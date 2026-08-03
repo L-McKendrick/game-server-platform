@@ -404,24 +404,19 @@ func validateEvent(
 	sessionID string,
 	event domain.SessionEvent,
 ) error {
-	switch {
-	case strings.TrimSpace(event.ID) == "":
-		return fmt.Errorf("event ID is required")
-	case strings.TrimSpace(event.SessionID) == "":
-		return fmt.Errorf("event session ID is required")
-	case event.SessionID != sessionID:
+	if err := event.Validate(); err != nil {
+		return fmt.Errorf("validate event: %w", err)
+	}
+
+	if event.SessionID != sessionID {
 		return fmt.Errorf(
 			"event session ID %q does not match session %q",
 			event.SessionID,
 			sessionID,
 		)
-	case strings.TrimSpace(string(event.Type)) == "":
-		return fmt.Errorf("event type is required")
-	case event.OccurredAt.IsZero():
-		return fmt.Errorf("event occurrence timestamp is required")
-	default:
-		return nil
 	}
+
+	return nil
 }
 
 func toSessionItem(session domain.Session) sessionItem {

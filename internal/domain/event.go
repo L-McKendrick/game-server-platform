@@ -1,6 +1,10 @@
 package domain
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // EventType is the stable machine-readable event name.
 type EventType string
@@ -22,10 +26,33 @@ type SessionEvent struct {
 	Data          map[string]string
 }
 
+// Validate verifies that an event contains its required audit fields.
+func (event SessionEvent) Validate() error {
+	switch {
+	case strings.TrimSpace(event.ID) == "":
+		return fmt.Errorf("event ID is required")
+	case strings.TrimSpace(event.SessionID) == "":
+		return fmt.Errorf("event session ID is required")
+	case strings.TrimSpace(string(event.Type)) == "":
+		return fmt.Errorf("event type is required")
+	case event.OccurredAt.IsZero():
+		return fmt.Errorf("event occurrence timestamp is required")
+	case strings.TrimSpace(event.ActorType) == "":
+		return fmt.Errorf("event actor type is required")
+	case strings.TrimSpace(event.ActorID) == "":
+		return fmt.Errorf("event actor ID is required")
+	case strings.TrimSpace(event.CorrelationID) == "":
+		return fmt.Errorf("event correlation ID is required")
+	default:
+		return nil
+	}
+}
+
 // NewSessionCreatedEvent creates the initial session event.
 func NewSessionCreatedEvent(
 	eventID string,
 	correlationID string,
+	actor Actor,
 	session Session,
 	now time.Time,
 ) SessionEvent {
@@ -34,8 +61,8 @@ func NewSessionCreatedEvent(
 		SessionID:     session.ID,
 		Type:          EventSessionCreated,
 		OccurredAt:    now.UTC(),
-		ActorType:     "user",
-		ActorID:       session.OwnerDiscordUserID,
+		ActorType:     string(actor.Type),
+		ActorID:       actor.ID,
 		CorrelationID: correlationID,
 		Data: map[string]string{
 			"slug":      session.Slug,
@@ -49,6 +76,7 @@ func NewSessionCreatedEvent(
 func NewStateChangedEvent(
 	eventID string,
 	correlationID string,
+	actor Actor,
 	session Session,
 	from LifecycleState,
 	now time.Time,
@@ -58,8 +86,8 @@ func NewStateChangedEvent(
 		SessionID:     session.ID,
 		Type:          EventStateChanged,
 		OccurredAt:    now.UTC(),
-		ActorType:     "system",
-		ActorID:       "metadata-smoke",
+		ActorType:     string(actor.Type),
+		ActorID:       actor.ID,
 		CorrelationID: correlationID,
 		Data: map[string]string{
 			"from": string(from),

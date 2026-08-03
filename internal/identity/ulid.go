@@ -17,3 +17,11 @@ func NewULID(now time.Time) (string, error) {
 
 	return id.String(), nil
 }
+
+// Generator generates production ULIDs.
+type Generator struct{}
+
+// New returns a new ULID for the supplied timestamp.
+func (Generator) New(now time.Time) (string, error) {
+	return NewULID(now)
+}
