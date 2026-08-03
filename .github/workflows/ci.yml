@@ -55,6 +55,9 @@ jobs:
           terraform_version: "1.15.8"
           terraform_wrapper: false
 
+      - name: Show Terraform version
+        run: terraform version
+
       - name: Check Terraform formatting
         run: terraform fmt -check -recursive infra/terraform
 
