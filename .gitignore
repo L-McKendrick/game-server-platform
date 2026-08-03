@@ -1,0 +1,27 @@
+# Local environment files
+.env
+.env.local
+
+# Local databases
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Build output
+bin/
+dist/
+*.exe
+
+# Terraform-generated files
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+
+# VS Code local settings
+.vscode/
