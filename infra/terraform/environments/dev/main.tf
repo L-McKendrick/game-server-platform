@@ -92,6 +92,37 @@ resource "aws_dynamodb_table" "metadata" {
     type = "S"
   }
 
+  attribute {
+    name = "gsi1pk"
+    type = "S"
+  }
+
+  attribute {
+    name = "gsi1sk"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires_at_epoch"
+    enabled        = true
+  }
+
+  global_secondary_index {
+    name = "gsi1"
+
+    key_schema {
+      attribute_name = "gsi1pk"
+      key_type       = "HASH"
+    }
+
+    key_schema {
+      attribute_name = "gsi1sk"
+      key_type       = "RANGE"
+    }
+
+    projection_type = "ALL"
+  }
+
   point_in_time_recovery {
     enabled = true
   }

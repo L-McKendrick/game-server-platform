@@ -30,3 +30,30 @@ the authoritative deployed metadata store.
 - Metadata persists independently of Lambda and game-server infrastructure.
 - Data models must be designed around DynamoDB access patterns.
 - Storage implementations can be replaced without rewriting lifecycle logic.
+
+## Initial Access Patterns
+
+The first implemented access patterns are:
+
+1. Create a session and its initial event atomically.
+2. Retrieve one session by session ID.
+3. Update a session using optimistic concurrency and append an event atomically.
+4. List recent sessions by Discord owner ID.
+
+Primary records use:
+
+- `pk = SESSION#<session-id>`
+- `sk = METADATA`
+
+Events use:
+
+- `pk = SESSION#<session-id>`
+- `sk = EVENT#<timestamp>#<event-id>`
+
+Owner queries use:
+
+- `gsi1pk = OWNER#<discord-user-id>`
+- `gsi1sk = UPDATED#<timestamp>#SESSION#<session-id>`
+
+Global-secondary-index results are used for discovery and listing. Authoritative
+state changes always read and conditionally update the primary session item.

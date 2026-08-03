@@ -9,9 +9,10 @@ import (
 
 // Config contains values needed by the control-plane application.
 type Config struct {
-	Environment string
-	AWSRegion   string
-	LogLevel    slog.Level
+	Environment   string
+	AWSRegion     string
+	MetadataTable string
+	LogLevel      slog.Level
 }
 
 // Load reads configuration from environment variables.
@@ -24,7 +25,11 @@ func Load() (Config, error) {
 	cfg := Config{
 		Environment: getEnv("APP_ENV", "development"),
 		AWSRegion:   getEnv("AWS_REGION", "us-west-2"),
-		LogLevel:    logLevel,
+		MetadataTable: getEnv(
+			"METADATA_TABLE_NAME",
+			"game-server-platform-dev-metadata",
+		),
+		LogLevel: logLevel,
 	}
 
 	if strings.TrimSpace(cfg.Environment) == "" {
@@ -33,6 +38,10 @@ func Load() (Config, error) {
 
 	if strings.TrimSpace(cfg.AWSRegion) == "" {
 		return Config{}, fmt.Errorf("AWS_REGION cannot be empty")
+	}
+
+	if strings.TrimSpace(cfg.MetadataTable) == "" {
+		return Config{}, fmt.Errorf("METADATA_TABLE_NAME cannot be empty")
 	}
 
 	return cfg, nil
