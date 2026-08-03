@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/identity"
@@ -29,7 +29,11 @@ func main() {
 
 	appConfig, err := config.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)
+		fmt.Fprintf(
+			os.Stderr,
+			"configuration error: %v\n",
+			err,
+		)
 		os.Exit(1)
 	}
 
@@ -45,120 +49,108 @@ func main() {
 	}
 
 	client := dynamodb.NewFromConfig(awsConfig)
+
 	repository := dynamodbstore.New(
 		client,
 		appConfig.MetadataTable,
 	)
 
-	now := time.Now().UTC()
-
-	sessionID := mustULID(now)
-	createEventID := mustULID(now.Add(time.Millisecond))
-	transitionEventID := mustULID(now.Add(2 * time.Millisecond))
-	correlationID := mustULID(now.Add(3 * time.Millisecond))
-
-	session, err := domain.NewSession(
-		domain.NewSessionInput{
-			ID:                 sessionID,
-			Slug:               "metadata-smoke-" + strings.ToLower(sessionID[len(sessionID)-6:]),
-			DisplayName:        "Metadata Smoke Test",
-			GameType:           "arma3",
-			OwnerDiscordUserID: smokeTestOwner,
-			GuildID:            "local-test-guild",
-			ChannelID:          "local-test-channel",
-		},
-		now,
+	service, err := sessions.NewService(
+		repository,
+		identity.Generator{},
+		sessions.SystemClock{},
 	)
 	if err != nil {
-		fail("create session model", err)
+		fail("construct session service", err)
 	}
 
-	createEvent := domain.NewSessionCreatedEvent(
-		createEventID,
-		correlationID,
-		session,
-		now,
-	)
+	actor := domain.Actor{
+		Type: domain.ActorTypeLocalTest,
+		ID:   smokeTestOwner,
+	}
 
-	if err := repository.Create(
+	nowSuffix := time.Now().
+		UTC().
+		Format("20060102-150405")
+
+	created, err := service.Create(
 		ctx,
-		session,
-		createEvent,
-	); err != nil {
-		fail("persist new session", err)
+		sessions.CreateCommand{
+			Actor:       actor,
+			Slug:        "metadata-smoke-" + nowSuffix,
+			DisplayName: "Metadata Smoke Test",
+			GameType:    "arma3",
+			GuildID:     "local-test-guild",
+			ChannelID:   "local-test-channel",
+		},
+	)
+	if err != nil {
+		fail("create session", err)
 	}
 
 	slog.Info(
-		"session created",
-		slog.String("session_id", session.ID),
-		slog.String("state", string(session.LifecycleState)),
-		slog.Int64("version", session.Version),
+		"session created through application service",
+		slog.String("session_id", created.ID),
+		slog.String(
+			"state",
+			string(created.LifecycleState),
+		),
+		slog.Int64("version", created.Version),
 	)
 
-	loaded, err := repository.Get(ctx, session.ID)
+	loaded, err := service.Get(
+		ctx,
+		sessions.GetQuery{
+			Actor:     actor,
+			SessionID: created.ID,
+		},
+	)
 	if err != nil {
-		fail("read session", err)
+		fail("get session", err)
 	}
 
-	previousState := loaded.LifecycleState
-	expectedVersion := loaded.Version
-
-	if err := loaded.Transition(
-		domain.StateNew,
-		now.Add(time.Second),
-	); err != nil {
+	transitioned, err := service.Transition(
+		ctx,
+		sessions.TransitionCommand{
+			Actor:     actor,
+			SessionID: loaded.ID,
+			To:        domain.StateNew,
+		},
+	)
+	if err != nil {
 		fail("transition session", err)
 	}
 
-	transitionEvent := domain.NewStateChangedEvent(
-		transitionEventID,
-		correlationID,
-		loaded,
-		previousState,
-		now.Add(time.Second),
-	)
-
-	if err := repository.SaveWithEvent(
-		ctx,
-		loaded,
-		expectedVersion,
-		transitionEvent,
-	); err != nil {
-		fail("save transitioned session", err)
-	}
-
 	slog.Info(
-		"session transitioned",
-		slog.String("session_id", loaded.ID),
-		slog.String("from", string(previousState)),
-		slog.String("to", string(loaded.LifecycleState)),
-		slog.Int64("version", loaded.Version),
+		"session transitioned through application service",
+		slog.String("session_id", transitioned.ID),
+		slog.String(
+			"state",
+			string(transitioned.LifecycleState),
+		),
+		slog.Int64("version", transitioned.Version),
 	)
 
-	sessions, err := repository.ListByOwner(
+	ownedSessions, err := service.List(
 		ctx,
-		smokeTestOwner,
-		10,
+		sessions.ListQuery{
+			Actor: actor,
+			Limit: 10,
+		},
 	)
 	if err != nil {
-		fail("list sessions by owner", err)
+		fail("list owner sessions", err)
 	}
 
 	slog.Info(
-		"metadata smoke test passed",
+		"application metadata smoke test passed",
 		slog.String("table", appConfig.MetadataTable),
-		slog.String("session_id", loaded.ID),
-		slog.Int("owner_session_count", len(sessions)),
+		slog.String("session_id", transitioned.ID),
+		slog.Int(
+			"owner_session_count",
+			len(ownedSessions),
+		),
 	)
-}
-
-func mustULID(now time.Time) string {
-	id, err := identity.NewULID(now)
-	if err != nil {
-		fail("generate ULID", err)
-	}
-
-	return id
 }
 
 func fail(operation string, err error) {
