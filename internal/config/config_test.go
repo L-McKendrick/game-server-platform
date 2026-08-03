@@ -31,6 +31,14 @@ func TestLoadUsesDefaults(t *testing.T) {
 		)
 	}
 
+	if cfg.MetadataTable != "game-server-platform-dev-metadata" {
+		t.Errorf(
+			"MetadataTable = %q; want %q",
+			cfg.MetadataTable,
+			"game-server-platform-dev-metadata",
+		)
+	}
+
 	if cfg.LogLevel != slog.LevelInfo {
 		t.Errorf(
 			"LogLevel = %v; want %v",
@@ -43,6 +51,7 @@ func TestLoadUsesDefaults(t *testing.T) {
 func TestLoadReadsEnvironmentVariables(t *testing.T) {
 	t.Setenv("APP_ENV", "test")
 	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("METADATA_TABLE_NAME", "test-metadata")
 	t.Setenv("LOG_LEVEL", "debug")
 
 	cfg, err := Load()
@@ -56,6 +65,14 @@ func TestLoadReadsEnvironmentVariables(t *testing.T) {
 
 	if cfg.AWSRegion != "us-east-1" {
 		t.Errorf("AWSRegion = %q; want %q", cfg.AWSRegion, "us-east-1")
+	}
+
+	if cfg.MetadataTable != "test-metadata" {
+		t.Errorf(
+			"MetadataTable = %q; want %q",
+			cfg.MetadataTable,
+			"test-metadata",
+		)
 	}
 
 	if cfg.LogLevel != slog.LevelDebug {
