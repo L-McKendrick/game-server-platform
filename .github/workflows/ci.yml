@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "$files" ]; then
+            echo "The following files require gofmt:"
+            echo "$files"
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run tests
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Build platform command
+        run: go build -o bin/platform ./cmd/platform
+
+  terraform:
+    name: Terraform checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "1.15.0"
+          terraform_wrapper: false
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive infra/terraform
+
+      - name: Initialize bootstrap configuration
+        run: terraform -chdir=infra/terraform/bootstrap init -backend=false -input=false
+
+      - name: Validate bootstrap configuration
+        run: terraform -chdir=infra/terraform/bootstrap validate
+
+      - name: Initialize development configuration
+        run: terraform -chdir=infra/terraform/environments/dev init -backend=false -input=false
+
+      - name: Validate development configuration
+        run: terraform -chdir=infra/terraform/environments/dev validate

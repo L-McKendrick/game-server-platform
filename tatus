@@ -1,0 +1,474 @@
+warning: LF will be replaced by CRLF in .gitignore.
+The file will have its original line endings in your working directory
+warning: LF will be replaced by CRLF in cmd/platform/main.go.
+The file will have its original line endings in your working directory
+warning: LF will be replaced by CRLF in docs/architecture-plan.md.
+The file will have its original line endings in your working directory
+warning: LF will be replaced by CRLF in go.mod.
+The file will have its original line endings in your working directory
+[1mdiff --git a/.gitignore b/.gitignore[m
+[1mindex 1fb2e17..be24b82 100644[m
+[1m--- a/.gitignore[m
+[1m+++ b/.gitignore[m
+[36m@@ -1,25 +1,39 @@[m
+[31m-# Local environment files[m
+[31m-.env[m
+[31m-.env.local[m
+[32m+[m[32m# Compiled Go files[m
+[32m+[m[32mbin/[m
+[32m+[m[32m*.exe[m
+[32m+[m[32m*.test[m
+[32m+[m[32m*.out[m
+[32m+[m[32mcoverage.out[m
+ [m
+[31m-# Local databases[m
+[32m+[m[32m# Local application data[m
+ data/[m
+ *.db[m
+ *.db-shm[m
+ *.db-wal[m
+ [m
+[31m-# Build output[m
+[31m-bin/[m
+[31m-dist/[m
+[31m-*.exe[m
+[32m+[m[32m# Local environment configuration[m
+[32m+[m[32m.env[m
+[32m+[m[32m.env.*[m
+[32m+[m[32msecrets/[m
+ [m
+[31m-# Terraform-generated files[m
+[31m-.terraform/[m
+[32m+[m[32m# Terraform working files and state[m
+[32m+[m[32m**/.terraform/*[m
+ *.tfstate[m
+ *.tfstate.*[m
+[32m+[m[32m*.tfplan[m
+ crash.log[m
+[32m+[m[32mcrash.*.log[m
+[32m+[m[32mbackend.hcl[m
+[32m+[m[32mterraform.rc[m
+[32m+[m[32m.terraformrc[m
+[32m+[m
+[32m+[m[32m# Variable files may contain sensitive values[m
+[32m+[m[32m*.tfvars[m
+[32m+[m[32m*.tfvars.json[m
+[32m+[m[32m!*.example.tfvars[m
+[32m+[m[32m!*.tfvars.example[m
+ [m
+[31m-# Operating-system files[m
+[32m+[m[32m# Operating system files[m
+ .DS_Store[m
+ Thumbs.db[m
+ [m
+[1mdiff --git a/cmd/platform/main.go b/cmd/platform/main.go[m
+[1mindex d1b53e5..0ac1e6f 100644[m
+[1m--- a/cmd/platform/main.go[m
+[1m+++ b/cmd/platform/main.go[m
+[36m@@ -1,18 +1,28 @@[m
+ package main[m
+ [m
+ import ([m
+[32m+[m	[32m"fmt"[m
+ 	"log/slog"[m
+ 	"os"[m
+[32m+[m
+[32m+[m	[32m"github.com/L-McKendrick/game-server-platform/internal/config"[m
+[32m+[m	[32m"github.com/L-McKendrick/game-server-platform/internal/logging"[m
+ )[m
+ [m
+ func main() {[m
+[31m-	logger := slog.New([m
+[31m-		slog.NewJSONHandler(os.Stdout, nil),[m
+[31m-	)[m
+[32m+[m	[32mcfg, err := config.Load()[m
+[32m+[m	[32mif err != nil {[m
+[32m+[m		[32mfmt.Fprintf(os.Stderr, "configuration error: %v\n", err)[m
+[32m+[m		[32mos.Exit(1)[m
+[32m+[m	[32m}[m
+[32m+[m
+[32m+[m	[32mlogger := logging.New(cfg.LogLevel)[m
+[32m+[m	[32mslog.SetDefault(logger)[m
+ [m
+ 	logger.Info([m
+ 		"game server platform started",[m
+[31m-		"component",[m
+[31m-		"control-plane",[m
+[32m+[m		[32mslog.String("component", "control-plane"),[m
+[32m+[m		[32mslog.String("environment", cfg.Environment),[m
+[32m+[m		[32mslog.String("aws_region", cfg.AWSRegion),[m
+ 	)[m
+[31m-}[m
+\ No newline at end of file[m
+[32m+[m[32m}[m
+[1mdiff --git a/docs/architecture-plan.md b/docs/architecture-plan.md[m
+[1mindex cbdf6c7..e007859 100644[m
+[1m--- a/docs/architecture-plan.md[m
+[1m+++ b/docs/architecture-plan.md[m
+[36m@@ -6,17 +6,16 @@[m
+ [m
+ **Objective:** Build an on-demand, self-managing game server platform that automatically provisions, operates, suspends, archives, and destroys dedicated game server infrastructure based on player activity.[m
+ [m
+[31m-**Primary Use Case:** Small cooperative groups running short campaigns (typically weekends or several consecutive evenings) separated by long periods of inactivity.[m
+[32m+[m[32m**Primary Use Case:** Small cooperative groups running short sessions (typically weekends or several consecutive evenings) separated by long periods of inactivity.[m
+ [m
+ **Core Value Proposition:** Eliminate idle infrastructure costs by treating game servers as ephemeral workloads. Compute resources exist only while actively in use or during a short inactivity buffer, allowing infrastructure costs to return to effectively $0.00 during extended downtime.[m
+ [m
+ **Design Principles:**[m
+ [m
+ * Infrastructure is disposable.  [m
+[31m-* Campaign data is persistent.  [m
+ * Automation is preferred over manual administration.  [m
+ * Recovery should resume from the last successful step whenever possible.  [m
+[31m-* All infrastructure should be reproducible from stored configuration and campaign data.[m
+[32m+[m[32m* All infrastructure should be reproducible from stored configuration and game sessions data.[m
+ [m
+ ---[m
+ [m
+[36m@@ -33,7 +32,7 @@[m [mThe platform is divided into four logical layers:[m
+ [m
+ ## **3\. Control Plane**[m
+ [m
+[31m-The Control Plane is responsible for orchestrating the entire lifecycle of a campaign. It contains no long-running servers and is implemented using serverless or event-driven components.[m
+[32m+[m[32mThe Control Plane is responsible for orchestrating the entire lifecycle of a game session. It contains no long-running servers and is implemented using serverless or event-driven components.[m
+ [m
+ ### **Discord Interface**[m
+ [m
+[36m@@ -41,15 +40,15 @@[m [mServes as the primary user interface.[m
+ [m
+ Responsibilities include:[m
+ [m
+[31m-* Creating new campaigns  [m
+[32m+[m[32m* Creating new sessions/missions[m[41m  [m
+ * Uploading launcher presets  [m
+ * Uploading mission files  [m
+ * Selecting optional features  [m
+[31m-* Starting campaigns  [m
+[32m+[m[32m* Starting sessions[m[41m  [m
+ * Waking sleeping servers  [m
+ * Manually stopping servers  [m
+[31m-* Viewing campaign status  [m
+[31m-* Restoring archived campaigns[m
+[32m+[m[32m* Viewing session status[m[41m  [m
+[32m+[m[32m* Restoring archived sessions[m
+ [m
+ ---[m
+ [m
+[36m@@ -60,7 +59,7 @@[m [mReceives requests from Discord and performs:[m
+ * Request validation  [m
+ * Permission checks  [m
+ * File validation  [m
+[31m-* Campaign creation  [m
+[32m+[m[32m* Session creation[m[41m  [m
+ * Workflow initiation[m
+ [m
+ It does not directly provision infrastructure.[m
+[36m@@ -83,13 +82,13 @@[m [mResponsibilities include:[m
+ [m
+ ---[m
+ [m
+[31m-### **Campaign Manager**[m
+[32m+[m[32m### **Game Session Manager**[m
+ [m
+[31m-Responsible for campaign lifecycle rather than infrastructure.[m
+[32m+[m[32mResponsible for session lifecycle rather than infrastructure.[m
+ [m
+ Responsibilities include:[m
+ [m
+[31m-* Tracking campaign state  [m
+[32m+[m[32m* Tracking session state[m[41m  [m
+ * Monitoring sleep timers  [m
+ * Scheduling warnings  [m
+ * Initiating archival  [m
+[36m@@ -121,8 +120,8 @@[m [mUnlike object storage, this layer contains structured metadata rather than files[m
+ [m
+ Typical information includes:[m
+ [m
+[31m-* Campaign identifier  [m
+[31m-* Campaign owner  [m
+[32m+[m[32m* Session identifier[m[41m  [m
+[32m+[m[32m* Session owner[m[41m  [m
+ * Current lifecycle state  [m
+ * VM identifier  [m
+ * Storage volume identifier  [m
+[36m@@ -143,14 +142,14 @@[m [mThis metadata persists even after infrastructure has been destroyed.[m
+ [m
+ ### **Object Storage**[m
+ [m
+[31m-Long-term durable storage for campaign assets.[m
+[32m+[m[32mLong-term durable storage for Session assets.[m
+ [m
+ Stores:[m
+ [m
+ * Launcher presets  [m
+ * Mission files  [m
+ * Configuration templates  [m
+[31m-* Campaign backups  [m
+[32m+[m[32m* Session backups  **likely not needed for most cases[m
+ * Save archives  [m
+ * Server logs[m
+ [m
+[36m@@ -160,7 +159,7 @@[m [mObject storage remains even after infrastructure is removed.[m
+ [m
+ ### **Ephemeral Block Storage**[m
+ [m
+[31m-A high-performance SSD volume attached to the virtual machine during an active campaign.[m
+[32m+[m[32mA high-performance SSD volume attached to the virtual machine during an active session.[m
+ [m
+ Stores:[m
+ [m
+[36m@@ -168,10 +167,10 @@[m [mStores:[m
+ * Creator DLC  [m
+ * Steam Workshop mods  [m
+ * TeamSpeak server  [m
+[31m-* Active campaign saves  [m
+[32m+[m[32m* Active session saves  **arma does not have saves for most missions[m
+ * Runtime configuration[m
+ [m
+[31m-The volume exists only while the campaign is active or sleeping.[m
+[32m+[m[32mThe volume exists only while the session is active or sleeping.[m
+ [m
+ After archival, it is destroyed.[m
+ [m
+[36m@@ -187,7 +186,7 @@[m [mResponsibilities include:[m
+ [m
+ * Running Arma 3 Dedicated Server  [m
+ * Running TeamSpeak 3  [m
+[31m-* Hosting campaign data  [m
+[32m+[m[32m* Hosting session data[m[41m  [m
+ * Executing mission scripts  [m
+ * Managing Workshop content[m
+ [m
+[36m@@ -213,13 +212,13 @@[m [mHosts:[m
+ [m
+ Runs alongside Arma 3 to support TFAR, ACRE2, or standard voice communication.[m
+ [m
+[31m-Deployment may be optional depending on campaign configuration.[m
+[32m+[m[32mDeployment may be optional depending on mission configuration.[m
+ [m
+ ---[m
+ [m
+[31m-## **7\. Campaign State Machine**[m
+[32m+[m[32m## **7\. Session State Machine**[m
+ [m
+[31m-Each campaign progresses through a defined lifecycle.[m
+[32m+[m[32mEach session progresses through a defined lifecycle.[m
+ [m
+ NEW[m
+ [m
+[36m@@ -300,7 +299,7 @@[m [mProvisioning is divided into resumable stages.[m
+ 11. Start TeamSpeak  [m
+ 12. Start Arma 3  [m
+ 13. Perform health checks  [m
+[31m-14. Mark campaign Ready[m
+[32m+[m[32m14. Mark session Ready[m
+ [m
+ Each stage records completion so interrupted deployments can resume instead of restarting.[m
+ [m
+[36m@@ -308,15 +307,15 @@[m [mEach stage records completion so interrupted deployments can resume instead of r[m
+ [m
+ ## **9\. Operational Lifecycle**[m
+ [m
+[31m-### **Campaign Deployment**[m
+[32m+[m[32m### **Session Deployment**[m
+ [m
+[31m-1. User creates a campaign through Discord.  [m
+[32m+[m[32m1. User creates a session through Discord.[m[41m  [m
+ 2. Launcher preset, mission, and optional assets are uploaded.  [m
+[31m-3. Campaign Manager records metadata.  [m
+[32m+[m[32m3. Session Manager records metadata.[m[41m  [m
+ 4. Provisioning Service creates infrastructure.  [m
+ 5. Bootstrap workflow installs required software.  [m
+ 6. Health checks verify successful startup.  [m
+[31m-7. Discord receives connection details and campaign status.[m
+[32m+[m[32m7. Discord receives connection details and session status.[m
+ [m
+ ---[m
+ [m
+[36m@@ -344,7 +343,7 @@[m [mWhen no players are detected for a configurable period, or when manually request[m
+ 3. Virtual machine enters a stopped state.  [m
+ 4. Public IP is released.  [m
+ 5. SSD volume remains attached for rapid restoration.  [m
+[31m-6. Campaign state changes to SLEEPING.[m
+[32m+[m[32m6. Session state changes to SLEEPING.[m
+ [m
+ ---[m
+ [m
+[36m@@ -353,31 +352,31 @@[m [mWhen no players are detected for a configurable period, or when manually request[m
+ After a configurable inactivity period:[m
+ [m
+ 1. Warning notifications are sent.  [m
+[31m-2. Campaign saves are compressed.  [m
+[32m+[m[32m2. Session saves are compressed.  (if game requires save data)[m
+ 3. Logs are archived.  [m
+ 4. Backup archive is uploaded to object storage.  [m
+ 5. Metadata database records archive location.  [m
+ 6. Virtual machine is deleted.  [m
+ 7. SSD volume is deleted.  [m
+[31m-8. Campaign enters ARCHIVED state.[m
+[32m+[m[32m8. Session enters ARCHIVED state.[m
+ [m
+ Infrastructure costs return to storage-only costs.[m
+ [m
+ ---[m
+ [m
+[31m-### **Campaign Restoration**[m
+[32m+[m[32m### **Session Restoration**[m
+ [m
+[31m-An archived campaign can be restored at any time.[m
+[32m+[m[32mAn archived session can be restored at any time.[m
+ [m
+ The platform:[m
+ [m
+ 1. Creates new infrastructure.  [m
+[31m-2. Restores campaign archive.  [m
+[32m+[m[32m2. Restores session archive.[m[41m  [m
+ 3. Reinstalls required software.  [m
+ 4. Downloads missing Workshop content.  [m
+ 5. Restores saves.  [m
+ 6. Starts services.  [m
+[31m-7. Returns the campaign to RUNNING state.[m
+[32m+[m[32m7. Returns the session to RUNNING state.[m
+ [m
+ ---[m
+ [m
+[36m@@ -407,7 +406,7 @@[m [mEvery significant operation generates a structured event.[m
+ [m
+ Examples include:[m
+ [m
+[31m-* CampaignCreated  [m
+[32m+[m[32m* SessionCreated[m[41m  [m
+ * ProvisionStarted  [m
+ * VMCreated  [m
+ * StorageAttached  [m
+[36m@@ -423,7 +422,7 @@[m [mExamples include:[m
+ * ArchiveCreated  [m
+ * ArchiveUploaded  [m
+ * InfrastructureDestroyed  [m
+[31m-* CampaignRestored[m
+[32m+[m[32m* SessionRestored[m
+ [m
+ Structured logging simplifies troubleshooting, auditing, and future analytics.[m
+ [m
+[36m@@ -448,15 +447,15 @@[m [mKey practices include:[m
+ [m
+ ## **13\. Design Strategy**[m
+ [m
+[31m-The platform intentionally separates infrastructure from campaign data.[m
+[32m+[m[32mThe platform intentionally separates infrastructure from session data.[m
+ [m
+ Virtual machines are considered disposable resources that can be recreated at any time.[m
+ [m
+[31m-Campaigns remain persistent through stored metadata and archived data, allowing complete infrastructure destruction without losing progress.[m
+[32m+[m[32mSessions remain persistent through stored metadata and archived data, allowing complete infrastructure destruction without losing progress.[m
+ [m
+ This architecture minimizes operational cost, reduces manual administration, improves fault recovery, and provides a foundation for supporting additional dedicated game servers beyond Arma 3 while reusing the same orchestration platform.[m
+ [m
+[31m-Based on your current architecture document, I'd build this in **vertical slices**, where each milestone results in a working system rather than building all of one layer first. The architecture already defines the major components and lifecycle, so the implementation order should follow the lifecycle from "create campaign" to "destroy campaign."[m
+[32m+[m[32mBased on your current architecture document, I'd build this in **vertical slices**, where each milestone results in a working system rather than building all of one layer first. The architecture already defines the major components and lifecycle, so the implementation order should follow the lifecycle from "create session" to "destroy session."[m
+ [m
+ ## **Phase 1 — Foundation**[m
+ [m
+[36m@@ -476,22 +475,19 @@[m [mBuild:[m
+ [m
+ ---[m
+ [m
+[31m-## **Phase 2 — Campaign Metadata**[m
+[32m+[m[32m## **Phase 2 — Metadata Layer**[m
+ [m
+[31m-**Goal:** Create and manage campaigns before worrying about infrastructure.[m
+[32m+[m[32m**Goal:** Create and manage sessions before worrying about infrastructure.[m
+ [m
+ Implement:[m
+ [m
+[31m-* Campaign model  [m
+[32m+[m[32m* Game model[m[41m  [m
+ * State machine  [m
+ * Database access layer  [m
+[31m-* Campaign CRUD operations  [m
+[32m+[m[32m* CRUD operations[m[41m  [m
+ * File upload handling  [m
+ * Object storage integration[m
+ [m
+[31m-Deliverable:[m
+[31m-[m
+[31m-Users can create campaigns, upload mission files and launcher presets, and view campaign status.[m
+ [m
+ ---[m
+ [m
+[36m@@ -501,14 +497,14 @@[m [mUsers can create campaigns, upload mission files and launcher presets, and view[m
+ [m
+ Implement commands such as:[m
+ [m
+[31m-* `/campaign create`  [m
+[31m-* `/campaign list`  [m
+[31m-* `/campaign status`  [m
+[31m-* `/campaign delete`  [m
+[31m-* `/campaign upload`  [m
+[31m-* `/campaign start`[m
+[32m+[m[32m* `/create`[m[41m  [m
+[32m+[m[32m* `/list`[m[41m  [m
+[32m+[m[32m* `/status`[m[41m  [m
+[32m+[m[32m* `/delete`[m[41m  [m
+[32m+[m[32m* `/upload`[m[41m  [m
+[32m+[m[32m* `/start`[m
+ [m
+[31m-At this stage, `/campaign start` can simply change the campaign state without provisioning infrastructure.[m
+[32m+[m[32mAt this stage, `/ start` can simply change the game state without provisioning infrastructure.[m
+ [m
+ Deliverable:[m
+ [m
+[36m@@ -599,7 +595,7 @@[m [mImplement:[m
+ [m
+ Deliverable:[m
+ [m
+[31m-Campaigns can pause without being destroyed, minimizing compute costs while retaining the attached storage volume.[m
+[32m+[m[32mSessions can pause without being destroyed, minimizing compute costs while retaining the attached storage volume.[m
+ [m
+ ---[m
+ [m
+[36m@@ -620,7 +616,7 @@[m [mImplement:[m
+ [m
+ Deliverable:[m
+ [m
+[31m-Inactive campaigns automatically transition to the archived state after the configured inactivity period.[m
+[32m+[m[32mInactive sessions automatically transition to the archived state after the configured inactivity period.[m
+ [m
+ ---[m
+ [m
+[36m@@ -637,7 +633,7 @@[m [mImplement:[m
+ [m
+ Deliverable:[m
+ [m
+[31m-Archived campaigns become fully restorable.[m
+[32m+[m[32mArchived sessions become fully restorable.[m
+ [m
+ ---[m
+ [m
+[36m@@ -683,7 +679,7 @@[m [mAdministrators can diagnose issues and monitor operations without accessing the[m
+ Only after the core lifecycle is stable should you add enhancements such as:[m
+ [m
+ * Scheduled boots  [m
+[31m-* Multiple concurrent campaigns  [m
+[32m+[m[32m* Multiple concurrent games/sessions[m[41m  [m
+ * Automatic Workshop updates  [m
+ * Additional supported games  [m
+ * Web dashboard  [m
+[36m@@ -716,7 +712,7 @@[m [mOnly after the core lifecycle is stable should you add enhancements such as:[m
+         │  [m
+ 12\. Feature Expansion[m
+ [m
+[31m-This sequence keeps the project continuously usable: each phase builds on the previous one and delivers a complete, testable capability instead of isolated components. It also aligns closely with the lifecycle defined in your architecture document, progressing from campaign creation through provisioning, operation, suspension, archival, and restoration.[m
+[32m+[m[32mThis sequence keeps the project continuously usable: each phase builds on the previous one and delivers a complete, testable capability instead of isolated components. It also aligns closely with the lifecycle defined in your architecture document, progressing from session creation through provisioning, operation, suspension, archival, and restoration.[m
+ [m
+ # **Phase 1 Updated Technology Stack**[m
+ [m
+[1mdiff --git a/go.mod b/go.mod[m
+[1mindex b2c69d6..40dd142 100644[m
+[1m--- a/go.mod[m
+[1m+++ b/go.mod[m
+[36m@@ -1,3 +1,3 @@[m
+[31m-module game-server-platform[m
+[32m+[m[32mmodule github.com/L-McKendrick/game-server-platform[m
+ [m
+ go 1.26.5[m

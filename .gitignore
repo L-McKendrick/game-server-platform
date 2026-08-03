@@ -1,25 +1,39 @@
-# Local environment files
-.env
-.env.local
+# Compiled Go files
+bin/
+*.exe
+*.test
+*.out
+coverage.out
 
-# Local databases
+# Local application data
 data/
 *.db
 *.db-shm
 *.db-wal
 
-# Build output
-bin/
-dist/
-*.exe
+# Local environment configuration
+.env
+.env.*
+secrets/
 
-# Terraform-generated files
-.terraform/
+# Terraform working files and state
+**/.terraform/*
 *.tfstate
 *.tfstate.*
+*.tfplan
 crash.log
+crash.*.log
+backend.hcl
+terraform.rc
+.terraformrc
 
-# Operating-system files
+# Variable files may contain sensitive values
+*.tfvars
+*.tfvars.json
+!*.example.tfvars
+!*.tfvars.example
+
+# Operating system files
 .DS_Store
 Thumbs.db
 

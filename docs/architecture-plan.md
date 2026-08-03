@@ -6,17 +6,16 @@
 
 **Objective:** Build an on-demand, self-managing game server platform that automatically provisions, operates, suspends, archives, and destroys dedicated game server infrastructure based on player activity.
 
-**Primary Use Case:** Small cooperative groups running short campaigns (typically weekends or several consecutive evenings) separated by long periods of inactivity.
+**Primary Use Case:** Small cooperative groups running short sessions (typically weekends or several consecutive evenings) separated by long periods of inactivity.
 
 **Core Value Proposition:** Eliminate idle infrastructure costs by treating game servers as ephemeral workloads. Compute resources exist only while actively in use or during a short inactivity buffer, allowing infrastructure costs to return to effectively $0.00 during extended downtime.
 
 **Design Principles:**
 
 * Infrastructure is disposable.  
-* Campaign data is persistent.  
 * Automation is preferred over manual administration.  
 * Recovery should resume from the last successful step whenever possible.  
-* All infrastructure should be reproducible from stored configuration and campaign data.
+* All infrastructure should be reproducible from stored configuration and game sessions data.
 
 ---
 
@@ -33,7 +32,7 @@ The platform is divided into four logical layers:
 
 ## **3\. Control Plane**
 
-The Control Plane is responsible for orchestrating the entire lifecycle of a campaign. It contains no long-running servers and is implemented using serverless or event-driven components.
+The Control Plane is responsible for orchestrating the entire lifecycle of a game session. It contains no long-running servers and is implemented using serverless or event-driven components.
 
 ### **Discord Interface**
 
@@ -41,15 +40,15 @@ Serves as the primary user interface.
 
 Responsibilities include:
 
-* Creating new campaigns  
+* Creating new sessions/missions  
 * Uploading launcher presets  
 * Uploading mission files  
 * Selecting optional features  
-* Starting campaigns  
+* Starting sessions  
 * Waking sleeping servers  
 * Manually stopping servers  
-* Viewing campaign status  
-* Restoring archived campaigns
+* Viewing session status  
+* Restoring archived sessions
 
 ---
 
@@ -60,7 +59,7 @@ Receives requests from Discord and performs:
 * Request validation  
 * Permission checks  
 * File validation  
-* Campaign creation  
+* Session creation  
 * Workflow initiation
 
 It does not directly provision infrastructure.
@@ -83,13 +82,13 @@ Responsibilities include:
 
 ---
 
-### **Campaign Manager**
+### **Game Session Manager**
 
-Responsible for campaign lifecycle rather than infrastructure.
+Responsible for session lifecycle rather than infrastructure.
 
 Responsibilities include:
 
-* Tracking campaign state  
+* Tracking session state  
 * Monitoring sleep timers  
 * Scheduling warnings  
 * Initiating archival  
@@ -121,8 +120,8 @@ Unlike object storage, this layer contains structured metadata rather than files
 
 Typical information includes:
 
-* Campaign identifier  
-* Campaign owner  
+* Session identifier  
+* Session owner  
 * Current lifecycle state  
 * VM identifier  
 * Storage volume identifier  
@@ -143,14 +142,14 @@ This metadata persists even after infrastructure has been destroyed.
 
 ### **Object Storage**
 
-Long-term durable storage for campaign assets.
+Long-term durable storage for Session assets.
 
 Stores:
 
 * Launcher presets  
 * Mission files  
 * Configuration templates  
-* Campaign backups  
+* Session backups  **likely not needed for most cases
 * Save archives  
 * Server logs
 
@@ -160,7 +159,7 @@ Object storage remains even after infrastructure is removed.
 
 ### **Ephemeral Block Storage**
 
-A high-performance SSD volume attached to the virtual machine during an active campaign.
+A high-performance SSD volume attached to the virtual machine during an active session.
 
 Stores:
 
@@ -168,10 +167,10 @@ Stores:
 * Creator DLC  
 * Steam Workshop mods  
 * TeamSpeak server  
-* Active campaign saves  
+* Active session saves  **arma does not have saves for most missions
 * Runtime configuration
 
-The volume exists only while the campaign is active or sleeping.
+The volume exists only while the session is active or sleeping.
 
 After archival, it is destroyed.
 
@@ -187,7 +186,7 @@ Responsibilities include:
 
 * Running Arma 3 Dedicated Server  
 * Running TeamSpeak 3  
-* Hosting campaign data  
+* Hosting session data  
 * Executing mission scripts  
 * Managing Workshop content
 
@@ -213,13 +212,13 @@ Hosts:
 
 Runs alongside Arma 3 to support TFAR, ACRE2, or standard voice communication.
 
-Deployment may be optional depending on campaign configuration.
+Deployment may be optional depending on mission configuration.
 
 ---
 
-## **7\. Campaign State Machine**
+## **7\. Session State Machine**
 
-Each campaign progresses through a defined lifecycle.
+Each session progresses through a defined lifecycle.
 
 NEW
 
@@ -300,7 +299,7 @@ Provisioning is divided into resumable stages.
 11. Start TeamSpeak  
 12. Start Arma 3  
 13. Perform health checks  
-14. Mark campaign Ready
+14. Mark session Ready
 
 Each stage records completion so interrupted deployments can resume instead of restarting.
 
@@ -308,15 +307,15 @@ Each stage records completion so interrupted deployments can resume instead of r
 
 ## **9\. Operational Lifecycle**
 
-### **Campaign Deployment**
+### **Session Deployment**
 
-1. User creates a campaign through Discord.  
+1. User creates a session through Discord.  
 2. Launcher preset, mission, and optional assets are uploaded.  
-3. Campaign Manager records metadata.  
+3. Session Manager records metadata.  
 4. Provisioning Service creates infrastructure.  
 5. Bootstrap workflow installs required software.  
 6. Health checks verify successful startup.  
-7. Discord receives connection details and campaign status.
+7. Discord receives connection details and session status.
 
 ---
 
@@ -344,7 +343,7 @@ When no players are detected for a configurable period, or when manually request
 3. Virtual machine enters a stopped state.  
 4. Public IP is released.  
 5. SSD volume remains attached for rapid restoration.  
-6. Campaign state changes to SLEEPING.
+6. Session state changes to SLEEPING.
 
 ---
 
@@ -353,31 +352,31 @@ When no players are detected for a configurable period, or when manually request
 After a configurable inactivity period:
 
 1. Warning notifications are sent.  
-2. Campaign saves are compressed.  
+2. Session saves are compressed.  (if game requires save data)
 3. Logs are archived.  
 4. Backup archive is uploaded to object storage.  
 5. Metadata database records archive location.  
 6. Virtual machine is deleted.  
 7. SSD volume is deleted.  
-8. Campaign enters ARCHIVED state.
+8. Session enters ARCHIVED state.
 
 Infrastructure costs return to storage-only costs.
 
 ---
 
-### **Campaign Restoration**
+### **Session Restoration**
 
-An archived campaign can be restored at any time.
+An archived session can be restored at any time.
 
 The platform:
 
 1. Creates new infrastructure.  
-2. Restores campaign archive.  
+2. Restores session archive.  
 3. Reinstalls required software.  
 4. Downloads missing Workshop content.  
 5. Restores saves.  
 6. Starts services.  
-7. Returns the campaign to RUNNING state.
+7. Returns the session to RUNNING state.
 
 ---
 
@@ -407,7 +406,7 @@ Every significant operation generates a structured event.
 
 Examples include:
 
-* CampaignCreated  
+* SessionCreated  
 * ProvisionStarted  
 * VMCreated  
 * StorageAttached  
@@ -423,7 +422,7 @@ Examples include:
 * ArchiveCreated  
 * ArchiveUploaded  
 * InfrastructureDestroyed  
-* CampaignRestored
+* SessionRestored
 
 Structured logging simplifies troubleshooting, auditing, and future analytics.
 
@@ -448,15 +447,15 @@ Key practices include:
 
 ## **13\. Design Strategy**
 
-The platform intentionally separates infrastructure from campaign data.
+The platform intentionally separates infrastructure from session data.
 
 Virtual machines are considered disposable resources that can be recreated at any time.
 
-Campaigns remain persistent through stored metadata and archived data, allowing complete infrastructure destruction without losing progress.
+Sessions remain persistent through stored metadata and archived data, allowing complete infrastructure destruction without losing progress.
 
 This architecture minimizes operational cost, reduces manual administration, improves fault recovery, and provides a foundation for supporting additional dedicated game servers beyond Arma 3 while reusing the same orchestration platform.
 
-Based on your current architecture document, I'd build this in **vertical slices**, where each milestone results in a working system rather than building all of one layer first. The architecture already defines the major components and lifecycle, so the implementation order should follow the lifecycle from "create campaign" to "destroy campaign."
+Based on your current architecture document, I'd build this in **vertical slices**, where each milestone results in a working system rather than building all of one layer first. The architecture already defines the major components and lifecycle, so the implementation order should follow the lifecycle from "create session" to "destroy session."
 
 ## **Phase 1 — Foundation**
 
@@ -476,22 +475,19 @@ Build:
 
 ---
 
-## **Phase 2 — Campaign Metadata**
+## **Phase 2 — Metadata Layer**
 
-**Goal:** Create and manage campaigns before worrying about infrastructure.
+**Goal:** Create and manage sessions before worrying about infrastructure.
 
 Implement:
 
-* Campaign model  
+* Game model  
 * State machine  
 * Database access layer  
-* Campaign CRUD operations  
+* CRUD operations  
 * File upload handling  
 * Object storage integration
 
-Deliverable:
-
-Users can create campaigns, upload mission files and launcher presets, and view campaign status.
 
 ---
 
@@ -501,14 +497,14 @@ Users can create campaigns, upload mission files and launcher presets, and view 
 
 Implement commands such as:
 
-* `/campaign create`  
-* `/campaign list`  
-* `/campaign status`  
-* `/campaign delete`  
-* `/campaign upload`  
-* `/campaign start`
+* `/create`  
+* `/list`  
+* `/status`  
+* `/delete`  
+* `/upload`  
+* `/start`
 
-At this stage, `/campaign start` can simply change the campaign state without provisioning infrastructure.
+At this stage, `/ start` can simply change the game state without provisioning infrastructure.
 
 Deliverable:
 
@@ -599,7 +595,7 @@ Implement:
 
 Deliverable:
 
-Campaigns can pause without being destroyed, minimizing compute costs while retaining the attached storage volume.
+Sessions can pause without being destroyed, minimizing compute costs while retaining the attached storage volume.
 
 ---
 
@@ -620,7 +616,7 @@ Implement:
 
 Deliverable:
 
-Inactive campaigns automatically transition to the archived state after the configured inactivity period.
+Inactive sessions automatically transition to the archived state after the configured inactivity period.
 
 ---
 
@@ -637,7 +633,7 @@ Implement:
 
 Deliverable:
 
-Archived campaigns become fully restorable.
+Archived sessions become fully restorable.
 
 ---
 
@@ -683,7 +679,7 @@ Administrators can diagnose issues and monitor operations without accessing the 
 Only after the core lifecycle is stable should you add enhancements such as:
 
 * Scheduled boots  
-* Multiple concurrent campaigns  
+* Multiple concurrent games/sessions  
 * Automatic Workshop updates  
 * Additional supported games  
 * Web dashboard  
@@ -716,7 +712,7 @@ Only after the core lifecycle is stable should you add enhancements such as:
         │  
 12\. Feature Expansion
 
-This sequence keeps the project continuously usable: each phase builds on the previous one and delivers a complete, testable capability instead of isolated components. It also aligns closely with the lifecycle defined in your architecture document, progressing from campaign creation through provisioning, operation, suspension, archival, and restoration.
+This sequence keeps the project continuously usable: each phase builds on the previous one and delivers a complete, testable capability instead of isolated components. It also aligns closely with the lifecycle defined in your architecture document, progressing from session creation through provisioning, operation, suspension, archival, and restoration.
 
 # **Phase 1 Updated Technology Stack**
 
