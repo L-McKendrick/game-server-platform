@@ -4,7 +4,8 @@ An on-demand platform for provisioning and managing temporary dedicated game ser
 
 ## Current status
 
-Phase 1: Foundation
+Foundation and core metadata vertical slice implemented.
+Next milestone: command idempotency.
 
 ## Initial technology choices
 
@@ -26,17 +27,3 @@ Phase 1: Foundation
 - Server: A temporary compute instance
 - Mission: Arma-specific mission content
 - Deployment Archive: A long-term backup of a deployment
-
-## Run locally
-
-```bash
-go run ./cmd/platform
-
----
-
-# Part 10 — Format and test the project
-
-Run:
-
-```bash
-go fmt ./...

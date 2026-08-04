@@ -18,7 +18,7 @@ and cannot act as the shared durable metadata database for the control plane.
 The deployed AWS environment will use DynamoDB as its metadata store.
 
 Application code will access metadata through interfaces defined under
-`internal/store`. This prevents business logic from depending directly on
+`internal/ports`. This prevents business logic from depending directly on
 DynamoDB and allows a local or test implementation to be added later.
 
 SQLite may be used for local development or isolated tests, but it will not be
