@@ -4,19 +4,25 @@ An on-demand platform for provisioning and managing temporary dedicated game ser
 
 ## Current status
 
-Foundation, core metadata, command idempotency, and the local Discord interaction boundary are implemented.
+Foundation, metadata, command idempotency, the Discord interaction boundary,
+and the development Lambda/API Gateway ingress deployment are implemented.
 
-The Discord adapter currently provides:
+The deployable Discord slice provides:
 
 - Ed25519 verification against the exact raw request body;
 - timestamp freshness, request-size, application-ID, and guild validation;
 - Discord `PING` acknowledgement;
 - `/session create`, `/session list`, and `/session status`;
-- ephemeral responses with mentions disabled;
 - command idempotency derived from the Discord interaction ID;
-- a local in-memory HTTP composition root for transport testing.
+- DynamoDB-backed Lambda composition;
+- API Gateway HTTP API payload format `2.0`;
+- least-privilege Lambda IAM;
+- API throttling, access logs, retention, and alarms;
+- a repeatable Windows packaging script and development-guild registration script.
 
-Next milestone: deploy the interaction handler through API Gateway HTTP API and Lambda, compose it with DynamoDB, and register the command in one development guild.
+Next milestone: add asynchronous command normalization and the workflow
+foundation with SQS, Step Functions, workflow locks, and notification delivery.
+Do not add EC2 provisioning until that control-plane slice is complete.
 
 ## Local Discord interaction server
 
@@ -53,13 +59,43 @@ The endpoint is:
 POST /discord/interactions
 ```
 
-The versioned development command definition is stored at:
+## Deploy the development Discord endpoint
+
+Build the Linux ARM64 Lambda package on Windows:
+
+```powershell
+./scripts/build-discord-lambda.ps1
+```
+
+The script creates:
+
+```text
+dist/discord-interactions.zip
+```
+
+Copy and edit the ignored Terraform values:
+
+```powershell
+Copy-Item `
+  infra/terraform/environments/dev/discord.auto.tfvars.example `
+  infra/terraform/environments/dev/discord.auto.tfvars
+```
+
+Then follow:
+
+```text
+docs/runbooks/deploy-discord-interactions.md
+```
+
+The versioned development command definition remains at:
 
 ```text
 deploy/discord/session-command.json
 ```
 
-Do not register the endpoint or command until the Lambda/API Gateway deployment slice is complete.
+The Lambda does not require the Discord bot token. The token is used only by
+the explicit command-registration script and must not be committed or placed in
+Terraform variables.
 
 ## Initial technology choices
 

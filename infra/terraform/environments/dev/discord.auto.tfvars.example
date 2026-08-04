@@ -1,0 +1,4 @@
+discord_interaction_lambda_package_path = "../../../../dist/discord-interactions.zip"
+discord_public_key                      = "REPLACE_WITH_64_CHARACTER_HEX_PUBLIC_KEY"
+discord_application_id                  = "REPLACE_WITH_APPLICATION_ID"
+discord_allowed_guild_ids               = ["REPLACE_WITH_DEVELOPMENT_GUILD_ID"]
