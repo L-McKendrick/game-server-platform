@@ -18,9 +18,10 @@ import (
 )
 
 const (
-	sessionSortKey = "METADATA"
-	ownerIndexName = "gsi1"
-	schemaVersion  = 1
+	sessionSortKey     = "METADATA"
+	idempotencySortKey = "RESULT"
+	ownerIndexName     = "gsi1"
+	schemaVersion      = 1
 )
 
 // API contains the DynamoDB operations used by the repository.
@@ -102,11 +103,26 @@ type eventItem struct {
 	Data          map[string]string `dynamodbav:"data"`
 }
 
+type idempotencyItem struct {
+	PK              string `dynamodbav:"pk"`
+	SK              string `dynamodbav:"sk"`
+	EntityType      string `dynamodbav:"entity_type"`
+	SchemaVersion   int    `dynamodbav:"schema_version"`
+	IdempotencyKey  string `dynamodbav:"idempotency_key"`
+	RequestHash     string `dynamodbav:"request_hash"`
+	Status          string `dynamodbav:"status"`
+	CreatedAt       string `dynamodbav:"created_at"`
+	CompletedAt     string `dynamodbav:"completed_at,omitempty"`
+	ResultReference string `dynamodbav:"result_reference,omitempty"`
+	ExpiresAtEpoch  int64  `dynamodbav:"expires_at_epoch"`
+}
+
 // Create atomically creates the session and its initial event.
 func (repository *Repository) Create(
 	ctx context.Context,
 	session domain.Session,
 	event domain.SessionEvent,
+	idempotency domain.IdempotencyRecord,
 ) error {
 	if err := repository.validate(); err != nil {
 		return err
@@ -120,6 +136,10 @@ func (repository *Repository) Create(
 		return err
 	}
 
+	if err := validateIdempotency(session.ID, idempotency); err != nil {
+		return err
+	}
+
 	sessionAttributes, err := attributevalue.MarshalMap(toSessionItem(session))
 	if err != nil {
 		return fmt.Errorf("marshal session: %w", err)
@@ -128,6 +148,13 @@ func (repository *Repository) Create(
 	eventAttributes, err := attributevalue.MarshalMap(toEventItem(event))
 	if err != nil {
 		return fmt.Errorf("marshal session event: %w", err)
+	}
+
+	idempotencyAttributes, err := attributevalue.MarshalMap(
+		toIdempotencyItem(idempotency),
+	)
+	if err != nil {
+		return fmt.Errorf("marshal idempotency record: %w", err)
 	}
 
 	_, err = repository.client.TransactWriteItems(
@@ -148,6 +175,15 @@ func (repository *Repository) Create(
 					Put: &types.Put{
 						TableName: aws.String(repository.tableName),
 						Item:      eventAttributes,
+						ConditionExpression: aws.String(
+							"attribute_not_exists(pk) AND attribute_not_exists(sk)",
+						),
+					},
+				},
+				{
+					Put: &types.Put{
+						TableName: aws.String(repository.tableName),
+						Item:      idempotencyAttributes,
 						ConditionExpression: aws.String(
 							"attribute_not_exists(pk) AND attribute_not_exists(sk)",
 						),
@@ -232,6 +268,7 @@ func (repository *Repository) SaveWithEvent(
 	session domain.Session,
 	expectedVersion int64,
 	event domain.SessionEvent,
+	idempotency domain.IdempotencyRecord,
 ) error {
 	if err := repository.validate(); err != nil {
 		return err
@@ -257,6 +294,10 @@ func (repository *Repository) SaveWithEvent(
 		return err
 	}
 
+	if err := validateIdempotency(session.ID, idempotency); err != nil {
+		return err
+	}
+
 	sessionAttributes, err := attributevalue.MarshalMap(toSessionItem(session))
 	if err != nil {
 		return fmt.Errorf("marshal session: %w", err)
@@ -265,6 +306,13 @@ func (repository *Repository) SaveWithEvent(
 	eventAttributes, err := attributevalue.MarshalMap(toEventItem(event))
 	if err != nil {
 		return fmt.Errorf("marshal session event: %w", err)
+	}
+
+	idempotencyAttributes, err := attributevalue.MarshalMap(
+		toIdempotencyItem(idempotency),
+	)
+	if err != nil {
+		return fmt.Errorf("marshal idempotency record: %w", err)
 	}
 
 	_, err = repository.client.TransactWriteItems(
@@ -298,6 +346,15 @@ func (repository *Repository) SaveWithEvent(
 						),
 					},
 				},
+				{
+					Put: &types.Put{
+						TableName: aws.String(repository.tableName),
+						Item:      idempotencyAttributes,
+						ConditionExpression: aws.String(
+							"attribute_not_exists(pk) AND attribute_not_exists(sk)",
+						),
+					},
+				},
 			},
 		},
 	)
@@ -316,6 +373,69 @@ func (repository *Repository) SaveWithEvent(
 	}
 
 	return nil
+}
+
+// GetIdempotency returns a command result by external idempotency key.
+func (repository *Repository) GetIdempotency(
+	ctx context.Context,
+	key string,
+) (domain.IdempotencyRecord, error) {
+	if err := repository.validate(); err != nil {
+		return domain.IdempotencyRecord{}, err
+	}
+
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return domain.IdempotencyRecord{}, fmt.Errorf("idempotency key is required")
+	}
+
+	output, err := repository.client.GetItem(
+		ctx,
+		&dynamodb.GetItemInput{
+			TableName:      aws.String(repository.tableName),
+			ConsistentRead: aws.Bool(true),
+			Key: map[string]types.AttributeValue{
+				"pk": &types.AttributeValueMemberS{
+					Value: idempotencyPartitionKey(key),
+				},
+				"sk": &types.AttributeValueMemberS{
+					Value: idempotencySortKey,
+				},
+			},
+		},
+	)
+	if err != nil {
+		return domain.IdempotencyRecord{}, fmt.Errorf(
+			"get idempotency record: %w",
+			err,
+		)
+	}
+
+	if len(output.Item) == 0 {
+		return domain.IdempotencyRecord{}, fmt.Errorf(
+			"%w: idempotency key %s",
+			domain.ErrNotFound,
+			key,
+		)
+	}
+
+	var item idempotencyItem
+	if err := attributevalue.UnmarshalMap(output.Item, &item); err != nil {
+		return domain.IdempotencyRecord{}, fmt.Errorf(
+			"unmarshal idempotency record: %w",
+			err,
+		)
+	}
+
+	record, err := fromIdempotencyItem(item)
+	if err != nil {
+		return domain.IdempotencyRecord{}, fmt.Errorf(
+			"decode idempotency record: %w",
+			err,
+		)
+	}
+
+	return record, nil
 }
 
 // ListByOwner lists recent sessions belonging to one Discord user.
@@ -419,6 +539,29 @@ func validateEvent(
 	return nil
 }
 
+func validateIdempotency(
+	sessionID string,
+	record domain.IdempotencyRecord,
+) error {
+	if err := record.Validate(); err != nil {
+		return fmt.Errorf("validate idempotency record: %w", err)
+	}
+
+	if record.Status != domain.IdempotencyCompleted {
+		return fmt.Errorf("metadata mutation requires a completed idempotency record")
+	}
+
+	if record.ResultReference != sessionID {
+		return fmt.Errorf(
+			"idempotency result reference %q does not match session %q",
+			record.ResultReference,
+			sessionID,
+		)
+	}
+
+	return nil
+}
+
 func toSessionItem(session domain.Session) sessionItem {
 	return sessionItem{
 		PK:            sessionPartitionKey(session.ID),
@@ -504,6 +647,72 @@ func toEventItem(event domain.SessionEvent) eventItem {
 		CorrelationID: event.CorrelationID,
 		Data:          event.Data,
 	}
+}
+
+func toIdempotencyItem(
+	record domain.IdempotencyRecord,
+) idempotencyItem {
+	completedAt := ""
+	if !record.CompletedAt.IsZero() {
+		completedAt = record.CompletedAt.UTC().Format(time.RFC3339Nano)
+	}
+
+	return idempotencyItem{
+		PK:              idempotencyPartitionKey(record.Key),
+		SK:              idempotencySortKey,
+		EntityType:      "IdempotencyRecord",
+		SchemaVersion:   schemaVersion,
+		IdempotencyKey:  record.Key,
+		RequestHash:     record.RequestHash,
+		Status:          string(record.Status),
+		CreatedAt:       record.CreatedAt.UTC().Format(time.RFC3339Nano),
+		CompletedAt:     completedAt,
+		ResultReference: record.ResultReference,
+		ExpiresAtEpoch:  record.ExpiresAtEpoch,
+	}
+}
+
+func fromIdempotencyItem(
+	item idempotencyItem,
+) (domain.IdempotencyRecord, error) {
+	createdAt, err := time.Parse(time.RFC3339Nano, item.CreatedAt)
+	if err != nil {
+		return domain.IdempotencyRecord{}, fmt.Errorf(
+			"parse idempotency created_at: %w",
+			err,
+		)
+	}
+
+	var completedAt time.Time
+	if item.CompletedAt != "" {
+		completedAt, err = time.Parse(time.RFC3339Nano, item.CompletedAt)
+		if err != nil {
+			return domain.IdempotencyRecord{}, fmt.Errorf(
+				"parse idempotency completed_at: %w",
+				err,
+			)
+		}
+	}
+
+	record := domain.IdempotencyRecord{
+		Key:             item.IdempotencyKey,
+		RequestHash:     item.RequestHash,
+		Status:          domain.IdempotencyStatus(item.Status),
+		CreatedAt:       createdAt.UTC(),
+		CompletedAt:     completedAt.UTC(),
+		ResultReference: item.ResultReference,
+		ExpiresAtEpoch:  item.ExpiresAtEpoch,
+	}
+
+	if err := record.Validate(); err != nil {
+		return domain.IdempotencyRecord{}, err
+	}
+
+	return record, nil
+}
+
+func idempotencyPartitionKey(key string) string {
+	return "IDEMPOTENCY#" + key
 }
 
 func sessionPartitionKey(sessionID string) string {

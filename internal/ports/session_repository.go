@@ -12,6 +12,7 @@ type SessionRepository interface {
 		ctx context.Context,
 		session domain.Session,
 		event domain.SessionEvent,
+		idempotency domain.IdempotencyRecord,
 	) error
 
 	Get(
@@ -24,7 +25,13 @@ type SessionRepository interface {
 		session domain.Session,
 		expectedVersion int64,
 		event domain.SessionEvent,
+		idempotency domain.IdempotencyRecord,
 	) error
+
+	GetIdempotency(
+		ctx context.Context,
+		key string,
+	) (domain.IdempotencyRecord, error)
 
 	ListByOwner(
 		ctx context.Context,

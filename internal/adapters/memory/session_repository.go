@@ -12,9 +12,10 @@ import (
 
 // SessionRepository is an in-memory implementation for tests and local tools.
 type SessionRepository struct {
-	mu       sync.RWMutex
-	sessions map[string]domain.Session
-	events   map[string][]domain.SessionEvent
+	mu          sync.RWMutex
+	sessions    map[string]domain.Session
+	events      map[string][]domain.SessionEvent
+	idempotency map[string]domain.IdempotencyRecord
 }
 
 var _ ports.SessionRepository = (*SessionRepository)(nil)
@@ -22,8 +23,9 @@ var _ ports.SessionRepository = (*SessionRepository)(nil)
 // NewSessionRepository creates an empty repository.
 func NewSessionRepository() *SessionRepository {
 	return &SessionRepository{
-		sessions: make(map[string]domain.Session),
-		events:   make(map[string][]domain.SessionEvent),
+		sessions:    make(map[string]domain.Session),
+		events:      make(map[string][]domain.SessionEvent),
+		idempotency: make(map[string]domain.IdempotencyRecord),
 	}
 }
 
@@ -32,6 +34,7 @@ func (repository *SessionRepository) Create(
 	ctx context.Context,
 	session domain.Session,
 	event domain.SessionEvent,
+	idempotency domain.IdempotencyRecord,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -45,8 +48,20 @@ func (repository *SessionRepository) Create(
 		return err
 	}
 
+	if err := validateIdempotency(session.ID, idempotency); err != nil {
+		return err
+	}
+
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
+
+	if _, exists := repository.idempotency[idempotency.Key]; exists {
+		return fmt.Errorf(
+			"%w: idempotency key %s",
+			domain.ErrAlreadyExists,
+			idempotency.Key,
+		)
+	}
 
 	if _, exists := repository.sessions[session.ID]; exists {
 		return fmt.Errorf(
@@ -60,6 +75,7 @@ func (repository *SessionRepository) Create(
 	repository.events[session.ID] = []domain.SessionEvent{
 		cloneEvent(event),
 	}
+	repository.idempotency[idempotency.Key] = idempotency
 
 	return nil
 }
@@ -94,6 +110,7 @@ func (repository *SessionRepository) SaveWithEvent(
 	session domain.Session,
 	expectedVersion int64,
 	event domain.SessionEvent,
+	idempotency domain.IdempotencyRecord,
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -107,6 +124,10 @@ func (repository *SessionRepository) SaveWithEvent(
 		return err
 	}
 
+	if err := validateIdempotency(session.ID, idempotency); err != nil {
+		return err
+	}
+
 	if session.Version != expectedVersion+1 {
 		return fmt.Errorf(
 			"session version %d must equal expected version %d plus one",
@@ -117,6 +138,14 @@ func (repository *SessionRepository) SaveWithEvent(
 
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
+
+	if _, exists := repository.idempotency[idempotency.Key]; exists {
+		return fmt.Errorf(
+			"%w: idempotency key %s",
+			domain.ErrConflict,
+			idempotency.Key,
+		)
+	}
 
 	current, exists := repository.sessions[session.ID]
 	if !exists {
@@ -142,8 +171,33 @@ func (repository *SessionRepository) SaveWithEvent(
 		repository.events[session.ID],
 		cloneEvent(event),
 	)
+	repository.idempotency[idempotency.Key] = idempotency
 
 	return nil
+}
+
+// GetIdempotency returns a durable command result by external key.
+func (repository *SessionRepository) GetIdempotency(
+	ctx context.Context,
+	key string,
+) (domain.IdempotencyRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.IdempotencyRecord{}, err
+	}
+
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+
+	record, exists := repository.idempotency[key]
+	if !exists {
+		return domain.IdempotencyRecord{}, fmt.Errorf(
+			"%w: idempotency key %s",
+			domain.ErrNotFound,
+			key,
+		)
+	}
+
+	return record, nil
 }
 
 // ListByOwner returns an owner's sessions, newest first.
@@ -229,6 +283,29 @@ func validateEvent(
 		return fmt.Errorf(
 			"event session ID %q does not match session %q",
 			event.SessionID,
+			sessionID,
+		)
+	}
+
+	return nil
+}
+
+func validateIdempotency(
+	sessionID string,
+	record domain.IdempotencyRecord,
+) error {
+	if err := record.Validate(); err != nil {
+		return fmt.Errorf("validate idempotency record: %w", err)
+	}
+
+	if record.Status != domain.IdempotencyCompleted {
+		return fmt.Errorf("metadata mutation requires a completed idempotency record")
+	}
+
+	if record.ResultReference != sessionID {
+		return fmt.Errorf(
+			"idempotency result reference %q does not match session %q",
+			record.ResultReference,
 			sessionID,
 		)
 	}

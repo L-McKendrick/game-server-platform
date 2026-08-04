@@ -59,6 +59,7 @@ func main() {
 		repository,
 		identity.Generator{},
 		sessions.SystemClock{},
+		appConfig.IdempotencyRetention,
 	)
 	if err != nil {
 		fail("construct session service", err)
@@ -73,17 +74,18 @@ func main() {
 		UTC().
 		Format("20060102-150405")
 
-	created, err := service.Create(
-		ctx,
-		sessions.CreateCommand{
-			Actor:       actor,
-			Slug:        "metadata-smoke-" + nowSuffix,
-			DisplayName: "Metadata Smoke Test",
-			GameType:    "arma3",
-			GuildID:     "local-test-guild",
-			ChannelID:   "local-test-channel",
-		},
-	)
+	createCommand := sessions.CreateCommand{
+		Actor:          actor,
+		CorrelationID:  "metadata-smoke:create:" + nowSuffix,
+		IdempotencyKey: "local:metadata-smoke:create:" + nowSuffix,
+		Slug:           "metadata-smoke-" + nowSuffix,
+		DisplayName:    "Metadata Smoke Test",
+		GameType:       "arma3",
+		GuildID:        "local-test-guild",
+		ChannelID:      "local-test-channel",
+	}
+
+	created, err := service.Create(ctx, createCommand)
 	if err != nil {
 		fail("create session", err)
 	}
@@ -98,6 +100,22 @@ func main() {
 		slog.Int64("version", created.Version),
 	)
 
+	replayedCreate, err := service.Create(ctx, createCommand)
+	if err != nil {
+		fail("replay create session", err)
+	}
+
+	if replayedCreate.ID != created.ID {
+		fail(
+			"verify create idempotency",
+			fmt.Errorf(
+				"replayed session ID %s does not match %s",
+				replayedCreate.ID,
+				created.ID,
+			),
+		)
+	}
+
 	loaded, err := service.Get(
 		ctx,
 		sessions.GetQuery{
@@ -109,14 +127,15 @@ func main() {
 		fail("get session", err)
 	}
 
-	transitioned, err := service.Transition(
-		ctx,
-		sessions.TransitionCommand{
-			Actor:     actor,
-			SessionID: loaded.ID,
-			To:        domain.StateNew,
-		},
-	)
+	transitionCommand := sessions.TransitionCommand{
+		Actor:          actor,
+		SessionID:      loaded.ID,
+		To:             domain.StateNew,
+		CorrelationID:  "metadata-smoke:transition:" + nowSuffix,
+		IdempotencyKey: "local:metadata-smoke:transition:" + nowSuffix,
+	}
+
+	transitioned, err := service.Transition(ctx, transitionCommand)
 	if err != nil {
 		fail("transition session", err)
 	}
@@ -130,6 +149,22 @@ func main() {
 		),
 		slog.Int64("version", transitioned.Version),
 	)
+
+	replayedTransition, err := service.Transition(ctx, transitionCommand)
+	if err != nil {
+		fail("replay session transition", err)
+	}
+
+	if replayedTransition.Version != transitioned.Version {
+		fail(
+			"verify transition idempotency",
+			fmt.Errorf(
+				"replayed version %d does not match %d",
+				replayedTransition.Version,
+				transitioned.Version,
+			),
+		)
+	}
 
 	ownedSessions, err := service.List(
 		ctx,

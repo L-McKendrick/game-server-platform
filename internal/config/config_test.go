@@ -3,12 +3,14 @@ package config
 import (
 	"log/slog"
 	"testing"
+	"time"
 )
 
 func TestLoadUsesDefaults(t *testing.T) {
 	t.Setenv("APP_ENV", "")
 	t.Setenv("AWS_REGION", "")
 	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("IDEMPOTENCY_RETENTION_HOURS", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -39,6 +41,14 @@ func TestLoadUsesDefaults(t *testing.T) {
 		)
 	}
 
+	if cfg.IdempotencyRetention != 168*time.Hour {
+		t.Errorf(
+			"IdempotencyRetention = %v; want %v",
+			cfg.IdempotencyRetention,
+			168*time.Hour,
+		)
+	}
+
 	if cfg.LogLevel != slog.LevelInfo {
 		t.Errorf(
 			"LogLevel = %v; want %v",
@@ -53,6 +63,7 @@ func TestLoadReadsEnvironmentVariables(t *testing.T) {
 	t.Setenv("AWS_REGION", "us-east-1")
 	t.Setenv("METADATA_TABLE_NAME", "test-metadata")
 	t.Setenv("LOG_LEVEL", "debug")
+	t.Setenv("IDEMPOTENCY_RETENTION_HOURS", "336")
 
 	cfg, err := Load()
 	if err != nil {
@@ -75,6 +86,14 @@ func TestLoadReadsEnvironmentVariables(t *testing.T) {
 		)
 	}
 
+	if cfg.IdempotencyRetention != 336*time.Hour {
+		t.Errorf(
+			"IdempotencyRetention = %v; want %v",
+			cfg.IdempotencyRetention,
+			336*time.Hour,
+		)
+	}
+
 	if cfg.LogLevel != slog.LevelDebug {
 		t.Errorf("LogLevel = %v; want %v", cfg.LogLevel, slog.LevelDebug)
 	}
@@ -82,6 +101,15 @@ func TestLoadReadsEnvironmentVariables(t *testing.T) {
 
 func TestLoadRejectsInvalidLogLevel(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "banana")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() returned nil error; expected an error")
+	}
+}
+
+func TestLoadRejectsInvalidIdempotencyRetention(t *testing.T) {
+	t.Setenv("IDEMPOTENCY_RETENTION_HOURS", "zero")
 
 	_, err := Load()
 	if err == nil {

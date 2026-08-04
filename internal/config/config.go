@@ -4,20 +4,30 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Config contains values needed by the control-plane application.
 type Config struct {
-	Environment   string
-	AWSRegion     string
-	MetadataTable string
-	LogLevel      slog.Level
+	Environment          string
+	AWSRegion            string
+	MetadataTable        string
+	IdempotencyRetention time.Duration
+	LogLevel             slog.Level
 }
 
 // Load reads configuration from environment variables.
 func Load() (Config, error) {
 	logLevel, err := parseLogLevel(getEnv("LOG_LEVEL", "info"))
+	if err != nil {
+		return Config{}, err
+	}
+
+	idempotencyRetention, err := parsePositiveHours(
+		getEnv("IDEMPOTENCY_RETENTION_HOURS", "168"),
+	)
 	if err != nil {
 		return Config{}, err
 	}
@@ -29,7 +39,8 @@ func Load() (Config, error) {
 			"METADATA_TABLE_NAME",
 			"game-server-platform-dev-metadata",
 		),
-		LogLevel: logLevel,
+		IdempotencyRetention: idempotencyRetention,
+		LogLevel:             logLevel,
 	}
 
 	if strings.TrimSpace(cfg.Environment) == "" {
@@ -72,4 +83,16 @@ func parseLogLevel(value string) (slog.Level, error) {
 			value,
 		)
 	}
+}
+
+func parsePositiveHours(value string) (time.Duration, error) {
+	hours, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || hours <= 0 {
+		return 0, fmt.Errorf(
+			"IDEMPOTENCY_RETENTION_HOURS %q must be a positive whole number",
+			value,
+		)
+	}
+
+	return time.Duration(hours) * time.Hour, nil
 }

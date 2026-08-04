@@ -4,8 +4,8 @@ An on-demand platform for provisioning and managing temporary dedicated game ser
 
 ## Current status
 
-Foundation and core metadata vertical slice implemented.
-Next milestone: command idempotency.
+Foundation, core metadata, and command idempotency implemented.
+Next milestone: Discord interaction verification and metadata commands.
 
 ## Initial technology choices
 
@@ -14,7 +14,7 @@ Next milestone: command idempotency.
 - EBS and S3
 - Terraform
 - Go
-- SQLite
+- DynamoDB
 - AWS Secrets Manager
 - EventBridge
 - AWS Lambda
