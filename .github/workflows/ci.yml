@@ -41,6 +41,9 @@ jobs:
       - name: Build platform command
         run: go build -o bin/platform ./cmd/platform
 
+      - name: Build local Discord interaction command
+        run: go build -o bin/discord-local ./cmd/discord-local
+
   terraform:
     name: Terraform checks
     runs-on: ubuntu-latest
