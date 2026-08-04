@@ -2,6 +2,10 @@ package sessions
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -32,9 +36,10 @@ func (SystemClock) Now() time.Time {
 
 // Service implements session application commands and queries.
 type Service struct {
-	repository ports.SessionRepository
-	ids        IDGenerator
-	clock      Clock
+	repository           ports.SessionRepository
+	ids                  IDGenerator
+	clock                Clock
+	idempotencyRetention time.Duration
 }
 
 // NewService creates a session application service.
@@ -42,6 +47,7 @@ func NewService(
 	repository ports.SessionRepository,
 	ids IDGenerator,
 	clock Clock,
+	idempotencyRetention time.Duration,
 ) (*Service, error) {
 	switch {
 	case repository == nil:
@@ -50,19 +56,23 @@ func NewService(
 		return nil, fmt.Errorf("ID generator is required")
 	case clock == nil:
 		return nil, fmt.Errorf("clock is required")
+	case idempotencyRetention <= 0:
+		return nil, fmt.Errorf("idempotency retention must be positive")
 	default:
 		return &Service{
-			repository: repository,
-			ids:        ids,
-			clock:      clock,
+			repository:           repository,
+			ids:                  ids,
+			clock:                clock,
+			idempotencyRetention: idempotencyRetention,
 		}, nil
 	}
 }
 
 // CreateCommand contains the user-controlled values needed to create a session.
 type CreateCommand struct {
-	Actor         domain.Actor
-	CorrelationID string
+	Actor          domain.Actor
+	CorrelationID  string
+	IdempotencyKey string
 
 	Slug        string
 	DisplayName string
@@ -78,6 +88,20 @@ func (service *Service) Create(
 ) (domain.Session, error) {
 	if err := command.Actor.Validate(); err != nil {
 		return domain.Session{}, fmt.Errorf("validate actor: %w", err)
+	}
+
+	idempotencyKey, requestHash, err := createRequestIdentity(command)
+	if err != nil {
+		return domain.Session{}, err
+	}
+
+	if replayed, found, err := service.replaySession(
+		ctx,
+		idempotencyKey,
+		requestHash,
+		command.Actor,
+	); err != nil || found {
+		return replayed, err
 	}
 
 	now := service.clock.Now().UTC()
@@ -134,11 +158,35 @@ func (service *Service) Create(
 		)
 	}
 
+	idempotency, err := domain.NewCompletedIdempotencyRecord(
+		idempotencyKey,
+		requestHash,
+		session.ID,
+		now,
+		service.idempotencyRetention,
+	)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf(
+			"construct idempotency record: %w",
+			err,
+		)
+	}
+
 	if err := service.repository.Create(
 		ctx,
 		session,
 		event,
+		idempotency,
 	); err != nil {
+		if replayed, found, replayErr := service.replaySession(
+			ctx,
+			idempotencyKey,
+			requestHash,
+			command.Actor,
+		); replayErr != nil || found {
+			return replayed, replayErr
+		}
+
 		return domain.Session{}, fmt.Errorf(
 			"persist session: %w",
 			err,
@@ -207,10 +255,11 @@ func (service *Service) List(
 
 // TransitionCommand identifies a requested lifecycle transition.
 type TransitionCommand struct {
-	Actor         domain.Actor
-	SessionID     string
-	To            domain.LifecycleState
-	CorrelationID string
+	Actor          domain.Actor
+	SessionID      string
+	To             domain.LifecycleState
+	CorrelationID  string
+	IdempotencyKey string
 }
 
 // Transition validates and persists one direct lifecycle transition.
@@ -220,6 +269,20 @@ func (service *Service) Transition(
 ) (domain.Session, error) {
 	if err := command.Actor.Validate(); err != nil {
 		return domain.Session{}, fmt.Errorf("validate actor: %w", err)
+	}
+
+	idempotencyKey, requestHash, err := transitionRequestIdentity(command)
+	if err != nil {
+		return domain.Session{}, err
+	}
+
+	if replayed, found, err := service.replaySession(
+		ctx,
+		idempotencyKey,
+		requestHash,
+		command.Actor,
+	); err != nil || found {
+		return replayed, err
 	}
 
 	session, err := service.repository.Get(
@@ -274,12 +337,36 @@ func (service *Service) Transition(
 		)
 	}
 
+	idempotency, err := domain.NewCompletedIdempotencyRecord(
+		idempotencyKey,
+		requestHash,
+		session.ID,
+		now,
+		service.idempotencyRetention,
+	)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf(
+			"construct idempotency record: %w",
+			err,
+		)
+	}
+
 	if err := service.repository.SaveWithEvent(
 		ctx,
 		session,
 		expectedVersion,
 		event,
+		idempotency,
 	); err != nil {
+		if replayed, found, replayErr := service.replaySession(
+			ctx,
+			idempotencyKey,
+			requestHash,
+			command.Actor,
+		); replayErr != nil || found {
+			return replayed, replayErr
+		}
+
 		return domain.Session{}, fmt.Errorf(
 			"persist state transition: %w",
 			err,
@@ -287,6 +374,128 @@ func (service *Service) Transition(
 	}
 
 	return session, nil
+}
+
+func createRequestIdentity(
+	command CreateCommand,
+) (string, string, error) {
+	key := strings.TrimSpace(command.IdempotencyKey)
+	if key == "" {
+		return "", "", fmt.Errorf("idempotency key is required")
+	}
+
+	hash, err := hashRequest(struct {
+		CommandType string `json:"command_type"`
+		ActorType   string `json:"actor_type"`
+		ActorID     string `json:"actor_id"`
+		Slug        string `json:"slug"`
+		DisplayName string `json:"display_name"`
+		GameType    string `json:"game_type"`
+		GuildID     string `json:"guild_id"`
+		ChannelID   string `json:"channel_id"`
+	}{
+		CommandType: "CreateSession",
+		ActorType:   string(command.Actor.Type),
+		ActorID:     strings.TrimSpace(command.Actor.ID),
+		Slug:        strings.TrimSpace(command.Slug),
+		DisplayName: strings.TrimSpace(command.DisplayName),
+		GameType:    strings.ToLower(strings.TrimSpace(command.GameType)),
+		GuildID:     strings.TrimSpace(command.GuildID),
+		ChannelID:   strings.TrimSpace(command.ChannelID),
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("hash create-session request: %w", err)
+	}
+
+	return key, hash, nil
+}
+
+func transitionRequestIdentity(
+	command TransitionCommand,
+) (string, string, error) {
+	key := strings.TrimSpace(command.IdempotencyKey)
+	if key == "" {
+		return "", "", fmt.Errorf("idempotency key is required")
+	}
+
+	hash, err := hashRequest(struct {
+		CommandType string `json:"command_type"`
+		ActorType   string `json:"actor_type"`
+		ActorID     string `json:"actor_id"`
+		SessionID   string `json:"session_id"`
+		To          string `json:"to"`
+	}{
+		CommandType: "TransitionSession",
+		ActorType:   string(command.Actor.Type),
+		ActorID:     strings.TrimSpace(command.Actor.ID),
+		SessionID:   strings.TrimSpace(command.SessionID),
+		To:          string(command.To),
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("hash transition-session request: %w", err)
+	}
+
+	return key, hash, nil
+}
+
+func hashRequest(value any) (string, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("marshal canonical request: %w", err)
+	}
+
+	digest := sha256.Sum256(encoded)
+
+	return hex.EncodeToString(digest[:]), nil
+}
+
+func (service *Service) replaySession(
+	ctx context.Context,
+	key string,
+	requestHash string,
+	actor domain.Actor,
+) (domain.Session, bool, error) {
+	record, err := service.repository.GetIdempotency(ctx, key)
+	if errors.Is(err, domain.ErrNotFound) {
+		return domain.Session{}, false, nil
+	}
+
+	if err != nil {
+		return domain.Session{}, true, fmt.Errorf(
+			"get idempotency record: %w",
+			err,
+		)
+	}
+
+	if record.RequestHash != requestHash {
+		return domain.Session{}, true, fmt.Errorf(
+			"%w: key %s",
+			domain.ErrIdempotencyConflict,
+			key,
+		)
+	}
+
+	if record.Status != domain.IdempotencyCompleted {
+		return domain.Session{}, true, fmt.Errorf(
+			"%w: key %s",
+			domain.ErrCommandInProgress,
+			key,
+		)
+	}
+
+	session, err := service.repository.Get(ctx, record.ResultReference)
+	if err != nil {
+		return domain.Session{}, true, fmt.Errorf(
+			"get idempotent command result: %w",
+			err,
+		)
+	}
+
+	if err := authorizeOwner(actor, session); err != nil {
+		return domain.Session{}, true, err
+	}
+
+	return session, true, nil
 }
 
 func authorizeOwner(

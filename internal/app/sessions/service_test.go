@@ -53,13 +53,14 @@ func TestCreatePersistsDraftSessionAndEvent(t *testing.T) {
 	session, err := service.Create(
 		context.Background(),
 		CreateCommand{
-			Actor:         actor,
-			CorrelationID: "correlation-1",
-			Slug:          "saturday-arma",
-			DisplayName:   "Saturday Arma",
-			GameType:      "arma3",
-			GuildID:       "guild-1",
-			ChannelID:     "channel-1",
+			Actor:          actor,
+			CorrelationID:  "correlation-1",
+			IdempotencyKey: "discord:create-1",
+			Slug:           "saturday-arma",
+			DisplayName:    "Saturday Arma",
+			GameType:       "arma3",
+			GuildID:        "guild-1",
+			ChannelID:      "channel-1",
 		},
 	)
 	if err != nil {
@@ -164,10 +165,11 @@ func TestTransitionAdvancesStateAndStoresEvent(t *testing.T) {
 	transitioned, err := service.Transition(
 		context.Background(),
 		TransitionCommand{
-			Actor:         actor,
-			SessionID:     created.ID,
-			To:            domain.StateNew,
-			CorrelationID: "correlation-transition",
+			Actor:          actor,
+			SessionID:      created.ID,
+			To:             domain.StateNew,
+			CorrelationID:  "correlation-transition",
+			IdempotencyKey: "discord:transition-1",
 		},
 	)
 	if err != nil {
@@ -240,10 +242,11 @@ func TestTransitionRejectsInvalidStateChange(t *testing.T) {
 	_, err := service.Transition(
 		context.Background(),
 		TransitionCommand{
-			Actor:         actor,
-			SessionID:     created.ID,
-			To:            domain.StateRunning,
-			CorrelationID: "correlation-transition",
+			Actor:          actor,
+			SessionID:      created.ID,
+			To:             domain.StateRunning,
+			CorrelationID:  "correlation-transition",
+			IdempotencyKey: "discord:transition-1",
 		},
 	)
 
@@ -331,6 +334,132 @@ func TestListReturnsOnlyActorSessions(t *testing.T) {
 	}
 }
 
+func TestCreateReplaysSameIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	repository := memory.NewSessionRepository()
+	service := newTestService(
+		t,
+		repository,
+		"session-1",
+		"event-1",
+	)
+
+	command := CreateCommand{
+		Actor:          testActor("owner-1"),
+		CorrelationID:  "correlation-1",
+		IdempotencyKey: "discord:create-replay",
+		Slug:           "saturday-arma",
+		DisplayName:    "Saturday Arma",
+		GameType:       "arma3",
+		GuildID:        "guild-1",
+		ChannelID:      "channel-1",
+	}
+
+	first, err := service.Create(context.Background(), command)
+	if err != nil {
+		t.Fatalf("first Create() returned error: %v", err)
+	}
+
+	second, err := service.Create(context.Background(), command)
+	if err != nil {
+		t.Fatalf("second Create() returned error: %v", err)
+	}
+
+	if second.ID != first.ID {
+		t.Errorf("replayed session ID = %q; want %q", second.ID, first.ID)
+	}
+
+	if eventCount := len(repository.Events(first.ID)); eventCount != 1 {
+		t.Errorf("event count = %d; want 1", eventCount)
+	}
+}
+
+func TestCreateRejectsIdempotencyKeyReuseWithDifferentRequest(t *testing.T) {
+	t.Parallel()
+
+	repository := memory.NewSessionRepository()
+	service := newTestService(
+		t,
+		repository,
+		"session-1",
+		"event-1",
+	)
+
+	command := CreateCommand{
+		Actor:          testActor("owner-1"),
+		CorrelationID:  "correlation-1",
+		IdempotencyKey: "discord:create-conflict",
+		Slug:           "saturday-arma",
+		DisplayName:    "Saturday Arma",
+		GameType:       "arma3",
+		GuildID:        "guild-1",
+		ChannelID:      "channel-1",
+	}
+
+	if _, err := service.Create(context.Background(), command); err != nil {
+		t.Fatalf("first Create() returned error: %v", err)
+	}
+
+	command.DisplayName = "Different Session"
+
+	_, err := service.Create(context.Background(), command)
+	if !errors.Is(err, domain.ErrIdempotencyConflict) {
+		t.Fatalf(
+			"second Create() error = %v; want ErrIdempotencyConflict",
+			err,
+		)
+	}
+}
+
+func TestTransitionReplaysSameIdempotencyKey(t *testing.T) {
+	t.Parallel()
+
+	repository := memory.NewSessionRepository()
+	service := newTestService(
+		t,
+		repository,
+		"session-1",
+		"event-create",
+		"event-transition",
+	)
+
+	actor := testActor("owner-1")
+	created := mustCreateSession(
+		t,
+		service,
+		actor,
+		"correlation-create",
+		"saturday-arma",
+	)
+
+	command := TransitionCommand{
+		Actor:          actor,
+		SessionID:      created.ID,
+		To:             domain.StateNew,
+		CorrelationID:  "correlation-transition",
+		IdempotencyKey: "discord:transition-replay",
+	}
+
+	first, err := service.Transition(context.Background(), command)
+	if err != nil {
+		t.Fatalf("first Transition() returned error: %v", err)
+	}
+
+	second, err := service.Transition(context.Background(), command)
+	if err != nil {
+		t.Fatalf("second Transition() returned error: %v", err)
+	}
+
+	if second.Version != first.Version {
+		t.Errorf("replayed version = %d; want %d", second.Version, first.Version)
+	}
+
+	if eventCount := len(repository.Events(created.ID)); eventCount != 2 {
+		t.Errorf("event count = %d; want 2", eventCount)
+	}
+}
+
 func newTestService(
 	t *testing.T,
 	repository *memory.SessionRepository,
@@ -353,6 +482,7 @@ func newTestService(
 				time.UTC,
 			),
 		},
+		7*24*time.Hour,
 	)
 	if err != nil {
 		t.Fatalf("NewService() returned error: %v", err)
@@ -373,13 +503,14 @@ func mustCreateSession(
 	session, err := service.Create(
 		context.Background(),
 		CreateCommand{
-			Actor:         actor,
-			CorrelationID: correlationID,
-			Slug:          slug,
-			DisplayName:   "Test Session",
-			GameType:      "arma3",
-			GuildID:       "guild-1",
-			ChannelID:     "channel-1",
+			Actor:          actor,
+			CorrelationID:  correlationID,
+			IdempotencyKey: "test:create:" + correlationID,
+			Slug:           slug,
+			DisplayName:    "Test Session",
+			GameType:       "arma3",
+			GuildID:        "guild-1",
+			ChannelID:      "channel-1",
 		},
 	)
 	if err != nil {
