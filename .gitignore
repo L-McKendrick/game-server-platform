@@ -1,5 +1,7 @@
 # Compiled Go files
 bin/
+dist/
+/bootstrap
 *.exe
 *.test
 *.out

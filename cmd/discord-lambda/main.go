@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 
@@ -20,7 +19,6 @@ import (
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
 	"github.com/L-McKendrick/game-server-platform/internal/identity"
-	"github.com/L-McKendrick/game-server-platform/internal/logging"
 )
 
 func main() {
@@ -44,10 +42,6 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load Discord configuration: %w", err)
 	}
-	logger := logging.New(baseConfig.LogLevel)
-	slog.SetDefault(logger)
-
-	publicKey, err := interactions.ParsePublicKey(discordConfig.PublicKeyHex)
 	if err != nil {
 		return nil, err
 	}
