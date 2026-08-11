@@ -54,7 +54,7 @@ jobs:
       - name: Upload Lambda packages
         uses: actions/upload-artifact@v4
         with:
-          name: phase-4-lambdas
+          name: phase-5-lambdas
           path: dist/*.zip
           if-no-files-found: error
 

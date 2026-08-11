@@ -105,6 +105,9 @@ func TestStartFailureMarksWorkflowFailedAndReleasesLock(t *testing.T) {
 	if session.ActiveWorkflowID != "" {
 		t.Fatalf("active workflow ID = %q; want released lock", session.ActiveWorkflowID)
 	}
+	if session.LifecycleState != domain.StateNew {
+		t.Fatalf("lifecycle state = %q; want NEW after start failure", session.LifecycleState)
+	}
 	workflow, err := repository.GetWorkflow(context.Background(), "session-1", "command-1")
 	if err != nil {
 		t.Fatalf("GetWorkflow() returned error: %v", err)
@@ -123,6 +126,17 @@ func seedWorkflowRepository(t *testing.T, now time.Time) *memory.SessionReposito
 	}, now)
 	if err != nil {
 		t.Fatalf("NewSession() returned error: %v", err)
+	}
+	if err := session.Configure(domain.SessionConfiguration{
+		GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400,
+	}, now); err != nil {
+		t.Fatalf("Configure() returned error: %v", err)
+	}
+	if err := session.AttachArtifact(domain.ArtifactMission, "sessions/session-1/input/mission.pbo", now); err != nil {
+		t.Fatalf("AttachArtifact(mission) returned error: %v", err)
+	}
+	if err := session.AttachArtifact(domain.ArtifactPreset, "sessions/session-1/input/preset.html", now); err != nil {
+		t.Fatalf("AttachArtifact(preset) returned error: %v", err)
 	}
 	actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}
 	event := domain.NewSessionCreatedEvent("create-event", "correlation-create", actor, session, now)

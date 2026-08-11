@@ -21,7 +21,7 @@ const (
 	sessionSortKey     = "METADATA"
 	idempotencySortKey = "RESULT"
 	ownerIndexName     = "gsi1"
-	schemaVersion      = 2
+	schemaVersion      = 3
 )
 
 // API contains the DynamoDB operations used by the repository.
@@ -43,6 +43,12 @@ type API interface {
 		params *dynamodb.PutItemInput,
 		optFns ...func(*dynamodb.Options),
 	) (*dynamodb.PutItemOutput, error)
+
+	DeleteItem(
+		ctx context.Context,
+		params *dynamodb.DeleteItemInput,
+		optFns ...func(*dynamodb.Options),
+	) (*dynamodb.DeleteItemOutput, error)
 
 	TransactWriteItems(
 		ctx context.Context,
@@ -73,20 +79,31 @@ type sessionItem struct {
 	EntityType    string `dynamodbav:"entity_type"`
 	SchemaVersion int    `dynamodbav:"schema_version"`
 
-	SessionID             string `dynamodbav:"session_id"`
-	Slug                  string `dynamodbav:"slug"`
-	DisplayName           string `dynamodbav:"display_name"`
-	GameType              string `dynamodbav:"game_type"`
-	OwnerDiscordUserID    string `dynamodbav:"owner_discord_user_id"`
-	GuildID               string `dynamodbav:"guild_id"`
-	ChannelID             string `dynamodbav:"channel_id"`
-	GameProfileID         string `dynamodbav:"game_profile_id"`
-	SleepAfterSeconds     int64  `dynamodbav:"sleep_after_seconds"`
-	ArchiveAfterSeconds   int64  `dynamodbav:"archive_after_seconds"`
-	TeamSpeakEnabled      bool   `dynamodbav:"teamspeak_enabled"`
-	ConfigurationRevision int64  `dynamodbav:"configuration_revision"`
-	MissionObjectKey      string `dynamodbav:"mission_object_key,omitempty"`
-	PresetObjectKey       string `dynamodbav:"preset_object_key,omitempty"`
+	SessionID                string   `dynamodbav:"session_id"`
+	Slug                     string   `dynamodbav:"slug"`
+	DisplayName              string   `dynamodbav:"display_name"`
+	GameType                 string   `dynamodbav:"game_type"`
+	OwnerDiscordUserID       string   `dynamodbav:"owner_discord_user_id"`
+	GuildID                  string   `dynamodbav:"guild_id"`
+	ChannelID                string   `dynamodbav:"channel_id"`
+	GameProfileID            string   `dynamodbav:"game_profile_id"`
+	SleepAfterSeconds        int64    `dynamodbav:"sleep_after_seconds"`
+	ArchiveAfterSeconds      int64    `dynamodbav:"archive_after_seconds"`
+	TeamSpeakEnabled         bool     `dynamodbav:"teamspeak_enabled"`
+	ConfigurationRevision    int64    `dynamodbav:"configuration_revision"`
+	MissionObjectKey         string   `dynamodbav:"mission_object_key,omitempty"`
+	PresetObjectKey          string   `dynamodbav:"preset_object_key,omitempty"`
+	CapacitySlotID           string   `dynamodbav:"capacity_slot_id,omitempty"`
+	AvailabilityZone         string   `dynamodbav:"availability_zone,omitempty"`
+	SubnetID                 string   `dynamodbav:"subnet_id,omitempty"`
+	SecurityGroupIDs         []string `dynamodbav:"security_group_ids,omitempty"`
+	InstanceProfile          string   `dynamodbav:"instance_profile,omitempty"`
+	AMIID                    string   `dynamodbav:"ami_id,omitempty"`
+	InstanceType             string   `dynamodbav:"instance_type,omitempty"`
+	InstanceID               string   `dynamodbav:"instance_id,omitempty"`
+	DataVolumeID             string   `dynamodbav:"data_volume_id,omitempty"`
+	PublicIPv4               string   `dynamodbav:"public_ipv4,omitempty"`
+	InfrastructureObservedAt string   `dynamodbav:"infrastructure_observed_at,omitempty"`
 
 	ActiveWorkflowID             string `dynamodbav:"active_workflow_id,omitempty"`
 	ActiveWorkflowType           string `dynamodbav:"active_workflow_type,omitempty"`
@@ -601,6 +618,17 @@ func toSessionItem(session domain.Session) sessionItem {
 		ConfigurationRevision:        session.ConfigurationRevision,
 		MissionObjectKey:             session.MissionObjectKey,
 		PresetObjectKey:              session.PresetObjectKey,
+		CapacitySlotID:               session.Infrastructure.CapacitySlotID,
+		AvailabilityZone:             session.Infrastructure.AvailabilityZone,
+		SubnetID:                     session.Infrastructure.SubnetID,
+		SecurityGroupIDs:             append([]string(nil), session.Infrastructure.SecurityGroupIDs...),
+		InstanceProfile:              session.Infrastructure.InstanceProfile,
+		AMIID:                        session.Infrastructure.AMIID,
+		InstanceType:                 session.Infrastructure.InstanceType,
+		InstanceID:                   session.Infrastructure.InstanceID,
+		DataVolumeID:                 session.Infrastructure.DataVolumeID,
+		PublicIPv4:                   session.Infrastructure.PublicIPv4,
+		InfrastructureObservedAt:     optionalTimestamp(session.Infrastructure.LastObservedAt),
 		ActiveWorkflowID:             session.ActiveWorkflowID,
 		ActiveWorkflowType:           session.ActiveWorkflowType,
 		ActiveWorkflowStartedAt:      fixedTimestamp(session.ActiveWorkflowStartedAt),
@@ -654,22 +682,33 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("parse active workflow lease: %w", err)
 	}
+	infrastructureObservedAt, err := parseOptionalTimestamp(item.InfrastructureObservedAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse infrastructure observed_at: %w", err)
+	}
 
 	session := domain.Session{
-		ID:                           item.SessionID,
-		Slug:                         item.Slug,
-		DisplayName:                  item.DisplayName,
-		GameType:                     item.GameType,
-		OwnerDiscordUserID:           item.OwnerDiscordUserID,
-		GuildID:                      item.GuildID,
-		ChannelID:                    item.ChannelID,
-		GameProfileID:                item.GameProfileID,
-		SleepAfterSeconds:            item.SleepAfterSeconds,
-		ArchiveAfterSeconds:          item.ArchiveAfterSeconds,
-		TeamSpeakEnabled:             item.TeamSpeakEnabled,
-		ConfigurationRevision:        item.ConfigurationRevision,
-		MissionObjectKey:             item.MissionObjectKey,
-		PresetObjectKey:              item.PresetObjectKey,
+		ID:                    item.SessionID,
+		Slug:                  item.Slug,
+		DisplayName:           item.DisplayName,
+		GameType:              item.GameType,
+		OwnerDiscordUserID:    item.OwnerDiscordUserID,
+		GuildID:               item.GuildID,
+		ChannelID:             item.ChannelID,
+		GameProfileID:         item.GameProfileID,
+		SleepAfterSeconds:     item.SleepAfterSeconds,
+		ArchiveAfterSeconds:   item.ArchiveAfterSeconds,
+		TeamSpeakEnabled:      item.TeamSpeakEnabled,
+		ConfigurationRevision: item.ConfigurationRevision,
+		MissionObjectKey:      item.MissionObjectKey,
+		PresetObjectKey:       item.PresetObjectKey,
+		Infrastructure: domain.Infrastructure{
+			CapacitySlotID: item.CapacitySlotID, AvailabilityZone: item.AvailabilityZone,
+			SubnetID: item.SubnetID, SecurityGroupIDs: append([]string(nil), item.SecurityGroupIDs...),
+			InstanceProfile: item.InstanceProfile, AMIID: item.AMIID, InstanceType: item.InstanceType,
+			InstanceID: item.InstanceID, DataVolumeID: item.DataVolumeID, PublicIPv4: item.PublicIPv4,
+			LastObservedAt: infrastructureObservedAt,
+		},
 		ActiveWorkflowID:             item.ActiveWorkflowID,
 		ActiveWorkflowType:           item.ActiveWorkflowType,
 		ActiveWorkflowStartedAt:      activeWorkflowStartedAt,

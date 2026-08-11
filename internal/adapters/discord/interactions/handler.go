@@ -54,6 +54,8 @@ type SessionService interface {
 		actor domain.Actor,
 		request domain.ArtifactIngestRequest,
 	) error
+
+	RequestStart(ctx context.Context, command appsession.StartCommand) error
 }
 
 type AccessService interface {
@@ -360,11 +362,40 @@ func (handler *Handler) routeCommand(
 	case "upload-preset":
 		content, err := handler.requestArtifactIngest(ctx, payload, subcommand.Options, actor, correlationID, domain.ArtifactPreset)
 		return content, commandName, err
+	case "start":
+		content, err := handler.startSession(ctx, payload, subcommand.Options, actor, correlationID)
+		return content, commandName, err
 	default:
 		return "", commandName, newUserError(
 			"That `/session` subcommand is not supported yet.",
 		)
 	}
+}
+
+func (handler *Handler) startSession(
+	ctx context.Context,
+	payload interactionPayload,
+	options []applicationCommandOption,
+	actor domain.Actor,
+	correlationID string,
+) (string, error) {
+	sessionID, err := stringOption(options, "session-id", true)
+	if err != nil {
+		return "", newUserError("A session ID is required.")
+	}
+	roles := []string{}
+	if payload.Member != nil {
+		roles = append(roles, payload.Member.Roles...)
+	}
+	if err := handler.service.RequestStart(ctx, appsession.StartCommand{
+		Actor: actor, Roles: roles, SessionID: sessionID,
+		GuildID: strings.TrimSpace(payload.GuildID), ChannelID: strings.TrimSpace(payload.ChannelID),
+		CommandID: strings.TrimSpace(payload.ID), CorrelationID: correlationID,
+		IdempotencyKey: "discord:" + strings.TrimSpace(payload.ID),
+	}); err != nil {
+		return "", fmt.Errorf("request session start: %w", err)
+	}
+	return fmt.Sprintf("**Provisioning request accepted**\nSession: `%s`\nUse `/session status` to follow infrastructure progress.", sanitizeInline(sessionID)), nil
 }
 
 func (handler *Handler) handleAdminAccess(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actorID string) error {
@@ -645,6 +676,10 @@ func (handler *Handler) commandErrorMessage(err error, correlationID string) str
 		return "You do not have access to that session."
 	case errors.Is(err, domain.ErrIdempotencyConflict):
 		return "Discord reused this interaction ID for different command data. Please run the command again."
+	case errors.Is(err, domain.ErrFeatureDisabled):
+		return "Infrastructure provisioning is not enabled in this environment yet."
+	case errors.Is(err, domain.ErrQuotaExceeded):
+		return "The environment has reached its provisioned-session limit. Try again after another session is removed."
 	default:
 		return fmt.Sprintf(
 			"The command failed. Reference: `%s`",

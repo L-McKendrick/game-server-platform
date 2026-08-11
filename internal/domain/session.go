@@ -25,6 +25,7 @@ type Session struct {
 	ConfigurationRevision int64
 	MissionObjectKey      string
 	PresetObjectKey       string
+	Infrastructure        Infrastructure
 
 	ActiveWorkflowID             string
 	ActiveWorkflowType           string
@@ -167,6 +168,9 @@ func NewSession(input NewSessionInput, now time.Time) (Session, error) {
 
 // Validate verifies the session's domain invariants.
 func (session Session) Validate() error {
+	if err := session.Infrastructure.Validate(); err != nil {
+		return err
+	}
 	switch {
 	case session.ID == "":
 		return fmt.Errorf("session ID is required")

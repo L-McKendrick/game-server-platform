@@ -512,205 +512,103 @@ A functional Discord interface backed by the metadata layer.
 
 ---
 
-## **Phase 4 — Infrastructure Provisioning**
+## **Phase 4 — Workflow Foundation**
 
-**Goal:** Automatically create and destroy cloud resources.
+**Status:** Complete.
 
-Implement:
+Delivered:
 
-* VM creation  
-* SSD creation  
-* Volume attachment  
-* Firewall creation  
-* Public IP allocation  
-* VM deletion  
-* Volume deletion
+* FIFO command, artifact, and notification queues with dead-letter queues
+* Normalized command envelopes
+* DynamoDB workflow records and conditional per-session leases
+* Step Functions Standard workflow boundaries
+* Artifact and notification workers
+* Discord-native guild role configuration
 
-Initially, stop after verifying that the VM is running.
-
-Deliverable:
-
-Discord can create and destroy cloud infrastructure.
+The Phase 4 lifecycle state machines fail closed until their implementation phase. This prevents Discord from claiming that compute exists before provisioning is operational.
 
 ---
 
-## **Phase 5 — Bootstrap System**
+## **Phase 5 — Infrastructure Provisioning**
 
-This is likely the largest implementation milestone.
-
-Break it into independent stages, as described in your bootstrap workflow.
+**Goal:** Create cost-bounded, discoverable AWS infrastructure without claiming that Arma is playable.
 
 Implement:
 
-1. Retrieve secrets  
-2. Install SteamCMD  
-3. Install Arma 3  
-4. Install Creator DLC  
-5. Download Workshop mods  
-6. Normalize Linux paths  
-7. Deploy configuration  
-8. Deploy mission  
-9. Install TeamSpeak  
-10. Launch services  
-11. Health checks
+* A dedicated VPC with two public subnets and no NAT Gateway
+* Restrictive game and optional voice security groups with no inbound SSH
+* EC2 instance role and Systems Manager access
+* Encrypted EC2 root and persistent EBS data volumes
+* Idempotent instance discovery and launch using session tags and client tokens
+* DynamoDB-backed global capacity slots and approved compute profiles
+* AWS Budget notifications before provisioning is enabled
+* A command worker and staged `ProvisionSession` workflow
+* Conditional metadata updates for resource identifiers and workflow progress
 
-Record completion after each stage to support resuming failed deployments.
+The workflow stops at `BOOTSTRAPPING`. `/session start` remains feature-gated until a reviewed deployment and end-to-end provisioning test succeed.
 
 Deliverable:
 
-A newly provisioned VM automatically becomes a playable server.
+Discord can request infrastructure provisioning; one tagged EC2 instance and its encrypted EBS volumes become reachable through Systems Manager without exposing SSH.
 
 ---
 
-## **Phase 6 — Monitoring**
+## **Phase 6 — Arma Bootstrap**
 
-Once the server works, begin monitoring it.
+Implement resumable stages for secrets, SteamCMD, Arma 3, Creator DLC, Workshop content, Linux path normalization, configuration, mission deployment, optional TeamSpeak, service launch, and health checks.
 
-Implement:
-
-* Arma query monitoring  
-* Player count  
-* TeamSpeak status  
-* Process monitoring  
-* Health checks  
-* Automatic service restart
-
-Deliverable:
-
-The platform can detect failures and recover individual services.
+Deliverable: a newly provisioned instance becomes a playable server.
 
 ---
 
-## **Phase 7 — Sleep/Wake Automation**
+## **Phase 7 — Monitoring**
 
-Implement:
-
-* Idle detection  
-* Sleep timer  
-* Graceful shutdown  
-* VM stop  
-* Public IP release  
-* Wake command  
-* Fast boot
-
-Deliverable:
-
-Sessions can pause without being destroyed, minimizing compute costs while retaining the attached storage volume.
+Implement agent heartbeat, Arma query/player count, service and TeamSpeak checks, metrics, alarms, and selective recovery.
 
 ---
 
-## **Phase 8 — Archival**
+## **Phase 8 — Sleep and Wake**
 
-Now implement the long-term lifecycle.
-
-Implement:
-
-* Warning scheduler  
-* Save compression  
-* Log collection  
-* Archive creation  
-* Upload to object storage  
-* Metadata updates  
-* VM deletion  
-* Volume deletion
-
-Deliverable:
-
-Inactive sessions automatically transition to the archived state after the configured inactivity period.
+Implement idle detection, graceful stop, EC2 stop/start, endpoint refresh, and fast wake while retaining the EBS data volume.
 
 ---
 
-## **Phase 9 — Restoration**
+## **Phase 9 — Archive and Restore**
 
-Implement:
-
-* Restore command  
-* Archive download  
-* VM recreation  
-* Volume recreation  
-* Save restoration  
-* Service startup
-
-Deliverable:
-
-Archived sessions become fully restorable.
+Implement warnings, versioned manifests, compression, checksums, S3 verification, compute and volume destruction, infrastructure recreation, and restore.
 
 ---
 
 ## **Phase 10 — Reliability**
 
-Improve robustness rather than adding features.
-
-Focus on:
-
-* Retry logic  
-* Idempotent provisioning  
-* Workflow resumption  
-* Error recovery  
-* Timeouts  
-* Cleanup of partially created resources
-
-This phase turns a working prototype into a dependable platform.
+Implement bounded retries, DLQ operations, reconciliation, orphan cleanup, cancellation, and disaster recovery.
 
 ---
 
-## **Phase 11 — Observability**
+## **Phase 11 — Production Hardening**
 
-Enhance visibility into system behavior.
-
-Implement:
-
-* Structured logging  
-* Event history  
-* Deployment progress  
-* Metrics  
-* Audit trail  
-* Cost tracking  
-* Dashboard
-
-Deliverable:
-
-Administrators can diagnose issues and monitor operations without accessing the VM directly.
+Complete least-privilege review, GitHub OIDC deployment, staging, threat-model review, runbook testing, dashboards, and cost verification.
 
 ---
 
-## **Phase 12 — Polish & Future Features**
+## **Phase 12 — Expansion**
 
-Only after the core lifecycle is stable should you add enhancements such as:
-
-* Scheduled boots  
-* Multiple concurrent games/sessions  
-* Automatic Workshop updates  
-* Additional supported games  
-* Web dashboard  
-* Cost estimation  
-* Backup versioning
+Only after the lifecycle is stable: additional games, scheduling and cost analytics, a web dashboard, multi-account, and multi-region support.
 
 ## **Overall Roadmap**
 
-1\. Foundation  
-        │  
-2\. Metadata Layer  
-        │  
-3\. Discord Bot  
-        │  
-4\. Cloud Provisioning  
-        │  
-5\. Server Bootstrap  
-        │  
-6\. Health Monitoring  
-        │  
-7\. Sleep / Wake  
-        │  
-8\. Archive & Destroy  
-        │  
-9\. Restore  
-        │  
-10\. Reliability  
-        │  
-11\. Observability  
-        │  
-12\. Feature Expansion
+1. Foundation
+2. Metadata layer
+3. Discord interface
+4. Workflow foundation
+5. Infrastructure provisioning
+6. Arma bootstrap
+7. Monitoring
+8. Sleep and wake
+9. Archive and restore
+10. Reliability
+11. Production hardening
+12. Expansion
 
 This sequence keeps the project continuously usable: each phase builds on the previous one and delivers a complete, testable capability instead of isolated components. It also aligns closely with the lifecycle defined in your architecture document, progressing from session creation through provisioning, operation, suspension, archival, and restoration.
 
@@ -723,7 +621,7 @@ This sequence keeps the project continuously usable: each phase builds on the pr
 | Storage | ✅ EBS \+ S3 |
 | Infrastructure as Code | ✅ Terraform *(recommended over CloudFormation)* |
 | Language | ✅ Go |
-| Discord | ✅ discordgo |
+| Discord | ✅ Signed HTTP interactions using the Go standard library (ADR 0004) |
 | Database | ✅ DynamoDB (deployed authority; in-memory repositories for local tests) |
 | Secrets | ✅ AWS Secrets Manager |
 | Scheduler | ✅ EventBridge |

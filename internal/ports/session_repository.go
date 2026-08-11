@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
@@ -55,6 +56,19 @@ type WorkflowRepository interface {
 
 type WorkflowStarter interface {
 	Start(ctx context.Context, workflow domain.Workflow) (string, error)
+}
+
+type ProvisioningRepository interface {
+	SaveProvisioningStage(ctx context.Context, session domain.Session, expectedVersion int64, event domain.SessionEvent) error
+	AcquireCapacitySlot(ctx context.Context, sessionID string, workflowID string, limit int, now time.Time) (string, error)
+	ReleaseCapacitySlot(ctx context.Context, slotID string, sessionID string) error
+}
+
+type ComputeProvisioner interface {
+	FindInstance(ctx context.Context, request domain.ComputeLaunchRequest) (domain.ComputeObservation, bool, error)
+	EnsureInstance(ctx context.Context, request domain.ComputeLaunchRequest, knownInstanceID string) (domain.ComputeObservation, error)
+	ObserveInstance(ctx context.Context, instanceID string) (domain.ComputeObservation, error)
+	IsManaged(ctx context.Context, instanceID string) (bool, error)
 }
 
 // SessionRepository provides durable access to session metadata.

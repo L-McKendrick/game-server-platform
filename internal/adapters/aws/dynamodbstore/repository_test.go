@@ -45,6 +45,14 @@ func (fake *fakeAPI) PutItem(
 	return &dynamodb.PutItemOutput{}, nil
 }
 
+func (fake *fakeAPI) DeleteItem(
+	_ context.Context,
+	_ *dynamodb.DeleteItemInput,
+	_ ...func(*dynamodb.Options),
+) (*dynamodb.DeleteItemOutput, error) {
+	return &dynamodb.DeleteItemOutput{}, nil
+}
+
 func (fake *fakeAPI) TransactWriteItems(
 	_ context.Context,
 	input *dynamodb.TransactWriteItemsInput,

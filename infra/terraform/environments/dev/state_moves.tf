@@ -4,6 +4,11 @@ moved {
 }
 
 moved {
+  from = aws_sfn_state_machine.workflow["ProvisionSession"]
+  to   = aws_sfn_state_machine.provision_session
+}
+
+moved {
   from = aws_apigatewayv2_integration.discord_interactions
   to   = aws_apigatewayv2_integration.discord_lambda
 }

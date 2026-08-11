@@ -9,7 +9,9 @@ $packagerPath = Join-Path $cacheDirectory $packagerFilename
 $packages = @(
     @{ Command = "./cmd/discord-lambda"; Archive = "discord-interactions.zip" },
     @{ Command = "./cmd/artifact-worker"; Archive = "artifact-worker.zip" },
-    @{ Command = "./cmd/notification-worker"; Archive = "notification-worker.zip" }
+    @{ Command = "./cmd/notification-worker"; Archive = "notification-worker.zip" },
+    @{ Command = "./cmd/command-worker"; Archive = "command-worker.zip" },
+    @{ Command = "./cmd/provisioning-worker"; Archive = "provisioning-worker.zip" }
 )
 
 New-Item -ItemType Directory -Force -Path $distDirectory | Out-Null

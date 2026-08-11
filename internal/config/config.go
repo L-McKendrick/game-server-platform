@@ -15,9 +15,11 @@ type Config struct {
 	AWSRegion            string
 	MetadataTable        string
 	ArtifactQueueURL     string
+	CommandQueueURL      string
 	NotificationQueueURL string
 	SessionAssetsBucket  string
 	DiscordSecretName    string
+	ProvisioningEnabled  bool
 	IdempotencyRetention time.Duration
 	LogLevel             slog.Level
 }
@@ -35,6 +37,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	provisioningEnabled, err := strconv.ParseBool(getEnv("PROVISIONING_ENABLED", "false"))
+	if err != nil {
+		return Config{}, fmt.Errorf("PROVISIONING_ENABLED must be true or false")
+	}
 
 	cfg := Config{
 		Environment: getEnv("APP_ENV", "development"),
@@ -44,9 +50,11 @@ func Load() (Config, error) {
 			"game-server-platform-dev-metadata",
 		),
 		ArtifactQueueURL:     strings.TrimSpace(os.Getenv("ARTIFACT_QUEUE_URL")),
+		CommandQueueURL:      strings.TrimSpace(os.Getenv("COMMAND_QUEUE_URL")),
 		NotificationQueueURL: strings.TrimSpace(os.Getenv("NOTIFICATION_QUEUE_URL")),
 		SessionAssetsBucket:  strings.TrimSpace(os.Getenv("SESSION_ASSETS_BUCKET")),
 		DiscordSecretName:    strings.TrimSpace(os.Getenv("DISCORD_SECRET_NAME")),
+		ProvisioningEnabled:  provisioningEnabled,
 		IdempotencyRetention: idempotencyRetention,
 		LogLevel:             logLevel,
 	}

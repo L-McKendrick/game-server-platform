@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -14,11 +15,13 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/lambdahttp"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsartifact"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqscommand"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/discord/interactions"
 	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
 	"github.com/L-McKendrick/game-server-platform/internal/identity"
+	"github.com/L-McKendrick/game-server-platform/internal/logging"
 )
 
 func main() {
@@ -38,12 +41,18 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 	if strings.TrimSpace(baseConfig.ArtifactQueueURL) == "" {
 		return nil, fmt.Errorf("ARTIFACT_QUEUE_URL is required")
 	}
+	if baseConfig.ProvisioningEnabled && strings.TrimSpace(baseConfig.CommandQueueURL) == "" {
+		return nil, fmt.Errorf("COMMAND_QUEUE_URL is required when provisioning is enabled")
+	}
 	discordConfig, err := config.LoadDiscord()
 	if err != nil {
 		return nil, fmt.Errorf("load Discord configuration: %w", err)
 	}
+	logger := logging.New(baseConfig.LogLevel)
+	slog.SetDefault(logger)
+	publicKey, err := interactions.ParsePublicKey(discordConfig.PublicKeyHex)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse Discord public key: %w", err)
 	}
 	awsConfiguration, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(baseConfig.AWSRegion))
 	if err != nil {
@@ -53,12 +62,17 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 	artifactQueue := sqsartifact.New(sqs.NewFromConfig(awsConfiguration), baseConfig.ArtifactQueueURL)
 	ids := identity.Generator{}
 	clock := appsession.SystemClock{}
+	serviceOptions := []appsession.Option{appsession.WithArtifactQueue(artifactQueue)}
+	if baseConfig.ProvisioningEnabled {
+		commandQueue := sqscommand.New(sqs.NewFromConfig(awsConfiguration), baseConfig.CommandQueueURL)
+		serviceOptions = append(serviceOptions, appsession.WithCommandQueue(commandQueue))
+	}
 	service, err := appsession.NewService(
 		repository,
 		ids,
 		clock,
 		baseConfig.IdempotencyRetention,
-		appsession.WithArtifactQueue(artifactQueue),
+		serviceOptions...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create session service: %w", err)

@@ -10,16 +10,33 @@ import (
 type EventType string
 
 const (
-	EventSessionCreated    EventType = "SessionCreated"
-	EventStateChanged      EventType = "SessionStateChanged"
-	EventSessionConfigured EventType = "SessionConfigured"
-	EventArtifactRequested EventType = "ArtifactUploadRequested"
-	EventArtifactValidated EventType = "ArtifactValidated"
-	EventArtifactRejected  EventType = "ArtifactRejected"
-	EventWorkflowStarted   EventType = "WorkflowStarted"
-	EventWorkflowFailed    EventType = "WorkflowFailed"
-	EventWorkflowCompleted EventType = "WorkflowCompleted"
+	EventSessionCreated      EventType = "SessionCreated"
+	EventStateChanged        EventType = "SessionStateChanged"
+	EventSessionConfigured   EventType = "SessionConfigured"
+	EventArtifactRequested   EventType = "ArtifactUploadRequested"
+	EventArtifactValidated   EventType = "ArtifactValidated"
+	EventArtifactRejected    EventType = "ArtifactRejected"
+	EventWorkflowStarted     EventType = "WorkflowStarted"
+	EventWorkflowFailed      EventType = "WorkflowFailed"
+	EventWorkflowCompleted   EventType = "WorkflowCompleted"
+	EventProvisioningStage   EventType = "ProvisioningStageCompleted"
+	EventInfrastructureReady EventType = "InfrastructureReady"
+	EventProvisioningFailed  EventType = "InfrastructureProvisioningFailed"
 )
+
+// NewProvisioningEvent records a stable workflow stage without exposing cloud
+// account identifiers or credentials.
+func NewProvisioningEvent(eventID string, eventType EventType, stage string, workflow Workflow, session Session, now time.Time) SessionEvent {
+	return SessionEvent{
+		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
+		ActorType: string(ActorTypeSystem), ActorID: "ProvisionSession", CorrelationID: workflow.CorrelationID,
+		Data: map[string]string{
+			"workflow_id": workflow.ID, "stage": strings.TrimSpace(stage),
+			"state": string(session.LifecycleState), "instance_id": session.Infrastructure.InstanceID,
+			"volume_id": session.Infrastructure.DataVolumeID,
+		},
+	}
+}
 
 // SessionEvent is an immutable fact about a session.
 type SessionEvent struct {

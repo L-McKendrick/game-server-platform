@@ -30,7 +30,6 @@ locals {
   artifact_worker_package_path     = var.artifact_worker_lambda_package_path != null ? var.artifact_worker_lambda_package_path : abspath("${path.module}/../../../../dist/artifact-worker.zip")
   notification_worker_package_path = var.notification_worker_lambda_package_path != null ? var.notification_worker_lambda_package_path : abspath("${path.module}/../../../../dist/notification-worker.zip")
   workflow_types = toset([
-    "ProvisionSession",
     "BootstrapGameServer",
     "SleepSession",
     "WakeSession",
@@ -296,5 +295,8 @@ output "notification_queue_url" {
 
 output "workflow_state_machine_arns" {
   description = "Canonical Step Functions Standard workflow ARNs."
-  value       = { for name, machine in aws_sfn_state_machine.workflow : name => machine.arn }
+  value = merge(
+    { for name, machine in aws_sfn_state_machine.workflow : name => machine.arn },
+    { ProvisionSession = aws_sfn_state_machine.provision_session.arn },
+  )
 }

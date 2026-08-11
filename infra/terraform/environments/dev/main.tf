@@ -260,6 +260,12 @@ data "aws_iam_policy_document" "discord_lambda" {
     resources = [aws_sqs_queue.artifact_ingest.arn]
   }
 
+  statement {
+    sid       = "CommandQueueSend"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.commands.arn]
+  }
+
 
   statement {
     sid = "RuntimeLogDelivery"
@@ -302,6 +308,8 @@ resource "aws_lambda_function" "discord_interactions" {
       LOG_LEVEL                         = "info"
       METADATA_TABLE_NAME               = aws_dynamodb_table.metadata.name
       ARTIFACT_QUEUE_URL                = aws_sqs_queue.artifact_ingest.url
+      COMMAND_QUEUE_URL                 = aws_sqs_queue.commands.url
+      PROVISIONING_ENABLED              = tostring(var.provisioning_enabled)
       DISCORD_PUBLIC_KEY                = var.discord_public_key
       DISCORD_APPLICATION_ID            = var.discord_application_id
       DISCORD_ALLOWED_GUILD_IDS         = join(",", sort(tolist(var.discord_allowed_guild_ids)))

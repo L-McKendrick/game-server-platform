@@ -75,7 +75,7 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 	now := service.clock.Now().UTC()
 	workflowID := command.CommandID
 	expectedVersion := session.Version
-	if err := session.AcquireWorkflowLock(workflowID, workflowType, service.lease, now); err != nil {
+	if err := acquireWorkflowLock(&session, workflowID, workflowType, service.lease, now); err != nil {
 		return domain.Workflow{}, err
 	}
 	workflow := domain.Workflow{
@@ -93,6 +93,13 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 		return domain.Workflow{}, err
 	}
 	return service.startExecution(ctx, session, workflow, actor)
+}
+
+func acquireWorkflowLock(session *domain.Session, workflowID string, workflowType string, lease time.Duration, now time.Time) error {
+	if workflowType == "ProvisionSession" {
+		return session.AcquireProvisioningWorkflowLock(workflowID, lease, now)
+	}
+	return session.AcquireWorkflowLock(workflowID, workflowType, lease, now)
 }
 
 func (service *Service) resumePending(ctx context.Context, workflow domain.Workflow) (domain.Workflow, error) {
@@ -121,8 +128,14 @@ func (service *Service) startExecution(ctx context.Context, session domain.Sessi
 func (service *Service) failStart(ctx context.Context, session domain.Session, workflow domain.Workflow, actor domain.Actor, startErr error) error {
 	now := service.clock.Now().UTC()
 	expectedVersion := session.Version
-	if err := session.ReleaseWorkflowLock(workflow.ID, now); err != nil {
-		return err
+	var releaseErr error
+	if workflow.Type == "ProvisionSession" {
+		releaseErr = session.AbortProvisioningWorkflowStart(workflow.ID, now)
+	} else {
+		releaseErr = session.ReleaseWorkflowLock(workflow.ID, now)
+	}
+	if releaseErr != nil {
+		return releaseErr
 	}
 	workflow.Status = domain.WorkflowFailed
 	workflow.ErrorCode = "ERR_WORKFLOW_START_FAILED"

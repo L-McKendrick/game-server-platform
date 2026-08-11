@@ -4,7 +4,7 @@ An on-demand platform for provisioning and managing temporary dedicated game ser
 
 ## Current status
 
-Phases 1-4 are implemented in the repository: foundation, durable metadata, the deployable Discord interface, and the asynchronous workflow foundation.
+Phases 1-4 are deployed. Phase 5 infrastructure provisioning is implemented in the repository and remains feature-gated until its cost-bearing Terraform plan is reviewed and applied.
 
 The platform currently provides:
 
@@ -20,13 +20,18 @@ The platform currently provides:
 - normalized command and workflow contracts with conditional per-session workflow leases;
 - command, attachment, and notification FIFO queues with dead-letter queues;
 - canonical Step Functions Standard state-machine boundaries;
+- a FIFO command worker that revalidates access and starts `ProvisionSession`;
+- a dedicated game VPC, two public subnets, game/voice security groups, and no inbound SSH;
+- an idempotent EC2/EBS provisioning worker with IMDSv2, encrypted volumes, Systems Manager readiness, resource discovery tags, and DynamoDB capacity slots;
+- a real bounded `ProvisionSession` workflow that stops at `BOOTSTRAPPING` for Phase 6;
+- an AWS monthly budget and a fail-closed provisioning enablement gate;
 - reproducible Lambda packages, least-privilege IAM, retained logs, and CI checks.
 
-The lifecycle state machines intentionally terminate with `PhaseNotImplemented` in Phase 4. No `/session start` command is registered yet, so the interface does not claim that EC2 provisioning works before Phase 5.
+Non-provisioning lifecycle state machines intentionally terminate with `PhaseNotImplemented`. `/session start` returns disabled until Terraform sets `PROVISIONING_ENABLED=true`; enabling it requires a budget alert recipient.
 
-Next milestone: Phase 5 infrastructure provisioning—VPC, security groups, EC2, EBS, instance roles, and Systems Manager tasks behind `ProvisionSession`.
+Next milestone after Phase 5 deployment verification: Phase 6 Arma bootstrap—SteamCMD, Arma, DLC, Workshop content, mission deployment, optional TeamSpeak, and health checks.
 
-See [Phase 4: Workflow Foundation](docs/phase-4-workflow-foundation.md) for the delivered boundary and remaining deployment inputs.
+See [Phase 5: Infrastructure Provisioning](docs/phase-5-infrastructure-provisioning.md) for the implemented boundary and deployment safety gates.
 
 ## Local Discord interaction server
 

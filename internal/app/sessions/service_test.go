@@ -24,6 +24,13 @@ type sequenceIDGenerator struct {
 	index int
 }
 
+type recordingCommandQueue struct{ commands []domain.CommandEnvelope }
+
+func (queue *recordingCommandQueue) Enqueue(_ context.Context, command domain.CommandEnvelope) error {
+	queue.commands = append(queue.commands, command)
+	return nil
+}
+
 func (generator *sequenceIDGenerator) New(
 	_ time.Time,
 ) (string, error) {
@@ -102,6 +109,41 @@ func TestCreatePersistsDraftSessionAndEvent(t *testing.T) {
 			events[0].ActorID,
 			actor.ID,
 		)
+	}
+}
+
+func TestRequestStartQueuesNormalizedCommandForReadyOwnerSession(t *testing.T) {
+	t.Parallel()
+	repository := memory.NewSessionRepository()
+	queue := &recordingCommandQueue{}
+	clock := fixedClock{now: time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)}
+	service, err := NewService(
+		repository, &sequenceIDGenerator{ids: []string{"session-1", "create-event", "transition-event"}},
+		clock, 7*24*time.Hour, WithCommandQueue(queue),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := testActor("owner-1")
+	session := mustCreateSession(t, service, actor, "create-correlation", "saturday-arma")
+	if _, err := service.Transition(context.Background(), TransitionCommand{
+		Actor: actor, SessionID: session.ID, To: domain.StateNew,
+		CorrelationID: "ready-correlation", IdempotencyKey: "test:ready",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RequestStart(context.Background(), StartCommand{
+		Actor: actor, Roles: []string{"role-1"}, SessionID: session.ID,
+		GuildID: "guild-1", ChannelID: "channel-1", CommandID: "interaction-1",
+		CorrelationID: "start-correlation", IdempotencyKey: "discord:interaction-1",
+	}); err != nil {
+		t.Fatalf("RequestStart() returned error: %v", err)
+	}
+	if len(queue.commands) != 1 || queue.commands[0].CommandType != domain.CommandStartSession {
+		t.Fatalf("queued commands = %#v", queue.commands)
+	}
+	if queue.commands[0].Actor.DiscordUserID != actor.ID || queue.commands[0].SessionID != session.ID {
+		t.Fatalf("queued command = %#v", queue.commands[0])
 	}
 }
 

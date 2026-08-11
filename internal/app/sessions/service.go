@@ -38,6 +38,7 @@ func (SystemClock) Now() time.Time {
 type Service struct {
 	repository           ports.SessionRepository
 	artifactQueue        ports.ArtifactQueue
+	commandQueue         ports.CommandQueue
 	ids                  IDGenerator
 	clock                Clock
 	idempotencyRetention time.Duration
@@ -49,6 +50,11 @@ type Option func(*Service)
 // WithArtifactQueue enables asynchronous Discord attachment ingestion.
 func WithArtifactQueue(queue ports.ArtifactQueue) Option {
 	return func(service *Service) { service.artifactQueue = queue }
+}
+
+// WithCommandQueue enables asynchronous lifecycle command dispatch.
+func WithCommandQueue(queue ports.CommandQueue) Option {
+	return func(service *Service) { service.commandQueue = queue }
 }
 
 // NewService creates a session application service.
@@ -82,6 +88,59 @@ func NewService(
 		}
 		return service, nil
 	}
+}
+
+// StartCommand contains the signed Discord context used to request
+// infrastructure provisioning.
+type StartCommand struct {
+	Actor          domain.Actor
+	Roles          []string
+	SessionID      string
+	GuildID        string
+	ChannelID      string
+	CommandID      string
+	CorrelationID  string
+	IdempotencyKey string
+}
+
+// RequestStart validates the synchronous boundary and queues a normalized
+// command. The command worker revalidates authorization and state before it
+// acquires a workflow lock.
+func (service *Service) RequestStart(ctx context.Context, command StartCommand) error {
+	if err := command.Actor.Validate(); err != nil {
+		return fmt.Errorf("validate actor: %w", err)
+	}
+	if service.commandQueue == nil {
+		return fmt.Errorf("%w: lifecycle commands", domain.ErrFeatureDisabled)
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+	if err := authorizeOwner(command.Actor, session); err != nil {
+		return err
+	}
+	if session.GuildID != strings.TrimSpace(command.GuildID) {
+		return fmt.Errorf("session belongs to another guild: %w", domain.ErrForbidden)
+	}
+	if session.LifecycleState != domain.StateNew {
+		return fmt.Errorf("session must be fully configured before start: %w", domain.ErrInvalidTransition)
+	}
+	envelope := domain.CommandEnvelope{
+		SchemaVersion: 1,
+		CommandID:     strings.TrimSpace(command.CommandID), CommandType: domain.CommandStartSession,
+		RequestedAt: service.clock.Now().UTC(),
+		Actor: domain.CommandActor{
+			DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID),
+			ChannelID: strings.TrimSpace(command.ChannelID), Roles: append([]string(nil), command.Roles...),
+		},
+		SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey),
+		CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: map[string]string{},
+	}
+	if err := service.commandQueue.Enqueue(ctx, envelope); err != nil {
+		return fmt.Errorf("enqueue start command: %w", err)
+	}
+	return nil
 }
 
 // ConfigureCommand replaces the editable configuration of a draft session.
