@@ -278,6 +278,40 @@ func TestTransitionRejectsInvalidStateChange(t *testing.T) {
 	}
 }
 
+func TestConfigurePersistsRevisionAndEvent(t *testing.T) {
+	t.Parallel()
+
+	repository := memory.NewSessionRepository()
+	service := newTestService(t, repository, "session-1", "event-create", "event-configure")
+	actor := testActor("owner-1")
+	created := mustCreateSession(t, service, actor, "correlation-create", "saturday-arma")
+
+	configured, err := service.Configure(context.Background(), ConfigureCommand{
+		Actor:               actor,
+		SessionID:           created.ID,
+		GuildID:             "guild-1",
+		CorrelationID:       "correlation-configure",
+		IdempotencyKey:      "discord:configure-1",
+		GameProfileID:       "arma3-default",
+		SleepAfterSeconds:   3600,
+		ArchiveAfterSeconds: 14 * 86400,
+		TeamSpeakEnabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("Configure() returned error: %v", err)
+	}
+	if configured.ConfigurationRevision != 1 || configured.Version != 2 {
+		t.Errorf("revision/version = %d/%d; want 1/2", configured.ConfigurationRevision, configured.Version)
+	}
+	if configured.SleepAfterSeconds != 3600 || !configured.TeamSpeakEnabled {
+		t.Errorf("configuration was not applied: %#v", configured)
+	}
+	events := repository.Events(created.ID)
+	if len(events) != 2 || events[1].Type != domain.EventSessionConfigured {
+		t.Fatalf("events = %#v; want SessionConfigured", events)
+	}
+}
+
 func TestListReturnsOnlyActorSessions(t *testing.T) {
 	t.Parallel()
 

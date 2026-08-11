@@ -37,9 +37,18 @@ func (SystemClock) Now() time.Time {
 // Service implements session application commands and queries.
 type Service struct {
 	repository           ports.SessionRepository
+	artifactQueue        ports.ArtifactQueue
 	ids                  IDGenerator
 	clock                Clock
 	idempotencyRetention time.Duration
+}
+
+// Option configures optional application-service capabilities.
+type Option func(*Service)
+
+// WithArtifactQueue enables asynchronous Discord attachment ingestion.
+func WithArtifactQueue(queue ports.ArtifactQueue) Option {
+	return func(service *Service) { service.artifactQueue = queue }
 }
 
 // NewService creates a session application service.
@@ -48,6 +57,7 @@ func NewService(
 	ids IDGenerator,
 	clock Clock,
 	idempotencyRetention time.Duration,
+	options ...Option,
 ) (*Service, error) {
 	switch {
 	case repository == nil:
@@ -59,13 +69,123 @@ func NewService(
 	case idempotencyRetention <= 0:
 		return nil, fmt.Errorf("idempotency retention must be positive")
 	default:
-		return &Service{
+		service := &Service{
 			repository:           repository,
 			ids:                  ids,
 			clock:                clock,
 			idempotencyRetention: idempotencyRetention,
-		}, nil
+		}
+		for _, option := range options {
+			if option != nil {
+				option(service)
+			}
+		}
+		return service, nil
 	}
+}
+
+// ConfigureCommand replaces the editable configuration of a draft session.
+type ConfigureCommand struct {
+	Actor               domain.Actor
+	SessionID           string
+	GuildID             string
+	CorrelationID       string
+	IdempotencyKey      string
+	GameProfileID       string
+	SleepAfterSeconds   int64
+	ArchiveAfterSeconds int64
+	TeamSpeakEnabled    bool
+}
+
+// Configure validates and persists a new immutable configuration revision.
+func (service *Service) Configure(ctx context.Context, command ConfigureCommand) (domain.Session, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Session{}, fmt.Errorf("validate actor: %w", err)
+	}
+
+	idempotencyKey, requestHash, err := configureRequestIdentity(command)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if replayed, found, err := service.replaySession(ctx, idempotencyKey, requestHash, command.Actor); err != nil || found {
+		return replayed, err
+	}
+
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("get session: %w", err)
+	}
+	if err := authorizeOwner(command.Actor, session); err != nil {
+		return domain.Session{}, err
+	}
+	if session.GuildID != strings.TrimSpace(command.GuildID) {
+		return domain.Session{}, fmt.Errorf("session belongs to another guild: %w", domain.ErrForbidden)
+	}
+
+	now := service.clock.Now().UTC()
+	expectedVersion := session.Version
+	if err := session.Configure(domain.SessionConfiguration{
+		GameProfileID:       command.GameProfileID,
+		SleepAfterSeconds:   command.SleepAfterSeconds,
+		ArchiveAfterSeconds: command.ArchiveAfterSeconds,
+		TeamSpeakEnabled:    command.TeamSpeakEnabled,
+	}, now); err != nil {
+		return domain.Session{}, fmt.Errorf("configure session: %w", err)
+	}
+
+	eventID, err := service.newID(now, "configuration event")
+	if err != nil {
+		return domain.Session{}, err
+	}
+	correlationID, err := service.resolveCorrelationID(command.CorrelationID, now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.NewSessionConfiguredEvent(eventID, correlationID, command.Actor, session, now)
+	idempotency, err := domain.NewCompletedIdempotencyRecord(idempotencyKey, requestHash, session.ID, now, service.idempotencyRetention)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("construct idempotency record: %w", err)
+	}
+	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, idempotency); err != nil {
+		if replayed, found, replayErr := service.replaySession(ctx, idempotencyKey, requestHash, command.Actor); replayErr != nil || found {
+			return replayed, replayErr
+		}
+		return domain.Session{}, fmt.Errorf("persist configuration: %w", err)
+	}
+	return session, nil
+}
+
+// RequestArtifactIngest authorizes and queues a Discord attachment for asynchronous ingestion.
+func (service *Service) RequestArtifactIngest(ctx context.Context, actor domain.Actor, request domain.ArtifactIngestRequest) error {
+	if err := actor.Validate(); err != nil {
+		return fmt.Errorf("validate actor: %w", err)
+	}
+	if service.artifactQueue == nil {
+		return fmt.Errorf("artifact ingestion is not configured")
+	}
+	if request.ActorID != actor.ID {
+		return fmt.Errorf("artifact actor does not match command actor: %w", domain.ErrForbidden)
+	}
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(request.SessionID))
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+	if err := authorizeOwner(actor, session); err != nil {
+		return err
+	}
+	if session.GuildID != request.GuildID {
+		return fmt.Errorf("session belongs to another guild: %w", domain.ErrForbidden)
+	}
+	if session.LifecycleState != domain.StateDraft {
+		return fmt.Errorf("attachments are only accepted while a session is DRAFT: %w", domain.ErrInvalidTransition)
+	}
+	if err := service.artifactQueue.Enqueue(ctx, request); err != nil {
+		return fmt.Errorf("enqueue artifact ingestion: %w", err)
+	}
+	return nil
 }
 
 // CreateCommand contains the user-controlled values needed to create a session.
@@ -435,6 +555,36 @@ func transitionRequestIdentity(
 		return "", "", fmt.Errorf("hash transition-session request: %w", err)
 	}
 
+	return key, hash, nil
+}
+
+func configureRequestIdentity(command ConfigureCommand) (string, string, error) {
+	key := strings.TrimSpace(command.IdempotencyKey)
+	if key == "" {
+		return "", "", fmt.Errorf("idempotency key is required")
+	}
+	hash, err := hashRequest(struct {
+		CommandType         string `json:"command_type"`
+		ActorID             string `json:"actor_id"`
+		SessionID           string `json:"session_id"`
+		GuildID             string `json:"guild_id"`
+		GameProfileID       string `json:"game_profile_id"`
+		SleepAfterSeconds   int64  `json:"sleep_after_seconds"`
+		ArchiveAfterSeconds int64  `json:"archive_after_seconds"`
+		TeamSpeakEnabled    bool   `json:"teamspeak_enabled"`
+	}{
+		CommandType:         "ConfigureSession",
+		ActorID:             strings.TrimSpace(command.Actor.ID),
+		SessionID:           strings.TrimSpace(command.SessionID),
+		GuildID:             strings.TrimSpace(command.GuildID),
+		GameProfileID:       strings.ToLower(strings.TrimSpace(command.GameProfileID)),
+		SleepAfterSeconds:   command.SleepAfterSeconds,
+		ArchiveAfterSeconds: command.ArchiveAfterSeconds,
+		TeamSpeakEnabled:    command.TeamSpeakEnabled,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("hash configure-session request: %w", err)
+	}
 	return key, hash, nil
 }
 

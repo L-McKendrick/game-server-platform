@@ -21,7 +21,7 @@ const (
 	sessionSortKey     = "METADATA"
 	idempotencySortKey = "RESULT"
 	ownerIndexName     = "gsi1"
-	schemaVersion      = 1
+	schemaVersion      = 2
 )
 
 // API contains the DynamoDB operations used by the repository.
@@ -37,6 +37,12 @@ type API interface {
 		params *dynamodb.QueryInput,
 		optFns ...func(*dynamodb.Options),
 	) (*dynamodb.QueryOutput, error)
+
+	PutItem(
+		ctx context.Context,
+		params *dynamodb.PutItemInput,
+		optFns ...func(*dynamodb.Options),
+	) (*dynamodb.PutItemOutput, error)
 
 	TransactWriteItems(
 		ctx context.Context,
@@ -67,13 +73,25 @@ type sessionItem struct {
 	EntityType    string `dynamodbav:"entity_type"`
 	SchemaVersion int    `dynamodbav:"schema_version"`
 
-	SessionID          string `dynamodbav:"session_id"`
-	Slug               string `dynamodbav:"slug"`
-	DisplayName        string `dynamodbav:"display_name"`
-	GameType           string `dynamodbav:"game_type"`
-	OwnerDiscordUserID string `dynamodbav:"owner_discord_user_id"`
-	GuildID            string `dynamodbav:"guild_id"`
-	ChannelID          string `dynamodbav:"channel_id"`
+	SessionID             string `dynamodbav:"session_id"`
+	Slug                  string `dynamodbav:"slug"`
+	DisplayName           string `dynamodbav:"display_name"`
+	GameType              string `dynamodbav:"game_type"`
+	OwnerDiscordUserID    string `dynamodbav:"owner_discord_user_id"`
+	GuildID               string `dynamodbav:"guild_id"`
+	ChannelID             string `dynamodbav:"channel_id"`
+	GameProfileID         string `dynamodbav:"game_profile_id"`
+	SleepAfterSeconds     int64  `dynamodbav:"sleep_after_seconds"`
+	ArchiveAfterSeconds   int64  `dynamodbav:"archive_after_seconds"`
+	TeamSpeakEnabled      bool   `dynamodbav:"teamspeak_enabled"`
+	ConfigurationRevision int64  `dynamodbav:"configuration_revision"`
+	MissionObjectKey      string `dynamodbav:"mission_object_key,omitempty"`
+	PresetObjectKey       string `dynamodbav:"preset_object_key,omitempty"`
+
+	ActiveWorkflowID             string `dynamodbav:"active_workflow_id,omitempty"`
+	ActiveWorkflowType           string `dynamodbav:"active_workflow_type,omitempty"`
+	ActiveWorkflowStartedAt      string `dynamodbav:"active_workflow_started_at,omitempty"`
+	ActiveWorkflowLeaseExpiresAt string `dynamodbav:"active_workflow_lease_expires_at,omitempty"`
 
 	DesiredState   string `dynamodbav:"desired_state"`
 	ObservedState  string `dynamodbav:"observed_state"`
@@ -569,13 +587,24 @@ func toSessionItem(session domain.Session) sessionItem {
 		EntityType:    "Session",
 		SchemaVersion: schemaVersion,
 
-		SessionID:          session.ID,
-		Slug:               session.Slug,
-		DisplayName:        session.DisplayName,
-		GameType:           session.GameType,
-		OwnerDiscordUserID: session.OwnerDiscordUserID,
-		GuildID:            session.GuildID,
-		ChannelID:          session.ChannelID,
+		SessionID:                    session.ID,
+		Slug:                         session.Slug,
+		DisplayName:                  session.DisplayName,
+		GameType:                     session.GameType,
+		OwnerDiscordUserID:           session.OwnerDiscordUserID,
+		GuildID:                      session.GuildID,
+		ChannelID:                    session.ChannelID,
+		GameProfileID:                session.GameProfileID,
+		SleepAfterSeconds:            session.SleepAfterSeconds,
+		ArchiveAfterSeconds:          session.ArchiveAfterSeconds,
+		TeamSpeakEnabled:             session.TeamSpeakEnabled,
+		ConfigurationRevision:        session.ConfigurationRevision,
+		MissionObjectKey:             session.MissionObjectKey,
+		PresetObjectKey:              session.PresetObjectKey,
+		ActiveWorkflowID:             session.ActiveWorkflowID,
+		ActiveWorkflowType:           session.ActiveWorkflowType,
+		ActiveWorkflowStartedAt:      fixedTimestamp(session.ActiveWorkflowStartedAt),
+		ActiveWorkflowLeaseExpiresAt: fixedTimestamp(session.ActiveWorkflowLeaseExpiresAt),
 
 		DesiredState:   string(session.DesiredState),
 		ObservedState:  string(session.ObservedState),
@@ -606,14 +635,45 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		return domain.Session{}, fmt.Errorf("parse updated_at: %w", err)
 	}
 
+	// Schema version 1 records created before configuration support omitted
+	// these fields. Preserve read compatibility during the deployment rollout.
+	if item.GameProfileID == "" {
+		item.GameProfileID = "arma3-default"
+	}
+	if item.SleepAfterSeconds == 0 {
+		item.SleepAfterSeconds = 1800
+	}
+	if item.ArchiveAfterSeconds == 0 {
+		item.ArchiveAfterSeconds = 7 * 24 * 60 * 60
+	}
+	activeWorkflowStartedAt, err := parseOptionalTimestamp(item.ActiveWorkflowStartedAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse active workflow started_at: %w", err)
+	}
+	activeWorkflowLeaseExpiresAt, err := parseOptionalTimestamp(item.ActiveWorkflowLeaseExpiresAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse active workflow lease: %w", err)
+	}
+
 	session := domain.Session{
-		ID:                 item.SessionID,
-		Slug:               item.Slug,
-		DisplayName:        item.DisplayName,
-		GameType:           item.GameType,
-		OwnerDiscordUserID: item.OwnerDiscordUserID,
-		GuildID:            item.GuildID,
-		ChannelID:          item.ChannelID,
+		ID:                           item.SessionID,
+		Slug:                         item.Slug,
+		DisplayName:                  item.DisplayName,
+		GameType:                     item.GameType,
+		OwnerDiscordUserID:           item.OwnerDiscordUserID,
+		GuildID:                      item.GuildID,
+		ChannelID:                    item.ChannelID,
+		GameProfileID:                item.GameProfileID,
+		SleepAfterSeconds:            item.SleepAfterSeconds,
+		ArchiveAfterSeconds:          item.ArchiveAfterSeconds,
+		TeamSpeakEnabled:             item.TeamSpeakEnabled,
+		ConfigurationRevision:        item.ConfigurationRevision,
+		MissionObjectKey:             item.MissionObjectKey,
+		PresetObjectKey:              item.PresetObjectKey,
+		ActiveWorkflowID:             item.ActiveWorkflowID,
+		ActiveWorkflowType:           item.ActiveWorkflowType,
+		ActiveWorkflowStartedAt:      activeWorkflowStartedAt,
+		ActiveWorkflowLeaseExpiresAt: activeWorkflowLeaseExpiresAt,
 
 		DesiredState:   domain.LifecycleState(item.DesiredState),
 		ObservedState:  domain.LifecycleState(item.ObservedState),
@@ -630,6 +690,33 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	}
 
 	return session, nil
+}
+
+func optionalTimestamp(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+// fixedTimestamp preserves chronological ordering when DynamoDB compares lock
+// leases as strings. RFC3339Nano's trimmed fractional seconds do not.
+func fixedTimestamp(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format("2006-01-02T15:04:05.000000000Z")
+}
+
+func parseOptionalTimestamp(value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return parsed.UTC(), nil
 }
 
 func toEventItem(event domain.SessionEvent) eventItem {

@@ -10,4 +10,5 @@ var (
 	ErrInvalidTransition   = errors.New("invalid lifecycle transition")
 	ErrIdempotencyConflict = errors.New("idempotency key reused with a different request")
 	ErrCommandInProgress   = errors.New("command is already in progress")
+	ErrWorkflowLocked      = errors.New("session workflow lock is held")
 )

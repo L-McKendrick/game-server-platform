@@ -44,6 +44,20 @@ jobs:
       - name: Build local Discord interaction command
         run: go build -o bin/discord-local ./cmd/discord-local
 
+      - name: Build Discord command registration tool
+        run: go build -o bin/discord-register ./cmd/discord-register
+
+      - name: Package Lambda functions
+        shell: pwsh
+        run: ./scripts/package-discord-lambda.ps1
+
+      - name: Upload Lambda packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-4-lambdas
+          path: dist/*.zip
+          if-no-files-found: error
+
   terraform:
     name: Terraform checks
     runs-on: ubuntu-latest

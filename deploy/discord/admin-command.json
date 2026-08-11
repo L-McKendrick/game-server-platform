@@ -1,0 +1,13 @@
+{
+  "name": "admin",
+  "description": "Configure game-server platform administration",
+  "type": 1,
+  "default_member_permissions": "32",
+  "options": [
+    {
+      "type": 1,
+      "name": "access",
+      "description": "Choose which Discord roles may use platform commands"
+    }
+  ]
+}

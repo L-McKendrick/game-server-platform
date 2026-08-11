@@ -724,7 +724,7 @@ This sequence keeps the project continuously usable: each phase builds on the pr
 | Infrastructure as Code | ✅ Terraform *(recommended over CloudFormation)* |
 | Language | ✅ Go |
 | Discord | ✅ discordgo |
-| Database | ✅ SQLite |
+| Database | ✅ DynamoDB (deployed authority; in-memory repositories for local tests) |
 | Secrets | ✅ AWS Secrets Manager |
 | Scheduler | ✅ EventBridge |
 | Serverless | ✅ AWS Lambda |
@@ -766,4 +766,3 @@ This gives you a clean separation:
 
 * **Platform terminology** stays generic, so adding another game later doesn't require renaming major components.  
 * **Game terminology** remains familiar to users. An Arma admin still uploads a **Mission** and receives a **Mission Save**, while a future Minecraft server would upload a **World** instead.
-

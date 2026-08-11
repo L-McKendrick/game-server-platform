@@ -107,3 +107,61 @@ func TestTransitionRejectsInvalidTransition(t *testing.T) {
 		)
 	}
 }
+
+func TestSessionBecomesNewWhenConfigurationAndArtifactsAreComplete(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 8, 20, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{
+		ID: "session-1", Slug: "saturday-arma", DisplayName: "Saturday Arma", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatalf("NewSession() returned error: %v", err)
+	}
+	if err := session.AttachArtifact(ArtifactMission, "sessions/session-1/input/missions/mission.pbo", now.Add(time.Second)); err != nil {
+		t.Fatalf("AttachArtifact(mission) returned error: %v", err)
+	}
+	if err := session.AttachArtifact(ArtifactPreset, "sessions/session-1/input/presets/preset.html", now.Add(2*time.Second)); err != nil {
+		t.Fatalf("AttachArtifact(preset) returned error: %v", err)
+	}
+	if session.LifecycleState != StateDraft {
+		t.Fatalf("state before configuration = %s; want DRAFT", session.LifecycleState)
+	}
+	if err := session.Configure(SessionConfiguration{
+		GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400,
+	}, now.Add(3*time.Second)); err != nil {
+		t.Fatalf("Configure() returned error: %v", err)
+	}
+	if session.LifecycleState != StateNew || session.DesiredState != StateNew || session.ObservedState != StateNew {
+		t.Fatalf("completed session states = %s/%s/%s; want NEW", session.DesiredState, session.ObservedState, session.LifecycleState)
+	}
+}
+
+func TestSessionWorkflowLockRejectsConcurrentMutationAndCanBeReleased(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 8, 20, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{
+		ID: "session-1", Slug: "saturday-arma", DisplayName: "Saturday Arma", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatalf("NewSession() returned error: %v", err)
+	}
+	if err := session.AcquireWorkflowLock("workflow-1", "ProvisionSession", time.Hour, now.Add(time.Second)); err != nil {
+		t.Fatalf("AcquireWorkflowLock() returned error: %v", err)
+	}
+	if err := session.AcquireWorkflowLock("workflow-2", "SleepSession", time.Hour, now.Add(2*time.Second)); !errors.Is(err, ErrWorkflowLocked) {
+		t.Fatalf("concurrent AcquireWorkflowLock() error = %v; want ErrWorkflowLocked", err)
+	}
+	if err := session.ReleaseWorkflowLock("workflow-other", now.Add(3*time.Second)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("ReleaseWorkflowLock(other) error = %v; want ErrConflict", err)
+	}
+	if err := session.ReleaseWorkflowLock("workflow-1", now.Add(4*time.Second)); err != nil {
+		t.Fatalf("ReleaseWorkflowLock() returned error: %v", err)
+	}
+	if session.ActiveWorkflowID != "" || !session.ActiveWorkflowLeaseExpiresAt.IsZero() {
+		t.Fatalf("workflow lock was not cleared: %#v", session)
+	}
+}

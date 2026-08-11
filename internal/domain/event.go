@@ -10,8 +10,15 @@ import (
 type EventType string
 
 const (
-	EventSessionCreated EventType = "SessionCreated"
-	EventStateChanged   EventType = "SessionStateChanged"
+	EventSessionCreated    EventType = "SessionCreated"
+	EventStateChanged      EventType = "SessionStateChanged"
+	EventSessionConfigured EventType = "SessionConfigured"
+	EventArtifactRequested EventType = "ArtifactUploadRequested"
+	EventArtifactValidated EventType = "ArtifactValidated"
+	EventArtifactRejected  EventType = "ArtifactRejected"
+	EventWorkflowStarted   EventType = "WorkflowStarted"
+	EventWorkflowFailed    EventType = "WorkflowFailed"
+	EventWorkflowCompleted EventType = "WorkflowCompleted"
 )
 
 // SessionEvent is an immutable fact about a session.
@@ -24,6 +31,73 @@ type SessionEvent struct {
 	ActorID       string
 	CorrelationID string
 	Data          map[string]string
+}
+
+func NewArtifactEvent(
+	eventID string,
+	eventType EventType,
+	correlationID string,
+	actor Actor,
+	session Session,
+	kind ArtifactKind,
+	objectKey string,
+	now time.Time,
+) SessionEvent {
+	return SessionEvent{
+		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
+		ActorType: string(actor.Type), ActorID: actor.ID, CorrelationID: correlationID,
+		Data: map[string]string{
+			"artifact_kind": string(kind),
+			"object_key":    objectKey,
+			"state":         string(session.LifecycleState),
+		},
+	}
+}
+
+func NewWorkflowEvent(
+	eventID string,
+	eventType EventType,
+	correlationID string,
+	actor Actor,
+	session Session,
+	workflow Workflow,
+	now time.Time,
+) SessionEvent {
+	return SessionEvent{
+		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
+		ActorType: string(actor.Type), ActorID: actor.ID, CorrelationID: correlationID,
+		Data: map[string]string{
+			"workflow_id":     workflow.ID,
+			"workflow_type":   workflow.Type,
+			"workflow_status": string(workflow.Status),
+		},
+	}
+}
+
+// NewSessionConfiguredEvent records an immutable configuration revision.
+func NewSessionConfiguredEvent(
+	eventID string,
+	correlationID string,
+	actor Actor,
+	session Session,
+	now time.Time,
+) SessionEvent {
+	return SessionEvent{
+		ID:            eventID,
+		SessionID:     session.ID,
+		Type:          EventSessionConfigured,
+		OccurredAt:    now.UTC(),
+		ActorType:     string(actor.Type),
+		ActorID:       actor.ID,
+		CorrelationID: correlationID,
+		Data: map[string]string{
+			"configuration_revision": fmt.Sprintf("%d", session.ConfigurationRevision),
+			"game_profile_id":        session.GameProfileID,
+			"sleep_after_seconds":    fmt.Sprintf("%d", session.SleepAfterSeconds),
+			"archive_after_seconds":  fmt.Sprintf("%d", session.ArchiveAfterSeconds),
+			"teamspeak_enabled":      fmt.Sprintf("%t", session.TeamSpeakEnabled),
+		},
+	}
 }
 
 // Validate verifies that an event contains its required audit fields.

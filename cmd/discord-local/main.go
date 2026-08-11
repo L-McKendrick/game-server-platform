@@ -12,6 +12,7 @@ import (
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/discord/interactions"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
+	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
 	"github.com/L-McKendrick/game-server-platform/internal/identity"
@@ -45,6 +46,7 @@ func run() error {
 	}
 
 	repository := memory.NewSessionRepository()
+	artifactQueue := memory.NewArtifactQueue()
 	generator := identity.Generator{}
 	clock := appsession.SystemClock{}
 
@@ -53,13 +55,24 @@ func run() error {
 		generator,
 		clock,
 		baseConfig.IdempotencyRetention,
+		appsession.WithArtifactQueue(artifactQueue),
 	)
 	if err != nil {
 		return fmt.Errorf("create session service: %w", err)
 	}
+	accessService, err := appaccess.NewService(
+		memory.NewAccessPolicyRepository(),
+		discordConfig.AllowedRoleIDs,
+		discordConfig.AllowedChannelIDs,
+		clock,
+	)
+	if err != nil {
+		return fmt.Errorf("create access service: %w", err)
+	}
 
 	handler, err := interactions.NewHandler(
 		service,
+		accessService,
 		generator,
 		clock,
 		logger,

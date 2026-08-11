@@ -16,6 +16,7 @@ type SessionRepository struct {
 	sessions    map[string]domain.Session
 	events      map[string][]domain.SessionEvent
 	idempotency map[string]domain.IdempotencyRecord
+	workflows   map[string]domain.Workflow
 }
 
 var _ ports.SessionRepository = (*SessionRepository)(nil)
@@ -26,6 +27,7 @@ func NewSessionRepository() *SessionRepository {
 		sessions:    make(map[string]domain.Session),
 		events:      make(map[string][]domain.SessionEvent),
 		idempotency: make(map[string]domain.IdempotencyRecord),
+		workflows:   make(map[string]domain.Workflow),
 	}
 }
 

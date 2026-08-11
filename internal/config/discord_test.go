@@ -10,6 +10,8 @@ func TestLoadDiscord(t *testing.T) {
 	t.Setenv("DISCORD_PUBLIC_KEY", "public-key")
 	t.Setenv("DISCORD_APPLICATION_ID", "application-1")
 	t.Setenv("DISCORD_ALLOWED_GUILD_IDS", "guild-1, guild-2, guild-1")
+	t.Setenv("DISCORD_ALLOWED_ROLE_IDS", "role-1")
+	t.Setenv("DISCORD_ALLOWED_CHANNEL_IDS", "channel-1")
 	t.Setenv("DISCORD_LISTEN_ADDRESS", "127.0.0.1:9090")
 	t.Setenv("DISCORD_MAX_REQUEST_BYTES", "32768")
 	t.Setenv("DISCORD_SIGNATURE_MAX_AGE_SECONDS", "120")
@@ -43,6 +45,8 @@ func TestLoadDiscordRequiresGuilds(t *testing.T) {
 	t.Setenv("DISCORD_PUBLIC_KEY", "public-key")
 	t.Setenv("DISCORD_APPLICATION_ID", "application-1")
 	t.Setenv("DISCORD_ALLOWED_GUILD_IDS", "")
+	t.Setenv("DISCORD_ALLOWED_ROLE_IDS", "role-1")
+	t.Setenv("DISCORD_ALLOWED_CHANNEL_IDS", "channel-1")
 
 	_, err := LoadDiscord()
 	if err == nil {
@@ -50,10 +54,28 @@ func TestLoadDiscordRequiresGuilds(t *testing.T) {
 	}
 }
 
+func TestLoadDiscordDoesNotRequirePreconfiguredAccessIDs(t *testing.T) {
+	t.Setenv("DISCORD_PUBLIC_KEY", "public-key")
+	t.Setenv("DISCORD_APPLICATION_ID", "application-1")
+	t.Setenv("DISCORD_ALLOWED_GUILD_IDS", "guild-1")
+	t.Setenv("DISCORD_ALLOWED_ROLE_IDS", "")
+	t.Setenv("DISCORD_ALLOWED_CHANNEL_IDS", "")
+
+	config, err := LoadDiscord()
+	if err != nil {
+		t.Fatalf("LoadDiscord() returned error: %v", err)
+	}
+	if len(config.AllowedRoleIDs) != 0 || len(config.AllowedChannelIDs) != 0 {
+		t.Fatalf("fallback access IDs = %#v/%#v; want empty", config.AllowedRoleIDs, config.AllowedChannelIDs)
+	}
+}
+
 func TestLoadDiscordRejectsInvalidListenAddress(t *testing.T) {
 	t.Setenv("DISCORD_PUBLIC_KEY", "public-key")
 	t.Setenv("DISCORD_APPLICATION_ID", "application-1")
 	t.Setenv("DISCORD_ALLOWED_GUILD_IDS", "guild-1")
+	t.Setenv("DISCORD_ALLOWED_ROLE_IDS", "role-1")
+	t.Setenv("DISCORD_ALLOWED_CHANNEL_IDS", "channel-1")
 	t.Setenv("DISCORD_LISTEN_ADDRESS", "localhost")
 
 	_, err := LoadDiscord()

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
+	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 )
 
@@ -144,6 +145,75 @@ func TestHandlerCreatesAndReplaysSession(t *testing.T) {
 	}
 }
 
+func TestHandlerGuildManagerConfiguresRolesWithSelectMenu(t *testing.T) {
+	t.Parallel()
+
+	handler, _, privateKey := newTestHandler(
+		t,
+		[]string{"correlation-admin-command", "correlation-admin-select", "correlation-create"},
+		[]string{"session-1", "event-1"},
+	)
+	menuResponse := executeSignedRequest(
+		t,
+		handler,
+		privateKey,
+		adminAccessCommandBody("interaction-admin", "guild-manager", "guild-1", "channel-other"),
+		testNow,
+	)
+
+	if menuResponse.Code != http.StatusOK {
+		t.Fatalf("status = %d; want %d; body = %s", menuResponse.Code, http.StatusOK, menuResponse.Body.String())
+	}
+	var menu interactionResponse
+	decodeResponse(t, menuResponse, &menu)
+	if menu.Type != interactionResponseChannelMessageWithSource || menu.Data == nil || menu.Data.Components == nil ||
+		len(*menu.Data.Components) != 1 || (*menu.Data.Components)[0].Components[0].Type != componentTypeRoleSelect {
+		t.Fatalf("admin menu response = %#v", menu)
+	}
+
+	selectionResponse := executeSignedRequest(
+		t, handler, privateKey,
+		adminRoleSelectionBody("interaction-select", "guild-manager", "guild-1", "channel-other", []string{"role-2", "role-1"}),
+		testNow,
+	)
+	var selection interactionResponse
+	decodeResponse(t, selectionResponse, &selection)
+	if selection.Type != interactionResponseUpdateMessage || selection.Data == nil ||
+		!strings.Contains(selection.Data.Content, "Access settings updated") ||
+		!strings.Contains(selection.Data.Content, "<@&role-1>") ||
+		!strings.Contains(selection.Data.Content, "<@&role-2>") ||
+		selection.Data.Components == nil || len(*selection.Data.Components) != 0 {
+		t.Fatalf("admin selection response = %#v", selection)
+	}
+
+	createResponse := executeSignedRequest(
+		t, handler, privateKey,
+		createCommandBody("interaction-create-after-access", "owner-1", "guild-1", "different-channel"),
+		testNow,
+	)
+	var created interactionResponse
+	decodeResponse(t, createResponse, &created)
+	if created.Data == nil || !strings.Contains(created.Data.Content, "session-1") {
+		t.Fatalf("command after role configuration = %#v", created)
+	}
+}
+
+func TestHandlerRejectsAccessConfigurationWithoutGuildManagementPermission(t *testing.T) {
+	t.Parallel()
+
+	handler, _, privateKey := newTestHandler(t, nil, nil)
+	response := executeSignedRequest(
+		t, handler, privateKey,
+		adminAccessCommandBodyWithPermissions("interaction-admin", "member-1", "guild-1", "channel-1", "0"),
+		testNow,
+	)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Manage Server") || decoded.Data.Components != nil {
+		t.Fatalf("unauthorized admin response = %#v", decoded)
+	}
+}
+
 func TestHandlerListsAndShowsSessionStatus(t *testing.T) {
 	t.Parallel()
 
@@ -188,6 +258,50 @@ func TestHandlerListsAndShowsSessionStatus(t *testing.T) {
 	decodeResponse(t, statusResponse, &statusDecoded)
 	if statusDecoded.Data == nil || !strings.Contains(statusDecoded.Data.Content, "Lifecycle: `DRAFT`") {
 		t.Fatalf("status content = %#v; want DRAFT lifecycle", statusDecoded.Data)
+	}
+}
+
+func TestHandlerConfiguresAndAcceptsMissionAttachment(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(
+		t,
+		[]string{"correlation-create", "correlation-configure", "correlation-upload"},
+		[]string{"session-1", "event-create", "event-configure"},
+	)
+	executeSignedRequest(t, handler, privateKey, createCommandBody("interaction-create", "owner-1", "guild-1", "channel-1"), testNow)
+
+	configuredResponse := executeSignedRequest(
+		t,
+		handler,
+		privateKey,
+		configureCommandBody("interaction-configure", "owner-1", "guild-1", "channel-1", "session-1"),
+		testNow,
+	)
+	var configuredDecoded interactionResponse
+	decodeResponse(t, configuredResponse, &configuredDecoded)
+	if configuredDecoded.Data == nil || !strings.Contains(configuredDecoded.Data.Content, "Revision: `1`") {
+		t.Fatalf("configure content = %#v", configuredDecoded.Data)
+	}
+	stored, err := repository.Get(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("repository.Get() error = %v", err)
+	}
+	if stored.ConfigurationRevision != 1 || !stored.TeamSpeakEnabled {
+		t.Errorf("stored configuration = %#v", stored)
+	}
+
+	uploadResponse := executeSignedRequest(
+		t,
+		handler,
+		privateKey,
+		uploadCommandBody("interaction-upload", "owner-1", "guild-1", "channel-1", "session-1"),
+		testNow,
+	)
+	var uploadDecoded interactionResponse
+	decodeResponse(t, uploadResponse, &uploadDecoded)
+	if uploadDecoded.Data == nil || !strings.Contains(uploadDecoded.Data.Content, "accepted for validation") {
+		t.Fatalf("upload content = %#v", uploadDecoded.Data)
 	}
 }
 
@@ -280,14 +394,25 @@ func newTestHandler(
 		&sequenceGenerator{ids: serviceIDs},
 		fixedClock{now: testNow},
 		7*24*time.Hour,
+		appsession.WithArtifactQueue(memory.NewArtifactQueue()),
 	)
 	if err != nil {
 		t.Fatalf("NewService() returned error: %v", err)
+	}
+	accessService, err := appaccess.NewService(
+		memory.NewAccessPolicyRepository(),
+		[]string{"role-1"},
+		[]string{"channel-1"},
+		fixedClock{now: testNow},
+	)
+	if err != nil {
+		t.Fatalf("access.NewService() returned error: %v", err)
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler, err := NewHandler(
 		service,
+		accessService,
 		&sequenceGenerator{ids: correlationIDs},
 		fixedClock{now: testNow},
 		logger,
@@ -386,6 +511,42 @@ func statusCommandBody(interactionID, ownerID, guildID, channelID, sessionID str
 	)
 }
 
+func configureCommandBody(interactionID, ownerID, guildID, channelID, sessionID string) []byte {
+	return commandBody(interactionID, ownerID, guildID, channelID, "configure", []any{
+		map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": sessionID},
+		map[string]any{"type": applicationCommandOptionString, "name": "profile", "value": "arma3-default"},
+		map[string]any{"type": applicationCommandOptionInteger, "name": "sleep-minutes", "value": 60},
+		map[string]any{"type": applicationCommandOptionInteger, "name": "archive-days", "value": 14},
+		map[string]any{"type": applicationCommandOptionBoolean, "name": "teamspeak", "value": true},
+	})
+}
+
+func uploadCommandBody(interactionID, ownerID, guildID, channelID, sessionID string) []byte {
+	body := map[string]any{
+		"id": interactionID, "application_id": "app-1", "type": interactionTypeApplicationCommand,
+		"guild_id": guildID, "channel_id": channelID,
+		"member": map[string]any{"user": map[string]any{"id": ownerID}, "roles": []string{"role-1"}},
+		"data": map[string]any{
+			"name": "session",
+			"options": []any{map[string]any{
+				"type": applicationCommandOptionSubcommand, "name": "upload-mission",
+				"options": []any{
+					map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": sessionID},
+					map[string]any{"type": applicationCommandOptionAttachment, "name": "file", "value": "attachment-1"},
+				},
+			}},
+			"resolved": map[string]any{"attachments": map[string]any{
+				"attachment-1": map[string]any{
+					"id": "attachment-1", "filename": "operation.pbo", "size": 1024,
+					"url":          "https://cdn.discordapp.com/attachments/1/2/operation.pbo",
+					"content_type": "application/octet-stream",
+				},
+			}},
+		},
+	}
+	return marshalPayload(body)
+}
+
 func commandBody(
 	interactionID string,
 	ownerID string,
@@ -401,7 +562,8 @@ func commandBody(
 		"guild_id":       guildID,
 		"channel_id":     channelID,
 		"member": map[string]any{
-			"user": map[string]any{"id": ownerID},
+			"user":  map[string]any{"id": ownerID},
+			"roles": []string{"role-1"},
 		},
 		"data": map[string]any{
 			"name": "session",
@@ -412,6 +574,35 @@ func commandBody(
 					"options": options,
 				},
 			},
+		},
+	})
+}
+
+func adminAccessCommandBody(interactionID, ownerID, guildID, channelID string) []byte {
+	return adminAccessCommandBodyWithPermissions(interactionID, ownerID, guildID, channelID, "32")
+}
+
+func adminAccessCommandBodyWithPermissions(interactionID, ownerID, guildID, channelID, permissions string) []byte {
+	return marshalPayload(map[string]any{
+		"id": interactionID, "application_id": "app-1", "type": interactionTypeApplicationCommand,
+		"guild_id": guildID, "channel_id": channelID,
+		"member": map[string]any{"user": map[string]any{"id": ownerID}, "roles": []string{}, "permissions": permissions},
+		"data": map[string]any{
+			"name": "admin",
+			"options": []any{map[string]any{
+				"type": applicationCommandOptionSubcommand, "name": "access",
+			}},
+		},
+	})
+}
+
+func adminRoleSelectionBody(interactionID, ownerID, guildID, channelID string, roleIDs []string) []byte {
+	return marshalPayload(map[string]any{
+		"id": interactionID, "application_id": "app-1", "type": interactionTypeMessageComponent,
+		"guild_id": guildID, "channel_id": channelID,
+		"member": map[string]any{"user": map[string]any{"id": ownerID}, "roles": []string{}, "permissions": "32"},
+		"data": map[string]any{
+			"custom_id": adminRoleSelectCustomID, "component_type": componentTypeRoleSelect, "values": roleIDs,
 		},
 	})
 }

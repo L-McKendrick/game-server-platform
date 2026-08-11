@@ -11,12 +11,14 @@ import (
 
 // DiscordConfig contains values required by the Discord interaction adapter.
 type DiscordConfig struct {
-	PublicKeyHex    string
-	ApplicationID   string
-	AllowedGuildIDs []string
-	ListenAddress   string
-	MaxRequestBytes int64
-	SignatureMaxAge time.Duration
+	PublicKeyHex      string
+	ApplicationID     string
+	AllowedGuildIDs   []string
+	AllowedRoleIDs    []string
+	AllowedChannelIDs []string
+	ListenAddress     string
+	MaxRequestBytes   int64
+	SignatureMaxAge   time.Duration
 }
 
 // LoadDiscord reads Discord-specific configuration from environment variables.
@@ -38,12 +40,14 @@ func LoadDiscord() (DiscordConfig, error) {
 	}
 
 	config := DiscordConfig{
-		PublicKeyHex:    strings.TrimSpace(os.Getenv("DISCORD_PUBLIC_KEY")),
-		ApplicationID:   strings.TrimSpace(os.Getenv("DISCORD_APPLICATION_ID")),
-		AllowedGuildIDs: splitNonEmptyCSV(os.Getenv("DISCORD_ALLOWED_GUILD_IDS")),
-		ListenAddress:   getEnv("DISCORD_LISTEN_ADDRESS", "127.0.0.1:8080"),
-		MaxRequestBytes: maxRequestBytes,
-		SignatureMaxAge: time.Duration(signatureMaxAgeSeconds) * time.Second,
+		PublicKeyHex:      strings.TrimSpace(os.Getenv("DISCORD_PUBLIC_KEY")),
+		ApplicationID:     strings.TrimSpace(os.Getenv("DISCORD_APPLICATION_ID")),
+		AllowedGuildIDs:   splitNonEmptyCSV(os.Getenv("DISCORD_ALLOWED_GUILD_IDS")),
+		AllowedRoleIDs:    splitNonEmptyCSV(os.Getenv("DISCORD_ALLOWED_ROLE_IDS")),
+		AllowedChannelIDs: splitNonEmptyCSV(os.Getenv("DISCORD_ALLOWED_CHANNEL_IDS")),
+		ListenAddress:     getEnv("DISCORD_LISTEN_ADDRESS", "127.0.0.1:8080"),
+		MaxRequestBytes:   maxRequestBytes,
+		SignatureMaxAge:   time.Duration(signatureMaxAgeSeconds) * time.Second,
 	}
 
 	switch {

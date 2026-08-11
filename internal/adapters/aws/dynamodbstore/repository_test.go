@@ -37,6 +37,14 @@ func (fake *fakeAPI) Query(
 	return fake.queryOutput, fake.queryErr
 }
 
+func (fake *fakeAPI) PutItem(
+	_ context.Context,
+	_ *dynamodb.PutItemInput,
+	_ ...func(*dynamodb.Options),
+) (*dynamodb.PutItemOutput, error) {
+	return &dynamodb.PutItemOutput{}, nil
+}
+
 func (fake *fakeAPI) TransactWriteItems(
 	_ context.Context,
 	input *dynamodb.TransactWriteItemsInput,
@@ -100,6 +108,44 @@ func TestCreateWritesSessionEventAndIdempotencyAtomically(t *testing.T) {
 
 	if got := stringAttribute(t, idempotencyPut.Item["sk"]); got != idempotencySortKey {
 		t.Errorf("idempotency sk = %q; want %q", got, idempotencySortKey)
+	}
+}
+
+func TestAcquireWorkflowConditionallyWritesLockWorkflowAndEvent(t *testing.T) {
+	t.Parallel()
+
+	client := &fakeAPI{}
+	repository := New(client, "metadata-table")
+	now := time.Date(2026, 8, 8, 22, 0, 0, 0, time.UTC)
+	session := testSession(t, now)
+	expectedVersion := session.Version
+	if err := session.AcquireWorkflowLock("command-1", "ProvisionSession", 2*time.Hour, now.Add(time.Second)); err != nil {
+		t.Fatalf("AcquireWorkflowLock() returned error: %v", err)
+	}
+	workflow := domain.Workflow{
+		ID: "command-1", SessionID: session.ID, Type: "ProvisionSession", Status: domain.WorkflowPending,
+		RequestedBy: session.OwnerDiscordUserID, CorrelationID: "correlation-workflow",
+		ExpectedVersion: expectedVersion, StartedAt: now.Add(time.Second), LeaseExpiresAt: now.Add(2*time.Hour + time.Second),
+	}
+	event := domain.NewWorkflowEvent(
+		"workflow-event", domain.EventWorkflowStarted, workflow.CorrelationID,
+		domain.Actor{Type: domain.ActorTypeDiscordUser, ID: workflow.RequestedBy},
+		session, workflow, workflow.StartedAt,
+	)
+
+	if err := repository.AcquireWorkflow(context.Background(), session, expectedVersion, workflow, event); err != nil {
+		t.Fatalf("AcquireWorkflow() returned error: %v", err)
+	}
+	if client.transactWriteInput == nil || len(client.transactWriteInput.TransactItems) != 3 {
+		t.Fatalf("workflow transaction = %#v; want three writes", client.transactWriteInput)
+	}
+	condition := *client.transactWriteInput.TransactItems[0].Put.ConditionExpression
+	if condition != "#version = :expected_version AND (attribute_not_exists(active_workflow_id) OR active_workflow_lease_expires_at < :now)" {
+		t.Fatalf("session lock condition = %q", condition)
+	}
+	workflowPut := client.transactWriteInput.TransactItems[1].Put
+	if got := stringAttribute(t, workflowPut.Item["sk"]); got != "WORKFLOW#command-1" {
+		t.Fatalf("workflow sort key = %q", got)
 	}
 }
 

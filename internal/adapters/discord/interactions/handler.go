@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,22 @@ type SessionService interface {
 		ctx context.Context,
 		query appsession.ListQuery,
 	) ([]domain.Session, error)
+
+	Configure(
+		ctx context.Context,
+		command appsession.ConfigureCommand,
+	) (domain.Session, error)
+
+	RequestArtifactIngest(
+		ctx context.Context,
+		actor domain.Actor,
+		request domain.ArtifactIngestRequest,
+	) error
+}
+
+type AccessService interface {
+	Authorize(ctx context.Context, guildID string, channelID string, userID string, roles []string) error
+	Configure(ctx context.Context, guildID string, userID string, canManageGuild bool, roleIDs []string, channelIDs []string) (domain.GuildAccessPolicy, error)
 }
 
 // Clock supplies current UTC time for signature validation and tests.
@@ -66,6 +83,7 @@ type Config struct {
 // Handler verifies and routes Discord HTTP interactions.
 type Handler struct {
 	service         SessionService
+	access          AccessService
 	ids             IDGenerator
 	clock           Clock
 	logger          *slog.Logger
@@ -79,6 +97,7 @@ type Handler struct {
 // NewHandler creates a Discord interaction handler.
 func NewHandler(
 	service SessionService,
+	access AccessService,
 	ids IDGenerator,
 	clock Clock,
 	logger *slog.Logger,
@@ -87,6 +106,8 @@ func NewHandler(
 	switch {
 	case service == nil:
 		return nil, fmt.Errorf("session service is required")
+	case access == nil:
+		return nil, fmt.Errorf("access service is required")
 	case ids == nil:
 		return nil, fmt.Errorf("correlation ID generator is required")
 	case clock == nil:
@@ -110,7 +131,6 @@ func NewHandler(
 
 		allowedGuildIDs[guildID] = struct{}{}
 	}
-
 	maxRequestBytes := config.MaxRequestBytes
 	if maxRequestBytes <= 0 {
 		maxRequestBytes = defaultMaxRequestBytes
@@ -123,6 +143,7 @@ func NewHandler(
 
 	return &Handler{
 		service:         service,
+		access:          access,
 		ids:             ids,
 		clock:           clock,
 		logger:          logger,
@@ -200,7 +221,7 @@ func (handler *Handler) ServeHTTP(
 		return
 	}
 
-	if payload.Type != interactionTypeApplicationCommand {
+	if payload.Type != interactionTypeApplicationCommand && payload.Type != interactionTypeMessageComponent {
 		writeInteractionMessage(writer, "This interaction type is not supported yet.")
 		return
 	}
@@ -217,6 +238,40 @@ func (handler *Handler) ServeHTTP(
 			slog.String("guild_id", payload.GuildID),
 		)
 		writeInteractionMessage(writer, "This app is not enabled in this Discord server.")
+		return
+	}
+	actorID := payload.actorID()
+	roles := []string{}
+	if payload.Member != nil {
+		roles = payload.Member.Roles
+	}
+	if payload.isAdminAccessCommand() || payload.isAdminRoleSelection() {
+		if !payload.memberCanManageGuild() {
+			handler.logger.Warn("rejected Discord access configuration without Manage Server permission", slog.String("guild_id", payload.GuildID))
+			writeInteractionMessage(writer, "Only members with Administrator or Manage Server permission can configure bot access.")
+			return
+		}
+		correlationID, err := handler.ids.New(handler.clock.Now().UTC())
+		if err != nil {
+			handler.logger.Error("failed to generate Discord correlation ID", slog.Any("error", err))
+			writeInteractionMessage(writer, "The command could not be processed. Please try again.")
+			return
+		}
+		if err := handler.handleAdminAccess(request.Context(), writer, payload, actorID); err != nil {
+			handler.logger.Error("Discord access configuration failed", slog.String("correlation_id", correlationID), slog.Any("error", err))
+			writeInteractionMessage(writer, handler.commandErrorMessage(err, correlationID))
+			return
+		}
+		handler.logger.Info("Discord access configuration completed", slog.String("correlation_id", correlationID), slog.String("guild_id", payload.GuildID))
+		return
+	}
+	if payload.Type == interactionTypeMessageComponent {
+		writeInteractionMessage(writer, "This component is not supported or has expired.")
+		return
+	}
+	if err := handler.access.Authorize(request.Context(), payload.GuildID, payload.ChannelID, actorID, roles); err != nil {
+		handler.logger.Warn("rejected unauthorized Discord interaction", slog.String("guild_id", payload.GuildID), slog.String("channel_id", payload.ChannelID))
+		writeInteractionMessage(writer, "You are not authorized to use this app in this channel.")
 		return
 	}
 
@@ -265,14 +320,13 @@ func (handler *Handler) routeCommand(
 		return "", "session", newUserError("Discord channel information is missing from the command.")
 	}
 
-	subcommand, err := payload.subcommand()
-	if err != nil {
-		return "", "session", newUserError("Use one of the supported `/session` subcommands.")
-	}
-
 	actor := domain.Actor{
 		Type: domain.ActorTypeDiscordUser,
 		ID:   actorID,
+	}
+	subcommand, err := payload.subcommand()
+	if err != nil {
+		return "", "session", newUserError("Use one of the supported `/session` subcommands.")
 	}
 
 	commandName := "session " + subcommand.Name
@@ -297,11 +351,177 @@ func (handler *Handler) routeCommand(
 			payload.GuildID,
 		)
 		return content, commandName, err
+	case "configure":
+		content, err := handler.configureSession(ctx, payload, subcommand.Options, actor, correlationID)
+		return content, commandName, err
+	case "upload-mission":
+		content, err := handler.requestArtifactIngest(ctx, payload, subcommand.Options, actor, correlationID, domain.ArtifactMission)
+		return content, commandName, err
+	case "upload-preset":
+		content, err := handler.requestArtifactIngest(ctx, payload, subcommand.Options, actor, correlationID, domain.ArtifactPreset)
+		return content, commandName, err
 	default:
 		return "", commandName, newUserError(
 			"That `/session` subcommand is not supported yet.",
 		)
 	}
+}
+
+func (handler *Handler) handleAdminAccess(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actorID string) error {
+	if payload.isAdminAccessCommand() {
+		subcommand, err := payload.namedSubcommand("admin")
+		if err != nil || subcommand.Name != "access" {
+			return newUserError("Use `/admin access` to configure bot access.")
+		}
+		minimum, maximum := 1, 25
+		components := []interactionComponent{{
+			Type: componentTypeActionRow,
+			Components: []interactionComponent{{
+				Type: componentTypeRoleSelect, CustomID: adminRoleSelectCustomID,
+				Placeholder: "Select allowed roles", MinValues: &minimum, MaxValues: &maximum,
+			}},
+		}}
+		writeJSON(writer, http.StatusOK, interactionResponse{
+			Type: interactionResponseChannelMessageWithSource,
+			Data: &interactionResponseData{
+				Content:         "Choose the Discord roles that may use game-server platform commands.",
+				Flags:           messageFlagEphemeral,
+				AllowedMentions: interactionAllowedMentions{Parse: []string{}},
+				Components:      &components,
+			},
+		})
+		return nil
+	}
+	if payload.Data == nil || len(payload.Data.Values) == 0 {
+		return newUserError("Select at least one role.")
+	}
+	policy, err := handler.access.Configure(ctx, payload.GuildID, actorID, true, payload.Data.Values, nil)
+	if err != nil {
+		return fmt.Errorf("configure guild access: %w", err)
+	}
+	mentions := make([]string, 0, len(policy.AllowedRoleIDs))
+	for _, roleID := range policy.AllowedRoleIDs {
+		mentions = append(mentions, "<@&"+roleID+">")
+	}
+	emptyComponents := []interactionComponent{}
+	writeJSON(writer, http.StatusOK, interactionResponse{
+		Type: interactionResponseUpdateMessage,
+		Data: &interactionResponseData{
+			Content:         fmt.Sprintf("**Access settings updated**\nRevision: `%d`\nAllowed roles: %s", policy.Version, strings.Join(mentions, ", ")),
+			AllowedMentions: interactionAllowedMentions{Parse: []string{}},
+			Components:      &emptyComponents,
+		},
+	})
+	return nil
+}
+
+func (payload interactionPayload) isAdminAccessCommand() bool {
+	return payload.Type == interactionTypeApplicationCommand && payload.Data != nil && strings.TrimSpace(payload.Data.Name) == "admin"
+}
+
+func (payload interactionPayload) isAdminRoleSelection() bool {
+	return payload.Type == interactionTypeMessageComponent && payload.Data != nil &&
+		payload.Data.ComponentType == componentTypeRoleSelect && payload.Data.CustomID == adminRoleSelectCustomID
+}
+
+func (payload interactionPayload) memberCanManageGuild() bool {
+	if payload.Member == nil {
+		return false
+	}
+	permissions, err := strconv.ParseUint(strings.TrimSpace(payload.Member.Permissions), 10, 64)
+	if err != nil {
+		return false
+	}
+	return permissions&administratorPermission != 0 || permissions&manageGuildPermission != 0
+}
+
+func (handler *Handler) configureSession(
+	ctx context.Context,
+	payload interactionPayload,
+	options []applicationCommandOption,
+	actor domain.Actor,
+	correlationID string,
+) (string, error) {
+	sessionID, err := stringOption(options, "session-id", true)
+	if err != nil {
+		return "", newUserError("A session ID is required.")
+	}
+	profile, err := stringOption(options, "profile", false)
+	if err != nil {
+		return "", newUserError("The game profile must be text.")
+	}
+	if profile == "" {
+		profile = "arma3-default"
+	}
+	sleepMinutes, err := integerOption(options, "sleep-minutes", 30)
+	if err != nil || sleepMinutes < 10 || sleepMinutes > 1440 {
+		return "", newUserError("Sleep time must be between 10 and 1440 minutes.")
+	}
+	archiveDays, err := integerOption(options, "archive-days", 7)
+	if err != nil || archiveDays < 1 || archiveDays > 90 {
+		return "", newUserError("Archive time must be between 1 and 90 days.")
+	}
+	teamSpeak, err := booleanOption(options, "teamspeak", false)
+	if err != nil {
+		return "", newUserError("The TeamSpeak option must be true or false.")
+	}
+
+	session, err := handler.service.Configure(ctx, appsession.ConfigureCommand{
+		Actor:               actor,
+		SessionID:           sessionID,
+		GuildID:             strings.TrimSpace(payload.GuildID),
+		CorrelationID:       correlationID,
+		IdempotencyKey:      "discord:" + strings.TrimSpace(payload.ID),
+		GameProfileID:       profile,
+		SleepAfterSeconds:   sleepMinutes * 60,
+		ArchiveAfterSeconds: archiveDays * 86400,
+		TeamSpeakEnabled:    teamSpeak,
+	})
+	if err != nil {
+		return "", fmt.Errorf("configure session: %w", err)
+	}
+	return formatConfiguredSession(session), nil
+}
+
+func (handler *Handler) requestArtifactIngest(
+	ctx context.Context,
+	payload interactionPayload,
+	options []applicationCommandOption,
+	actor domain.Actor,
+	correlationID string,
+	kind domain.ArtifactKind,
+) (string, error) {
+	sessionID, err := stringOption(options, "session-id", true)
+	if err != nil {
+		return "", newUserError("A session ID is required.")
+	}
+	attachment, err := attachmentOption(payload.Data, options, "file")
+	if err != nil {
+		return "", newUserError("A valid Discord attachment is required.")
+	}
+	request := domain.ArtifactIngestRequest{
+		SchemaVersion:  1,
+		SessionID:      sessionID,
+		Kind:           kind,
+		AttachmentID:   attachment.ID,
+		Filename:       attachment.Filename,
+		ContentType:    attachment.ContentType,
+		SizeBytes:      attachment.Size,
+		SourceURL:      attachment.URL,
+		ActorID:        actor.ID,
+		GuildID:        strings.TrimSpace(payload.GuildID),
+		ChannelID:      strings.TrimSpace(payload.ChannelID),
+		CorrelationID:  correlationID,
+		IdempotencyKey: "discord:" + strings.TrimSpace(payload.ID),
+		RequestedAt:    handler.clock.Now().UTC(),
+	}
+	if err := request.Validate(); err != nil {
+		return "", newUserError(err.Error())
+	}
+	if err := handler.service.RequestArtifactIngest(ctx, actor, request); err != nil {
+		return "", fmt.Errorf("request artifact ingestion: %w", err)
+	}
+	return formatArtifactAccepted(kind, attachment.Filename, sessionID), nil
 }
 
 func (handler *Handler) createSession(

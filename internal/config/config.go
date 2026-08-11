@@ -14,6 +14,10 @@ type Config struct {
 	Environment          string
 	AWSRegion            string
 	MetadataTable        string
+	ArtifactQueueURL     string
+	NotificationQueueURL string
+	SessionAssetsBucket  string
+	DiscordSecretName    string
 	IdempotencyRetention time.Duration
 	LogLevel             slog.Level
 }
@@ -39,6 +43,10 @@ func Load() (Config, error) {
 			"METADATA_TABLE_NAME",
 			"game-server-platform-dev-metadata",
 		),
+		ArtifactQueueURL:     strings.TrimSpace(os.Getenv("ARTIFACT_QUEUE_URL")),
+		NotificationQueueURL: strings.TrimSpace(os.Getenv("NOTIFICATION_QUEUE_URL")),
+		SessionAssetsBucket:  strings.TrimSpace(os.Getenv("SESSION_ASSETS_BUCKET")),
+		DiscordSecretName:    strings.TrimSpace(os.Getenv("DISCORD_SECRET_NAME")),
 		IdempotencyRetention: idempotencyRetention,
 		LogLevel:             logLevel,
 	}

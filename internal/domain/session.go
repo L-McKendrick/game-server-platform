@@ -11,13 +11,25 @@ var slugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // Session represents the persistent platform identity of a game server.
 type Session struct {
-	ID                 string
-	Slug               string
-	DisplayName        string
-	GameType           string
-	OwnerDiscordUserID string
-	GuildID            string
-	ChannelID          string
+	ID                    string
+	Slug                  string
+	DisplayName           string
+	GameType              string
+	OwnerDiscordUserID    string
+	GuildID               string
+	ChannelID             string
+	GameProfileID         string
+	SleepAfterSeconds     int64
+	ArchiveAfterSeconds   int64
+	TeamSpeakEnabled      bool
+	ConfigurationRevision int64
+	MissionObjectKey      string
+	PresetObjectKey       string
+
+	ActiveWorkflowID             string
+	ActiveWorkflowType           string
+	ActiveWorkflowStartedAt      time.Time
+	ActiveWorkflowLeaseExpiresAt time.Time
 
 	DesiredState   LifecycleState
 	ObservedState  LifecycleState
@@ -27,6 +39,85 @@ type Session struct {
 	Version   int64
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// AttachArtifact records a validated durable object and advances a complete
+// draft to NEW without tying session identity to the source attachment URL.
+func (session *Session) AttachArtifact(kind ArtifactKind, objectKey string, now time.Time) error {
+	if session.LifecycleState != StateDraft {
+		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
+	}
+	objectKey = strings.TrimSpace(objectKey)
+	if objectKey == "" {
+		return fmt.Errorf("artifact object key is required")
+	}
+	switch kind {
+	case ArtifactMission:
+		session.MissionObjectKey = objectKey
+	case ArtifactPreset:
+		session.PresetObjectKey = objectKey
+	default:
+		return fmt.Errorf("unsupported artifact kind %q", kind)
+	}
+
+	session.Version++
+	session.UpdatedAt = now.UTC()
+	session.markReadyWhenComplete()
+	return session.Validate()
+}
+
+// AcquireWorkflowLock applies an in-memory workflow lease. Durable adapters
+// must additionally use a conditional write to prevent races.
+func (session *Session) AcquireWorkflowLock(workflowID string, workflowType string, lease time.Duration, now time.Time) error {
+	workflowID = strings.TrimSpace(workflowID)
+	workflowType = strings.TrimSpace(workflowType)
+	now = now.UTC()
+	if workflowID == "" || workflowType == "" {
+		return fmt.Errorf("workflow ID and type are required")
+	}
+	if lease <= 0 {
+		return fmt.Errorf("workflow lease must be positive")
+	}
+	if session.ActiveWorkflowID != "" && session.ActiveWorkflowLeaseExpiresAt.After(now) {
+		return fmt.Errorf("%w: session %s is locked by workflow %s", ErrWorkflowLocked, session.ID, session.ActiveWorkflowID)
+	}
+	session.ActiveWorkflowID = workflowID
+	session.ActiveWorkflowType = workflowType
+	session.ActiveWorkflowStartedAt = now
+	session.ActiveWorkflowLeaseExpiresAt = now.Add(lease)
+	session.Version++
+	session.UpdatedAt = now
+	return session.Validate()
+}
+
+// ReleaseWorkflowLock releases the matching active workflow lease.
+func (session *Session) ReleaseWorkflowLock(workflowID string, now time.Time) error {
+	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) {
+		return fmt.Errorf("%w: workflow %s does not hold the session lock", ErrConflict, workflowID)
+	}
+	session.ActiveWorkflowID = ""
+	session.ActiveWorkflowType = ""
+	session.ActiveWorkflowStartedAt = time.Time{}
+	session.ActiveWorkflowLeaseExpiresAt = time.Time{}
+	session.Version++
+	session.UpdatedAt = now.UTC()
+	return session.Validate()
+}
+
+// RecordMutation advances optimistic-concurrency metadata for an event that
+// does not otherwise change the user-visible session fields.
+func (session *Session) RecordMutation(now time.Time) error {
+	session.Version++
+	session.UpdatedAt = now.UTC()
+	return session.Validate()
+}
+
+// SessionConfiguration contains the owner-controlled runtime policy for a session.
+type SessionConfiguration struct {
+	GameProfileID       string
+	SleepAfterSeconds   int64
+	ArchiveAfterSeconds int64
+	TeamSpeakEnabled    bool
 }
 
 // NewSessionInput contains the required information for a new draft session.
@@ -45,13 +136,17 @@ func NewSession(input NewSessionInput, now time.Time) (Session, error) {
 	now = now.UTC()
 
 	session := Session{
-		ID:                 strings.TrimSpace(input.ID),
-		Slug:               strings.TrimSpace(input.Slug),
-		DisplayName:        strings.TrimSpace(input.DisplayName),
-		GameType:           strings.ToLower(strings.TrimSpace(input.GameType)),
-		OwnerDiscordUserID: strings.TrimSpace(input.OwnerDiscordUserID),
-		GuildID:            strings.TrimSpace(input.GuildID),
-		ChannelID:          strings.TrimSpace(input.ChannelID),
+		ID:                    strings.TrimSpace(input.ID),
+		Slug:                  strings.TrimSpace(input.Slug),
+		DisplayName:           strings.TrimSpace(input.DisplayName),
+		GameType:              strings.ToLower(strings.TrimSpace(input.GameType)),
+		OwnerDiscordUserID:    strings.TrimSpace(input.OwnerDiscordUserID),
+		GuildID:               strings.TrimSpace(input.GuildID),
+		ChannelID:             strings.TrimSpace(input.ChannelID),
+		GameProfileID:         "arma3-default",
+		SleepAfterSeconds:     1800,
+		ArchiveAfterSeconds:   7 * 24 * 60 * 60,
+		ConfigurationRevision: 0,
 
 		DesiredState:   StateDraft,
 		ObservedState:  StateDraft,
@@ -92,6 +187,22 @@ func (session Session) Validate() error {
 		return fmt.Errorf("Discord guild ID is required")
 	case session.ChannelID == "":
 		return fmt.Errorf("Discord channel ID is required")
+	case strings.TrimSpace(session.GameProfileID) == "":
+		return fmt.Errorf("game profile ID is required")
+	case session.SleepAfterSeconds < 600:
+		return fmt.Errorf("sleep policy must be at least 600 seconds")
+	case session.ArchiveAfterSeconds < 86400:
+		return fmt.Errorf("archive policy must be at least 86400 seconds")
+	case session.ConfigurationRevision < 0:
+		return fmt.Errorf("configuration revision cannot be negative")
+	case session.ActiveWorkflowID == "" && (session.ActiveWorkflowType != "" || !session.ActiveWorkflowStartedAt.IsZero() || !session.ActiveWorkflowLeaseExpiresAt.IsZero()):
+		return fmt.Errorf("workflow lock fields require an active workflow ID")
+	case session.ActiveWorkflowID != "" && session.ActiveWorkflowType == "":
+		return fmt.Errorf("active workflow type is required")
+	case session.ActiveWorkflowID != "" && session.ActiveWorkflowStartedAt.IsZero():
+		return fmt.Errorf("active workflow start timestamp is required")
+	case session.ActiveWorkflowID != "" && !session.ActiveWorkflowLeaseExpiresAt.After(session.ActiveWorkflowStartedAt):
+		return fmt.Errorf("active workflow lease must expire after it starts")
 	case !session.DesiredState.Valid():
 		return fmt.Errorf("invalid desired state %q", session.DesiredState)
 	case !session.ObservedState.Valid():
@@ -110,6 +221,47 @@ func (session Session) Validate() error {
 		return fmt.Errorf("updated timestamp cannot precede created timestamp")
 	default:
 		return nil
+	}
+}
+
+// Configure replaces the current validated configuration while the session is a draft.
+func (session *Session) Configure(configuration SessionConfiguration, now time.Time) error {
+	if session.LifecycleState != StateDraft {
+		return fmt.Errorf(
+			"%w: configuration is only editable while a session is DRAFT",
+			ErrInvalidTransition,
+		)
+	}
+
+	configuration.GameProfileID = strings.ToLower(strings.TrimSpace(configuration.GameProfileID))
+	if configuration.GameProfileID != "arma3-default" {
+		return fmt.Errorf("unsupported game profile %q", configuration.GameProfileID)
+	}
+	if configuration.SleepAfterSeconds < 600 || configuration.SleepAfterSeconds > 86400 {
+		return fmt.Errorf("sleep policy must be between 600 and 86400 seconds")
+	}
+	if configuration.ArchiveAfterSeconds < 86400 || configuration.ArchiveAfterSeconds > 90*86400 {
+		return fmt.Errorf("archive policy must be between 1 and 90 days")
+	}
+
+	session.GameProfileID = configuration.GameProfileID
+	session.SleepAfterSeconds = configuration.SleepAfterSeconds
+	session.ArchiveAfterSeconds = configuration.ArchiveAfterSeconds
+	session.TeamSpeakEnabled = configuration.TeamSpeakEnabled
+	session.ConfigurationRevision++
+	session.Version++
+	session.UpdatedAt = now.UTC()
+	session.markReadyWhenComplete()
+
+	return session.Validate()
+}
+
+func (session *Session) markReadyWhenComplete() {
+	if session.LifecycleState == StateDraft && session.ConfigurationRevision > 0 &&
+		session.MissionObjectKey != "" && session.PresetObjectKey != "" {
+		session.DesiredState = StateNew
+		session.ObservedState = StateNew
+		session.LifecycleState = StateNew
 	}
 }
 

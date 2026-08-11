@@ -7,6 +7,27 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
 
+func formatConfiguredSession(session domain.Session) string {
+	return fmt.Sprintf(
+		"**Session configured**\nID: `%s`\nRevision: `%d`\nProfile: `%s`\nSleep after: `%d minutes`\nArchive after: `%d days`\nTeamSpeak: `%t`",
+		sanitizeInline(session.ID),
+		session.ConfigurationRevision,
+		sanitizeInline(session.GameProfileID),
+		session.SleepAfterSeconds/60,
+		session.ArchiveAfterSeconds/86400,
+		session.TeamSpeakEnabled,
+	)
+}
+
+func formatArtifactAccepted(kind domain.ArtifactKind, filename string, sessionID string) string {
+	return fmt.Sprintf(
+		"**%s accepted for validation**\nFile: `%s`\nSession: `%s`\nThe platform will report the validation result asynchronously.",
+		strings.ToLower(string(kind)),
+		sanitizeInline(filename),
+		sanitizeInline(sessionID),
+	)
+}
+
 func formatCreatedSession(session domain.Session) string {
 	return fmt.Sprintf(
 		"**Draft session created**\nName: %s\nID: `%s`\nState: `%s`\nGame: `%s`",
@@ -19,12 +40,17 @@ func formatCreatedSession(session domain.Session) string {
 
 func formatSessionStatus(session domain.Session) string {
 	return fmt.Sprintf(
-		"**%s**\nID: `%s`\nSlug: `%s`\nLifecycle: `%s`\nHealth: `%s`\nVersion: `%d`",
+		"**%s**\nID: `%s`\nSlug: `%s`\nLifecycle: `%s`\nHealth: `%s`\nConfiguration: `%d` (`%s`)\nSleep after: `%d minutes`\nArchive after: `%d days`\nTeamSpeak: `%t`\nVersion: `%d`",
 		sanitizeInline(session.DisplayName),
 		sanitizeInline(session.ID),
 		sanitizeInline(session.Slug),
 		session.LifecycleState,
 		session.HealthStatus,
+		session.ConfigurationRevision,
+		sanitizeInline(session.GameProfileID),
+		session.SleepAfterSeconds/60,
+		session.ArchiveAfterSeconds/86400,
+		session.TeamSpeakEnabled,
 		session.Version,
 	)
 }
