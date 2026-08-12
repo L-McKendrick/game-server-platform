@@ -54,6 +54,45 @@ func TestProvisioningRejectsDraftSession(t *testing.T) {
 	}
 }
 
+func TestProvisioningRetryAllowsOnlyResourceFreeFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)
+	session := readySessionForProvisioning(t, now)
+
+	if err := session.AcquireProvisioningWorkflowLock("workflow-1", time.Hour, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.BeginInfrastructureProvisioning("workflow-1", "slot-0", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	// Failure handling clears the reservation only after EC2 discovery proves
+	// that no instance exists.
+	session.Infrastructure = Infrastructure{}
+	if err := session.FailInfrastructureProvisioning("workflow-1", now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if !session.CanStartInfrastructureProvisioning() {
+		t.Fatal("resource-free FAILED session cannot retry provisioning")
+	}
+	if err := session.AcquireProvisioningWorkflowLock("workflow-2", time.Hour, now.Add(3*time.Minute)); err != nil {
+		t.Fatalf("retry AcquireProvisioningWorkflowLock() returned error: %v", err)
+	}
+
+	session = readySessionForProvisioning(t, now)
+	if err := session.AcquireProvisioningWorkflowLock("workflow-1", time.Hour, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.BeginInfrastructureProvisioning("workflow-1", "slot-0", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.FailInfrastructureProvisioning("workflow-1", now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if session.CanStartInfrastructureProvisioning() {
+		t.Fatal("FAILED session with retained capacity can retry provisioning")
+	}
+}
+
 func readySessionForProvisioning(t *testing.T, now time.Time) Session {
 	t.Helper()
 	session, err := NewSession(NewSessionInput{

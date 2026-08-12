@@ -134,6 +134,37 @@ func TestProcessRejectsInvalidPresetWithoutWritingObject(t *testing.T) {
 	}
 }
 
+func TestProcessAcceptsPresetWithRepeatedWorkshopReferences(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 8, 21, 0, 0, 0, time.UTC)
+	repository := seededRepository(t, now)
+	downloader := &testDownloader{body: []byte(`<html><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=450814997" data-publishedfileid="450814997">mod</a></html>`)}
+	objects := &testObjectStore{}
+	notifications := &testNotifications{}
+	service, err := NewService(repository, downloader, objects, notifications, &testIDs{ids: []string{"preset-event-1"}}, testClock{now}, 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("NewService() returned error: %v", err)
+	}
+	request := missionRequest(now, int64(len(downloader.body)))
+	request.Kind = domain.ArtifactPreset
+	request.Filename = "preset.html"
+
+	if err := service.Process(context.Background(), request); err != nil {
+		t.Fatalf("Process() returned error: %v", err)
+	}
+	if len(objects.objects) != 1 || !strings.HasPrefix(objects.objects[0].key, "sessions/session-1/input/presets/") {
+		t.Fatalf("stored objects = %#v; want one preset object", objects.objects)
+	}
+	session, err := repository.Get(context.Background(), "session-1")
+	if err != nil {
+		t.Fatalf("Get() returned error: %v", err)
+	}
+	if session.PresetObjectKey != objects.objects[0].key {
+		t.Fatalf("preset object key = %q; want %q", session.PresetObjectKey, objects.objects[0].key)
+	}
+}
+
 func seededRepository(t *testing.T, now time.Time) *memory.SessionRepository {
 	t.Helper()
 	repository := memory.NewSessionRepository()

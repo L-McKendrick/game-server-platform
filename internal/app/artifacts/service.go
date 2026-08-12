@@ -247,15 +247,12 @@ func validateContent(request domain.ArtifactIngestRequest, body []byte) error {
 		return fmt.Errorf("launcher preset contains an unsupported local-mod path")
 	}
 	matches := workshopIDPattern.FindAllStringSubmatch(text, -1)
-	if len(matches) > 250 {
-		return fmt.Errorf("launcher preset references more than 250 Workshop items")
-	}
 	seen := make(map[string]struct{}, len(matches))
 	for _, match := range matches {
-		if _, duplicate := seen[match[1]]; duplicate {
-			return fmt.Errorf("launcher preset contains duplicate Workshop item %s", match[1])
-		}
 		seen[match[1]] = struct{}{}
+	}
+	if len(seen) > 250 {
+		return fmt.Errorf("launcher preset references more than 250 Workshop items")
 	}
 	return nil
 }

@@ -7,7 +7,7 @@ provisioning_enabled    = false
 monthly_budget_limit_usd = 75
 # budget_alert_email    = "REPLACE_WITH_ALERT_EMAIL"
 
-provisioning_instance_type   = "c7i.large"
+provisioning_instance_type   = "c7i-flex.large"
 provisioning_root_volume_gib = 30
 provisioning_data_volume_gib = 100
 max_provisioned_sessions     = 1

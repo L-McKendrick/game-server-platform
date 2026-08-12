@@ -4,7 +4,7 @@ An on-demand platform for provisioning and managing temporary dedicated game ser
 
 ## Current status
 
-Phases 1-4 are deployed. Phase 5 infrastructure provisioning is implemented in the repository and remains feature-gated until its cost-bearing Terraform plan is reviewed and applied.
+Phases 1-5 are deployed and accepted in the development guild. A Discord-driven provisioning run reached `BOOTSTRAPPING` with tagged EC2/EBS resources online through Systems Manager.
 
 The platform currently provides:
 
@@ -27,9 +27,9 @@ The platform currently provides:
 - an AWS monthly budget and a fail-closed provisioning enablement gate;
 - reproducible Lambda packages, least-privilege IAM, retained logs, and CI checks.
 
-Non-provisioning lifecycle state machines intentionally terminate with `PhaseNotImplemented`. `/session start` returns disabled until Terraform sets `PROVISIONING_ENABLED=true`; enabling it requires a budget alert recipient.
+Non-provisioning lifecycle state machines intentionally terminate with `PhaseNotImplemented`. `/session start` is enabled in development with a one-session capacity limit and AWS Budget alerts.
 
-Next milestone after Phase 5 deployment verification: Phase 6 Arma bootstrap—SteamCMD, Arma, DLC, Workshop content, mission deployment, optional TeamSpeak, and health checks.
+Next milestone: Phase 6 Arma bootstrap—SteamCMD, Arma, DLC, Workshop content, mission deployment, optional TeamSpeak, and health checks.
 
 See [Phase 5: Infrastructure Provisioning](docs/phase-5-infrastructure-provisioning.md) for the implemented boundary and deployment safety gates.
 

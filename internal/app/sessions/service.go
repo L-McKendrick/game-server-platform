@@ -123,7 +123,7 @@ func (service *Service) RequestStart(ctx context.Context, command StartCommand) 
 	if session.GuildID != strings.TrimSpace(command.GuildID) {
 		return fmt.Errorf("session belongs to another guild: %w", domain.ErrForbidden)
 	}
-	if session.LifecycleState != domain.StateNew {
+	if !session.CanStartInfrastructureProvisioning() {
 		return fmt.Errorf("session must be fully configured before start: %w", domain.ErrInvalidTransition)
 	}
 	envelope := domain.CommandEnvelope{

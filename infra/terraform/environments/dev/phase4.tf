@@ -78,13 +78,29 @@ resource "aws_sqs_queue" "notifications" {
   })
 }
 
+locals {
+  artifact_worker_metadata_actions = [
+    "dynamodb:GetItem",
+    # TransactWriteItems authorizes each Put operation separately.
+    "dynamodb:PutItem",
+    "dynamodb:TransactWriteItems",
+  ]
+}
+
+check "artifact_worker_metadata_write_permissions" {
+  assert {
+    condition = (
+      contains(local.artifact_worker_metadata_actions, "dynamodb:PutItem") &&
+      contains(local.artifact_worker_metadata_actions, "dynamodb:TransactWriteItems")
+    )
+    error_message = "Artifact persistence requires both dynamodb:PutItem and dynamodb:TransactWriteItems."
+  }
+}
+
 data "aws_iam_policy_document" "artifact_worker" {
   statement {
-    sid = "MetadataAccess"
-    actions = [
-      "dynamodb:GetItem",
-      "dynamodb:TransactWriteItems",
-    ]
+    sid       = "MetadataAccess"
+    actions   = local.artifact_worker_metadata_actions
     resources = [aws_dynamodb_table.metadata.arn]
   }
 

@@ -1,0 +1,64 @@
+# Project Plan
+
+## Summary and Goal
+
+Build a secure, cost-bounded AWS platform controlled through Discord that provisions, operates, sleeps, archives, restores, and destroys temporary dedicated game servers. Deliver the complete Arma 3 lifecycle first, then reuse the platform for other games.
+
+## Phases
+
+1. **Foundation — Done**
+   - **1.1** [x] Establish Go structure, configuration, logging, and CI.
+   - **1.2** [x] Provision Terraform state, DynamoDB, S3, and secret boundaries.
+   - **1.3** [x] Establish AWS authentication and baseline security.
+
+2. **Metadata Layer — Done**
+   - **2.1** [x] Define sessions, lifecycle states, events, and idempotency.
+   - **2.2** [x] Implement CRUD, persistence, and object-storage boundaries.
+   - **2.3** [x] Test metadata and artifact behavior.
+
+3. **Discord Interface — Done**
+   - **3.1** [x] Verify interactions and expose session management commands.
+   - **3.2** [x] Add uploads, idempotency, and safe responses.
+   - **3.3** [x] Configure guild access through role selection.
+
+4. **Workflow Foundation — Done**
+   - **4.1** [x] Add FIFO queues, workers, and DLQs.
+   - **4.2** [x] Add workflow contracts, leases, and Step Functions boundaries.
+   - **4.3** [x] Fail unimplemented workflows closed.
+
+5. **Infrastructure Provisioning — Done**
+   - **5.1** [x] Implement `/session start` and staged provisioning.
+   - **5.2** [x] Add bounded EC2/EBS, networking, SSM, IAM, capacity, and budgets.
+   - **5.3** [x] Validate code and review the non-destructive baseline plan.
+   - **5.4** [x] Configure alerts, apply the approved plan, and register `/session start`.
+   - **5.5** [x] Provision one session through Discord and verify EC2/EBS, SSM, and `BOOTSTRAPPING`.
+
+6. **Arma Bootstrap — Pending**
+   - **6.1** [ ] Install SteamCMD, Arma, DLC, and Workshop content resumably.
+   - **6.2** [ ] Deploy configuration, mission, and optional TeamSpeak.
+   - **6.3** [ ] Launch, verify health, and mark the session playable.
+
+7. **Monitoring — Pending**
+   - **7.1** [ ] Add heartbeat, player, service, and voice checks.
+   - **7.2** [ ] Publish metrics/alarms and recover selectively.
+
+8. **Sleep and Wake — Pending**
+   - **8.1** [ ] Detect idle sessions and stop safely.
+   - **8.2** [ ] Restart, refresh endpoints, and retain data.
+
+9. **Archive and Restore — Pending**
+   - **9.1** [ ] Add warnings, manifests, archives, checksums, and S3 verification.
+   - **9.2** [ ] Recreate infrastructure and restore validated data.
+
+10. **Reliability — Pending**
+    - **10.1** [ ] Add bounded retries, DLQ operations, reconciliation, and cancellation.
+    - **10.2** [ ] Add orphan cleanup and disaster recovery.
+
+11. **Production Hardening — Pending**
+    - **11.1** [ ] Complete least-privilege and threat-model reviews.
+    - **11.2** [ ] Add OIDC deployment, staging, dashboards, and tested runbooks.
+    - **11.3** [ ] Verify costs and operational readiness.
+
+12. **Expansion — Pending**
+    - **12.1** [ ] Add games after the Arma lifecycle is stable.
+    - **12.2** [ ] Evaluate scheduling, analytics, web UI, multi-account, and multi-region support.

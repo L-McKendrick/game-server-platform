@@ -43,3 +43,7 @@ Thumbs.db
 
 # VS Code local settings
 .vscode/
+
+# Codex local context
+AGENTS.md
+CURRENT_WORK.md

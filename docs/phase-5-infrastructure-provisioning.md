@@ -2,6 +2,8 @@
 
 Phase 5 turns the workflow contracts into a cost-bounded EC2/EBS provisioning path. It does not install or start Arma 3; successful provisioning stops at `BOOTSTRAPPING` for Phase 6.
 
+Deployment status: complete. The development guild completed an end-to-end provisioning run to `BOOTSTRAPPING`.
+
 ## Control flow
 
 1. `/session start` validates guild access, ownership, and `NEW` state, then sends a normalized FIFO command.
@@ -31,7 +33,15 @@ Phase 5 turns the workflow contracts into a cost-bounded EC2/EBS provisioning pa
 - `max_provisioned_sessions` defaults to one and is enforced with conditional DynamoDB capacity slots.
 - Instance type and volume sizes are operator-controlled Terraform inputs with bounded validation.
 - Session and environment tags allow recovery when a metadata update is interrupted.
-- `/session start` must not be registered or enabled in the deployed guild until a reviewed Terraform plan is applied and an end-to-end test succeeds.
+- `/session start` was registered after the reviewed development plan was applied. The controlled end-to-end test succeeded with the one-session development limit enforced.
+
+## Acceptance evidence
+
+- Step Functions execution `1536991526016516136` succeeded.
+- Session `01KZ5VR86TM25A6Q3EKZGGX4DT` reached `BOOTSTRAPPING` with its workflow lease cleared.
+- Instance `i-07abe4ba82ce2649f` passed both EC2 status checks and registered online in Systems Manager.
+- Encrypted `gp3` root and persistent data volumes were attached and recorded.
+- The completion notification was delivered; command, artifact, notification, and dead-letter queues were empty.
 
 ## Phase boundary
 

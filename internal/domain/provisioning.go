@@ -87,8 +87,8 @@ func (infrastructure Infrastructure) Validate() error {
 func (session *Session) AcquireProvisioningWorkflowLock(workflowID string, lease time.Duration, now time.Time) error {
 	workflowID = strings.TrimSpace(workflowID)
 	now = now.UTC()
-	if session.LifecycleState != StateNew {
-		return fmt.Errorf("%w: provisioning requires a NEW session", ErrInvalidTransition)
+	if !session.CanStartInfrastructureProvisioning() {
+		return fmt.Errorf("%w: provisioning requires NEW or a resource-free FAILED session", ErrInvalidTransition)
 	}
 	if workflowID == "" || lease <= 0 {
 		return fmt.Errorf("workflow ID and positive lease are required")
@@ -107,6 +107,19 @@ func (session *Session) AcquireProvisioningWorkflowLock(workflowID string, lease
 	session.Version++
 	session.UpdatedAt = now
 	return session.Validate()
+}
+
+// CanStartInfrastructureProvisioning permits a clean retry after a failure
+// only when reconciliation found no capacity reservation or compute resources.
+func (session Session) CanStartInfrastructureProvisioning() bool {
+	if session.LifecycleState == StateNew {
+		return true
+	}
+	return session.LifecycleState == StateFailed &&
+		session.ActiveWorkflowID == "" &&
+		session.Infrastructure.CapacitySlotID == "" &&
+		session.Infrastructure.InstanceID == "" &&
+		session.Infrastructure.DataVolumeID == ""
 }
 
 // BeginInfrastructureProvisioning records the capacity reservation before any

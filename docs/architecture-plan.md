@@ -533,6 +533,8 @@ The Phase 4 lifecycle state machines fail closed until their implementation phas
 
 **Goal:** Create cost-bounded, discoverable AWS infrastructure without claiming that Arma is playable.
 
+**Status:** Complete. Deployed, enabled, and verified end to end in development.
+
 Implement:
 
 * A dedicated VPC with two public subnets and no NAT Gateway
@@ -545,7 +547,7 @@ Implement:
 * A command worker and staged `ProvisionSession` workflow
 * Conditional metadata updates for resource identifiers and workflow progress
 
-The workflow stops at `BOOTSTRAPPING`. `/session start` remains feature-gated until a reviewed deployment and end-to-end provisioning test succeed.
+The workflow stops at `BOOTSTRAPPING`. Acceptance verified a Discord-requested `c7i-flex.large` instance, encrypted root and persistent data volumes, Systems Manager connectivity, metadata completion, Discord notification delivery, and empty dead-letter queues.
 
 Deliverable:
 

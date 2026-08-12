@@ -70,10 +70,10 @@ variable "public_subnet_cidrs" {
 variable "provisioning_instance_type" {
   description = "Operator-controlled Phase 5 compute profile instance type."
   type        = string
-  default     = "c7i.large"
+  default     = "c7i-flex.large"
 
   validation {
-    condition     = contains(["c7i.large", "c7i.xlarge"], var.provisioning_instance_type)
+    condition     = contains(["c7i-flex.large", "c7i.large", "c7i.xlarge"], var.provisioning_instance_type)
     error_message = "provisioning_instance_type must be an approved Arma 3 profile instance type."
   }
 }
@@ -393,6 +393,30 @@ resource "aws_lambda_event_source_mapping" "command_worker" {
   function_response_types = ["ReportBatchItemFailures"]
 }
 
+locals {
+  provisioning_instance_resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
+  provisioning_volume_resource   = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:volume/*"
+  provisioning_launch_resources = [
+    "arn:aws:ec2:${var.aws_region}::image/${data.aws_ssm_parameter.al2023_ami.value}",
+    aws_subnet.game_public[0].arn,
+    aws_security_group.arma.arn,
+    aws_security_group.teamspeak.arn,
+    "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:network-interface/*",
+  ]
+}
+
+check "provisioning_run_instances_resource_scope" {
+  assert {
+    condition = (
+      local.provisioning_instance_resource != "*" &&
+      local.provisioning_volume_resource != "*" &&
+      !contains(local.provisioning_launch_resources, "*") &&
+      contains(local.provisioning_launch_resources, aws_subnet.game_public[0].arn)
+    )
+    error_message = "RunInstances must use separately scoped instance, volume, and approved launch resources."
+  }
+}
+
 data "aws_iam_policy_document" "provisioning_worker" {
   statement {
     sid = "MetadataAccess"
@@ -406,9 +430,9 @@ data "aws_iam_policy_document" "provisioning_worker" {
   }
 
   statement {
-    sid       = "ProvisionBoundedCompute"
+    sid       = "LaunchTaggedApprovedInstance"
     actions   = ["ec2:RunInstances"]
-    resources = ["*"]
+    resources = [local.provisioning_instance_resource]
 
     condition {
       test     = "StringEquals"
@@ -423,10 +447,52 @@ data "aws_iam_policy_document" "provisioning_worker" {
     }
 
     condition {
-      test     = "ArnEquals"
-      variable = "ec2:Subnet"
-      values   = [aws_subnet.game_public[0].arn]
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Project"
+      values   = [var.project_name]
     }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Environment"
+      values   = [var.environment]
+    }
+  }
+
+  statement {
+    sid       = "LaunchEncryptedGP3Volumes"
+    actions   = ["ec2:RunInstances"]
+    resources = [local.provisioning_volume_resource]
+
+    condition {
+      test     = "Bool"
+      variable = "ec2:Encrypted"
+      values   = ["true"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:VolumeType"
+      values   = ["gp3"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Project"
+      values   = [var.project_name]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Environment"
+      values   = [var.environment]
+    }
+  }
+
+  statement {
+    sid       = "UseApprovedLaunchResources"
+    actions   = ["ec2:RunInstances"]
+    resources = local.provisioning_launch_resources
   }
 
   statement {
@@ -460,6 +526,12 @@ data "aws_iam_policy_document" "provisioning_worker" {
     sid       = "PassGameInstanceRole"
     actions   = ["iam:PassRole"]
     resources = [aws_iam_role.game_instance.arn]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["ec2.amazonaws.com"]
+    }
   }
 
   statement {
