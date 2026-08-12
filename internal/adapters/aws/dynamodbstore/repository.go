@@ -55,6 +55,7 @@ type API interface {
 		params *dynamodb.TransactWriteItemsInput,
 		optFns ...func(*dynamodb.Options),
 	) (*dynamodb.TransactWriteItemsOutput, error)
+	Scan(context.Context, *dynamodb.ScanInput, ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error)
 }
 
 // Repository stores sessions and events in one DynamoDB table.
@@ -110,10 +111,12 @@ type sessionItem struct {
 	ActiveWorkflowStartedAt      string `dynamodbav:"active_workflow_started_at,omitempty"`
 	ActiveWorkflowLeaseExpiresAt string `dynamodbav:"active_workflow_lease_expires_at,omitempty"`
 
-	DesiredState   string `dynamodbav:"desired_state"`
-	ObservedState  string `dynamodbav:"observed_state"`
-	LifecycleState string `dynamodbav:"lifecycle_state"`
-	HealthStatus   string `dynamodbav:"health_status"`
+	DesiredState        string `dynamodbav:"desired_state"`
+	ObservedState       string `dynamodbav:"observed_state"`
+	LifecycleState      string `dynamodbav:"lifecycle_state"`
+	HealthStatus        string `dynamodbav:"health_status"`
+	MonitoringCommandID string `dynamodbav:"monitoring_command_id,omitempty"`
+	MonitoringStartedAt string `dynamodbav:"monitoring_started_at,omitempty"`
 
 	Version   int64  `dynamodbav:"version"`
 	CreatedAt string `dynamodbav:"created_at"`
@@ -634,10 +637,12 @@ func toSessionItem(session domain.Session) sessionItem {
 		ActiveWorkflowStartedAt:      fixedTimestamp(session.ActiveWorkflowStartedAt),
 		ActiveWorkflowLeaseExpiresAt: fixedTimestamp(session.ActiveWorkflowLeaseExpiresAt),
 
-		DesiredState:   string(session.DesiredState),
-		ObservedState:  string(session.ObservedState),
-		LifecycleState: string(session.LifecycleState),
-		HealthStatus:   string(session.HealthStatus),
+		DesiredState:        string(session.DesiredState),
+		ObservedState:       string(session.ObservedState),
+		LifecycleState:      string(session.LifecycleState),
+		HealthStatus:        string(session.HealthStatus),
+		MonitoringCommandID: session.MonitoringCommandID,
+		MonitoringStartedAt: optionalTimestamp(session.MonitoringStartedAt),
 
 		Version:   session.Version,
 		CreatedAt: session.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -686,6 +691,10 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("parse infrastructure observed_at: %w", err)
 	}
+	monitoringStartedAt, err := parseOptionalTimestamp(item.MonitoringStartedAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse monitoring started_at: %w", err)
+	}
 
 	session := domain.Session{
 		ID:                    item.SessionID,
@@ -714,10 +723,11 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		ActiveWorkflowStartedAt:      activeWorkflowStartedAt,
 		ActiveWorkflowLeaseExpiresAt: activeWorkflowLeaseExpiresAt,
 
-		DesiredState:   domain.LifecycleState(item.DesiredState),
-		ObservedState:  domain.LifecycleState(item.ObservedState),
-		LifecycleState: domain.LifecycleState(item.LifecycleState),
-		HealthStatus:   domain.HealthStatus(item.HealthStatus),
+		DesiredState:        domain.LifecycleState(item.DesiredState),
+		ObservedState:       domain.LifecycleState(item.ObservedState),
+		LifecycleState:      domain.LifecycleState(item.LifecycleState),
+		HealthStatus:        domain.HealthStatus(item.HealthStatus),
+		MonitoringCommandID: item.MonitoringCommandID, MonitoringStartedAt: monitoringStartedAt,
 
 		Version:   item.Version,
 		CreatedAt: createdAt.UTC(),

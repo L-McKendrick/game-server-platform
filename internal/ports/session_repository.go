@@ -68,6 +68,17 @@ type BootstrapRepository interface {
 	SaveBootstrapStage(ctx context.Context, session domain.Session, expectedVersion int64, event domain.SessionEvent) error
 }
 
+type MonitoringRepository interface {
+	ListRunning(ctx context.Context, limit int32) ([]domain.Session, error)
+	SaveMonitoring(ctx context.Context, session domain.Session, expectedVersion int64, event *domain.SessionEvent) error
+}
+
+type MonitoringCommandStatus struct { Status string; ErrorMessage string; Observation domain.HealthObservation }
+type MonitoringRunner interface {
+	Start(ctx context.Context, session domain.Session) (string, error)
+	Observe(ctx context.Context, instanceID string, commandID string) (MonitoringCommandStatus, error)
+}
+
 type BootstrapCommandStatus struct {
 	Status       string
 	ErrorMessage string

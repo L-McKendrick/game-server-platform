@@ -38,9 +38,9 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
    - **6.2** [x] Deploy configuration, mission, and optional TeamSpeak.
    - **6.3** [x] Launch, verify health, and mark the session playable.
 
-7. **Monitoring — Pending**
-   - **7.1** [ ] Add heartbeat, player, service, and voice checks.
-   - **7.2** [ ] Publish metrics/alarms and recover selectively.
+7. **Monitoring — Done**
+   - **7.1** [x] Add heartbeat, player, service, and voice checks.
+   - **7.2** [x] Publish metrics/alarms and defer automatic recovery to Phase 10.
 
 8. **Sleep and Wake — Pending**
    - **8.1** [ ] Detect idle sessions and stop safely.
@@ -65,4 +65,4 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **12.2** [ ] Evaluate scheduling, analytics, web UI, multi-account, and multi-region support.
     - **12.3** [ ] Improve Discord UX with an admin menu, tutorial, user-friendly session names, and requester-visible provisioning progress. Show a measured ETA derived from historical per-stage durations and update it at useful, rate-limited milestones.
     - **12.4** [ ] Benchmark and optimize bootstrap throughput end to end. Instrument Steam download rate, CPU, ENA allowance/drop counters, instance network/EBS ceilings, and EBS queue/throughput before changing settings; then evaluate supported Steam configuration, safe kernel/socket/ring tuning, instance sizing, explicit gp3 IOPS/throughput, and cache/snapshot/prebake strategies with cost guardrails.
-    - **12.5** [ ] Support multiple mission uploads per session and safe in-game mission rotation without requiring game/mod configuration changes; retain mission artifact history and validate ownership/authorization.
+    - **12.5** [ ] Support multiple mission uploads per session and safe in-game mission rotation without requiring game/mod configuration changes; preserve each uploaded mission filename in the Arma server mission directory, retain mission artifact history, and validate ownership/authorization.

@@ -20,6 +20,7 @@ type fakeAPI struct {
 	transactWriteInput *dynamodb.TransactWriteItemsInput
 	transactWriteErr   error
 }
+func (fake *fakeAPI) Scan(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) { return &dynamodb.ScanOutput{}, nil }
 
 func (fake *fakeAPI) GetItem(
 	_ context.Context,

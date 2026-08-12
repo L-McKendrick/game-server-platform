@@ -25,6 +25,7 @@ const (
 	EventBootstrapStage      EventType = "BootstrapStageCompleted"
 	EventGameServerReady     EventType = "GameServerReady"
 	EventBootstrapFailed     EventType = "GameServerBootstrapFailed"
+	EventHealthChanged       EventType = "GameServerHealthChanged"
 )
 
 // NewProvisioningEvent records a stable workflow stage without exposing cloud
@@ -38,6 +39,12 @@ func NewProvisioningEvent(eventID string, eventType EventType, stage string, wor
 			"state": string(session.LifecycleState), "instance_id": session.Infrastructure.InstanceID,
 			"volume_id": session.Infrastructure.DataVolumeID,
 		},
+	}
+}
+
+func NewHealthChangedEvent(eventID string, session Session, from HealthStatus, observation HealthObservation, now time.Time) SessionEvent {
+	return SessionEvent{ID: eventID, SessionID: session.ID, Type: EventHealthChanged, OccurredAt: now.UTC(), ActorType: string(ActorTypeSystem), ActorID: "MonitorGameServer", CorrelationID: eventID,
+		Data: map[string]string{"from_health": string(from), "to_health": string(session.HealthStatus), "arma_service": fmt.Sprintf("%t", observation.ArmaService), "arma_udp_2302": fmt.Sprintf("%t", observation.ArmaUDP), "teamspeak_service": fmt.Sprintf("%t", observation.TeamSpeakService), "teamspeak_udp_9987": fmt.Sprintf("%t", observation.TeamSpeakUDP), "disk_used_percent": fmt.Sprintf("%d", observation.DiskUsedPercent), "memory_available_bytes": fmt.Sprintf("%d", observation.MemoryAvailableBytes), "player_count": fmt.Sprintf("%d", observation.PlayerCount)},
 	}
 }
 

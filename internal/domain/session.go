@@ -32,10 +32,12 @@ type Session struct {
 	ActiveWorkflowStartedAt      time.Time
 	ActiveWorkflowLeaseExpiresAt time.Time
 
-	DesiredState   LifecycleState
-	ObservedState  LifecycleState
-	LifecycleState LifecycleState
-	HealthStatus   HealthStatus
+	DesiredState        LifecycleState
+	ObservedState       LifecycleState
+	LifecycleState      LifecycleState
+	HealthStatus        HealthStatus
+	MonitoringCommandID string
+	MonitoringStartedAt time.Time
 
 	Version   int64
 	CreatedAt time.Time
@@ -215,6 +217,10 @@ func (session Session) Validate() error {
 		return fmt.Errorf("invalid lifecycle state %q", session.LifecycleState)
 	case !session.HealthStatus.Valid():
 		return fmt.Errorf("invalid health status %q", session.HealthStatus)
+	case session.MonitoringCommandID == "" && !session.MonitoringStartedAt.IsZero():
+		return fmt.Errorf("monitoring start timestamp requires a command ID")
+	case session.MonitoringCommandID != "" && session.MonitoringStartedAt.IsZero():
+		return fmt.Errorf("monitoring command requires a start timestamp")
 	case session.Version < 1:
 		return fmt.Errorf("session version must be at least 1")
 	case session.CreatedAt.IsZero():
@@ -226,6 +232,38 @@ func (session Session) Validate() error {
 	default:
 		return nil
 	}
+}
+
+// BeginMonitoring records a short, read-only Systems Manager probe. Monitoring
+// never changes the session lifecycle and may only run for a live server.
+func (session *Session) BeginMonitoring(commandID string, now time.Time) error {
+	if session.LifecycleState != StateRunning || session.Infrastructure.InstanceID == "" {
+		return fmt.Errorf("%w: monitoring requires a running managed instance", ErrInvalidTransition)
+	}
+	if session.MonitoringCommandID != "" {
+		return fmt.Errorf("%w: monitoring command is already pending", ErrConflict)
+	}
+	commandID = strings.TrimSpace(commandID)
+	if commandID == "" {
+		return fmt.Errorf("monitoring command ID is required")
+	}
+	session.MonitoringCommandID, session.MonitoringStartedAt = commandID, now.UTC()
+	return session.RecordMutation(now)
+}
+
+// CompleteMonitoring records the latest classified health result and clears
+// the durable pending probe marker.
+func (session *Session) CompleteMonitoring(health HealthStatus, now time.Time) (HealthStatus, error) {
+	if session.MonitoringCommandID == "" {
+		return HealthUnknown, fmt.Errorf("%w: no monitoring command is pending", ErrConflict)
+	}
+	if !health.Valid() {
+		return HealthUnknown, fmt.Errorf("invalid health status %q", health)
+	}
+	previous := session.HealthStatus
+	session.MonitoringCommandID, session.MonitoringStartedAt = "", time.Time{}
+	session.HealthStatus = health
+	return previous, session.RecordMutation(now)
 }
 
 // Configure replaces the current validated configuration while the session is a draft.
