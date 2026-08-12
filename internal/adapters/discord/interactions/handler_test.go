@@ -19,6 +19,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
 	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
+	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
 
 var testNow = time.Date(2026, 8, 3, 20, 0, 0, 0, time.UTC)
@@ -26,6 +27,10 @@ var testNow = time.Date(2026, 8, 3, 20, 0, 0, 0, time.UTC)
 type fixedClock struct {
 	now time.Time
 }
+
+type discardCommandQueue struct{}
+
+func (discardCommandQueue) Enqueue(context.Context, domain.CommandEnvelope) error { return nil }
 
 func (clock fixedClock) Now() time.Time {
 	return clock.now
@@ -261,6 +266,27 @@ func TestHandlerListsAndShowsSessionStatus(t *testing.T) {
 	}
 }
 
+func TestHandlerAllowsGuildAdministratorToRequestAnotherOwnersSleep(t *testing.T) {
+	t.Parallel()
+	handler, repository, privateKey := newTestHandler(t, []string{"correlation-sleep"}, nil)
+	seedRunningHandlerSession(t, repository)
+	body := marshalPayload(map[string]any{
+		"id": "interaction-sleep", "application_id": "app-1", "type": interactionTypeApplicationCommand,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "admin-1"}, "permissions": "8"},
+		"data": map[string]any{"name": "session", "options": []any{map[string]any{
+			"type": applicationCommandOptionSubcommand, "name": "sleep",
+			"options": []any{map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"}},
+		}}},
+	})
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Sleep request accepted") {
+		t.Fatalf("response = %#v", decoded.Data)
+	}
+}
+
 func TestHandlerConfiguresAndAcceptsMissionAttachment(t *testing.T) {
 	t.Parallel()
 
@@ -395,6 +421,7 @@ func newTestHandler(
 		fixedClock{now: testNow},
 		7*24*time.Hour,
 		appsession.WithArtifactQueue(memory.NewArtifactQueue()),
+		appsession.WithCommandQueue(discardCommandQueue{}),
 	)
 	if err != nil {
 		t.Fatalf("NewService() returned error: %v", err)
@@ -605,6 +632,30 @@ func adminRoleSelectionBody(interactionID, ownerID, guildID, channelID string, r
 			"custom_id": adminRoleSelectCustomID, "component_type": componentTypeRoleSelect, "values": roleIDs,
 		},
 	})
+}
+
+func seedRunningHandlerSession(t *testing.T, repository *memory.SessionRepository) {
+	t.Helper()
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: "running-session", Slug: "running-session", DisplayName: "Running Session", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateRunning, domain.StateRunning, domain.StateRunning, domain.HealthHealthy
+	session.Infrastructure = domain.Infrastructure{
+		CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"},
+		InstanceProfile: "instance-profile", AMIID: "ami-1", InstanceType: "c7i-flex.large", InstanceID: "i-1", DataVolumeID: "vol-1", PublicIPv4: "203.0.113.1", LastObservedAt: testNow,
+	}
+	event := domain.NewSessionCreatedEvent("running-event", "running-correlation", domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}, session, testNow)
+	idempotency, err := domain.NewCompletedIdempotencyRecord("running-create", "running-hash", session.ID, testNow, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func marshalPayload(value any) []byte {

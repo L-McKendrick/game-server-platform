@@ -117,6 +117,29 @@ func TestStartFailureMarksWorkflowFailedAndReleasesLock(t *testing.T) {
 	}
 }
 
+func TestStart_AllowsGuildAdministratorForSleepWorkflow(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	repository := seedRunningWorkflowRepository(t, now)
+	starter := &workflowStarter{arn: "arn:aws:states:us-west-2:123456789012:execution:SleepSession:command-admin"}
+	service, err := NewService(repository, repository, starter, rejectAuthorizer{}, &workflowIDs{ids: []string{"workflow-start-event"}}, workflowClock{now}, 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := domain.CommandEnvelope{
+		SchemaVersion: 1, CommandID: "command-admin", CommandType: domain.CommandSleepSession, RequestedAt: now,
+		Actor:     domain.CommandActor{DiscordUserID: "admin-1", GuildID: "guild-1", ChannelID: "channel-1", CanManageGuild: true},
+		SessionID: "running-session", IdempotencyKey: "discord:command-admin", CorrelationID: "correlation-admin", Parameters: map[string]string{},
+	}
+	workflow, err := service.Start(context.Background(), command)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if workflow.Type != domain.SleepWorkflowType || starter.calls != 1 {
+		t.Fatalf("workflow = %#v, starter calls = %d", workflow, starter.calls)
+	}
+}
+
 func seedWorkflowRepository(t *testing.T, now time.Time) *memory.SessionRepository {
 	t.Helper()
 	repository := memory.NewSessionRepository()
@@ -146,6 +169,38 @@ func seedWorkflowRepository(t *testing.T, now time.Time) *memory.SessionReposito
 	}
 	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
 		t.Fatalf("Create() returned error: %v", err)
+	}
+	return repository
+}
+
+type rejectAuthorizer struct{}
+
+func (rejectAuthorizer) Authorize(context.Context, string, string, string, []string) error {
+	return domain.ErrForbidden
+}
+
+func seedRunningWorkflowRepository(t *testing.T, now time.Time) *memory.SessionRepository {
+	t.Helper()
+	repository := memory.NewSessionRepository()
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: "running-session", Slug: "running-session", DisplayName: "Running Session", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateRunning, domain.StateRunning, domain.StateRunning, domain.HealthHealthy
+	session.Infrastructure = domain.Infrastructure{
+		CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"},
+		InstanceProfile: "instance-profile", AMIID: "ami-1", InstanceType: "c7i-flex.large", InstanceID: "i-1", DataVolumeID: "vol-1", PublicIPv4: "203.0.113.1", LastObservedAt: now,
+	}
+	event := domain.NewSessionCreatedEvent("running-event", "running-correlation", domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}, session, now)
+	idempotency, err := domain.NewCompletedIdempotencyRecord("running-create", "running-hash", session.ID, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatal(err)
 	}
 	return repository
 }

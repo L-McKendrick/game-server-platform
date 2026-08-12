@@ -103,12 +103,14 @@ type StartCommand struct {
 	IdempotencyKey string
 }
 
-// LifecycleCommand requests an explicit, owner-authorized sleep or wake.
+// LifecycleCommand requests an explicit sleep or wake from the session owner
+// or a Discord member with Administrator or Manage Server permission.
 type LifecycleCommand struct {
 	Actor                                                                   domain.Actor
 	Roles                                                                   []string
 	SessionID, GuildID, ChannelID, CommandID, CorrelationID, IdempotencyKey string
 	CommandType                                                             string
+	CanManageGuild                                                          bool
 }
 
 func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleCommand) error {
@@ -122,7 +124,7 @@ func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleC
 	if err != nil {
 		return err
 	}
-	if err := authorizeOwner(command.Actor, session); err != nil {
+	if err := authorizeLifecycleActor(command.Actor, session, command.CanManageGuild); err != nil {
 		return err
 	}
 	if session.GuildID != strings.TrimSpace(command.GuildID) {
@@ -137,7 +139,7 @@ func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleC
 	if command.CommandType != domain.CommandSleepSession && command.CommandType != domain.CommandWakeSession {
 		return fmt.Errorf("unsupported lifecycle command")
 	}
-	return service.commandQueue.Enqueue(ctx, domain.CommandEnvelope{SchemaVersion: 1, CommandID: strings.TrimSpace(command.CommandID), CommandType: command.CommandType, RequestedAt: service.clock.Now().UTC(), Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID), Roles: append([]string(nil), command.Roles...)}, SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: map[string]string{}})
+	return service.commandQueue.Enqueue(ctx, domain.CommandEnvelope{SchemaVersion: 1, CommandID: strings.TrimSpace(command.CommandID), CommandType: command.CommandType, RequestedAt: service.clock.Now().UTC(), Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID), Roles: append([]string(nil), command.Roles...), CanManageGuild: command.CanManageGuild}, SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: map[string]string{}})
 }
 
 // RequestStart validates the synchronous boundary and queues a normalized
@@ -763,6 +765,13 @@ func authorizeOwner(
 	}
 
 	return nil
+}
+
+func authorizeLifecycleActor(actor domain.Actor, session domain.Session, canManageGuild bool) error {
+	if canManageGuild {
+		return nil
+	}
+	return authorizeOwner(actor, session)
 }
 
 func (service *Service) resolveCorrelationID(

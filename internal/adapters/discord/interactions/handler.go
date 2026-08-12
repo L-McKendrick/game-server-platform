@@ -276,7 +276,7 @@ func (handler *Handler) ServeHTTP(
 		writeInteractionMessage(writer, "This component is not supported or has expired.")
 		return
 	}
-	if err := handler.access.Authorize(request.Context(), payload.GuildID, payload.ChannelID, actorID, roles); err != nil {
+	if err := handler.access.Authorize(request.Context(), payload.GuildID, payload.ChannelID, actorID, roles); err != nil && !payload.memberCanManageGuild() {
 		handler.logger.Warn("rejected unauthorized Discord interaction", slog.String("guild_id", payload.GuildID), slog.String("channel_id", payload.ChannelID))
 		writeInteractionMessage(writer, "You are not authorized to use this app in this channel.")
 		return
@@ -373,6 +373,8 @@ func (handler *Handler) routeCommand(
 	case "sleep", "wake":
 		content, err := handler.requestLifecycle(ctx, payload, subcommand.Options, actor, correlationID, subcommand.Name)
 		return content, commandName, err
+	case "archive":
+		return "", commandName, newUserError("Archive is not available yet. It will be enabled with the validated Phase 9 archive workflow.")
 	default:
 		return "", commandName, newUserError(
 			"That `/session` subcommand is not supported yet.",
@@ -393,7 +395,7 @@ func (handler *Handler) requestLifecycle(ctx context.Context, payload interactio
 	if action == "wake" {
 		typeName = domain.CommandWakeSession
 	}
-	if err := handler.service.RequestLifecycle(ctx, appsession.LifecycleCommand{Actor: actor, Roles: roles, SessionID: sessionID, GuildID: payload.GuildID, ChannelID: payload.ChannelID, CommandID: payload.ID, CorrelationID: correlationID, IdempotencyKey: "discord:" + payload.ID, CommandType: typeName}); err != nil {
+	if err := handler.service.RequestLifecycle(ctx, appsession.LifecycleCommand{Actor: actor, Roles: roles, SessionID: sessionID, GuildID: payload.GuildID, ChannelID: payload.ChannelID, CommandID: payload.ID, CorrelationID: correlationID, IdempotencyKey: "discord:" + payload.ID, CommandType: typeName, CanManageGuild: payload.memberCanManageGuild()}); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("**%s request accepted**\nSession: `%s`\nUse `/session status` to follow progress.", strings.ToUpper(action[:1])+action[1:], sanitizeInline(sessionID)), nil

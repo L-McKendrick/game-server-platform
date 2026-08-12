@@ -45,14 +45,17 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 	if err != nil {
 		return domain.Workflow{}, err
 	}
-	if err := service.authorizer.Authorize(
-		ctx,
-		command.Actor.GuildID,
-		command.Actor.ChannelID,
-		command.Actor.DiscordUserID,
-		command.Actor.Roles,
-	); err != nil {
-		return domain.Workflow{}, err
+	canManageLifecycle := command.Actor.CanManageGuild && isOwnerOrAdminLifecycle(workflowType)
+	if !canManageLifecycle {
+		if err := service.authorizer.Authorize(
+			ctx,
+			command.Actor.GuildID,
+			command.Actor.ChannelID,
+			command.Actor.DiscordUserID,
+			command.Actor.Roles,
+		); err != nil {
+			return domain.Workflow{}, err
+		}
 	}
 	if existing, err := service.workflows.GetWorkflow(ctx, command.SessionID, command.CommandID); err == nil {
 		if existing.Type != workflowType || existing.RequestedBy != command.Actor.DiscordUserID || existing.CorrelationID != command.CorrelationID {
@@ -69,7 +72,7 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 	if err != nil {
 		return domain.Workflow{}, err
 	}
-	if session.OwnerDiscordUserID != command.Actor.DiscordUserID || session.GuildID != command.Actor.GuildID {
+	if session.GuildID != command.Actor.GuildID || (session.OwnerDiscordUserID != command.Actor.DiscordUserID && !canManageLifecycle) {
 		return domain.Workflow{}, domain.ErrForbidden
 	}
 	now := service.clock.Now().UTC()
@@ -93,6 +96,10 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 		return domain.Workflow{}, err
 	}
 	return service.startExecution(ctx, session, workflow, actor)
+}
+
+func isOwnerOrAdminLifecycle(workflowType string) bool {
+	return workflowType == domain.SleepWorkflowType || workflowType == domain.WakeWorkflowType
 }
 
 func acquireWorkflowLock(session *domain.Session, workflowID string, workflowType string, lease time.Duration, now time.Time) error {

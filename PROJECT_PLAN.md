@@ -45,6 +45,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
 8. **Sleep and Wake — Done**
    - **8.1** [x] Implement manual safe sleep and live `/session status` A2S player count; defer automatic idle detection until the server-side activity adapter exists.
    - **8.2** [x] Restart, verify health, refresh endpoints, and retain data.
+   - **8.3** [x] Register sleep, wake, and archive Discord commands. Allow the session owner or a signed Discord Administrator/Manage Server member to invoke the implemented sleep/wake workflows; archive remains fail-closed until Phase 9 provides its destructive workflow safeguards.
 
 9. **Archive and Restore — Pending**
    - **9.1** [ ] Add warnings, manifests, archives, checksums, and S3 verification.

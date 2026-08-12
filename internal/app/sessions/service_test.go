@@ -210,6 +210,53 @@ func TestRequestStartRoutesProvisionedSessionToBootstrap(t *testing.T) {
 	}
 }
 
+func TestRequestLifecycle_AllowsGuildAdministratorForAnotherOwnersRunningSession(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	queue := &recordingCommandQueue{}
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour, WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRunningSession(t, repository, now)
+
+	err = service.RequestLifecycle(context.Background(), LifecycleCommand{
+		Actor: testActor("admin-1"), Roles: []string{"unrelated-role"}, CanManageGuild: true,
+		SessionID: "running-session", GuildID: "guild-1", ChannelID: "channel-1", CommandID: "interaction-1",
+		CorrelationID: "lifecycle-correlation", IdempotencyKey: "discord:interaction-1", CommandType: domain.CommandSleepSession,
+	})
+	if err != nil {
+		t.Fatalf("RequestLifecycle() error = %v", err)
+	}
+	if len(queue.commands) != 1 || !queue.commands[0].Actor.CanManageGuild || queue.commands[0].Actor.DiscordUserID != "admin-1" {
+		t.Fatalf("queued commands = %#v", queue.commands)
+	}
+}
+
+func TestRequestLifecycle_RejectsAnotherOwnerWithoutGuildPermission(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	queue := &recordingCommandQueue{}
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour, WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRunningSession(t, repository, now)
+
+	err = service.RequestLifecycle(context.Background(), LifecycleCommand{
+		Actor: testActor("member-1"), SessionID: "running-session", GuildID: "guild-1", ChannelID: "channel-1", CommandID: "interaction-1",
+		CorrelationID: "lifecycle-correlation", IdempotencyKey: "discord:interaction-1", CommandType: domain.CommandSleepSession,
+	})
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("RequestLifecycle() error = %v; want ErrForbidden", err)
+	}
+	if len(queue.commands) != 0 {
+		t.Fatalf("queued commands = %#v; want none", queue.commands)
+	}
+}
+
 func TestGetRejectsNonOwner(t *testing.T) {
 	t.Parallel()
 
@@ -663,5 +710,32 @@ func testActor(id string) domain.Actor {
 	return domain.Actor{
 		Type: domain.ActorTypeDiscordUser,
 		ID:   id,
+	}
+}
+
+func seedRunningSession(t *testing.T, repository *memory.SessionRepository, now time.Time) {
+	t.Helper()
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: "running-session", Slug: "running-session", DisplayName: "Running Session", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateRunning, domain.StateRunning, domain.StateRunning, domain.HealthHealthy
+	session.Infrastructure = domain.Infrastructure{
+		CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"},
+		InstanceProfile: "instance-profile", AMIID: "ami-1", InstanceType: "c7i-flex.large", InstanceID: "i-1", DataVolumeID: "vol-1", PublicIPv4: "203.0.113.1", LastObservedAt: now,
+	}
+	if err := session.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	event := domain.NewSessionCreatedEvent("running-session-event", "running-session-correlation", testActor("owner-1"), session, now)
+	idempotency, err := domain.NewCompletedIdempotencyRecord("running-session-create", "running-session-hash", session.ID, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatal(err)
 	}
 }

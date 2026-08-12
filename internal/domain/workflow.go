@@ -70,10 +70,11 @@ func (workflow Workflow) Validate() error {
 }
 
 type CommandActor struct {
-	DiscordUserID string   `json:"discord_user_id"`
-	GuildID       string   `json:"guild_id"`
-	ChannelID     string   `json:"channel_id"`
-	Roles         []string `json:"roles"`
+	DiscordUserID  string   `json:"discord_user_id"`
+	GuildID        string   `json:"guild_id"`
+	ChannelID      string   `json:"channel_id"`
+	Roles          []string `json:"roles"`
+	CanManageGuild bool     `json:"can_manage_guild"`
 }
 
 const (
