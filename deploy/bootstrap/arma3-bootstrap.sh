@@ -143,7 +143,7 @@ set -Eeuo pipefail
 ROOT=/srv/game-server
 mods="$(cat "$ROOT/config/mods.txt" 2>/dev/null || true)"
 cd "$ROOT/arma3"
-args=(-name=server -config="$ROOT/config/server.cfg" -port=2302 -autoInit -noSound)
+args=(-name=server -config="$ROOT/config/server.cfg" -port=2302 -steamQueryPort=2303 -autoInit -noSound)
 [ -z "$mods" ] || args+=("-mod=$mods")
 exec ./arma3server_x64 "${args[@]}"
 EOF

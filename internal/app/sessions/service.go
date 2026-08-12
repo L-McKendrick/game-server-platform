@@ -103,6 +103,43 @@ type StartCommand struct {
 	IdempotencyKey string
 }
 
+// LifecycleCommand requests an explicit, owner-authorized sleep or wake.
+type LifecycleCommand struct {
+	Actor                                                                   domain.Actor
+	Roles                                                                   []string
+	SessionID, GuildID, ChannelID, CommandID, CorrelationID, IdempotencyKey string
+	CommandType                                                             string
+}
+
+func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleCommand) error {
+	if err := command.Actor.Validate(); err != nil {
+		return fmt.Errorf("validate actor: %w", err)
+	}
+	if service.commandQueue == nil {
+		return fmt.Errorf("%w: lifecycle commands", domain.ErrFeatureDisabled)
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return err
+	}
+	if err := authorizeOwner(command.Actor, session); err != nil {
+		return err
+	}
+	if session.GuildID != strings.TrimSpace(command.GuildID) {
+		return domain.ErrForbidden
+	}
+	if command.CommandType == domain.CommandSleepSession && !session.CanSleep() {
+		return fmt.Errorf("session cannot sleep now: %w", domain.ErrInvalidTransition)
+	}
+	if command.CommandType == domain.CommandWakeSession && !session.CanWake() {
+		return fmt.Errorf("session cannot wake now: %w", domain.ErrInvalidTransition)
+	}
+	if command.CommandType != domain.CommandSleepSession && command.CommandType != domain.CommandWakeSession {
+		return fmt.Errorf("unsupported lifecycle command")
+	}
+	return service.commandQueue.Enqueue(ctx, domain.CommandEnvelope{SchemaVersion: 1, CommandID: strings.TrimSpace(command.CommandID), CommandType: command.CommandType, RequestedAt: service.clock.Now().UTC(), Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID), Roles: append([]string(nil), command.Roles...)}, SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: map[string]string{}})
+}
+
 // RequestStart validates the synchronous boundary and queues a normalized
 // command. The command worker revalidates authorization and state before it
 // acquires a workflow lock.

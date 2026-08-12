@@ -28,7 +28,7 @@ func New(client API) (*Runner, error) {
 	return &Runner{client}, nil
 }
 func (runner *Runner) Start(ctx context.Context, session domain.Session) (string, error) {
-	if session.LifecycleState != domain.StateRunning || strings.TrimSpace(session.Infrastructure.InstanceID) == "" {
+	if (session.LifecycleState != domain.StateRunning && session.LifecycleState != domain.StateWaking) || strings.TrimSpace(session.Infrastructure.InstanceID) == "" {
 		return "", fmt.Errorf("running instance is required")
 	}
 	voice := "false"

@@ -26,6 +26,11 @@ const (
 	EventGameServerReady     EventType = "GameServerReady"
 	EventBootstrapFailed     EventType = "GameServerBootstrapFailed"
 	EventHealthChanged       EventType = "GameServerHealthChanged"
+	EventSleepStarted        EventType = "GameServerSleepStarted"
+	EventSessionSleeping     EventType = "GameServerSleeping"
+	EventWakeStarted         EventType = "GameServerWakeStarted"
+	EventSessionWoken        EventType = "GameServerWoken"
+	EventSleepWakeFailed     EventType = "GameServerSleepWakeFailed"
 )
 
 // NewProvisioningEvent records a stable workflow stage without exposing cloud

@@ -26,6 +26,14 @@ func (fake *fakeEC2) RunInstances(_ context.Context, input *ec2.RunInstancesInpu
 	return fake.runOutput, nil
 }
 
+func (fake *fakeEC2) StopInstances(context.Context, *ec2.StopInstancesInput, ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error) {
+	return &ec2.StopInstancesOutput{}, nil
+}
+
+func (fake *fakeEC2) StartInstances(context.Context, *ec2.StartInstancesInput, ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error) {
+	return &ec2.StartInstancesOutput{}, nil
+}
+
 type fakeSSM struct{}
 
 func (fakeSSM) DescribeInstanceInformation(context.Context, *ssm.DescribeInstanceInformationInput, ...func(*ssm.Options)) (*ssm.DescribeInstanceInformationOutput, error) {

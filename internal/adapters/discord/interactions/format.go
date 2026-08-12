@@ -38,8 +38,8 @@ func formatCreatedSession(session domain.Session) string {
 	)
 }
 
-func formatSessionStatus(session domain.Session) string {
-	return fmt.Sprintf(
+func formatSessionStatus(session domain.Session, players *domain.PlayerStatus) string {
+	status := fmt.Sprintf(
 		"**%s**\nID: `%s`\nSlug: `%s`\nLifecycle: `%s`\nHealth: `%s`\nConfiguration: `%d` (`%s`)\nSleep after: `%d minutes`\nArchive after: `%d days`\nTeamSpeak: `%t`\nVersion: `%d`",
 		sanitizeInline(session.DisplayName),
 		sanitizeInline(session.ID),
@@ -53,6 +53,45 @@ func formatSessionStatus(session domain.Session) string {
 		session.TeamSpeakEnabled,
 		session.Version,
 	)
+	if players == nil {
+		return status + "\nLive players (A2S): unavailable"
+	}
+	status += fmt.Sprintf("\nLive players (A2S): `%d/%d`", players.PlayerCount, players.MaxPlayers)
+	if len(players.PlayerNames) == 0 {
+		return status + "\nPlayer names: unavailable"
+	}
+	return status + "\nPlayer names: " + boundedNames(players.PlayerNames)
+}
+
+func boundedNames(names []string) string {
+	const maxNameRunes = 64
+	const maxOutputBytes = 600
+	values := make([]string, 0, len(names))
+	used := 0
+	for _, name := range names {
+		name = sanitizeInline(name)
+		runes := []rune(name)
+		if len(runes) > maxNameRunes {
+			name = string(runes[:maxNameRunes-1]) + "…"
+		}
+		if name == "" {
+			name = "(unnamed)"
+		}
+		additional := len(name)
+		if len(values) > 0 {
+			additional += 2
+		}
+		if used+additional > maxOutputBytes {
+			values = append(values, "…")
+			break
+		}
+		values = append(values, name)
+		used += additional
+	}
+	if len(values) == 0 {
+		return "unavailable"
+	}
+	return strings.Join(values, ", ")
 }
 
 func formatSessionList(sessions []domain.Session) string {

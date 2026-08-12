@@ -33,6 +33,8 @@ func (testCompute) ObserveInstance(context.Context, string) (domain.ComputeObser
 	return domain.ComputeObservation{InstanceID: "i-1", DataVolumeID: "vol-1", AvailabilityZone: "us-west-2a", PublicIPv4: "203.0.113.10", State: "running"}, nil
 }
 func (testCompute) IsManaged(context.Context, string) (bool, error) { return true, nil }
+func (testCompute) StopInstance(context.Context, string) error      { return nil }
+func (testCompute) StartInstance(context.Context, string) error     { return nil }
 
 type discoveredCompute struct{ testCompute }
 

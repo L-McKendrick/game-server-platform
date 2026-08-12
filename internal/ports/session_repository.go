@@ -96,6 +96,8 @@ type ComputeProvisioner interface {
 	EnsureInstance(ctx context.Context, request domain.ComputeLaunchRequest, knownInstanceID string) (domain.ComputeObservation, error)
 	ObserveInstance(ctx context.Context, instanceID string) (domain.ComputeObservation, error)
 	IsManaged(ctx context.Context, instanceID string) (bool, error)
+	StopInstance(ctx context.Context, instanceID string) error
+	StartInstance(ctx context.Context, instanceID string) error
 }
 
 // SessionRepository provides durable access to session metadata.

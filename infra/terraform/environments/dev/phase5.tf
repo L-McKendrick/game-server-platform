@@ -321,6 +321,8 @@ data "aws_iam_policy_document" "command_worker" {
     resources = [
       aws_sfn_state_machine.provision_session.arn,
       aws_sfn_state_machine.bootstrap_game_server.arn,
+      aws_sfn_state_machine.workflow["SleepSession"].arn,
+      aws_sfn_state_machine.workflow["WakeSession"].arn,
     ]
   }
 
@@ -379,6 +381,8 @@ resource "aws_lambda_function" "command_worker" {
       METADATA_TABLE_NAME         = aws_dynamodb_table.metadata.name
       PROVISION_STATE_MACHINE_ARN = aws_sfn_state_machine.provision_session.arn
       BOOTSTRAP_STATE_MACHINE_ARN = aws_sfn_state_machine.bootstrap_game_server.arn
+      SLEEP_STATE_MACHINE_ARN     = aws_sfn_state_machine.workflow["SleepSession"].arn
+      WAKE_STATE_MACHINE_ARN      = aws_sfn_state_machine.workflow["WakeSession"].arn
       DISCORD_PUBLIC_KEY          = var.discord_public_key
       DISCORD_APPLICATION_ID      = var.discord_application_id
       DISCORD_ALLOWED_GUILD_IDS   = join(",", sort(tolist(var.discord_allowed_guild_ids)))

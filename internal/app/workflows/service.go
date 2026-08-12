@@ -102,6 +102,12 @@ func acquireWorkflowLock(session *domain.Session, workflowID string, workflowTyp
 	if workflowType == domain.BootstrapWorkflowType {
 		return session.AcquireBootstrapWorkflowLock(workflowID, lease, now)
 	}
+	if workflowType == domain.SleepWorkflowType {
+		return session.BeginSleep(workflowID, lease, now)
+	}
+	if workflowType == domain.WakeWorkflowType {
+		return session.BeginWake(workflowID, lease, now)
+	}
 	return session.AcquireWorkflowLock(workflowID, workflowType, lease, now)
 }
 

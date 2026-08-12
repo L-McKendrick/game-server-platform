@@ -285,7 +285,7 @@ resource "aws_sfn_state_machine" "workflow" {
   name     = "${local.name_prefix}-${each.value}"
   role_arn = aws_iam_role.workflow.arn
   type     = "STANDARD"
-  definition = jsonencode({
+  definition = contains(["SleepSession", "WakeSession"], each.value) ? local.sleep_wake_definitions[each.value] : jsonencode({
     Comment = "Phase 4 contract boundary; implementation arrives in its lifecycle phase."
     StartAt = "NotImplemented"
     States = {
@@ -296,6 +296,8 @@ resource "aws_sfn_state_machine" "workflow" {
       }
     }
   })
+
+  depends_on = [aws_iam_role_policy.sleepwake_workflow]
 }
 
 output "command_queue_url" {

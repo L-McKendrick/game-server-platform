@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -17,6 +18,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsartifact"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqscommand"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/discord/interactions"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/steamquery"
 	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
@@ -86,12 +88,17 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create access service: %w", err)
 	}
+	playerQuery, err := steamquery.New(2303, 1500*time.Millisecond)
+	if err != nil {
+		return nil, fmt.Errorf("create Steam player query: %w", err)
+	}
 	handler, err := interactions.NewHandler(service, accessService, ids, clock, logger, interactions.Config{
 		PublicKey:       publicKey,
 		ApplicationID:   discordConfig.ApplicationID,
 		AllowedGuildIDs: discordConfig.AllowedGuildIDs,
 		MaxRequestBytes: discordConfig.MaxRequestBytes,
 		SignatureMaxAge: discordConfig.SignatureMaxAge,
+		PlayerQuery:     playerQuery,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create Discord interaction handler: %w", err)

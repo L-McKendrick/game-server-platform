@@ -21,6 +21,30 @@ const dataDeviceName = "/dev/sdf"
 type EC2API interface {
 	DescribeInstances(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
 	RunInstances(context.Context, *ec2.RunInstancesInput, ...func(*ec2.Options)) (*ec2.RunInstancesOutput, error)
+	StopInstances(context.Context, *ec2.StopInstancesInput, ...func(*ec2.Options)) (*ec2.StopInstancesOutput, error)
+	StartInstances(context.Context, *ec2.StartInstancesInput, ...func(*ec2.Options)) (*ec2.StartInstancesOutput, error)
+}
+
+func (provisioner *Provisioner) StopInstance(ctx context.Context, instanceID string) error {
+	if provisioner == nil || provisioner.ec2 == nil || strings.TrimSpace(instanceID) == "" {
+		return fmt.Errorf("EC2 client and instance ID are required")
+	}
+	_, err := provisioner.ec2.StopInstances(ctx, &ec2.StopInstancesInput{InstanceIds: []string{strings.TrimSpace(instanceID)}})
+	if err != nil {
+		return fmt.Errorf("stop EC2 instance: %w", err)
+	}
+	return nil
+}
+
+func (provisioner *Provisioner) StartInstance(ctx context.Context, instanceID string) error {
+	if provisioner == nil || provisioner.ec2 == nil || strings.TrimSpace(instanceID) == "" {
+		return fmt.Errorf("EC2 client and instance ID are required")
+	}
+	_, err := provisioner.ec2.StartInstances(ctx, &ec2.StartInstancesInput{InstanceIds: []string{strings.TrimSpace(instanceID)}})
+	if err != nil {
+		return fmt.Errorf("start EC2 instance: %w", err)
+	}
+	return nil
 }
 
 type SSMAPI interface {

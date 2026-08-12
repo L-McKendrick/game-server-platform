@@ -57,6 +57,10 @@ func build(ctx context.Context) (*handler, error) {
 	if bootstrapARN == "" {
 		return nil, fmt.Errorf("BOOTSTRAP_STATE_MACHINE_ARN is required")
 	}
+	sleepARN, wakeARN := strings.TrimSpace(os.Getenv("SLEEP_STATE_MACHINE_ARN")), strings.TrimSpace(os.Getenv("WAKE_STATE_MACHINE_ARN"))
+	if sleepARN == "" || wakeARN == "" {
+		return nil, fmt.Errorf("SLEEP_STATE_MACHINE_ARN and WAKE_STATE_MACHINE_ARN are required")
+	}
 	logger := logging.New(baseConfig.LogLevel)
 	awsConfig, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(baseConfig.AWSRegion))
 	if err != nil {
@@ -72,6 +76,7 @@ func build(ctx context.Context) (*handler, error) {
 		repository, repository,
 		sfnworkflow.New(sfn.NewFromConfig(awsConfig), map[string]string{
 			"ProvisionSession": provisionARN, domain.BootstrapWorkflowType: bootstrapARN,
+			domain.SleepWorkflowType: sleepARN, domain.WakeWorkflowType: wakeARN,
 		}),
 		authorizer, identity.Generator{}, clock, 8*time.Hour,
 	)

@@ -17,6 +17,7 @@ import (
 
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
+	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
 var discordSlugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
@@ -56,6 +57,7 @@ type SessionService interface {
 	) error
 
 	RequestStart(ctx context.Context, command appsession.StartCommand) error
+	RequestLifecycle(ctx context.Context, command appsession.LifecycleCommand) error
 }
 
 type AccessService interface {
@@ -80,6 +82,7 @@ type Config struct {
 	AllowedGuildIDs []string
 	MaxRequestBytes int64
 	SignatureMaxAge time.Duration
+	PlayerQuery     ports.PlayerQuery
 }
 
 // Handler verifies and routes Discord HTTP interactions.
@@ -89,6 +92,7 @@ type Handler struct {
 	ids             IDGenerator
 	clock           Clock
 	logger          *slog.Logger
+	playerQuery     ports.PlayerQuery
 	publicKey       ed25519.PublicKey
 	applicationID   string
 	allowedGuildIDs map[string]struct{}
@@ -149,6 +153,7 @@ func NewHandler(
 		ids:             ids,
 		clock:           clock,
 		logger:          logger,
+		playerQuery:     config.PlayerQuery,
 		publicKey:       append(ed25519.PublicKey(nil), config.PublicKey...),
 		applicationID:   strings.TrimSpace(config.ApplicationID),
 		allowedGuildIDs: allowedGuildIDs,
@@ -365,11 +370,33 @@ func (handler *Handler) routeCommand(
 	case "start":
 		content, err := handler.startSession(ctx, payload, subcommand.Options, actor, correlationID)
 		return content, commandName, err
+	case "sleep", "wake":
+		content, err := handler.requestLifecycle(ctx, payload, subcommand.Options, actor, correlationID, subcommand.Name)
+		return content, commandName, err
 	default:
 		return "", commandName, newUserError(
 			"That `/session` subcommand is not supported yet.",
 		)
 	}
+}
+
+func (handler *Handler) requestLifecycle(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, correlationID, action string) (string, error) {
+	sessionID, err := stringOption(options, "session-id", true)
+	if err != nil {
+		return "", newUserError("A session ID is required.")
+	}
+	roles := []string{}
+	if payload.Member != nil {
+		roles = append(roles, payload.Member.Roles...)
+	}
+	typeName := domain.CommandSleepSession
+	if action == "wake" {
+		typeName = domain.CommandWakeSession
+	}
+	if err := handler.service.RequestLifecycle(ctx, appsession.LifecycleCommand{Actor: actor, Roles: roles, SessionID: sessionID, GuildID: payload.GuildID, ChannelID: payload.ChannelID, CommandID: payload.ID, CorrelationID: correlationID, IdempotencyKey: "discord:" + payload.ID, CommandType: typeName}); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("**%s request accepted**\nSession: `%s`\nUse `/session status` to follow progress.", strings.ToUpper(action[:1])+action[1:], sanitizeInline(sessionID)), nil
 }
 
 func (handler *Handler) startSession(
@@ -660,7 +687,21 @@ func (handler *Handler) sessionStatus(
 		)
 	}
 
-	return formatSessionStatus(session), nil
+	if session.LifecycleState != domain.StateRunning && session.LifecycleState != domain.StateIdle {
+		return formatSessionStatus(session, nil), nil
+	}
+	if strings.TrimSpace(session.Infrastructure.PublicIPv4) == "" || handler.playerQuery == nil {
+		return formatSessionStatus(session, nil), nil
+	}
+
+	queryContext, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+	defer cancel()
+	players, err := handler.playerQuery.Query(queryContext, session.Infrastructure.PublicIPv4)
+	if err != nil {
+		handler.logger.Warn("live player query unavailable", slog.String("session_id", session.ID), slog.String("reason", "A2S query failed"))
+		return formatSessionStatus(session, nil), nil
+	}
+	return formatSessionStatus(session, &players), nil
 }
 
 func (handler *Handler) commandErrorMessage(err error, correlationID string) string {

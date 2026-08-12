@@ -42,9 +42,9 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
    - **7.1** [x] Add heartbeat, player, service, and voice checks.
    - **7.2** [x] Publish metrics/alarms and defer automatic recovery to Phase 10.
 
-8. **Sleep and Wake — Pending**
-   - **8.1** [ ] Detect idle sessions and stop safely.
-   - **8.2** [ ] Restart, refresh endpoints, and retain data.
+8. **Sleep and Wake — Done**
+   - **8.1** [x] Implement manual safe sleep and live `/session status` A2S player count; defer automatic idle detection until the server-side activity adapter exists.
+   - **8.2** [x] Restart, verify health, refresh endpoints, and retain data.
 
 9. **Archive and Restore — Pending**
    - **9.1** [ ] Add warnings, manifests, archives, checksums, and S3 verification.
@@ -66,3 +66,4 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **12.3** [ ] Improve Discord UX with an admin menu, tutorial, user-friendly session names, and requester-visible provisioning progress. Show a measured ETA derived from historical per-stage durations and update it at useful, rate-limited milestones.
     - **12.4** [ ] Benchmark and optimize bootstrap throughput end to end. Instrument Steam download rate, CPU, ENA allowance/drop counters, instance network/EBS ceilings, and EBS queue/throughput before changing settings; then evaluate supported Steam configuration, safe kernel/socket/ring tuning, instance sizing, explicit gp3 IOPS/throughput, and cache/snapshot/prebake strategies with cost guardrails.
     - **12.5** [ ] Support multiple mission uploads per session and safe in-game mission rotation without requiring game/mod configuration changes; preserve each uploaded mission filename in the Arma server mission directory, retain mission artifact history, and validate ownership/authorization.
+    - **12.6** [ ] Add an admin-configurable maximum session duration (default 8 hours), owner warning before expiry, and an auditable admin-only extension action.

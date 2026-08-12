@@ -156,6 +156,18 @@
           "max_length": 64
         }
       ]
+    },
+    {
+      "type": 1,
+      "name": "sleep",
+      "description": "Stop a running server while retaining its EBS volumes",
+      "options": [{"type": 3, "name": "session-id", "description": "Session identifier", "required": true}]
+    },
+    {
+      "type": 1,
+      "name": "wake",
+      "description": "Start a sleeping server and verify its health",
+      "options": [{"type": 3, "name": "session-id", "description": "Session identifier", "required": true}]
     }
   ]
 }
