@@ -33,10 +33,10 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
    - **5.4** [x] Configure alerts, apply the approved plan, and register `/session start`.
    - **5.5** [x] Provision one session through Discord and verify EC2/EBS, SSM, and `BOOTSTRAPPING`.
 
-6. **Arma Bootstrap — Pending**
-   - **6.1** [ ] Install SteamCMD, Arma, DLC, and Workshop content resumably.
-   - **6.2** [ ] Deploy configuration, mission, and optional TeamSpeak.
-   - **6.3** [ ] Launch, verify health, and mark the session playable.
+6. **Arma Bootstrap — Done**
+   - **6.1** [x] Install SteamCMD, Arma, DLC, and Workshop content resumably.
+   - **6.2** [x] Deploy configuration, mission, and optional TeamSpeak.
+   - **6.3** [x] Launch, verify health, and mark the session playable.
 
 7. **Monitoring — Pending**
    - **7.1** [ ] Add heartbeat, player, service, and voice checks.
@@ -53,6 +53,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
 10. **Reliability — Pending**
     - **10.1** [ ] Add bounded retries, DLQ operations, reconciliation, and cancellation.
     - **10.2** [ ] Add orphan cleanup and disaster recovery.
+    - **10.3** [ ] Automate or streamline Steam authentication for new hosts with a secure, short-lived Steam Guard challenge flow, cached machine authorization where Steam permits it, operator-safe redaction, and automatic cleanup. Never carry Guard codes in Discord, workflow input, Lambda configuration, SSM command text, or persistent logs.
 
 11. **Production Hardening — Pending**
     - **11.1** [ ] Complete least-privilege and threat-model reviews.
@@ -62,3 +63,6 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
 12. **Expansion — Pending**
     - **12.1** [ ] Add games after the Arma lifecycle is stable.
     - **12.2** [ ] Evaluate scheduling, analytics, web UI, multi-account, and multi-region support.
+    - **12.3** [ ] Improve Discord UX with an admin menu, tutorial, user-friendly session names, and requester-visible provisioning progress. Show a measured ETA derived from historical per-stage durations and update it at useful, rate-limited milestones.
+    - **12.4** [ ] Benchmark and optimize bootstrap throughput end to end. Instrument Steam download rate, CPU, ENA allowance/drop counters, instance network/EBS ceilings, and EBS queue/throughput before changing settings; then evaluate supported Steam configuration, safe kernel/socket/ring tuning, instance sizing, explicit gp3 IOPS/throughput, and cache/snapshot/prebake strategies with cost guardrails.
+    - **12.5** [ ] Support multiple mission uploads per session and safe in-game mission rotation without requiring game/mod configuration changes; retain mission artifact history and validate ownership/authorization.

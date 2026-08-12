@@ -395,7 +395,7 @@ func (handler *Handler) startSession(
 	}); err != nil {
 		return "", fmt.Errorf("request session start: %w", err)
 	}
-	return fmt.Sprintf("**Provisioning request accepted**\nSession: `%s`\nUse `/session status` to follow infrastructure progress.", sanitizeInline(sessionID)), nil
+	return fmt.Sprintf("**Start request accepted**\nSession: `%s`\nUse `/session status` to follow provisioning or bootstrap progress.", sanitizeInline(sessionID)), nil
 }
 
 func (handler *Handler) handleAdminAccess(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actorID string) error {

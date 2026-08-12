@@ -10,6 +10,11 @@ import (
 )
 
 var _ ports.ProvisioningRepository = (*SessionRepository)(nil)
+var _ ports.BootstrapRepository = (*SessionRepository)(nil)
+
+func (repository *SessionRepository) SaveBootstrapStage(ctx context.Context, session domain.Session, expectedVersion int64, event domain.SessionEvent) error {
+	return repository.SaveProvisioningStage(ctx, session, expectedVersion, event)
+}
 
 func (repository *SessionRepository) SaveProvisioningStage(ctx context.Context, session domain.Session, expectedVersion int64, event domain.SessionEvent) error {
 	if err := ctx.Err(); err != nil {

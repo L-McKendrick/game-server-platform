@@ -110,8 +110,8 @@ data "aws_availability_zones" "available" {
   state = "available"
 }
 
-data "aws_ssm_parameter" "al2023_ami" {
-  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+data "aws_ssm_parameter" "game_host_ami" {
+  name = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
 }
 
 locals {
@@ -316,9 +316,12 @@ data "aws_iam_policy_document" "command_worker" {
   }
 
   statement {
-    sid       = "StartProvisionWorkflow"
-    actions   = ["states:StartExecution"]
-    resources = [aws_sfn_state_machine.provision_session.arn]
+    sid     = "StartImplementedWorkflows"
+    actions = ["states:StartExecution"]
+    resources = [
+      aws_sfn_state_machine.provision_session.arn,
+      aws_sfn_state_machine.bootstrap_game_server.arn,
+    ]
   }
 
   statement {
@@ -375,6 +378,7 @@ resource "aws_lambda_function" "command_worker" {
       LOG_LEVEL                   = "info"
       METADATA_TABLE_NAME         = aws_dynamodb_table.metadata.name
       PROVISION_STATE_MACHINE_ARN = aws_sfn_state_machine.provision_session.arn
+      BOOTSTRAP_STATE_MACHINE_ARN = aws_sfn_state_machine.bootstrap_game_server.arn
       DISCORD_PUBLIC_KEY          = var.discord_public_key
       DISCORD_APPLICATION_ID      = var.discord_application_id
       DISCORD_ALLOWED_GUILD_IDS   = join(",", sort(tolist(var.discord_allowed_guild_ids)))
@@ -397,7 +401,7 @@ locals {
   provisioning_instance_resource = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"
   provisioning_volume_resource   = "arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:volume/*"
   provisioning_launch_resources = [
-    "arn:aws:ec2:${var.aws_region}::image/${data.aws_ssm_parameter.al2023_ami.value}",
+    "arn:aws:ec2:${var.aws_region}::image/${data.aws_ssm_parameter.game_host_ami.value}",
     aws_subnet.game_public[0].arn,
     aws_security_group.arma.arn,
     aws_security_group.teamspeak.arn,
@@ -591,7 +595,7 @@ resource "aws_lambda_function" "provisioning_worker" {
       LOG_LEVEL                            = "info"
       METADATA_TABLE_NAME                  = aws_dynamodb_table.metadata.name
       NOTIFICATION_QUEUE_URL               = aws_sqs_queue.notifications.url
-      PROVISIONING_AMI_ID                  = data.aws_ssm_parameter.al2023_ami.value
+      PROVISIONING_AMI_ID                  = data.aws_ssm_parameter.game_host_ami.value
       PROVISIONING_INSTANCE_TYPE           = var.provisioning_instance_type
       PROVISIONING_SUBNET_ID               = aws_subnet.game_public[0].id
       PROVISIONING_GAME_SECURITY_GROUP_ID  = aws_security_group.arma.id

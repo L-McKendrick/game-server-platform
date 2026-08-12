@@ -22,7 +22,7 @@ Deployment status: complete. The development guild completed an end-to-end provi
 - Arma UDP `2302-2306` and optional TeamSpeak UDP `9987` security groups.
 - No inbound SSH or public TeamSpeak ServerQuery port.
 - EC2 instance profile with Systems Manager and session-scoped S3 permissions.
-- Current Amazon Linux 2023 x86_64 AMI resolved from the AWS public SSM parameter.
+- Current Canonical Ubuntu Server 24.04 LTS x86_64 AMI resolved from the AWS public SSM parameter. Ubuntu is the supported game-host baseline because SteamCMD requires 32-bit userspace libraries that Amazon Linux 2023 does not publish.
 - Encrypted `gp3` root and persistent data volumes with IMDSv2 required.
 
 ## Cost and safety gates

@@ -18,6 +18,11 @@ import (
 )
 
 var _ ports.ProvisioningRepository = (*Repository)(nil)
+var _ ports.BootstrapRepository = (*Repository)(nil)
+
+func (repository *Repository) SaveBootstrapStage(ctx context.Context, session domain.Session, expectedVersion int64, event domain.SessionEvent) error {
+	return repository.SaveProvisioningStage(ctx, session, expectedVersion, event)
+}
 
 type capacitySlotItem struct {
 	PK            string `dynamodbav:"pk"`

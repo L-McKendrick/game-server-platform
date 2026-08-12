@@ -64,6 +64,22 @@ type ProvisioningRepository interface {
 	ReleaseCapacitySlot(ctx context.Context, slotID string, sessionID string) error
 }
 
+type BootstrapRepository interface {
+	SaveBootstrapStage(ctx context.Context, session domain.Session, expectedVersion int64, event domain.SessionEvent) error
+}
+
+type BootstrapCommandStatus struct {
+	Status       string
+	ErrorMessage string
+}
+
+// BootstrapRunner starts and observes one idempotent Systems Manager command.
+// The command itself owns durable per-stage markers on the session data volume.
+type BootstrapRunner interface {
+	Start(ctx context.Context, session domain.Session) (string, error)
+	Observe(ctx context.Context, instanceID string, commandID string) (BootstrapCommandStatus, error)
+}
+
 type ComputeProvisioner interface {
 	FindInstance(ctx context.Context, request domain.ComputeLaunchRequest) (domain.ComputeObservation, bool, error)
 	EnsureInstance(ctx context.Context, request domain.ComputeLaunchRequest, knownInstanceID string) (domain.ComputeObservation, error)

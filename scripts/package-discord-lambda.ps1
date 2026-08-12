@@ -11,7 +11,8 @@ $packages = @(
     @{ Command = "./cmd/artifact-worker"; Archive = "artifact-worker.zip" },
     @{ Command = "./cmd/notification-worker"; Archive = "notification-worker.zip" },
     @{ Command = "./cmd/command-worker"; Archive = "command-worker.zip" },
-    @{ Command = "./cmd/provisioning-worker"; Archive = "provisioning-worker.zip" }
+    @{ Command = "./cmd/provisioning-worker"; Archive = "provisioning-worker.zip" },
+    @{ Command = "./cmd/bootstrap-worker"; Archive = "bootstrap-worker.zip" }
 )
 
 New-Item -ItemType Directory -Force -Path $distDirectory | Out-Null
@@ -24,7 +25,7 @@ $previousGOCACHE = $env:GOCACHE
 
 try {
     $env:GOCACHE = Join-Path $cacheDirectory "go-build"
-    go build -trimpath -o $packagerPath ./cmd/package-lambda
+    go build -buildvcs=false -trimpath -o $packagerPath ./cmd/package-lambda
     if ($LASTEXITCODE -ne 0) { throw "packaging tool build failed" }
 
     $env:GOOS = "linux"
@@ -32,7 +33,7 @@ try {
     $env:CGO_ENABLED = "0"
     foreach ($package in $packages) {
         $archivePath = Join-Path $distDirectory $package.Archive
-        go build -tags lambda.norpc -trimpath -ldflags "-s -w" -o $bootstrapPath $package.Command
+        go build -buildvcs=false -tags lambda.norpc -trimpath -ldflags "-s -w" -o $bootstrapPath $package.Command
         if ($LASTEXITCODE -ne 0) { throw "Go build failed for $($package.Command)" }
 
         & $packagerPath -source $bootstrapPath -output $archivePath

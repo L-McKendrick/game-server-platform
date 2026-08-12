@@ -123,12 +123,17 @@ func (service *Service) RequestStart(ctx context.Context, command StartCommand) 
 	if session.GuildID != strings.TrimSpace(command.GuildID) {
 		return fmt.Errorf("session belongs to another guild: %w", domain.ErrForbidden)
 	}
-	if !session.CanStartInfrastructureProvisioning() {
-		return fmt.Errorf("session must be fully configured before start: %w", domain.ErrInvalidTransition)
+	commandType := domain.CommandStartSession
+	switch {
+	case session.CanStartInfrastructureProvisioning():
+	case session.CanStartBootstrap():
+		commandType = domain.CommandBootstrapServer
+	default:
+		return fmt.Errorf("session is not ready for provisioning or bootstrap: %w", domain.ErrInvalidTransition)
 	}
 	envelope := domain.CommandEnvelope{
 		SchemaVersion: 1,
-		CommandID:     strings.TrimSpace(command.CommandID), CommandType: domain.CommandStartSession,
+		CommandID:     strings.TrimSpace(command.CommandID), CommandType: commandType,
 		RequestedAt: service.clock.Now().UTC(),
 		Actor: domain.CommandActor{
 			DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID),

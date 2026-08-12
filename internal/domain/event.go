@@ -22,6 +22,9 @@ const (
 	EventProvisioningStage   EventType = "ProvisioningStageCompleted"
 	EventInfrastructureReady EventType = "InfrastructureReady"
 	EventProvisioningFailed  EventType = "InfrastructureProvisioningFailed"
+	EventBootstrapStage      EventType = "BootstrapStageCompleted"
+	EventGameServerReady     EventType = "GameServerReady"
+	EventBootstrapFailed     EventType = "GameServerBootstrapFailed"
 )
 
 // NewProvisioningEvent records a stable workflow stage without exposing cloud
@@ -34,6 +37,19 @@ func NewProvisioningEvent(eventID string, eventType EventType, stage string, wor
 			"workflow_id": workflow.ID, "stage": strings.TrimSpace(stage),
 			"state": string(session.LifecycleState), "instance_id": session.Infrastructure.InstanceID,
 			"volume_id": session.Infrastructure.DataVolumeID,
+		},
+	}
+}
+
+// NewBootstrapEvent records progress without including commands, output, or
+// credentials from the managed node.
+func NewBootstrapEvent(eventID string, eventType EventType, stage string, workflow Workflow, session Session, now time.Time) SessionEvent {
+	return SessionEvent{
+		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
+		ActorType: string(ActorTypeSystem), ActorID: BootstrapWorkflowType, CorrelationID: workflow.CorrelationID,
+		Data: map[string]string{
+			"workflow_id": workflow.ID, "stage": strings.TrimSpace(stage),
+			"state": string(session.LifecycleState), "instance_id": session.Infrastructure.InstanceID,
 		},
 	}
 }

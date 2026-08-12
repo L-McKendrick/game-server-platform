@@ -557,7 +557,11 @@ Discord can request infrastructure provisioning; one tagged EC2 instance and its
 
 ## **Phase 6 — Arma Bootstrap**
 
+**Status:** Deployed; live acceptance found and isolated an incompatible game-host AMI. Ubuntu recovery deployment and root-volume replacement are pending approval.
+
 Implement resumable stages for secrets, SteamCMD, Arma 3, Creator DLC, Workshop content, Linux path normalization, configuration, mission deployment, optional TeamSpeak, service launch, and health checks.
+
+The deployed design reuses `/session start`, the command FIFO, per-session workflow leases, and the canonical `BootstrapGameServer` state machine. A bootstrap Lambda dispatches one bounded Systems Manager command and polls it asynchronously. Persistent-volume markers make software stages retryable, while the service and UDP health gate always runs again. Steam values remain in Secrets Manager and are retrieved only by the managed instance. Canonical Ubuntu Server 24.04 LTS is the supported game-host baseline because it supplies SteamCMD's required 32-bit userspace libraries.
 
 Deliverable: a newly provisioned instance becomes a playable server.
 

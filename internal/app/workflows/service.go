@@ -99,6 +99,9 @@ func acquireWorkflowLock(session *domain.Session, workflowID string, workflowTyp
 	if workflowType == "ProvisionSession" {
 		return session.AcquireProvisioningWorkflowLock(workflowID, lease, now)
 	}
+	if workflowType == domain.BootstrapWorkflowType {
+		return session.AcquireBootstrapWorkflowLock(workflowID, lease, now)
+	}
 	return session.AcquireWorkflowLock(workflowID, workflowType, lease, now)
 }
 

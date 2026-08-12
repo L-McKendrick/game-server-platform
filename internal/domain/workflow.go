@@ -116,6 +116,8 @@ func (command CommandEnvelope) Validate() error {
 		return fmt.Errorf("unsupported command schema version %d", command.SchemaVersion)
 	case strings.TrimSpace(command.CommandID) == "":
 		return fmt.Errorf("command ID is required")
+	case len(command.CommandID) > 36:
+		return fmt.Errorf("command ID must not exceed 36 characters")
 	case strings.TrimSpace(command.CommandType) == "":
 		return fmt.Errorf("command type is required")
 	case commandWorkflowTypes[command.CommandType] == "":

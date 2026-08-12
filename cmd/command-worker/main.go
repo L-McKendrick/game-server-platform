@@ -53,6 +53,10 @@ func build(ctx context.Context) (*handler, error) {
 	if provisionARN == "" {
 		return nil, fmt.Errorf("PROVISION_STATE_MACHINE_ARN is required")
 	}
+	bootstrapARN := strings.TrimSpace(os.Getenv("BOOTSTRAP_STATE_MACHINE_ARN"))
+	if bootstrapARN == "" {
+		return nil, fmt.Errorf("BOOTSTRAP_STATE_MACHINE_ARN is required")
+	}
 	logger := logging.New(baseConfig.LogLevel)
 	awsConfig, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(baseConfig.AWSRegion))
 	if err != nil {
@@ -66,8 +70,10 @@ func build(ctx context.Context) (*handler, error) {
 	}
 	service, err := workflows.NewService(
 		repository, repository,
-		sfnworkflow.New(sfn.NewFromConfig(awsConfig), map[string]string{"ProvisionSession": provisionARN}),
-		authorizer, identity.Generator{}, clock, 2*time.Hour,
+		sfnworkflow.New(sfn.NewFromConfig(awsConfig), map[string]string{
+			"ProvisionSession": provisionARN, domain.BootstrapWorkflowType: bootstrapARN,
+		}),
+		authorizer, identity.Generator{}, clock, 8*time.Hour,
 	)
 	if err != nil {
 		return nil, err

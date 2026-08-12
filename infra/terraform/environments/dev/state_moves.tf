@@ -9,6 +9,11 @@ moved {
 }
 
 moved {
+  from = aws_sfn_state_machine.workflow["BootstrapGameServer"]
+  to   = aws_sfn_state_machine.bootstrap_game_server
+}
+
+moved {
   from = aws_apigatewayv2_integration.discord_interactions
   to   = aws_apigatewayv2_integration.discord_lambda
 }

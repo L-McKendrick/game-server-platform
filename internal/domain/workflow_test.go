@@ -28,6 +28,16 @@ func TestCommandEnvelopeRejectsUnknownCommand(t *testing.T) {
 	}
 }
 
+func TestCommandEnvelopeRejectsTransactionUnsafeCommandID(t *testing.T) {
+	t.Parallel()
+
+	command := testCommandEnvelope()
+	command.CommandID = "1234567890123456789012345678901234567"
+	if err := command.Validate(); err == nil {
+		t.Fatal("Validate() returned nil error for a command ID longer than the DynamoDB transaction token limit")
+	}
+}
+
 func testCommandEnvelope() CommandEnvelope {
 	return CommandEnvelope{
 		SchemaVersion: 1, CommandID: "command-1", CommandType: CommandStartSession,

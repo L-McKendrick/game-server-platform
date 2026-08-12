@@ -4,7 +4,7 @@ An on-demand platform for provisioning and managing temporary dedicated game ser
 
 ## Current status
 
-Phases 1-5 are deployed and accepted in the development guild. A Discord-driven provisioning run reached `BOOTSTRAPPING` with tagged EC2/EBS resources online through Systems Manager.
+Phases 1-5 are deployed and accepted in the development guild. Phase 6 is deployed, but live acceptance found an incompatible Amazon Linux game-host baseline; the Ubuntu recovery plan and root-volume replacement await approval.
 
 The platform currently provides:
 
@@ -24,14 +24,16 @@ The platform currently provides:
 - a dedicated game VPC, two public subnets, game/voice security groups, and no inbound SSH;
 - an idempotent EC2/EBS provisioning worker with IMDSv2, encrypted volumes, Systems Manager readiness, resource discovery tags, and DynamoDB capacity slots;
 - a real bounded `ProvisionSession` workflow that stops at `BOOTSTRAPPING` for Phase 6;
+- a resumable Systems Manager bootstrap path for SteamCMD, Arma, Workshop content, mission deployment, optional TeamSpeak, systemd, and health gating;
 - an AWS monthly budget and a fail-closed provisioning enablement gate;
 - reproducible Lambda packages, least-privilege IAM, retained logs, and CI checks.
 
 Non-provisioning lifecycle state machines intentionally terminate with `PhaseNotImplemented`. `/session start` is enabled in development with a one-session capacity limit and AWS Budget alerts.
 
-Next milestone: Phase 6 Arma bootstrap—SteamCMD, Arma, DLC, Workshop content, mission deployment, optional TeamSpeak, and health checks.
+Next milestone: complete the approved Phase 6 host recovery and live verification, then add continuous monitoring in Phase 7.
 
 See [Phase 5: Infrastructure Provisioning](docs/phase-5-infrastructure-provisioning.md) for the implemented boundary and deployment safety gates.
+See [Phase 6: Arma Bootstrap](docs/phase-6-arma-bootstrap.md) for the resumable installation and health boundary.
 
 ## Local Discord interaction server
 
