@@ -1,0 +1,52 @@
+# Repository Guidelines
+
+## Development Session Handoff
+
+Start every development session by reading `CURRENT_WORK.md`, then `PROJECT_PLAN.md`, before changing code. `CURRENT_WORK.md` is the immediate handoff; `PROJECT_PLAN.md` is the concise, ordered roadmap and completion reference.
+
+After development that changes project state, refresh both files. Keep them brief and factual; replace stale information instead of appending history. Record only the current handoff in `CURRENT_WORK.md` and durable roadmap status in `PROJECT_PLAN.md`. Skip updates after read-only work.
+
+If there are any important/critical items that require user attention before development can continue, append these in CURRENT_WORK.md, along with a default value/action that will be taken if not specified otherwise (if applicable).
+
+## Project Structure & Module Organization
+
+- `cmd/` contains handlers, workers, tools, and packaging helpers. Keep `main.go` focused on dependency wiring.
+- `internal/domain/` owns invariants; `internal/app/` implements use cases; `internal/ports/` defines boundaries; `internal/adapters/` contains integrations.
+- Tests live beside production code as `*_test.go` files.
+- `infra/terraform/bootstrap/` creates state infrastructure; `infra/terraform/environments/dev/` defines the development platform.
+- `deploy/discord/` stores command definitions. Decisions, plans, and runbooks belong in `docs/`.
+- `scripts/` contains PowerShell automation. Treat `dist/`, `.cache/`, local `.tfvars`, and plan files as generated or sensitive.
+
+## Build, Test, and Development Commands
+
+Use Go 1.26.5 and Terraform 1.15.x, matching CI.
+
+```powershell
+go test ./...                    # run all unit tests
+go test -race -cover ./...       # CI race and coverage check
+go vet ./...                     # static analysis
+gofmt -w ./cmd ./internal        # format Go source
+go build ./cmd/...               # compile every executable
+./scripts/package-discord-lambda.ps1 # build Lambda ZIPs
+terraform fmt -check -recursive infra/terraform
+terraform -chdir=infra/terraform/environments/dev validate
+go run ./cmd/discord-local       # run the local in-memory Discord endpoint
+```
+
+Run `terraform init -backend=false` before validation in a fresh checkout.
+
+## Coding Style & Naming Conventions
+
+Use `gofmt`, short lowercase packages, exported `PascalCase`, and unexported `camelCase`. Keep SDK details in adapters; domain and application packages depend on interfaces. Use Terraform `snake_case` names and run `terraform fmt`.
+
+## Testing Guidelines
+
+Use Go's `testing` package and table-driven tests for shared behavior. Name tests `TestTypeBehavior` or `TestFunction_Scenario`. Cover state transitions, idempotency, authorization, retries, and failures. CI records coverage without a numeric threshold.
+
+## Commit & Pull Request Guidelines
+
+Use scoped Conventional Commit subjects, such as `feat: add session bootstrap worker`. PRs should explain behavior and infrastructure impact, link issues, list verification, and identify Terraform plans, migrations, gates, or deployment steps. Add screenshots only for visible Discord changes.
+
+## Security & Configuration
+
+Never commit Discord tokens, AWS credentials, populated `.tfvars`, Terraform plans/state, or archives. Use the `game-server-dev` AWS CLI profile locally. Keep provisioning disabled until its Terraform plan, budget recipient, and deployment are approved. Never run `terraform apply` during routine validation.
