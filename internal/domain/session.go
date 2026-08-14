@@ -22,10 +22,13 @@ type Session struct {
 	SleepAfterSeconds     int64
 	ArchiveAfterSeconds   int64
 	TeamSpeakEnabled      bool
+	Vanilla               bool
 	ConfigurationRevision int64
 	MissionObjectKey      string
 	PresetObjectKey       string
 	Infrastructure        Infrastructure
+	Archive               ArchiveMetadata
+	ArchiveSourceState    LifecycleState
 
 	ActiveWorkflowID             string
 	ActiveWorkflowType           string
@@ -121,6 +124,7 @@ type SessionConfiguration struct {
 	SleepAfterSeconds   int64
 	ArchiveAfterSeconds int64
 	TeamSpeakEnabled    bool
+	Vanilla             bool
 }
 
 // NewSessionInput contains the required information for a new draft session.
@@ -173,6 +177,11 @@ func (session Session) Validate() error {
 	if err := session.Infrastructure.Validate(); err != nil {
 		return err
 	}
+	if !session.Archive.Empty() {
+		if err := session.Archive.Validate(); err != nil {
+			return err
+		}
+	}
 	switch {
 	case session.ID == "":
 		return fmt.Errorf("session ID is required")
@@ -209,6 +218,8 @@ func (session Session) Validate() error {
 		return fmt.Errorf("active workflow start timestamp is required")
 	case session.ActiveWorkflowID != "" && !session.ActiveWorkflowLeaseExpiresAt.After(session.ActiveWorkflowStartedAt):
 		return fmt.Errorf("active workflow lease must expire after it starts")
+	case session.ArchiveSourceState != "" && (session.ActiveWorkflowType != ArchiveWorkflowType || session.LifecycleState != StateArchiving):
+		return fmt.Errorf("archive source state requires an active archive workflow")
 	case !session.DesiredState.Valid():
 		return fmt.Errorf("invalid desired state %q", session.DesiredState)
 	case !session.ObservedState.Valid():
@@ -290,6 +301,7 @@ func (session *Session) Configure(configuration SessionConfiguration, now time.T
 	session.SleepAfterSeconds = configuration.SleepAfterSeconds
 	session.ArchiveAfterSeconds = configuration.ArchiveAfterSeconds
 	session.TeamSpeakEnabled = configuration.TeamSpeakEnabled
+	session.Vanilla = configuration.Vanilla
 	session.ConfigurationRevision++
 	session.Version++
 	session.UpdatedAt = now.UTC()
@@ -300,7 +312,7 @@ func (session *Session) Configure(configuration SessionConfiguration, now time.T
 
 func (session *Session) markReadyWhenComplete() {
 	if session.LifecycleState == StateDraft && session.ConfigurationRevision > 0 &&
-		session.MissionObjectKey != "" && session.PresetObjectKey != "" {
+		session.MissionObjectKey != "" && (session.Vanilla || session.PresetObjectKey != "") {
 		session.DesiredState = StateNew
 		session.ObservedState = StateNew
 		session.LifecycleState = StateNew

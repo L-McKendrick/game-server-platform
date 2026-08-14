@@ -112,9 +112,13 @@ func (provisioner *Provisioner) EnsureInstance(ctx context.Context, request doma
 		{Key: aws.String("LifecycleState"), Value: aws.String("PROVISIONING")},
 	}
 	userData := base64.StdEncoding.EncodeToString([]byte("#cloud-config\npackage_update: false\nruncmd:\n  - [mkdir, -p, /srv/game-server]\n"))
+	clientToken := strings.TrimSpace(request.ClientToken)
+	if clientToken == "" {
+		clientToken = "provision-" + request.SessionID
+	}
 	result, err := provisioner.ec2.RunInstances(ctx, &ec2.RunInstancesInput{
 		ImageId: aws.String(request.AMIID), InstanceType: ec2types.InstanceType(request.InstanceType),
-		MinCount: aws.Int32(1), MaxCount: aws.Int32(1), ClientToken: aws.String("provision-" + request.SessionID),
+		MinCount: aws.Int32(1), MaxCount: aws.Int32(1), ClientToken: aws.String(clientToken),
 		IamInstanceProfile: &ec2types.IamInstanceProfileSpecification{Name: aws.String(request.InstanceProfile)},
 		NetworkInterfaces: []ec2types.InstanceNetworkInterfaceSpecification{{
 			DeviceIndex: aws.Int32(0), AssociatePublicIpAddress: aws.Bool(true),

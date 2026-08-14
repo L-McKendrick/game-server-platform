@@ -68,13 +68,37 @@ func TestGeneratedCommandPassesBashSyntaxCheck(t *testing.T) {
 	assertBashSyntax(t, []byte(script))
 }
 
+func TestVanillaCommandUsesAnonymousModeWithoutPresetOrSecretIdentifier(t *testing.T) {
+	t.Parallel()
+	runner, err := New(&fakeSSM{}, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	script, err := runner.command(domain.Session{
+		ID: "session-vanilla", DisplayName: "Vanilla", Vanilla: true,
+		MissionObjectKey: "sessions/session-vanilla/input/mission.pbo",
+		LifecycleState:   domain.StateInstalling,
+		Infrastructure:   domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(script, "export VANILLA_MODE=true") {
+		t.Fatal("vanilla command did not enable anonymous bootstrap mode")
+	}
+	if strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(testConfig().SteamSecretID))) {
+		t.Fatal("vanilla command included the Steam secret identifier")
+	}
+	assertBashSyntax(t, []byte(script))
+}
+
 func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 	path := filepath.Clean(filepath.Join("..", "..", "..", "..", "deploy", "bootstrap", "arma3-bootstrap.sh"))
 	script, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"get-secret-value", "bootstrap.lock", "for stage in install_steamcmd install_arma", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
+	for _, required := range []string{"get-secret-value", "login anonymous", "VANILLA_MODE", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
 		if !strings.Contains(string(script), required) {
 			t.Errorf("script missing %q", required)
 		}

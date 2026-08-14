@@ -257,6 +257,51 @@ func TestRequestLifecycle_RejectsAnotherOwnerWithoutGuildPermission(t *testing.T
 	}
 }
 
+func TestRequestLifecycle_ArchiveRemainsOwnerOnly(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	queue := &recordingCommandQueue{}
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour, WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRunningSession(t, repository, now)
+
+	err = service.RequestLifecycle(context.Background(), LifecycleCommand{
+		Actor: testActor("admin-1"), CanManageGuild: true,
+		SessionID: "running-session", GuildID: "guild-1", ChannelID: "channel-1", CommandID: "interaction-archive",
+		CorrelationID: "archive-correlation", IdempotencyKey: "discord:interaction-archive", CommandType: domain.CommandArchiveSession,
+	})
+	if !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("RequestLifecycle() error = %v; want ErrForbidden", err)
+	}
+	if len(queue.commands) != 0 {
+		t.Fatalf("queued commands = %#v; want none", queue.commands)
+	}
+}
+
+func TestRequestLifecycle_TerminationRemainsOwnerOnly(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	queue := &recordingCommandQueue{}
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour, WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRunningSession(t, repository, now)
+
+	err = service.RequestLifecycle(context.Background(), LifecycleCommand{
+		Actor: testActor("admin-1"), CanManageGuild: true,
+		SessionID: "running-session", GuildID: "guild-1", ChannelID: "channel-1", CommandID: "interaction-terminate",
+		CorrelationID: "terminate-correlation", IdempotencyKey: "discord:interaction-terminate", CommandType: domain.CommandDestroySession,
+	})
+	if !errors.Is(err, domain.ErrForbidden) || len(queue.commands) != 0 {
+		t.Fatalf("RequestLifecycle() error = %v, commands = %#v; want owner-only rejection", err, queue.commands)
+	}
+}
+
 func TestGetRejectsNonOwner(t *testing.T) {
 	t.Parallel()
 
@@ -448,6 +493,7 @@ func TestConfigurePersistsRevisionAndEvent(t *testing.T) {
 		SleepAfterSeconds:   3600,
 		ArchiveAfterSeconds: 14 * 86400,
 		TeamSpeakEnabled:    true,
+		Vanilla:             true,
 	})
 	if err != nil {
 		t.Fatalf("Configure() returned error: %v", err)
@@ -455,12 +501,15 @@ func TestConfigurePersistsRevisionAndEvent(t *testing.T) {
 	if configured.ConfigurationRevision != 1 || configured.Version != 2 {
 		t.Errorf("revision/version = %d/%d; want 1/2", configured.ConfigurationRevision, configured.Version)
 	}
-	if configured.SleepAfterSeconds != 3600 || !configured.TeamSpeakEnabled {
+	if configured.SleepAfterSeconds != 3600 || !configured.TeamSpeakEnabled || !configured.Vanilla {
 		t.Errorf("configuration was not applied: %#v", configured)
 	}
 	events := repository.Events(created.ID)
 	if len(events) != 2 || events[1].Type != domain.EventSessionConfigured {
 		t.Fatalf("events = %#v; want SessionConfigured", events)
+	}
+	if events[1].Data["vanilla"] != "true" {
+		t.Fatalf("configured event vanilla = %q; want true", events[1].Data["vanilla"])
 	}
 }
 

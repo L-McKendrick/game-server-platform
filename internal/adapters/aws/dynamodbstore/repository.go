@@ -91,6 +91,7 @@ type sessionItem struct {
 	SleepAfterSeconds        int64    `dynamodbav:"sleep_after_seconds"`
 	ArchiveAfterSeconds      int64    `dynamodbav:"archive_after_seconds"`
 	TeamSpeakEnabled         bool     `dynamodbav:"teamspeak_enabled"`
+	Vanilla                  bool     `dynamodbav:"vanilla"`
 	ConfigurationRevision    int64    `dynamodbav:"configuration_revision"`
 	MissionObjectKey         string   `dynamodbav:"mission_object_key,omitempty"`
 	PresetObjectKey          string   `dynamodbav:"preset_object_key,omitempty"`
@@ -105,6 +106,16 @@ type sessionItem struct {
 	DataVolumeID             string   `dynamodbav:"data_volume_id,omitempty"`
 	PublicIPv4               string   `dynamodbav:"public_ipv4,omitempty"`
 	InfrastructureObservedAt string   `dynamodbav:"infrastructure_observed_at,omitempty"`
+	ArchiveID                string   `dynamodbav:"archive_id,omitempty"`
+	ArchiveObjectKey         string   `dynamodbav:"archive_object_key,omitempty"`
+	ArchiveManifestObjectKey string   `dynamodbav:"archive_manifest_object_key,omitempty"`
+	ArchiveManifestSHA256    string   `dynamodbav:"archive_manifest_sha256,omitempty"`
+	ArchiveManifestSizeBytes int64    `dynamodbav:"archive_manifest_size_bytes,omitempty"`
+	ArchiveSHA256            string   `dynamodbav:"archive_sha256,omitempty"`
+	ArchiveSizeBytes         int64    `dynamodbav:"archive_size_bytes,omitempty"`
+	ArchiveFormat            string   `dynamodbav:"archive_format,omitempty"`
+	ArchiveVerifiedAt        string   `dynamodbav:"archive_verified_at,omitempty"`
+	ArchiveSourceState       string   `dynamodbav:"archive_source_state,omitempty"`
 
 	ActiveWorkflowID             string `dynamodbav:"active_workflow_id,omitempty"`
 	ActiveWorkflowType           string `dynamodbav:"active_workflow_type,omitempty"`
@@ -618,6 +629,7 @@ func toSessionItem(session domain.Session) sessionItem {
 		SleepAfterSeconds:            session.SleepAfterSeconds,
 		ArchiveAfterSeconds:          session.ArchiveAfterSeconds,
 		TeamSpeakEnabled:             session.TeamSpeakEnabled,
+		Vanilla:                      session.Vanilla,
 		ConfigurationRevision:        session.ConfigurationRevision,
 		MissionObjectKey:             session.MissionObjectKey,
 		PresetObjectKey:              session.PresetObjectKey,
@@ -632,6 +644,16 @@ func toSessionItem(session domain.Session) sessionItem {
 		DataVolumeID:                 session.Infrastructure.DataVolumeID,
 		PublicIPv4:                   session.Infrastructure.PublicIPv4,
 		InfrastructureObservedAt:     optionalTimestamp(session.Infrastructure.LastObservedAt),
+		ArchiveID:                    session.Archive.ID,
+		ArchiveObjectKey:             session.Archive.ObjectKey,
+		ArchiveManifestObjectKey:     session.Archive.ManifestObjectKey,
+		ArchiveManifestSHA256:        session.Archive.ManifestSHA256,
+		ArchiveManifestSizeBytes:     session.Archive.ManifestSizeBytes,
+		ArchiveSHA256:                session.Archive.SHA256,
+		ArchiveSizeBytes:             session.Archive.SizeBytes,
+		ArchiveFormat:                session.Archive.Format,
+		ArchiveVerifiedAt:            optionalTimestamp(session.Archive.VerifiedAt),
+		ArchiveSourceState:           string(session.ArchiveSourceState),
 		ActiveWorkflowID:             session.ActiveWorkflowID,
 		ActiveWorkflowType:           session.ActiveWorkflowType,
 		ActiveWorkflowStartedAt:      fixedTimestamp(session.ActiveWorkflowStartedAt),
@@ -691,6 +713,10 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("parse infrastructure observed_at: %w", err)
 	}
+	archiveVerifiedAt, err := parseOptionalTimestamp(item.ArchiveVerifiedAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse archive_verified_at: %w", err)
+	}
 	monitoringStartedAt, err := parseOptionalTimestamp(item.MonitoringStartedAt)
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("parse monitoring started_at: %w", err)
@@ -708,6 +734,7 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		SleepAfterSeconds:     item.SleepAfterSeconds,
 		ArchiveAfterSeconds:   item.ArchiveAfterSeconds,
 		TeamSpeakEnabled:      item.TeamSpeakEnabled,
+		Vanilla:               item.Vanilla,
 		ConfigurationRevision: item.ConfigurationRevision,
 		MissionObjectKey:      item.MissionObjectKey,
 		PresetObjectKey:       item.PresetObjectKey,
@@ -718,6 +745,14 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 			InstanceID: item.InstanceID, DataVolumeID: item.DataVolumeID, PublicIPv4: item.PublicIPv4,
 			LastObservedAt: infrastructureObservedAt,
 		},
+		Archive: domain.ArchiveMetadata{
+			ID: item.ArchiveID, ObjectKey: item.ArchiveObjectKey,
+			ManifestObjectKey: item.ArchiveManifestObjectKey, SHA256: item.ArchiveSHA256,
+			ManifestSHA256:    item.ArchiveManifestSHA256,
+			ManifestSizeBytes: item.ArchiveManifestSizeBytes,
+			SizeBytes:         item.ArchiveSizeBytes, Format: item.ArchiveFormat, VerifiedAt: archiveVerifiedAt,
+		},
+		ArchiveSourceState:           domain.LifecycleState(item.ArchiveSourceState),
 		ActiveWorkflowID:             item.ActiveWorkflowID,
 		ActiveWorkflowType:           item.ActiveWorkflowType,
 		ActiveWorkflowStartedAt:      activeWorkflowStartedAt,

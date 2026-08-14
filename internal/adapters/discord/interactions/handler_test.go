@@ -287,6 +287,81 @@ func TestHandlerAllowsGuildAdministratorToRequestAnotherOwnersSleep(t *testing.T
 	}
 }
 
+func TestHandlerArchiveRequiresExplicitConfirmation(t *testing.T) {
+	t.Parallel()
+	handler, repository, privateKey := newTestHandler(t, []string{"correlation-archive"}, nil)
+	seedRunningHandlerSession(t, repository)
+	body := marshalPayload(map[string]any{
+		"id": "interaction-archive", "application_id": "app-1", "type": interactionTypeApplicationCommand,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{"name": "session", "options": []any{map[string]any{
+			"type": applicationCommandOptionSubcommand, "name": "archive",
+			"options": []any{
+				map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"},
+				map[string]any{"type": applicationCommandOptionBoolean, "name": "confirm", "value": false},
+			},
+		}}},
+	})
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "removes the current EC2 instance and EBS volumes") {
+		t.Fatalf("response = %#v", decoded.Data)
+	}
+}
+
+func TestHandlerArchiveAcceptsOwnerConfirmationAndWarnsAboutInterruption(t *testing.T) {
+	t.Parallel()
+	handler, repository, privateKey := newTestHandler(t, []string{"correlation-archive"}, nil)
+	seedRunningHandlerSession(t, repository)
+	body := marshalPayload(map[string]any{
+		"id": "interaction-archive", "application_id": "app-1", "type": interactionTypeApplicationCommand,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{"name": "session", "options": []any{map[string]any{
+			"type": applicationCommandOptionSubcommand, "name": "archive",
+			"options": []any{
+				map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"},
+				map[string]any{"type": applicationCommandOptionBoolean, "name": "confirm", "value": true},
+			},
+		}}},
+	})
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Archive request accepted") || !strings.Contains(decoded.Data.Content, "removed only after") {
+		t.Fatalf("response = %#v", decoded.Data)
+	}
+}
+
+func TestHandlerTerminateRequiresOwnerConfirmationAndWarnsIrreversible(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, interactionID string
+		confirmed           bool
+		want                string
+	}{
+		{name: "confirmation required", interactionID: "interaction-terminate-no", confirmed: false, want: "immediate and irreversible"},
+		{name: "confirmed request", interactionID: "interaction-terminate-yes", confirmed: true, want: "Terminate request accepted"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler, repository, privateKey := newTestHandler(t, []string{"correlation-terminate"}, nil)
+			seedRunningHandlerSession(t, repository)
+			body := commandBody(test.interactionID, "owner-1", "guild-1", "channel-1", "terminate", []any{
+				map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"},
+				map[string]any{"type": applicationCommandOptionBoolean, "name": "confirm", "value": test.confirmed},
+			})
+			response := executeSignedRequest(t, handler, privateKey, body, testNow)
+			var decoded interactionResponse
+			decodeResponse(t, response, &decoded)
+			if decoded.Data == nil || !strings.Contains(decoded.Data.Content, test.want) {
+				t.Fatalf("response = %#v; want %q", decoded.Data, test.want)
+			}
+		})
+	}
+}
+
 func TestHandlerConfiguresAndAcceptsMissionAttachment(t *testing.T) {
 	t.Parallel()
 
@@ -315,6 +390,9 @@ func TestHandlerConfiguresAndAcceptsMissionAttachment(t *testing.T) {
 	}
 	if stored.ConfigurationRevision != 1 || !stored.TeamSpeakEnabled {
 		t.Errorf("stored configuration = %#v", stored)
+	}
+	if !stored.Vanilla || configuredDecoded.Data == nil || !strings.Contains(configuredDecoded.Data.Content, "Vanilla: `true`") {
+		t.Errorf("vanilla configuration/response = %#v / %#v", stored, configuredDecoded.Data)
 	}
 
 	uploadResponse := executeSignedRequest(
@@ -545,6 +623,7 @@ func configureCommandBody(interactionID, ownerID, guildID, channelID, sessionID 
 		map[string]any{"type": applicationCommandOptionInteger, "name": "sleep-minutes", "value": 60},
 		map[string]any{"type": applicationCommandOptionInteger, "name": "archive-days", "value": 14},
 		map[string]any{"type": applicationCommandOptionBoolean, "name": "teamspeak", "value": true},
+		map[string]any{"type": applicationCommandOptionBoolean, "name": "vanilla", "value": true},
 	})
 }
 

@@ -91,7 +91,15 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 		return domain.Workflow{}, err
 	}
 	actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: command.Actor.DiscordUserID}
-	event := domain.NewWorkflowEvent(eventID, domain.EventWorkflowStarted, command.CorrelationID, actor, session, workflow, now)
+	eventType := domain.EventWorkflowStarted
+	if workflow.Type == domain.ArchiveWorkflowType {
+		eventType = domain.EventArchiveStarted
+	} else if workflow.Type == domain.RestoreWorkflowType {
+		eventType = domain.EventRestoreStarted
+	} else if workflow.Type == domain.TerminationWorkflowType {
+		eventType = domain.EventTerminationStarted
+	}
+	event := domain.NewWorkflowEvent(eventID, eventType, command.CorrelationID, actor, session, workflow, now)
 	if err := service.workflows.AcquireWorkflow(ctx, session, expectedVersion, workflow, event); err != nil {
 		return domain.Workflow{}, err
 	}
@@ -114,6 +122,15 @@ func acquireWorkflowLock(session *domain.Session, workflowID string, workflowTyp
 	}
 	if workflowType == domain.WakeWorkflowType {
 		return session.BeginWake(workflowID, lease, now)
+	}
+	if workflowType == domain.ArchiveWorkflowType {
+		return session.BeginArchive(workflowID, lease, now)
+	}
+	if workflowType == domain.RestoreWorkflowType {
+		return session.BeginRestore(workflowID, lease, now)
+	}
+	if workflowType == domain.TerminationWorkflowType {
+		return session.BeginTermination(workflowID, lease, now)
 	}
 	return session.AcquireWorkflowLock(workflowID, workflowType, lease, now)
 }
@@ -147,6 +164,12 @@ func (service *Service) failStart(ctx context.Context, session domain.Session, w
 	var releaseErr error
 	if workflow.Type == "ProvisionSession" {
 		releaseErr = session.AbortProvisioningWorkflowStart(workflow.ID, now)
+	} else if workflow.Type == domain.ArchiveWorkflowType {
+		releaseErr = session.AbortArchiveWorkflowStart(workflow.ID, now)
+	} else if workflow.Type == domain.RestoreWorkflowType {
+		releaseErr = session.AbortRestoreWorkflowStart(workflow.ID, now)
+	} else if workflow.Type == domain.TerminationWorkflowType {
+		releaseErr = session.AbortTerminationWorkflowStart(workflow.ID, now)
 	} else {
 		releaseErr = session.ReleaseWorkflowLock(workflow.ID, now)
 	}

@@ -10,28 +10,64 @@ import (
 type EventType string
 
 const (
-	EventSessionCreated      EventType = "SessionCreated"
-	EventStateChanged        EventType = "SessionStateChanged"
-	EventSessionConfigured   EventType = "SessionConfigured"
-	EventArtifactRequested   EventType = "ArtifactUploadRequested"
-	EventArtifactValidated   EventType = "ArtifactValidated"
-	EventArtifactRejected    EventType = "ArtifactRejected"
-	EventWorkflowStarted     EventType = "WorkflowStarted"
-	EventWorkflowFailed      EventType = "WorkflowFailed"
-	EventWorkflowCompleted   EventType = "WorkflowCompleted"
-	EventProvisioningStage   EventType = "ProvisioningStageCompleted"
-	EventInfrastructureReady EventType = "InfrastructureReady"
-	EventProvisioningFailed  EventType = "InfrastructureProvisioningFailed"
-	EventBootstrapStage      EventType = "BootstrapStageCompleted"
-	EventGameServerReady     EventType = "GameServerReady"
-	EventBootstrapFailed     EventType = "GameServerBootstrapFailed"
-	EventHealthChanged       EventType = "GameServerHealthChanged"
-	EventSleepStarted        EventType = "GameServerSleepStarted"
-	EventSessionSleeping     EventType = "GameServerSleeping"
-	EventWakeStarted         EventType = "GameServerWakeStarted"
-	EventSessionWoken        EventType = "GameServerWoken"
-	EventSleepWakeFailed     EventType = "GameServerSleepWakeFailed"
+	EventSessionCreated          EventType = "SessionCreated"
+	EventStateChanged            EventType = "SessionStateChanged"
+	EventSessionConfigured       EventType = "SessionConfigured"
+	EventArtifactRequested       EventType = "ArtifactUploadRequested"
+	EventArtifactValidated       EventType = "ArtifactValidated"
+	EventArtifactRejected        EventType = "ArtifactRejected"
+	EventWorkflowStarted         EventType = "WorkflowStarted"
+	EventWorkflowFailed          EventType = "WorkflowFailed"
+	EventWorkflowCompleted       EventType = "WorkflowCompleted"
+	EventProvisioningStage       EventType = "ProvisioningStageCompleted"
+	EventInfrastructureReady     EventType = "InfrastructureReady"
+	EventProvisioningFailed      EventType = "InfrastructureProvisioningFailed"
+	EventBootstrapStage          EventType = "BootstrapStageCompleted"
+	EventGameServerReady         EventType = "GameServerReady"
+	EventBootstrapFailed         EventType = "GameServerBootstrapFailed"
+	EventHealthChanged           EventType = "GameServerHealthChanged"
+	EventSleepStarted            EventType = "GameServerSleepStarted"
+	EventSessionSleeping         EventType = "GameServerSleeping"
+	EventWakeStarted             EventType = "GameServerWakeStarted"
+	EventSessionWoken            EventType = "GameServerWoken"
+	EventSleepWakeFailed         EventType = "GameServerSleepWakeFailed"
+	EventArchiveStarted          EventType = "SessionArchiveStarted"
+	EventArchiveVerified         EventType = "SessionArchiveVerified"
+	EventArchiveFailed           EventType = "SessionArchiveFailed"
+	EventInfrastructureDestroyed EventType = "SessionInfrastructureDestroyed"
+	EventRestoreStarted          EventType = "SessionRestoreStarted"
+	EventRestoreStage            EventType = "SessionRestoreStage"
+	EventSessionRestored         EventType = "SessionRestored"
+	EventRestoreFailed           EventType = "SessionRestoreFailed"
+	EventTerminationStarted      EventType = "SessionTerminationStarted"
+	EventSessionTerminated       EventType = "SessionTerminated"
+	EventTerminationFailed       EventType = "SessionTerminationFailed"
 )
+
+func NewTerminationEvent(eventID string, eventType EventType, stage string, workflow Workflow, session Session, objectsDeleted int, now time.Time) SessionEvent {
+	return SessionEvent{
+		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
+		ActorType: string(ActorTypeSystem), ActorID: TerminationWorkflowType, CorrelationID: workflow.CorrelationID,
+		Data: map[string]string{
+			"workflow_id": workflow.ID, "stage": strings.TrimSpace(stage), "state": string(session.LifecycleState),
+			"objects_deleted": fmt.Sprintf("%d", objectsDeleted),
+		},
+	}
+}
+
+func NewArchiveEvent(eventID string, eventType EventType, stage string, workflow Workflow, session Session, archive ArchiveMetadata, now time.Time) SessionEvent {
+	return SessionEvent{
+		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
+		ActorType: string(ActorTypeSystem), ActorID: ArchiveWorkflowType, CorrelationID: workflow.CorrelationID,
+		Data: map[string]string{
+			"workflow_id": workflow.ID, "stage": strings.TrimSpace(stage), "state": string(session.LifecycleState),
+			"archive_id": archive.ID, "archive_object_key": archive.ObjectKey,
+			"archive_manifest_object_key": archive.ManifestObjectKey,
+			"archive_manifest_sha256":     archive.ManifestSHA256,
+			"archive_manifest_size_bytes": fmt.Sprintf("%d", archive.ManifestSizeBytes),
+		},
+	}
+}
 
 // NewProvisioningEvent records a stable workflow stage without exposing cloud
 // account identifiers or credentials.
@@ -45,6 +81,13 @@ func NewProvisioningEvent(eventID string, eventType EventType, stage string, wor
 			"volume_id": session.Infrastructure.DataVolumeID,
 		},
 	}
+}
+
+func NewRestoreEvent(eventID string, eventType EventType, stage string, workflow Workflow, session Session, now time.Time) SessionEvent {
+	event := NewProvisioningEvent(eventID, eventType, stage, workflow, session, now)
+	event.ActorID = RestoreWorkflowType
+	event.Data["archive_id"] = session.Archive.ID
+	return event
 }
 
 func NewHealthChangedEvent(eventID string, session Session, from HealthStatus, observation HealthObservation, now time.Time) SessionEvent {
@@ -141,6 +184,7 @@ func NewSessionConfiguredEvent(
 			"sleep_after_seconds":    fmt.Sprintf("%d", session.SleepAfterSeconds),
 			"archive_after_seconds":  fmt.Sprintf("%d", session.ArchiveAfterSeconds),
 			"teamspeak_enabled":      fmt.Sprintf("%t", session.TeamSpeakEnabled),
+			"vanilla":                fmt.Sprintf("%t", session.Vanilla),
 		},
 	}
 }

@@ -61,6 +61,18 @@ func build(ctx context.Context) (*handler, error) {
 	if sleepARN == "" || wakeARN == "" {
 		return nil, fmt.Errorf("SLEEP_STATE_MACHINE_ARN and WAKE_STATE_MACHINE_ARN are required")
 	}
+	archiveARN := strings.TrimSpace(os.Getenv("ARCHIVE_STATE_MACHINE_ARN"))
+	if archiveARN == "" {
+		return nil, fmt.Errorf("ARCHIVE_STATE_MACHINE_ARN is required")
+	}
+	restoreARN := strings.TrimSpace(os.Getenv("RESTORE_STATE_MACHINE_ARN"))
+	if restoreARN == "" {
+		return nil, fmt.Errorf("RESTORE_STATE_MACHINE_ARN is required")
+	}
+	terminateARN := strings.TrimSpace(os.Getenv("TERMINATE_STATE_MACHINE_ARN"))
+	if terminateARN == "" {
+		return nil, fmt.Errorf("TERMINATE_STATE_MACHINE_ARN is required")
+	}
 	logger := logging.New(baseConfig.LogLevel)
 	awsConfig, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(baseConfig.AWSRegion))
 	if err != nil {
@@ -77,6 +89,9 @@ func build(ctx context.Context) (*handler, error) {
 		sfnworkflow.New(sfn.NewFromConfig(awsConfig), map[string]string{
 			"ProvisionSession": provisionARN, domain.BootstrapWorkflowType: bootstrapARN,
 			domain.SleepWorkflowType: sleepARN, domain.WakeWorkflowType: wakeARN,
+			domain.ArchiveWorkflowType:     archiveARN,
+			domain.RestoreWorkflowType:     restoreARN,
+			domain.TerminationWorkflowType: terminateARN,
 		}),
 		authorizer, identity.Generator{}, clock, 8*time.Hour,
 	)

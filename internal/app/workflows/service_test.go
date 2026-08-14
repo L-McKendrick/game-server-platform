@@ -140,6 +140,39 @@ func TestStart_AllowsGuildAdministratorForSleepWorkflow(t *testing.T) {
 	}
 }
 
+func TestStart_TerminationIsOwnerOnlyAndAcquiresDeletingState(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	repository := seedRunningWorkflowRepository(t, now)
+	starter := &workflowStarter{arn: "arn:aws:states:us-west-2:123456789012:execution:DestroySession:terminate-owner"}
+	service, err := NewService(repository, repository, starter, allowAuthorizer{}, &workflowIDs{ids: []string{"termination-started"}}, workflowClock{now}, 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin := domain.CommandEnvelope{
+		SchemaVersion: 1, CommandID: "terminate-admin", CommandType: domain.CommandDestroySession, RequestedAt: now,
+		Actor:     domain.CommandActor{DiscordUserID: "admin-1", GuildID: "guild-1", ChannelID: "channel-1", CanManageGuild: true},
+		SessionID: "running-session", IdempotencyKey: "discord:terminate-admin", CorrelationID: "terminate-admin", Parameters: map[string]string{},
+	}
+	if _, err := service.Start(context.Background(), admin); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("administrator termination error = %v; want forbidden", err)
+	}
+	owner := admin
+	owner.CommandID, owner.IdempotencyKey, owner.CorrelationID = "terminate-owner", "discord:terminate-owner", "terminate-owner"
+	owner.Actor.DiscordUserID, owner.Actor.CanManageGuild = "owner-1", false
+	workflow, err := service.Start(context.Background(), owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := repository.Get(context.Background(), "running-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workflow.Type != domain.TerminationWorkflowType || session.LifecycleState != domain.StateDeleting || session.ActiveWorkflowID != owner.CommandID {
+		t.Fatalf("workflow = %#v, session = %#v", workflow, session)
+	}
+}
+
 func seedWorkflowRepository(t *testing.T, now time.Time) *memory.SessionRepository {
 	t.Helper()
 	repository := memory.NewSessionRepository()

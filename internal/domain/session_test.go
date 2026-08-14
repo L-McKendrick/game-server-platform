@@ -138,6 +138,52 @@ func TestSessionBecomesNewWhenConfigurationAndArtifactsAreComplete(t *testing.T)
 	}
 }
 
+func TestVanillaSessionBecomesNewWithoutPreset(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 14, 6, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{
+		ID: "session-vanilla", Slug: "vanilla", DisplayName: "Vanilla", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(SessionConfiguration{
+		GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400, Vanilla: true,
+	}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AttachArtifact(ArtifactMission, "sessions/session-vanilla/input/missions/mission.pbo", now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateNew || session.PresetObjectKey != "" || !session.Vanilla {
+		t.Fatalf("vanilla session = %#v; want NEW without preset", session)
+	}
+}
+
+func TestModdedSessionStillRequiresPreset(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 14, 6, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{
+		ID: "session-modded", Slug: "modded", DisplayName: "Modded", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(SessionConfiguration{
+		GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400,
+	}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AttachArtifact(ArtifactMission, "sessions/session-modded/input/missions/mission.pbo", now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateDraft {
+		t.Fatalf("modded session state = %s; want DRAFT until preset upload", session.LifecycleState)
+	}
+}
+
 func TestSessionWorkflowLockRejectsConcurrentMutationAndCanBeReleased(t *testing.T) {
 	t.Parallel()
 

@@ -20,7 +20,10 @@ type fakeAPI struct {
 	transactWriteInput *dynamodb.TransactWriteItemsInput
 	transactWriteErr   error
 }
-func (fake *fakeAPI) Scan(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) { return &dynamodb.ScanOutput{}, nil }
+
+func (fake *fakeAPI) Scan(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+	return &dynamodb.ScanOutput{}, nil
+}
 
 func (fake *fakeAPI) GetItem(
 	_ context.Context,
@@ -196,6 +199,19 @@ func TestGetIdempotencyDecodesStoredRecord(t *testing.T) {
 			stored.ResultReference,
 			record.ResultReference,
 		)
+	}
+}
+
+func TestSessionItemRoundTripPreservesVanillaMode(t *testing.T) {
+	t.Parallel()
+	session := testSession(t, time.Date(2026, 8, 14, 6, 0, 0, 0, time.UTC))
+	session.Vanilla = true
+	stored, err := fromSessionItem(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.Vanilla {
+		t.Fatal("vanilla mode was not preserved by DynamoDB mapping")
 	}
 }
 

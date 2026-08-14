@@ -101,6 +101,12 @@
           "name": "teamspeak",
           "description": "Enable TeamSpeak for this session",
           "required": false
+        },
+        {
+          "type": 5,
+          "name": "vanilla",
+          "description": "Use anonymous SteamCMD without a mod preset",
+          "required": false
         }
       ]
     },
@@ -172,8 +178,28 @@
     {
       "type": 1,
       "name": "archive",
-      "description": "Archive a session when archival is available",
-      "options": [{"type": 3, "name": "session-id", "description": "Session identifier", "required": true}]
+      "description": "Verify a portable backup, then remove EC2 and EBS",
+      "options": [
+        {"type": 3, "name": "session-id", "description": "Session identifier", "required": true},
+        {"type": 5, "name": "confirm", "description": "Confirm verified backup followed by EC2 and EBS removal", "required": true}
+      ]
+    },
+    {
+      "type": 1,
+      "name": "restore",
+      "description": "Recreate infrastructure and restore a verified archive",
+      "options": [
+        {"type": 3, "name": "session-id", "description": "Archived session identifier", "required": true}
+      ]
+    },
+    {
+      "type": 1,
+      "name": "terminate",
+      "description": "Permanently delete a session and all associated resources",
+      "options": [
+        {"type": 3, "name": "session-id", "description": "Session identifier", "required": true},
+        {"type": 5, "name": "confirm", "description": "Confirm irreversible deletion without creating a backup", "required": true}
+      ]
     }
   ]
 }

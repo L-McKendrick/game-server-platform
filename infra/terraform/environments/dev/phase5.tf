@@ -291,6 +291,22 @@ data "aws_iam_policy_document" "game_instance" {
       "${aws_s3_bucket.session_assets.arn}/sessions/*/logs/*",
     ]
   }
+
+  statement {
+    sid     = "WriteSessionArchives"
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.session_assets.arn}/sessions/*/archives/*/session.tar.gz",
+    ]
+  }
+
+  statement {
+    sid     = "ReadSessionArchiveMetadata"
+    actions = ["s3:GetObject"]
+    resources = [
+      "${aws_s3_bucket.session_assets.arn}/sessions/*/archives/*/session.tar.gz",
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "game_instance" {
@@ -323,6 +339,9 @@ data "aws_iam_policy_document" "command_worker" {
       aws_sfn_state_machine.bootstrap_game_server.arn,
       aws_sfn_state_machine.workflow["SleepSession"].arn,
       aws_sfn_state_machine.workflow["WakeSession"].arn,
+      aws_sfn_state_machine.workflow["ArchiveSession"].arn,
+      aws_sfn_state_machine.workflow["RestoreSession"].arn,
+      aws_sfn_state_machine.workflow["DestroySession"].arn,
     ]
   }
 
@@ -383,6 +402,9 @@ resource "aws_lambda_function" "command_worker" {
       BOOTSTRAP_STATE_MACHINE_ARN = aws_sfn_state_machine.bootstrap_game_server.arn
       SLEEP_STATE_MACHINE_ARN     = aws_sfn_state_machine.workflow["SleepSession"].arn
       WAKE_STATE_MACHINE_ARN      = aws_sfn_state_machine.workflow["WakeSession"].arn
+      ARCHIVE_STATE_MACHINE_ARN   = aws_sfn_state_machine.workflow["ArchiveSession"].arn
+      RESTORE_STATE_MACHINE_ARN   = aws_sfn_state_machine.workflow["RestoreSession"].arn
+      TERMINATE_STATE_MACHINE_ARN = aws_sfn_state_machine.workflow["DestroySession"].arn
       DISCORD_PUBLIC_KEY          = var.discord_public_key
       DISCORD_APPLICATION_ID      = var.discord_application_id
       DISCORD_ALLOWED_GUILD_IDS   = join(",", sort(tolist(var.discord_allowed_guild_ids)))
@@ -482,6 +504,40 @@ data "aws_iam_policy_document" "provisioning_worker" {
       test     = "StringEquals"
       variable = "ec2:VolumeType"
       values   = ["gp3"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Project"
+      values   = [var.project_name]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/Environment"
+      values   = [var.environment]
+    }
+  }
+
+  # RunInstances evaluates an AMI-backed root volume against the encryption
+  # state of its parent snapshot. The approved Ubuntu AMI currently uses
+  # an unencrypted public snapshot even though the block-device mapping asks
+  # EC2 to create the resulting root volume encrypted.
+  statement {
+    sid       = "LaunchAMIBackedGP3RootVolume"
+    actions   = ["ec2:RunInstances"]
+    resources = [local.provisioning_volume_resource]
+
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:VolumeType"
+      values   = ["gp3"]
+    }
+
+    condition {
+      test     = "Null"
+      variable = "ec2:ParentSnapshot"
+      values   = ["false"]
     }
 
     condition {

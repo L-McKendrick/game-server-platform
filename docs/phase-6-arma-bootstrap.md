@@ -21,9 +21,14 @@ Command dispatch is intentionally single-attempt because Systems Manager Run Com
 - The instance retrieves the secret at runtime. A mode-`0600` SteamCMD runscript is deleted on every exit.
 - First-login Steam Guard authorization is performed as a one-time operator action on the managed host. Any temporary `steam_guard_code` secret field must be removed after authorization; normal bootstrap reads only `username` and `password`.
 - The non-secret bootstrap script is deployed as a content-addressed, versioned S3 artifact; its short SSM launcher is kept below 4 KiB.
-- Mission and preset inputs are read from the session-scoped S3 prefix. SSM output is stored under the session log prefix.
+- Mission input is always read from the session-scoped S3 prefix. Modded sessions also require a launcher preset; explicitly configured vanilla sessions require no preset. SSM output is stored under the session log prefix.
+- Vanilla sessions use `login anonymous` with the public Arma 3 dedicated-server app, do not select the Creator DLC beta branch, and skip Steam secret retrieval and Workshop processing entirely.
 - Steam Guard challenges fail closed and require explicit account authorization before retry.
 - Workshop content is read from the authenticated Steam user's persistent library under `/srv/game-server/home/Steam/steamapps/workshop`.
+
+For a vanilla session, set `vanilla:true` on `/session configure`, upload only
+the mission, and then use `/session start`. The vanilla selection is immutable
+after the session leaves `DRAFT`, like the rest of the session configuration.
 
 ## Host layout and health boundary
 

@@ -23,6 +23,13 @@ type Infrastructure struct {
 	LastObservedAt   time.Time
 }
 
+func (infrastructure Infrastructure) Empty() bool {
+	return infrastructure.CapacitySlotID == "" && infrastructure.InstanceID == "" && infrastructure.DataVolumeID == "" &&
+		infrastructure.AvailabilityZone == "" && infrastructure.SubnetID == "" && len(infrastructure.SecurityGroupIDs) == 0 &&
+		infrastructure.InstanceProfile == "" && infrastructure.AMIID == "" && infrastructure.InstanceType == "" &&
+		infrastructure.PublicIPv4 == "" && infrastructure.LastObservedAt.IsZero()
+}
+
 // ComputeLaunchRequest contains the bounded, operator-controlled launch
 // parameters for one session. Discord input never supplies these values.
 type ComputeLaunchRequest struct {
@@ -37,6 +44,7 @@ type ComputeLaunchRequest struct {
 	InstanceProfile  string
 	RootVolumeGiB    int32
 	DataVolumeGiB    int32
+	ClientToken      string
 }
 
 // ComputeObservation is the latest EC2 view used for idempotent reconciliation.
@@ -49,10 +57,7 @@ type ComputeObservation struct {
 }
 
 func (infrastructure Infrastructure) Validate() error {
-	if infrastructure.CapacitySlotID == "" && infrastructure.InstanceID == "" && infrastructure.DataVolumeID == "" &&
-		infrastructure.AvailabilityZone == "" && infrastructure.SubnetID == "" && len(infrastructure.SecurityGroupIDs) == 0 &&
-		infrastructure.InstanceProfile == "" && infrastructure.AMIID == "" && infrastructure.InstanceType == "" &&
-		infrastructure.PublicIPv4 == "" && infrastructure.LastObservedAt.IsZero() {
+	if infrastructure.Empty() {
 		return nil
 	}
 	if strings.TrimSpace(infrastructure.CapacitySlotID) == "" {

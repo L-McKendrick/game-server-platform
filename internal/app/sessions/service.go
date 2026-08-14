@@ -103,8 +103,8 @@ type StartCommand struct {
 	IdempotencyKey string
 }
 
-// LifecycleCommand requests an explicit sleep or wake from the session owner
-// or a Discord member with Administrator or Manage Server permission.
+// LifecycleCommand requests an explicit sleep, wake, archive, restore, or termination.
+// Archive and restore remain owner-only; sleep and wake also allow guild managers.
 type LifecycleCommand struct {
 	Actor                                                                   domain.Actor
 	Roles                                                                   []string
@@ -124,7 +124,8 @@ func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleC
 	if err != nil {
 		return err
 	}
-	if err := authorizeLifecycleActor(command.Actor, session, command.CanManageGuild); err != nil {
+	canManageLifecycle := command.CanManageGuild && (command.CommandType == domain.CommandSleepSession || command.CommandType == domain.CommandWakeSession)
+	if err := authorizeLifecycleActor(command.Actor, session, canManageLifecycle); err != nil {
 		return err
 	}
 	if session.GuildID != strings.TrimSpace(command.GuildID) {
@@ -136,7 +137,16 @@ func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleC
 	if command.CommandType == domain.CommandWakeSession && !session.CanWake() {
 		return fmt.Errorf("session cannot wake now: %w", domain.ErrInvalidTransition)
 	}
-	if command.CommandType != domain.CommandSleepSession && command.CommandType != domain.CommandWakeSession {
+	if command.CommandType == domain.CommandArchiveSession && !session.CanArchive() {
+		return fmt.Errorf("session cannot archive now: %w", domain.ErrInvalidTransition)
+	}
+	if command.CommandType == domain.CommandRestoreSession && !session.CanRestore() {
+		return fmt.Errorf("session cannot restore now: %w", domain.ErrInvalidTransition)
+	}
+	if command.CommandType == domain.CommandDestroySession && !session.CanTerminate() {
+		return fmt.Errorf("session cannot terminate now: %w", domain.ErrInvalidTransition)
+	}
+	if command.CommandType != domain.CommandSleepSession && command.CommandType != domain.CommandWakeSession && command.CommandType != domain.CommandArchiveSession && command.CommandType != domain.CommandRestoreSession && command.CommandType != domain.CommandDestroySession {
 		return fmt.Errorf("unsupported lifecycle command")
 	}
 	return service.commandQueue.Enqueue(ctx, domain.CommandEnvelope{SchemaVersion: 1, CommandID: strings.TrimSpace(command.CommandID), CommandType: command.CommandType, RequestedAt: service.clock.Now().UTC(), Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID), Roles: append([]string(nil), command.Roles...), CanManageGuild: command.CanManageGuild}, SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: map[string]string{}})
@@ -198,6 +208,7 @@ type ConfigureCommand struct {
 	SleepAfterSeconds   int64
 	ArchiveAfterSeconds int64
 	TeamSpeakEnabled    bool
+	Vanilla             bool
 }
 
 // Configure validates and persists a new immutable configuration revision.
@@ -232,6 +243,7 @@ func (service *Service) Configure(ctx context.Context, command ConfigureCommand)
 		SleepAfterSeconds:   command.SleepAfterSeconds,
 		ArchiveAfterSeconds: command.ArchiveAfterSeconds,
 		TeamSpeakEnabled:    command.TeamSpeakEnabled,
+		Vanilla:             command.Vanilla,
 	}, now); err != nil {
 		return domain.Session{}, fmt.Errorf("configure session: %w", err)
 	}
@@ -675,6 +687,7 @@ func configureRequestIdentity(command ConfigureCommand) (string, string, error) 
 		SleepAfterSeconds   int64  `json:"sleep_after_seconds"`
 		ArchiveAfterSeconds int64  `json:"archive_after_seconds"`
 		TeamSpeakEnabled    bool   `json:"teamspeak_enabled"`
+		Vanilla             bool   `json:"vanilla,omitempty"`
 	}{
 		CommandType:         "ConfigureSession",
 		ActorID:             strings.TrimSpace(command.Actor.ID),
@@ -684,6 +697,7 @@ func configureRequestIdentity(command ConfigureCommand) (string, string, error) 
 		SleepAfterSeconds:   command.SleepAfterSeconds,
 		ArchiveAfterSeconds: command.ArchiveAfterSeconds,
 		TeamSpeakEnabled:    command.TeamSpeakEnabled,
+		Vanilla:             command.Vanilla,
 	})
 	if err != nil {
 		return "", "", fmt.Errorf("hash configure-session request: %w", err)

@@ -370,11 +370,23 @@ func (handler *Handler) routeCommand(
 	case "start":
 		content, err := handler.startSession(ctx, payload, subcommand.Options, actor, correlationID)
 		return content, commandName, err
-	case "sleep", "wake":
+	case "sleep", "wake", "restore":
 		content, err := handler.requestLifecycle(ctx, payload, subcommand.Options, actor, correlationID, subcommand.Name)
 		return content, commandName, err
 	case "archive":
-		return "", commandName, newUserError("Archive is not available yet. It will be enabled with the validated Phase 9 archive workflow.")
+		confirmed, err := booleanOption(subcommand.Options, "confirm", false)
+		if err != nil || !confirmed {
+			return "", commandName, newUserError("Archiving stops the game services and removes the current EC2 instance and EBS volumes after the portable backup is verified. A later restore creates billable replacement resources. Set `confirm` to true to continue.")
+		}
+		content, err := handler.requestLifecycle(ctx, payload, subcommand.Options, actor, correlationID, subcommand.Name)
+		return content, commandName, err
+	case "terminate":
+		confirmed, err := booleanOption(subcommand.Options, "confirm", false)
+		if err != nil || !confirmed {
+			return "", commandName, newUserError("Termination is immediate and irreversible. It permanently deletes the session's tagged EC2/EBS infrastructure and every stored artifact/archive version without creating a backup. Set `confirm` to true to continue.")
+		}
+		content, err := handler.requestLifecycle(ctx, payload, subcommand.Options, actor, correlationID, subcommand.Name)
+		return content, commandName, err
 	default:
 		return "", commandName, newUserError(
 			"That `/session` subcommand is not supported yet.",
@@ -394,11 +406,25 @@ func (handler *Handler) requestLifecycle(ctx context.Context, payload interactio
 	typeName := domain.CommandSleepSession
 	if action == "wake" {
 		typeName = domain.CommandWakeSession
+	} else if action == "archive" {
+		typeName = domain.CommandArchiveSession
+	} else if action == "restore" {
+		typeName = domain.CommandRestoreSession
+	} else if action == "terminate" {
+		typeName = domain.CommandDestroySession
 	}
 	if err := handler.service.RequestLifecycle(ctx, appsession.LifecycleCommand{Actor: actor, Roles: roles, SessionID: sessionID, GuildID: payload.GuildID, ChannelID: payload.ChannelID, CommandID: payload.ID, CorrelationID: correlationID, IdempotencyKey: "discord:" + payload.ID, CommandType: typeName, CanManageGuild: payload.memberCanManageGuild()}); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("**%s request accepted**\nSession: `%s`\nUse `/session status` to follow progress.", strings.ToUpper(action[:1])+action[1:], sanitizeInline(sessionID)), nil
+	message := fmt.Sprintf("**%s request accepted**\nSession: `%s`\nUse `/session status` to follow progress.", strings.ToUpper(action[:1])+action[1:], sanitizeInline(sessionID))
+	if action == "archive" {
+		message += "\nThe game services will stop while the archive is captured. EC2 and EBS are removed only after the archive and manifest checksums are durably verified."
+	} else if action == "restore" {
+		message += "\nNew EC2 and EBS resources will be created; the recorded archive is revalidated before provisioning."
+	} else if action == "terminate" {
+		message += "\nTermination is irreversible. Tagged EC2/EBS resources and all stored session artifact/archive versions will be permanently deleted; only an audit tombstone remains."
+	}
+	return message, nil
 }
 
 func (handler *Handler) startSession(
@@ -525,6 +551,10 @@ func (handler *Handler) configureSession(
 	if err != nil {
 		return "", newUserError("The TeamSpeak option must be true or false.")
 	}
+	vanilla, err := booleanOption(options, "vanilla", false)
+	if err != nil {
+		return "", newUserError("The vanilla option must be true or false.")
+	}
 
 	session, err := handler.service.Configure(ctx, appsession.ConfigureCommand{
 		Actor:               actor,
@@ -536,6 +566,7 @@ func (handler *Handler) configureSession(
 		SleepAfterSeconds:   sleepMinutes * 60,
 		ArchiveAfterSeconds: archiveDays * 86400,
 		TeamSpeakEnabled:    teamSpeak,
+		Vanilla:             vanilla,
 	})
 	if err != nil {
 		return "", fmt.Errorf("configure session: %w", err)

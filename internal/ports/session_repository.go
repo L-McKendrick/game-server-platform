@@ -24,6 +24,47 @@ type ObjectStore interface {
 	Put(ctx context.Context, key string, contentType string, body []byte, sha256Base64 string) error
 }
 
+type ArchiveCommandStatus struct {
+	Status       string
+	ErrorMessage string
+	ObjectKey    string
+	SHA256       string
+	SizeBytes    int64
+}
+
+type ArchiveRunner interface {
+	Start(ctx context.Context, session domain.Session, archiveID string) (string, error)
+	Observe(ctx context.Context, instanceID string, commandID string) (ArchiveCommandStatus, error)
+}
+
+type ArchiveObject struct {
+	Key         string
+	SHA256      string
+	SizeBytes   int64
+	ContentType string
+}
+
+type ArchiveStore interface {
+	Put(ctx context.Context, object ArchiveObject, body []byte) error
+	Verify(ctx context.Context, object ArchiveObject) error
+	Get(ctx context.Context, object ArchiveObject) ([]byte, error)
+}
+
+// SessionObjectCleaner permanently removes every version and delete marker
+// under the platform-owned sessions/<id>/ prefix.
+type SessionObjectCleaner interface {
+	DeleteSessionObjects(ctx context.Context, sessionID string) (int, error)
+}
+
+// InfrastructureDestroyer removes only resources whose immutable platform
+// tags match the requested session. Implementations must be idempotent.
+type InfrastructureDestroyer interface {
+	TerminateInstance(ctx context.Context, sessionID string, instanceID string) error
+	InstanceTerminated(ctx context.Context, sessionID string, instanceID string) (bool, error)
+	DeleteVolume(ctx context.Context, sessionID string, volumeID string) error
+	VolumeDeleted(ctx context.Context, sessionID string, volumeID string) (bool, error)
+}
+
 type ArtifactDownloader interface {
 	Download(ctx context.Context, request domain.ArtifactIngestRequest) ([]byte, error)
 }
@@ -73,7 +114,11 @@ type MonitoringRepository interface {
 	SaveMonitoring(ctx context.Context, session domain.Session, expectedVersion int64, event *domain.SessionEvent) error
 }
 
-type MonitoringCommandStatus struct { Status string; ErrorMessage string; Observation domain.HealthObservation }
+type MonitoringCommandStatus struct {
+	Status       string
+	ErrorMessage string
+	Observation  domain.HealthObservation
+}
 type MonitoringRunner interface {
 	Start(ctx context.Context, session domain.Session) (string, error)
 	Observe(ctx context.Context, instanceID string, commandID string) (MonitoringCommandStatus, error)
@@ -87,6 +132,11 @@ type BootstrapCommandStatus struct {
 // BootstrapRunner starts and observes one idempotent Systems Manager command.
 // The command itself owns durable per-stage markers on the session data volume.
 type BootstrapRunner interface {
+	Start(ctx context.Context, session domain.Session) (string, error)
+	Observe(ctx context.Context, instanceID string, commandID string) (BootstrapCommandStatus, error)
+}
+
+type RestoreRunner interface {
 	Start(ctx context.Context, session domain.Session) (string, error)
 	Observe(ctx context.Context, instanceID string, commandID string) (BootstrapCommandStatus, error)
 }

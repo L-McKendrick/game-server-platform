@@ -13,6 +13,7 @@ const (
 	ActionPrepare        = "prepare"
 	ActionDispatch       = "dispatch"
 	ActionObserve        = "observe"
+	ActionCheckManaged   = "check_managed"
 	ActionHealthDispatch = "dispatch_health"
 	ActionHealthObserve  = "observe_health"
 	ActionComplete       = "complete"
@@ -37,6 +38,7 @@ type TaskResult struct {
 	WorkflowID   string `json:"workflow_id"`
 	State        string `json:"state"`
 	CommandID    string `json:"command_id,omitempty"`
+	Managed      bool   `json:"managed"`
 	Done         bool   `json:"done"`
 	Succeeded    bool   `json:"succeeded"`
 	ErrorCode    string `json:"error_code,omitempty"`
@@ -79,6 +81,8 @@ func (s *Service) Handle(ctx context.Context, r TaskRequest) (TaskResult, error)
 		return result(session, wf), nil
 	case ActionObserve:
 		return s.observe(ctx, session, wf)
+	case ActionCheckManaged:
+		return s.checkManaged(ctx, session, wf)
 	case ActionHealthDispatch:
 		commandID, err := s.monitor.Start(ctx, session)
 		if err != nil {
@@ -109,6 +113,17 @@ func (s *Service) Handle(ctx context.Context, r TaskRequest) (TaskResult, error)
 		return TaskResult{}, fmt.Errorf("unsupported sleep/wake action %q", r.Action)
 	}
 }
+
+func (s *Service) checkManaged(ctx context.Context, session domain.Session, wf domain.Workflow) (TaskResult, error) {
+	managed, err := s.compute.IsManaged(ctx, session.Infrastructure.InstanceID)
+	if err != nil {
+		return TaskResult{}, err
+	}
+	out := result(session, wf)
+	out.Managed = managed
+	return out, nil
+}
+
 func (s *Service) observe(ctx context.Context, session domain.Session, wf domain.Workflow) (TaskResult, error) {
 	o, err := s.compute.ObserveInstance(ctx, session.Infrastructure.InstanceID)
 	if err != nil {

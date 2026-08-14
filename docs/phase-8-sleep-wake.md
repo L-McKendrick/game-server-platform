@@ -13,15 +13,18 @@ boundary before publishing the refreshed endpoint.
 - Wake is permitted only from `SLEEPING`, and transitions through `WAKING`
   with health `STARTING` to `RUNNING` only after Systems Manager confirms the
   Arma service and UDP 2302 listener are healthy.
+- After EC2 reports `running`, wake waits for the instance to report `Online`
+  in Systems Manager before dispatching the service-health probe. This wait is
+  bounded to 40 checks at 15-second intervals.
 - A stopped instance retains both EBS volumes. No snapshot, termination,
   bootstrap, credential retrieval, or content mutation occurs in this phase.
 - The session owner or a signed Discord Administrator/Manage Server member may
   request `/session sleep` or `/session wake`. The verified administrator
   capability is carried through the private command queue and applies only to
   those two implemented lifecycle workflows.
-- `/session archive` is registered as a discoverable command but fails closed
-  until Phase 9 supplies a verified archive workflow; it cannot start the
-  current placeholder state machine.
+- Phase 8 registered `/session archive` as a discoverable, fail-closed command.
+  Phase 9 later replaced that placeholder with guarded archive/destruction and
+  restore workflows documented separately.
 - The public IPv4 address may change on wake. The observed endpoint is
   refreshed from EC2 only after health succeeds.
 - `/session status` uses a bounded, direct A2S `INFO` query to UDP `2303` for

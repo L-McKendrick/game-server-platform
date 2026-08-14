@@ -9,10 +9,11 @@ import (
 
 func formatConfiguredSession(session domain.Session) string {
 	return fmt.Sprintf(
-		"**Session configured**\nID: `%s`\nRevision: `%d`\nProfile: `%s`\nSleep after: `%d minutes`\nArchive after: `%d days`\nTeamSpeak: `%t`",
+		"**Session configured**\nID: `%s`\nRevision: `%d`\nProfile: `%s`\nVanilla: `%t`\nSleep after: `%d minutes`\nArchive after: `%d days`\nTeamSpeak: `%t`",
 		sanitizeInline(session.ID),
 		session.ConfigurationRevision,
 		sanitizeInline(session.GameProfileID),
+		session.Vanilla,
 		session.SleepAfterSeconds/60,
 		session.ArchiveAfterSeconds/86400,
 		session.TeamSpeakEnabled,
@@ -40,7 +41,7 @@ func formatCreatedSession(session domain.Session) string {
 
 func formatSessionStatus(session domain.Session, players *domain.PlayerStatus) string {
 	status := fmt.Sprintf(
-		"**%s**\nID: `%s`\nSlug: `%s`\nLifecycle: `%s`\nHealth: `%s`\nConfiguration: `%d` (`%s`)\nSleep after: `%d minutes`\nArchive after: `%d days`\nTeamSpeak: `%t`\nVersion: `%d`",
+		"**%s**\nID: `%s`\nSlug: `%s`\nLifecycle: `%s`\nHealth: `%s`\nConfiguration: `%d` (`%s`)\nVanilla: `%t`\nSleep after: `%d minutes`\nArchive after: `%d days`\nTeamSpeak: `%t`\nVersion: `%d`",
 		sanitizeInline(session.DisplayName),
 		sanitizeInline(session.ID),
 		sanitizeInline(session.Slug),
@@ -48,6 +49,7 @@ func formatSessionStatus(session domain.Session, players *domain.PlayerStatus) s
 		session.HealthStatus,
 		session.ConfigurationRevision,
 		sanitizeInline(session.GameProfileID),
+		session.Vanilla,
 		session.SleepAfterSeconds/60,
 		session.ArchiveAfterSeconds/86400,
 		session.TeamSpeakEnabled,

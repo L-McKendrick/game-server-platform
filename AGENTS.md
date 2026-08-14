@@ -47,6 +47,20 @@ Use Go's `testing` package and table-driven tests for shared behavior. Name test
 
 Use scoped Conventional Commit subjects, such as `feat: add session bootstrap worker`. PRs should explain behavior and infrastructure impact, link issues, list verification, and identify Terraform plans, migrations, gates, or deployment steps. Add screenshots only for visible Discord changes.
 
+### Phase and Step Workflow
+
+- Start every phase on a new branch before doing any work for that phase.
+- Before development begins on a step, break that step into 1-8 specific,
+  independently completable tasks and record them in `PROJECT_PLAN.md` using
+  nested numbering such as `X.X.1`, `X.X.2`, and `X.X.3`.
+- By default, each development prompt should implement exactly one numbered
+  task. Do not combine multiple tasks unless the user explicitly requests it.
+- When all tasks in a step are complete, create a scoped Conventional Commit,
+  tell the user the commit name, and push the phase branch.
+- When all steps in a phase are complete, open and merge the phase branch only
+  through a pull request. Tell the user the proposed PR name and provide a
+  concise PR summary covering behavior, infrastructure impact, and validation.
+
 ## Security & Configuration
 
 Never commit Discord tokens, AWS credentials, populated `.tfvars`, Terraform plans/state, or archives. Use the `game-server-dev` AWS CLI profile locally. Keep provisioning disabled until its Terraform plan, budget recipient, and deployment are approved. Never run `terraform apply` during routine validation.

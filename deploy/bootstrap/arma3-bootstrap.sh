@@ -12,6 +12,7 @@ ASSETS_BUCKET="$(decode "$ASSETS_BUCKET_B64")"
 STEAM_SECRET_ID="$(decode "$STEAM_SECRET_ID_B64")"
 AWS_REGION="$(decode "$AWS_REGION_B64")"
 TEAMSPEAK_VERSION="$(decode "$TEAMSPEAK_VERSION_B64")"
+: "${VANILLA_MODE:=false}"
 ROOT=/srv/game-server
 STATE_DIR="$ROOT/state"
 LOG_DIR="$ROOT/logs"
@@ -50,6 +51,12 @@ prepare_host() {
 
 steam_login_file() {
   local target="$1" secret username password escaped_user escaped_password
+  if [ "$VANILLA_MODE" = true ]; then
+    printf 'login anonymous\n' >> "$target"
+    chmod 600 "$target"
+    chown steam:steam "$target"
+    return 0
+  fi
   secret="$(aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$STEAM_SECRET_ID" --query SecretString --output text)"
   username="$(printf '%s' "$secret" | jq -er '.username | select(type == "string" and length > 0)')"
   password="$(printf '%s' "$secret" | jq -er '.password | select(type == "string" and length > 0)')"
@@ -77,7 +84,11 @@ install_arma() (
   trap 'rm -f "$runfile"' EXIT
   printf 'force_install_dir %s\n' "$ROOT/arma3" > "$runfile"
   steam_login_file "$runfile"
-  printf 'app_update 233780 -beta creatordlc validate\nquit\n' >> "$runfile"
+  if [ "$VANILLA_MODE" = true ]; then
+    printf 'app_update 233780 validate\nquit\n' >> "$runfile"
+  else
+    printf 'app_update 233780 -beta creatordlc validate\nquit\n' >> "$runfile"
+  fi
   runuser -u steam -- "$ROOT/steamcmd/steamcmd.sh" +runscript "$runfile"
   test -x "$ROOT/arma3/arma3server_x64"
 )
@@ -91,6 +102,12 @@ lowercase_tree() {
 }
 
 install_workshop() (
+  if [ "$VANILLA_MODE" = true ]; then
+    : > "$ROOT/config/mods.txt"
+    rm -f "$ROOT/config/preset.html"
+    chown steam:steam "$ROOT/config/mods.txt"
+    return 0
+  fi
   aws s3 cp "s3://$ASSETS_BUCKET/$PRESET_KEY" "$ROOT/config/preset.html" --region "$AWS_REGION" --only-show-errors
   mapfile -t ids < <(grep -Eio "id=[0-9]+|data-publishedfileid=[\"'][0-9]+" "$ROOT/config/preset.html" | grep -Eo '[0-9]+' | awk '!seen[$0]++')
   : > "$ROOT/config/mods.txt"

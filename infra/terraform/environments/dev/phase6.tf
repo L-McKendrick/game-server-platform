@@ -37,7 +37,8 @@ variable "teamspeak_version" {
 locals {
   bootstrap_worker_package_path = var.bootstrap_worker_lambda_package_path != null ? var.bootstrap_worker_lambda_package_path : abspath("${path.module}/../../../../dist/bootstrap-worker.zip")
   bootstrap_script_source_path  = abspath("${path.module}/../../../../deploy/bootstrap/arma3-bootstrap.sh")
-  bootstrap_script_hash         = filesha256(local.bootstrap_script_source_path)
+  bootstrap_script_content      = replace(file(local.bootstrap_script_source_path), "\r\n", "\n")
+  bootstrap_script_hash         = sha256(local.bootstrap_script_content)
   bootstrap_script_object_key   = "platform/bootstrap/arma3-${substr(local.bootstrap_script_hash, 0, 16)}.sh"
   bootstrap_poll_limit          = ceil(var.bootstrap_command_timeout_seconds / 30)
 }
@@ -45,7 +46,7 @@ locals {
 resource "aws_s3_object" "bootstrap_script" {
   bucket       = aws_s3_bucket.session_assets.id
   key          = local.bootstrap_script_object_key
-  source       = local.bootstrap_script_source_path
+  content      = local.bootstrap_script_content
   source_hash  = local.bootstrap_script_hash
   content_type = "text/x-shellscript"
 

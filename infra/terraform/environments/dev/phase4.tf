@@ -285,7 +285,7 @@ resource "aws_sfn_state_machine" "workflow" {
   name     = "${local.name_prefix}-${each.value}"
   role_arn = aws_iam_role.workflow.arn
   type     = "STANDARD"
-  definition = contains(["SleepSession", "WakeSession"], each.value) ? local.sleep_wake_definitions[each.value] : jsonencode({
+  definition = contains(["SleepSession", "WakeSession"], each.value) ? local.sleep_wake_definitions[each.value] : each.value == "ArchiveSession" ? local.archive_definition : each.value == "RestoreSession" ? local.restore_definition : each.value == "DestroySession" ? local.termination_definition : jsonencode({
     Comment = "Phase 4 contract boundary; implementation arrives in its lifecycle phase."
     StartAt = "NotImplemented"
     States = {
@@ -297,7 +297,7 @@ resource "aws_sfn_state_machine" "workflow" {
     }
   })
 
-  depends_on = [aws_iam_role_policy.sleepwake_workflow]
+  depends_on = [aws_iam_role_policy.sleepwake_workflow, aws_iam_role_policy.archive_workflow]
 }
 
 output "command_queue_url" {

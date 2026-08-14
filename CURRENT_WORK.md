@@ -2,31 +2,94 @@
 
 ## State and Objective
 
-Phases 1-8 are complete. The Arma 3 development session remains `RUNNING` and `HEALTHY`; Phase 8 includes a live Steam A2S player-count view and owner-or-admin lifecycle control in Discord.
+Phases 1-9.4 are complete. The operator reports that the Phase 9.3 termination
+path was deployed and `Test Session` was permanently terminated. Replacement
+session `01KZZA8R4BGFC1FBVSBWGSBJA8` reached bootstrap after the provisioning
+IAM correction, then failed because its authenticated Steam account required a
+Steam Guard challenge.
 
-## Completed
+## Phase 9 Completed
 
-- Phases 1-7: durable provisioning, resumable Arma bootstrap, health monitoring, and alerts are deployed.
-- Phase 8: `/session sleep` and `/session wake` are authorized, idempotent workflow requests. The locked workflows stop/start only the existing EC2 instance and retain both root and data EBS volumes.
-- Wake waits for EC2 readiness, dispatches an SSM Arma/UDP/optional-voice health probe, refreshes the public endpoint only after the probe is healthy, then sends a Discord notification.
-- A failed sleep/wake workflow records `FAILED`/`UNHEALTHY` without deleting any resources. No automatic stop or recovery occurs.
-- `/session status` uses a bounded A2S `INFO` query to the public UDP `2303` endpoint for a live player count. It displays player names only if the optional A2S `PLAYER` response is usable; names are not persisted or logged.
-- The active server was updated through SSM to launch with `-steamQueryPort=2303`, restarted cleanly, and independently verified with A2S `INFO`: `Test Session`, map `stratis`, `0/1` players. Its A2S `PLAYER` endpoint repeatedly returns challenges, so player names are currently unavailable.
-- Terraform deployed the updated Discord Lambda and versioned bootstrap script. The full Phase 8 deployment completed successfully.
-- `/session sleep` and `/session wake` now accept either the session owner or a signed Discord Administrator/Manage Server member. The capability survives the private command queue and is limited to these lifecycle workflows; all other session actions remain owner-only.
-- The `/session` and `/admin` command definitions were bulk-registered for the development guild. `/session archive` is visible but fails closed until Phase 9 implements and verifies the archive workflow.
+- `/session archive` is owner-only and explicitly confirms that verified
+  archival is followed by EC2 and EBS removal.
+- Archive metadata and both S3 checksums are durably recorded before the
+  session crosses into `DESTROYING`. The worker re-verifies both objects before
+  mutation.
+- Destructive EC2 operations require matching `Project`, `Environment`, and
+  `SessionId` tags. The instance terminates before the detached data volume is
+  deleted; metadata reaches `ARCHIVED` only after both observations succeed.
+- `/session restore` is owner-only and validates manifest identity,
+  configuration revision, artifact keys, sizes, and checksums before reserving
+  capacity or creating resources.
+- Restore uses fresh encrypted EC2/EBS infrastructure, the existing bootstrap,
+  safe bounded archive extraction, ownership repair, service restart, and Arma
+  plus optional TeamSpeak health acceptance before returning `RUNNING` and
+  `HEALTHY`.
+- Failure paths retain discovered resource identifiers for Phase 10
+  reconciliation. Capacity is released only when resources are known absent.
+- `/session terminate` is owner-only, requires explicit irreversible-action
+  confirmation, creates no backup, and accepts any unlocked non-deleted
+  session so failed cleanup can be retried.
+- Termination requires exact immutable EC2/EBS tags, bounds deletion
+  observations, permanently deletes every S3 object version/delete marker
+  below the exact session prefix, releases capacity, and retains only a
+  `DELETED` audit tombstone.
+- Partial termination failures retain resource and object identifiers in
+  `FAILED`; other lifecycle workflows cannot race the termination lock.
+- Non-race Go tests, vet, all command builds, eleven Lambda packages, Discord JSON
+  parsing, Terraform formatting/validation, and diff checks pass. CGO/race
+  remains assigned to GitHub CI; thorough live archive/restore acceptance is
+  reserved for the Phase 9 completion checks.
 
-## Important Resources
+## Wake Correction
 
-- Session: `01KZ5VR86TM25A6Q3EKZGGX4DT` (`Test Session`)
-- Instance: `i-07abe4ba82ce2649f`
-- Persistent data volume: `vol-04605fd628fabaf80`
-- Active root volume: `vol-0b0c4c54fd555b99d`
+- `WakeSession` now waits for the restarted instance to report `Online` in
+  Systems Manager before dispatching its health probe.
+- The readiness loop is bounded to 40 attempts at 15-second intervals and
+  fails with `ERR_SSM_TIMEOUT` rather than racing `ssm:SendCommand`.
+- The sleep/wake worker role now has the read-only
+  `ssm:DescribeInstanceInformation` permission required by the readiness check.
+- Full non-race Go tests, vet, command builds, Lambda packaging, Terraform
+  formatting/validation, and diff checks pass. CGO/race remains assigned to
+  GitHub CI. No further live wake acceptance occurred before `Test Session`
+  was terminated.
 
-## Deferred Safety Boundary
+## Terminated Test Resource
 
-Automatic idle sleep is not enabled. It requires a platform-owned Arma server-side activity component and Steam A2S `INFO` corroboration; missing, stale, malformed, or failed query data is `UNKNOWN`, never zero players.
+- Session `01KZ5VR86TM25A6Q3EKZGGX4DT` (`Test Session`) is terminated.
+- Former instance `i-07abe4ba82ce2649f`, data volume
+  `vol-04605fd628fabaf80`, and root volume `vol-0b0c4c54fd555b99d` are no
+  longer active resources.
+
+## Vanilla Session Correction
+
+- `/session configure` now accepts `vanilla:true`; the selection is persisted,
+  audited, and displayed by configuration and status responses. Omitted or
+  false remains the backward-compatible modded behavior.
+- A configured vanilla session becomes `NEW` after mission validation without
+  requiring a launcher preset. Modded sessions still require both artifacts.
+- Vanilla bootstrap uses anonymous SteamCMD for app `233780`, skips the Creator
+  DLC beta, Steam secret retrieval, preset download, and Workshop processing,
+  and launches with an empty mod list.
+- Archive manifests and restore verification preserve the vanilla selection.
+- Focused tests, all non-race Go tests, vet, command builds, Lambda packaging,
+  Discord JSON parsing, Terraform validation, Bash syntax checks, and diff
+  checks pass. CGO/race remains assigned to GitHub CI.
+
+## Operator Attention
+
+Deploy the updated Lambda packages, Terraform-managed bootstrap artifact, and
+Discord command definition before testing Phase 9.4. Vanilla mode is selected
+only while a session is `DRAFT` by running `/session configure` with
+`vanilla:true`; configuration plus a mission upload then makes it startable
+without `/session upload-preset`. Existing session
+`01KZZA8R4BGFC1FBVSBWGSBJA8` is already `FAILED` and cannot be converted through
+the draft-only configuration command; terminate it and create a new vanilla
+session for acceptance testing. Steam Guard handling for modded sessions remains
+deferred to Step 10.3.
 
 ## Exact Next Step
 
-Begin Phase 9 archive/restore design. Do not invoke `/session sleep` against the development session without explicit operational approval, because it will stop its EC2 instance.
+Deploy and acceptance-test one new vanilla session through Discord. After that,
+create a new Phase 10 branch, split Step 10.1 into 1-8 numbered tasks in
+`PROJECT_PLAN.md`, and implement only the first task by default.

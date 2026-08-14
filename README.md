@@ -4,13 +4,11 @@ An on-demand platform for provisioning and managing temporary dedicated game ser
 
 ## Current status
 
-Phases 1-5 are deployed and accepted in the development guild. Phase 6 is deployed, but live acceptance found an incompatible Amazon Linux game-host baseline; the Ubuntu recovery plan and root-volume replacement await approval.
-
 The platform currently provides:
 
 - Ed25519 verification against the exact raw Discord request body;
 - timestamp freshness, request-size, application-ID, and guild validation;
-- `/session create`, `/session list`, `/session status`, `/session configure`, `/session upload-mission`, and `/session upload-preset`;
+- `/session create`, `/session list`, `/session status`, `/session configure`, uploads, start, sleep, wake, owner-confirmed archive, restore, and owner-confirmed irreversible termination;
 - ephemeral responses with mentions disabled;
 - command idempotency derived from Discord interaction IDs;
 - API Gateway HTTP API v2 and Lambda backed by DynamoDB;
@@ -20,20 +18,23 @@ The platform currently provides:
 - normalized command and workflow contracts with conditional per-session workflow leases;
 - command, attachment, and notification FIFO queues with dead-letter queues;
 - canonical Step Functions Standard state-machine boundaries;
-- a FIFO command worker that revalidates access and starts `ProvisionSession`;
+- a FIFO command worker that revalidates access and starts implemented lifecycle workflows;
 - a dedicated game VPC, two public subnets, game/voice security groups, and no inbound SSH;
 - an idempotent EC2/EBS provisioning worker with IMDSv2, encrypted volumes, Systems Manager readiness, resource discovery tags, and DynamoDB capacity slots;
-- a real bounded `ProvisionSession` workflow that stops at `BOOTSTRAPPING` for Phase 6;
+- deployed provisioning, resumable Arma bootstrap, monitoring, and manual sleep/wake workflows;
 - a resumable Systems Manager bootstrap path for SteamCMD, Arma, Workshop content, mission deployment, optional TeamSpeak, systemd, and health gating;
+- guarded portable archive/destruction and restore workflows with versioned manifests, checksum verification, tagged-resource deletion, fresh infrastructure, safe extraction, and health acceptance;
+- irreversible termination with exact tag checks, bounded EC2/EBS deletion, permanent removal of every versioned session object, and an audit tombstone;
 - an AWS monthly budget and a fail-closed provisioning enablement gate;
 - reproducible Lambda packages, least-privilege IAM, retained logs, and CI checks.
 
-Non-provisioning lifecycle state machines intentionally terminate with `PhaseNotImplemented`. `/session start` is enabled in development with a one-session capacity limit and AWS Budget alerts.
+The reconciliation state machine intentionally terminates with `PhaseNotImplemented`. `/session start` and restore use the development one-session capacity limit and AWS Budget alerts.
 
-Next milestone: complete the approved Phase 6 host recovery and live verification, then add continuous monitoring in Phase 7.
+Next milestone: Phase 10 reliability, reconciliation, and orphan cleanup.
 
 See [Phase 5: Infrastructure Provisioning](docs/phase-5-infrastructure-provisioning.md) for the implemented boundary and deployment safety gates.
 See [Phase 6: Arma Bootstrap](docs/phase-6-arma-bootstrap.md) for the resumable installation and health boundary.
+See [Phase 8: Sleep and Wake](docs/phase-8-sleep-wake.md) and [Phase 9: Archive and Restore](docs/phase-9-archive-restore.md) for the current lifecycle boundaries.
 
 ## Local Discord interaction server
 

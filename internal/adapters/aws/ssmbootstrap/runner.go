@@ -54,7 +54,7 @@ func New(client API, config Config) (*Runner, error) {
 }
 
 func (runner *Runner) Start(ctx context.Context, session domain.Session) (string, error) {
-	if !session.CanStartBootstrap() && session.LifecycleState != domain.StateInstalling {
+	if !session.CanStartBootstrap() && session.LifecycleState != domain.StateInstalling && session.LifecycleState != domain.StateRestoring {
 		return "", fmt.Errorf("%w: session is not bootstrap-ready", domain.ErrInvalidTransition)
 	}
 	script, err := runner.command(session)
@@ -106,8 +106,12 @@ func (runner *Runner) Observe(ctx context.Context, instanceID string, commandID 
 }
 
 func (runner *Runner) command(session domain.Session) (string, error) {
-	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || session.MissionObjectKey == "" || session.PresetObjectKey == "" {
-		return "", fmt.Errorf("instance, data volume, mission, and preset are required")
+	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || session.MissionObjectKey == "" || (!session.Vanilla && session.PresetObjectKey == "") {
+		return "", fmt.Errorf("instance, data volume, mission, and a preset for modded sessions are required")
+	}
+	steamSecretID := runner.config.SteamSecretID
+	if session.Vanilla {
+		steamSecretID = ""
 	}
 	values := map[string]string{
 		"SESSION_ID_B64":        session.ID,
@@ -116,7 +120,7 @@ func (runner *Runner) command(session domain.Session) (string, error) {
 		"MISSION_KEY_B64":       session.MissionObjectKey,
 		"PRESET_KEY_B64":        session.PresetObjectKey,
 		"ASSETS_BUCKET_B64":     runner.config.AssetsBucket,
-		"STEAM_SECRET_ID_B64":   runner.config.SteamSecretID,
+		"STEAM_SECRET_ID_B64":   steamSecretID,
 		"AWS_REGION_B64":        runner.config.Region,
 		"TEAMSPEAK_VERSION_B64": runner.config.TeamSpeakVersion,
 	}
@@ -129,6 +133,11 @@ func (runner *Runner) command(session domain.Session) (string, error) {
 		command.WriteString("export TEAMSPEAK_ENABLED=true\n")
 	} else {
 		command.WriteString("export TEAMSPEAK_ENABLED=false\n")
+	}
+	if session.Vanilla {
+		command.WriteString("export VANILLA_MODE=true\n")
+	} else {
+		command.WriteString("export VANILLA_MODE=false\n")
 	}
 	command.WriteString("bootstrap_script=\"$(mktemp /run/gsp-bootstrap.XXXXXX)\"\n")
 	command.WriteString("aws_cli_tmp=''\n")
