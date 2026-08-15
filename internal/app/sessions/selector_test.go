@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
@@ -117,6 +118,60 @@ func TestSelectReturnsMatchingOwnerSessionsOnlyFromRequestedGuild(t *testing.T) 
 	}
 	if selections[1].ID != "session-bravo" {
 		t.Errorf("second selection ID = %q; want session-bravo", selections[1].ID)
+	}
+}
+
+func TestSelectExcludesDeletedSessionsUnlessExplicitlyIncluded(t *testing.T) {
+	t.Parallel()
+
+	repository := memory.NewSessionRepository()
+	now := time.Date(2026, time.August, 14, 12, 0, 0, 0, time.UTC)
+	active, err := domain.NewSession(domain.NewSessionInput{
+		ID: "session-active", Slug: "active-session", DisplayName: "Active Session", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := domain.NewSession(domain.NewSessionInput{
+		ID: "session-deleted", Slug: "deleted-session", DisplayName: "Deleted Session", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted.DesiredState, deleted.ObservedState, deleted.LifecycleState = domain.StateDeleted, domain.StateDeleted, domain.StateDeleted
+
+	for _, session := range []domain.Session{active, deleted} {
+		event := domain.NewSessionCreatedEvent("event-"+session.ID, "correlation-"+session.ID, testActor("owner-1"), session, now)
+		idempotency, recordErr := domain.NewCompletedIdempotencyRecord(
+			"selector:"+session.ID, "hash-"+session.ID, session.ID, now, time.Hour,
+		)
+		if recordErr != nil {
+			t.Fatal(recordErr)
+		}
+		if createErr := repository.Create(context.Background(), session, event, idempotency); createErr != nil {
+			t.Fatal(createErr)
+		}
+	}
+
+	service := newTestService(t, repository)
+	query := SelectQuery{Actor: testActor("owner-1"), GuildID: "guild-1", Limit: 25}
+	selections, err := service.Select(context.Background(), query)
+	if err != nil {
+		t.Fatalf("Select() returned error: %v", err)
+	}
+	if len(selections) != 1 || selections[0].ID != active.ID {
+		t.Fatalf("default selections = %#v; want active session only", selections)
+	}
+
+	query.IncludeDeleted = true
+	selections, err = service.Select(context.Background(), query)
+	if err != nil {
+		t.Fatalf("Select(include deleted) returned error: %v", err)
+	}
+	if len(selections) != 2 {
+		t.Fatalf("included selections = %#v; want active and deleted sessions", selections)
 	}
 }
 

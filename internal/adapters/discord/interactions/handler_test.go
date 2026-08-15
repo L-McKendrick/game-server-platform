@@ -111,6 +111,7 @@ func TestHandlerReturnsGuildVisibleStatusAutocompleteChoices(t *testing.T) {
 	seedAutocompleteSession(t, repository, "session-visible", "Saturday Arma", "saturday-arma", "owner-1", "guild-1")
 	seedAutocompleteSession(t, repository, "session-other-owner", "Saturday Private", "saturday-private", "owner-2", "guild-1")
 	seedAutocompleteSession(t, repository, "session-other-guild", "Saturday Elsewhere", "saturday-elsewhere", "owner-1", "guild-2")
+	seedHandlerSessionState(t, repository, "session-terminated", "Saturday Terminated", "saturday-terminated", "owner-1", "guild-1", domain.StateDeleted)
 	body := marshalPayload(map[string]any{
 		"id": "autocomplete-visible", "application_id": "app-1",
 		"type": interactionTypeApplicationCommandAutocomplete, "guild_id": "guild-1", "channel_id": "channel-1",
@@ -136,8 +137,8 @@ func TestHandlerReturnsGuildVisibleStatusAutocompleteChoices(t *testing.T) {
 			t.Fatalf("choice label exposes immutable ID: %q", choice.Name)
 		}
 	}
-	if !values["session-visible"] || !values["session-other-owner"] || values["session-other-guild"] {
-		t.Fatalf("choice values = %#v; want both guild sessions only", values)
+	if !values["session-visible"] || !values["session-other-owner"] || values["session-other-guild"] || values["session-terminated"] {
+		t.Fatalf("choice values = %#v; want active guild sessions only", values)
 	}
 }
 

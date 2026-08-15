@@ -81,7 +81,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **12.2** [x] Make session identity, discovery, and AWS presentation human-readable.
       - **12.2.1** [x] Add an optional normalized 64-character session description and record creation and later changes in immutable event history.
       - **12.2.2** [x] Generate a stable slug from the display name, add readable collision suffixes, and preserve explicit legacy slugs without changing immutable identity.
-      - **12.2.3** [x] Add authorized session autocomplete and exact-slug resolution to every session-targeting `/rb` command without exposing IDs.
+      - **12.2.3** [x] Add authorized session autocomplete and exact-slug resolution to every session-targeting `/rb` command without exposing IDs; exclude terminated sessions from autocomplete by default while allowing explicit opt-in for applicable tombstone workflows.
       - **12.2.4** [x] Make `/rb list` exclude `DELETED` by default, support lifecycle filters including deleted sessions, and add bounded ephemeral pagination with readable headings or mobile-safe stacked rows.
       - **12.2.5** [x] Make `/rb status` an ephemeral detailed view available to approved users in the session guild while preserving mutation authorization.
       - **12.2.6** [x] Tag new and restored EC2/EBS resources with readable `Name`, `SessionName`, and `SessionSlug` values while retaining immutable `Project`, `Environment`, and `SessionId` safeguards.

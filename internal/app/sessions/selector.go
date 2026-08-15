@@ -19,6 +19,7 @@ type SelectQuery struct {
 	Search           string
 	Limit            int
 	AllowGuildMember bool
+	IncludeDeleted   bool
 }
 
 // Selection exposes human-readable session identity while keeping the
@@ -108,7 +109,9 @@ func (service *Service) Select(ctx context.Context, query SelectQuery) ([]Select
 	search := strings.ToLower(strings.TrimSpace(query.Search))
 	selections := make([]Selection, 0, len(sessions))
 	for _, session := range sessions {
-		if session.GuildID != guildID || !sessionMatchesSelectionSearch(session, search) {
+		if session.GuildID != guildID ||
+			(!query.IncludeDeleted && session.LifecycleState == domain.StateDeleted) ||
+			!sessionMatchesSelectionSearch(session, search) {
 			continue
 		}
 		selections = append(selections, Selection{
