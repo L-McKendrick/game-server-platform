@@ -6,7 +6,7 @@ param(
     [Parameter(Mandatory)]
     [string]$GuildId,
 
-    [string]$CommandFile = "deploy/discord/session-command.json"
+    [string]$CommandFile = "deploy/discord/rb-command.json"
 )
 
 $ErrorActionPreference = "Stop"

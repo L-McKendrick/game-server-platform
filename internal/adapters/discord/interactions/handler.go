@@ -25,7 +25,6 @@ var discordSlugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 const (
 	defaultMaxRequestBytes = int64(64 * 1024)
 	defaultSignatureMaxAge = 5 * time.Minute
-	maximumResponseLength  = 1900
 )
 
 // SessionService is the application boundary used by Discord commands.
@@ -44,6 +43,11 @@ type SessionService interface {
 		ctx context.Context,
 		query appsession.ListQuery,
 	) ([]domain.Session, error)
+
+	Select(
+		ctx context.Context,
+		query appsession.SelectQuery,
+	) ([]appsession.Selection, error)
 
 	Configure(
 		ctx context.Context,
@@ -228,7 +232,10 @@ func (handler *Handler) ServeHTTP(
 		return
 	}
 
-	if payload.Type != interactionTypeApplicationCommand && payload.Type != interactionTypeMessageComponent {
+	if payload.Type != interactionTypeApplicationCommand &&
+		payload.Type != interactionTypeMessageComponent &&
+		payload.Type != interactionTypeApplicationCommandAutocomplete &&
+		payload.Type != interactionTypeModalSubmit {
 		writeInteractionMessage(writer, "This interaction type is not supported yet.")
 		return
 	}
@@ -244,7 +251,11 @@ func (handler *Handler) ServeHTTP(
 			"rejected Discord interaction from unapproved guild",
 			slog.String("guild_id", payload.GuildID),
 		)
-		writeInteractionMessage(writer, "This app is not enabled in this Discord server.")
+		if payload.Type == interactionTypeApplicationCommandAutocomplete {
+			writeAutocompleteChoices(writer, nil)
+		} else {
+			writeInteractionMessage(writer, "This app is not enabled in this Discord server.")
+		}
 		return
 	}
 	actorID := payload.actorID()
@@ -272,13 +283,36 @@ func (handler *Handler) ServeHTTP(
 		handler.logger.Info("Discord access configuration completed", slog.String("correlation_id", correlationID), slog.String("guild_id", payload.GuildID))
 		return
 	}
+	if err := handler.access.Authorize(request.Context(), payload.GuildID, payload.ChannelID, actorID, roles); err != nil && !payload.memberCanManageGuild() {
+		handler.logger.Warn("rejected unauthorized Discord interaction", slog.String("guild_id", payload.GuildID), slog.String("channel_id", payload.ChannelID))
+		if payload.Type == interactionTypeApplicationCommandAutocomplete {
+			writeAutocompleteChoices(writer, nil)
+		} else {
+			writeInteractionMessage(writer, "You are not authorized to use this app in this channel.")
+		}
+		return
+	}
 	if payload.Type == interactionTypeMessageComponent {
 		writeInteractionMessage(writer, "This component is not supported or has expired.")
 		return
 	}
-	if err := handler.access.Authorize(request.Context(), payload.GuildID, payload.ChannelID, actorID, roles); err != nil && !payload.memberCanManageGuild() {
-		handler.logger.Warn("rejected unauthorized Discord interaction", slog.String("guild_id", payload.GuildID), slog.String("channel_id", payload.ChannelID))
-		writeInteractionMessage(writer, "You are not authorized to use this app in this channel.")
+	if payload.Type == interactionTypeApplicationCommandAutocomplete {
+		choices, err := handler.sessionAutocompleteChoices(request.Context(), payload, domain.Actor{
+			Type: domain.ActorTypeDiscordUser,
+			ID:   actorID,
+		})
+		if err != nil {
+			handler.logger.Warn(
+				"Discord session autocomplete failed",
+				slog.String("guild_id", payload.GuildID),
+				slog.Any("error", err),
+			)
+		}
+		writeAutocompleteChoices(writer, choices)
+		return
+	}
+	if payload.Type == interactionTypeModalSubmit {
+		writeInteractionMessage(writer, "This modal is not supported or has expired.")
 		return
 	}
 
@@ -320,11 +354,11 @@ func (handler *Handler) routeCommand(
 ) (string, string, error) {
 	actorID := payload.actorID()
 	if actorID == "" {
-		return "", "session", newUserError("Discord user information is missing from the command.")
+		return "", "rb", newUserError("Discord user information is missing from the command.")
 	}
 
 	if strings.TrimSpace(payload.ChannelID) == "" {
-		return "", "session", newUserError("Discord channel information is missing from the command.")
+		return "", "rb", newUserError("Discord channel information is missing from the command.")
 	}
 
 	actor := domain.Actor{
@@ -333,10 +367,10 @@ func (handler *Handler) routeCommand(
 	}
 	subcommand, err := payload.subcommand()
 	if err != nil {
-		return "", "session", newUserError("Use one of the supported `/session` subcommands.")
+		return "", "rb", newUserError("Use one of the supported `/rb` subcommands.")
 	}
 
-	commandName := "session " + subcommand.Name
+	commandName := "rb " + subcommand.Name
 	switch subcommand.Name {
 	case "create":
 		content, err := handler.createSession(
@@ -389,7 +423,7 @@ func (handler *Handler) routeCommand(
 		return content, commandName, err
 	default:
 		return "", commandName, newUserError(
-			"That `/session` subcommand is not supported yet.",
+			"That `/rb` subcommand is not supported yet.",
 		)
 	}
 }
@@ -397,7 +431,7 @@ func (handler *Handler) routeCommand(
 func (handler *Handler) requestLifecycle(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, correlationID, action string) (string, error) {
 	sessionID, err := stringOption(options, "session-id", true)
 	if err != nil {
-		return "", newUserError("A session ID is required.")
+		return "", newUserError("Select a session.")
 	}
 	roles := []string{}
 	if payload.Member != nil {
@@ -416,7 +450,7 @@ func (handler *Handler) requestLifecycle(ctx context.Context, payload interactio
 	if err := handler.service.RequestLifecycle(ctx, appsession.LifecycleCommand{Actor: actor, Roles: roles, SessionID: sessionID, GuildID: payload.GuildID, ChannelID: payload.ChannelID, CommandID: payload.ID, CorrelationID: correlationID, IdempotencyKey: "discord:" + payload.ID, CommandType: typeName, CanManageGuild: payload.memberCanManageGuild()}); err != nil {
 		return "", err
 	}
-	message := fmt.Sprintf("**%s request accepted**\nSession: `%s`\nUse `/session status` to follow progress.", strings.ToUpper(action[:1])+action[1:], sanitizeInline(sessionID))
+	message := fmt.Sprintf("**%s request accepted**\nUse `/rb status` to follow progress.", strings.ToUpper(action[:1])+action[1:])
 	if action == "archive" {
 		message += "\nThe game services will stop while the archive is captured. EC2 and EBS are removed only after the archive and manifest checksums are durably verified."
 	} else if action == "restore" {
@@ -436,7 +470,7 @@ func (handler *Handler) startSession(
 ) (string, error) {
 	sessionID, err := stringOption(options, "session-id", true)
 	if err != nil {
-		return "", newUserError("A session ID is required.")
+		return "", newUserError("Select a session.")
 	}
 	roles := []string{}
 	if payload.Member != nil {
@@ -450,7 +484,7 @@ func (handler *Handler) startSession(
 	}); err != nil {
 		return "", fmt.Errorf("request session start: %w", err)
 	}
-	return fmt.Sprintf("**Start request accepted**\nSession: `%s`\nUse `/session status` to follow provisioning or bootstrap progress.", sanitizeInline(sessionID)), nil
+	return "**Start request accepted**\nUse `/rb status` to follow provisioning or bootstrap progress.", nil
 }
 
 func (handler *Handler) handleAdminAccess(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actorID string) error {
@@ -469,12 +503,11 @@ func (handler *Handler) handleAdminAccess(ctx context.Context, writer http.Respo
 		}}
 		writeJSON(writer, http.StatusOK, interactionResponse{
 			Type: interactionResponseChannelMessageWithSource,
-			Data: &interactionResponseData{
-				Content:         "Choose the Discord roles that may use game-server platform commands.",
-				Flags:           messageFlagEphemeral,
-				AllowedMentions: interactionAllowedMentions{Parse: []string{}},
-				Components:      &components,
-			},
+			Data: renderer.messageData(
+				"Choose the Discord roles that may use game-server platform commands.",
+				messageFlagEphemeral,
+				&components,
+			),
 		})
 		return nil
 	}
@@ -492,11 +525,11 @@ func (handler *Handler) handleAdminAccess(ctx context.Context, writer http.Respo
 	emptyComponents := []interactionComponent{}
 	writeJSON(writer, http.StatusOK, interactionResponse{
 		Type: interactionResponseUpdateMessage,
-		Data: &interactionResponseData{
-			Content:         fmt.Sprintf("**Access settings updated**\nRevision: `%d`\nAllowed roles: %s", policy.Version, strings.Join(mentions, ", ")),
-			AllowedMentions: interactionAllowedMentions{Parse: []string{}},
-			Components:      &emptyComponents,
-		},
+		Data: renderer.messageData(
+			fmt.Sprintf("**Access settings updated**\nRevision: `%d`\nAllowed roles: %s", policy.Version, strings.Join(mentions, ", ")),
+			0,
+			&emptyComponents,
+		),
 	})
 	return nil
 }
@@ -530,7 +563,7 @@ func (handler *Handler) configureSession(
 ) (string, error) {
 	sessionID, err := stringOption(options, "session-id", true)
 	if err != nil {
-		return "", newUserError("A session ID is required.")
+		return "", newUserError("Select a session.")
 	}
 	profile, err := stringOption(options, "profile", false)
 	if err != nil {
@@ -584,7 +617,7 @@ func (handler *Handler) requestArtifactIngest(
 ) (string, error) {
 	sessionID, err := stringOption(options, "session-id", true)
 	if err != nil {
-		return "", newUserError("A session ID is required.")
+		return "", newUserError("Select a session.")
 	}
 	attachment, err := attachmentOption(payload.Data, options, "file")
 	if err != nil {
@@ -612,7 +645,7 @@ func (handler *Handler) requestArtifactIngest(
 	if err := handler.service.RequestArtifactIngest(ctx, actor, request); err != nil {
 		return "", fmt.Errorf("request artifact ingestion: %w", err)
 	}
-	return formatArtifactAccepted(kind, attachment.Filename, sessionID), nil
+	return formatArtifactAccepted(kind, attachment.Filename), nil
 }
 
 func (handler *Handler) createSession(
@@ -702,7 +735,7 @@ func (handler *Handler) sessionStatus(
 ) (string, error) {
 	sessionID, err := stringOption(options, "session-id", true)
 	if err != nil {
-		return "", newUserError("A session ID is required.")
+		return "", newUserError("Select a session.")
 	}
 
 	session, err := handler.service.Get(
@@ -745,7 +778,7 @@ func (handler *Handler) commandErrorMessage(err error, correlationID string) str
 
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
-		return "Session not found. Use `/session list` to see your sessions."
+		return "Session not found. Use `/rb list` to see your sessions."
 	case errors.Is(err, domain.ErrForbidden):
 		return "You do not have access to that session."
 	case errors.Is(err, domain.ErrIdempotencyConflict):
@@ -801,13 +834,21 @@ func writeInteractionMessage(writer http.ResponseWriter, content string) {
 		http.StatusOK,
 		interactionResponse{
 			Type: interactionResponseChannelMessageWithSource,
-			Data: &interactionResponseData{
-				Content: content,
-				Flags:   messageFlagEphemeral,
-				AllowedMentions: interactionAllowedMentions{
-					Parse: []string{},
-				},
-			},
+			Data: renderer.messageData(content, messageFlagEphemeral, nil),
+		},
+	)
+}
+
+func writeAutocompleteChoices(writer http.ResponseWriter, choices []applicationCommandChoice) {
+	if choices == nil {
+		choices = []applicationCommandChoice{}
+	}
+	writeJSON(
+		writer,
+		http.StatusOK,
+		interactionResponse{
+			Type: interactionResponseAutocompleteResult,
+			Data: &interactionResponseData{Choices: &choices},
 		},
 	)
 }

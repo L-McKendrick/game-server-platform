@@ -254,7 +254,7 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 		} else if notifyErr := service.notifications.Enqueue(ctx, domain.NotificationRequest{
 			SchemaVersion: 1, NotificationID: notificationID, SessionID: session.ID,
 			GuildID: session.GuildID, ChannelID: session.ChannelID,
-			Content:       fmt.Sprintf("**Infrastructure ready**\nSession: `%s`\nThe instance is managed by Systems Manager. Run `/session start %s` again to begin the Arma bootstrap.", session.ID, session.ID),
+			Content:       fmt.Sprintf("**Infrastructure ready**\nSession: `%s`\nThe instance is managed by Systems Manager. Run `/rb start %s` again to begin the Arma bootstrap.", session.ID, session.ID),
 			CorrelationID: workflow.CorrelationID, RequestedAt: now,
 		}); notifyErr != nil {
 			response.Warning = notifyErr.Error()

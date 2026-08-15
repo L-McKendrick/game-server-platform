@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
 	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
@@ -73,6 +74,162 @@ func TestHandlerAcknowledgesValidPing(t *testing.T) {
 	}
 }
 
+func TestHandlerAcknowledgesAutocompleteWithExplicitEmptyChoices(t *testing.T) {
+	t.Parallel()
+
+	handler, _, privateKey := newTestHandler(t, nil, nil)
+	body := marshalPayload(map[string]any{
+		"id": "autocomplete-1", "application_id": "app-1",
+		"type":     interactionTypeApplicationCommandAutocomplete,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{
+			"name": "rb",
+			"options": []any{map[string]any{
+				"type": applicationCommandOptionSubcommand, "name": "status",
+				"options": []any{map[string]any{
+					"type": applicationCommandOptionString, "name": "session", "value": "sat", "focused": true,
+				}},
+			}},
+		},
+	})
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if response.Code != http.StatusOK || decoded.Type != interactionResponseAutocompleteResult ||
+		decoded.Data == nil || decoded.Data.Choices == nil || len(*decoded.Data.Choices) != 0 {
+		t.Fatalf("autocomplete response = %#v; body = %s", decoded, response.Body.String())
+	}
+}
+
+func TestHandlerReturnsAuthorizedSessionAutocompleteChoices(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(t, nil, nil)
+	seedAutocompleteSession(t, repository, "session-visible", "Saturday Arma", "saturday-arma", "owner-1", "guild-1")
+	seedAutocompleteSession(t, repository, "session-other-owner", "Saturday Private", "saturday-private", "owner-2", "guild-1")
+	seedAutocompleteSession(t, repository, "session-other-guild", "Saturday Elsewhere", "saturday-elsewhere", "owner-1", "guild-2")
+	body := marshalPayload(map[string]any{
+		"id": "autocomplete-visible", "application_id": "app-1",
+		"type": interactionTypeApplicationCommandAutocomplete, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
+			"type": applicationCommandOptionSubcommand, "name": "status", "options": []any{map[string]any{
+				"type": applicationCommandOptionString, "name": "session", "value": "SAT", "focused": true,
+			}},
+		}}},
+	})
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if response.Code != http.StatusOK || decoded.Type != interactionResponseAutocompleteResult ||
+		decoded.Data == nil || decoded.Data.Choices == nil || len(*decoded.Data.Choices) != 1 {
+		t.Fatalf("autocomplete response = %#v; body = %s", decoded, response.Body.String())
+	}
+	choice := (*decoded.Data.Choices)[0]
+	if choice.Name != "Saturday Arma — saturday-arma — Setting up" || choice.Value != "session-visible" {
+		t.Fatalf("choice = %#v", choice)
+	}
+	if strings.Contains(choice.Name, "session-visible") {
+		t.Fatalf("choice label exposes immutable ID: %q", choice.Name)
+	}
+}
+
+func TestHandlerAutocompleteDoesNotDiscloseSessionsBeforeAccessAuthorization(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(t, nil, nil)
+	seedAutocompleteSession(t, repository, "session-secret", "Secret Session", "secret-session", "owner-1", "guild-1")
+	body := marshalPayload(map[string]any{
+		"id": "autocomplete-unauthorized", "application_id": "app-1",
+		"type": interactionTypeApplicationCommandAutocomplete, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{}},
+		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
+			"type": applicationCommandOptionSubcommand, "name": "status", "options": []any{map[string]any{
+				"type": applicationCommandOptionString, "name": "session", "value": "secret", "focused": true,
+			}},
+		}}},
+	})
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if response.Code != http.StatusOK || decoded.Type != interactionResponseAutocompleteResult ||
+		decoded.Data == nil || decoded.Data.Choices == nil || len(*decoded.Data.Choices) != 0 {
+		t.Fatalf("unauthorized autocomplete response = %#v", decoded)
+	}
+	if strings.Contains(response.Body.String(), "session-secret") || strings.Contains(response.Body.String(), "Secret Session") {
+		t.Fatalf("unauthorized autocomplete leaked session data: %s", response.Body.String())
+	}
+}
+
+func TestHandlerAutocompleteHonorsDiscordChoiceLimits(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(t, nil, nil)
+	for index := 0; index < 30; index++ {
+		suffix := fmt.Sprintf("%02d", index)
+		seedAutocompleteSession(
+			t, repository, "session-"+suffix, "Session "+suffix, "session-"+suffix, "owner-1", "guild-1",
+		)
+	}
+	body := marshalPayload(map[string]any{
+		"id": "autocomplete-limit", "application_id": "app-1",
+		"type": interactionTypeApplicationCommandAutocomplete, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
+			"type": applicationCommandOptionSubcommand, "name": "status", "options": []any{map[string]any{
+				"type": applicationCommandOptionString, "name": "session", "value": "", "focused": true,
+			}},
+		}}},
+	})
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || decoded.Data.Choices == nil || len(*decoded.Data.Choices) != maximumAutocompleteChoices {
+		t.Fatalf("choice count response = %#v", decoded)
+	}
+	for _, choice := range *decoded.Data.Choices {
+		if utf8.RuneCountInString(choice.Name) > maximumAutocompleteLabelRunes {
+			t.Fatalf("choice label has %d runes: %q", utf8.RuneCountInString(choice.Name), choice.Name)
+		}
+	}
+}
+
+func TestHandlerRecognizesModalSubmission(t *testing.T) {
+	t.Parallel()
+
+	handler, _, privateKey := newTestHandler(t, nil, nil)
+	body := marshalPayload(map[string]any{
+		"id": "modal-1", "application_id": "app-1",
+		"type":     interactionTypeModalSubmit,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{
+			"custom_id": "rb:v1:create:1:Abcdef12",
+			"components": []any{map[string]any{
+				"type": componentTypeLabel,
+				"component": map[string]any{
+					"type": componentTypeTextInput, "custom_id": "name", "value": "Saturday Arma",
+				},
+			}},
+		},
+	})
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if response.Code != http.StatusOK || decoded.Type != interactionResponseChannelMessageWithSource ||
+		decoded.Data == nil || !strings.Contains(decoded.Data.Content, "modal is not supported or has expired") {
+		t.Fatalf("modal response = %#v; body = %s", decoded, response.Body.String())
+	}
+}
+
 func TestHandlerRejectsInvalidSignature(t *testing.T) {
 	t.Parallel()
 
@@ -110,6 +267,81 @@ func TestHandlerRejectsStaleTimestamp(t *testing.T) {
 	}
 }
 
+func TestHandlerRejectsMalformedAndOversizedSignedPayloads(t *testing.T) {
+	t.Parallel()
+
+	t.Run("malformed JSON", func(t *testing.T) {
+		handler, _, privateKey := newTestHandler(t, nil, nil)
+		response := executeSignedRequest(t, handler, privateKey, []byte(`{"application_id":"app-1"`), testNow)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid interaction payload") {
+			t.Fatalf("response = %d %q; want invalid-payload rejection", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("oversized body", func(t *testing.T) {
+		handler, _, privateKey := newTestHandler(t, nil, nil)
+		handler.maxRequestBytes = 32
+		body := []byte(`{"id":"ping-1","application_id":"app-1","type":1}`)
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		if response.Code != http.StatusRequestEntityTooLarge || !strings.Contains(response.Body.String(), "request body is too large") {
+			t.Fatalf("response = %d %q; want body-limit rejection", response.Code, response.Body.String())
+		}
+	})
+}
+
+func TestHandlerRejectsStaleOrMalformedComponentsWithoutEchoingState(t *testing.T) {
+	t.Parallel()
+
+	for _, customID := range []string{
+		"rb:v1:refresh:1:StaleTok",
+		"rb:v1:refresh:01:MalformedTok",
+	} {
+		t.Run(customID, func(t *testing.T) {
+			handler, _, privateKey := newTestHandler(t, nil, nil)
+			body := marshalPayload(map[string]any{
+				"id": "component-1", "application_id": "app-1", "type": interactionTypeMessageComponent,
+				"guild_id": "guild-1", "channel_id": "channel-1",
+				"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+				"data":   map[string]any{"custom_id": customID, "component_type": componentTypeButton},
+			})
+
+			response := executeSignedRequest(t, handler, privateKey, body, testNow)
+			var decoded interactionResponse
+			decodeResponse(t, response, &decoded)
+			if response.Code != http.StatusOK || decoded.Data == nil ||
+				!strings.Contains(decoded.Data.Content, "not supported or has expired") ||
+				strings.Contains(decoded.Data.Content, customID) {
+				t.Fatalf("component response = %#v", decoded)
+			}
+			if decoded.Data.Flags != messageFlagEphemeral || decoded.Data.AllowedMentions == nil ||
+				len(decoded.Data.AllowedMentions.Parse) != 0 {
+				t.Fatalf("component response safety = %#v", decoded.Data)
+			}
+		})
+	}
+}
+
+func TestHandlerAuthorizesComponentBeforeReturningStaleResponse(t *testing.T) {
+	t.Parallel()
+
+	handler, _, privateKey := newTestHandler(t, nil, nil)
+	customID := "rb:v1:refresh:1:SecretTk"
+	body := marshalPayload(map[string]any{
+		"id": "component-unauthorized", "application_id": "app-1", "type": interactionTypeMessageComponent,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{}},
+		"data":   map[string]any{"custom_id": customID, "component_type": componentTypeButton},
+	})
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "not authorized") ||
+		strings.Contains(decoded.Data.Content, customID) || strings.Contains(decoded.Data.Content, "expired") {
+		t.Fatalf("unauthorized component response = %#v", decoded)
+	}
+}
+
 func TestHandlerCreatesAndReplaysSession(t *testing.T) {
 	t.Parallel()
 
@@ -130,8 +362,8 @@ func TestHandlerCreatesAndReplaysSession(t *testing.T) {
 
 		var decoded interactionResponse
 		decodeResponse(t, response, &decoded)
-		if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "session-1") {
-			t.Fatalf("response %d content = %#v; want session ID", index+1, decoded.Data)
+		if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "saturday-arma") || strings.Contains(decoded.Data.Content, "session-1") {
+			t.Fatalf("response %d content = %#v; want slug without immutable ID", index+1, decoded.Data)
 		}
 		if decoded.Data.Flags != messageFlagEphemeral {
 			t.Errorf("response %d flags = %d; want %d", index+1, decoded.Data.Flags, messageFlagEphemeral)
@@ -147,6 +379,40 @@ func TestHandlerCreatesAndReplaysSession(t *testing.T) {
 	}
 	if eventCount := len(repository.Events("session-1")); eventCount != 1 {
 		t.Errorf("event count = %d; want 1", eventCount)
+	}
+}
+
+func TestHandlerRejectsLegacySessionCommand(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(
+		t,
+		[]string{"correlation-legacy"},
+		[]string{"unused-session", "unused-event"},
+	)
+	body := bytes.Replace(
+		createCommandBody("interaction-legacy", "owner-1", "guild-1", "channel-1"),
+		[]byte(`"name":"rb"`),
+		[]byte(`"name":"session"`),
+		1,
+	)
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d; want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "supported `/rb` subcommands") {
+		t.Fatalf("response content = %#v; want /rb guidance", decoded.Data)
+	}
+	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+	if err != nil {
+		t.Fatalf("ListByOwner() returned error: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("session count = %d; want 0", len(sessions))
 	}
 }
 
@@ -198,7 +464,7 @@ func TestHandlerGuildManagerConfiguresRolesWithSelectMenu(t *testing.T) {
 	)
 	var created interactionResponse
 	decodeResponse(t, createResponse, &created)
-	if created.Data == nil || !strings.Contains(created.Data.Content, "session-1") {
+	if created.Data == nil || !strings.Contains(created.Data.Content, "saturday-arma") || strings.Contains(created.Data.Content, "session-1") {
 		t.Fatalf("command after role configuration = %#v", created)
 	}
 }
@@ -261,8 +527,8 @@ func TestHandlerListsAndShowsSessionStatus(t *testing.T) {
 	)
 	var statusDecoded interactionResponse
 	decodeResponse(t, statusResponse, &statusDecoded)
-	if statusDecoded.Data == nil || !strings.Contains(statusDecoded.Data.Content, "Lifecycle: `DRAFT`") {
-		t.Fatalf("status content = %#v; want DRAFT lifecycle", statusDecoded.Data)
+	if statusDecoded.Data == nil || !strings.Contains(statusDecoded.Data.Content, "Status: Setting up") || strings.Contains(statusDecoded.Data.Content, "session-1") {
+		t.Fatalf("status content = %#v; want readable status without immutable ID", statusDecoded.Data)
 	}
 }
 
@@ -274,7 +540,7 @@ func TestHandlerAllowsGuildAdministratorToRequestAnotherOwnersSleep(t *testing.T
 		"id": "interaction-sleep", "application_id": "app-1", "type": interactionTypeApplicationCommand,
 		"guild_id": "guild-1", "channel_id": "channel-1",
 		"member": map[string]any{"user": map[string]any{"id": "admin-1"}, "permissions": "8"},
-		"data": map[string]any{"name": "session", "options": []any{map[string]any{
+		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
 			"type": applicationCommandOptionSubcommand, "name": "sleep",
 			"options": []any{map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"}},
 		}}},
@@ -295,7 +561,7 @@ func TestHandlerArchiveRequiresExplicitConfirmation(t *testing.T) {
 		"id": "interaction-archive", "application_id": "app-1", "type": interactionTypeApplicationCommand,
 		"guild_id": "guild-1", "channel_id": "channel-1",
 		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
-		"data": map[string]any{"name": "session", "options": []any{map[string]any{
+		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
 			"type": applicationCommandOptionSubcommand, "name": "archive",
 			"options": []any{
 				map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"},
@@ -319,7 +585,7 @@ func TestHandlerArchiveAcceptsOwnerConfirmationAndWarnsAboutInterruption(t *test
 		"id": "interaction-archive", "application_id": "app-1", "type": interactionTypeApplicationCommand,
 		"guild_id": "guild-1", "channel_id": "channel-1",
 		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
-		"data": map[string]any{"name": "session", "options": []any{map[string]any{
+		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
 			"type": applicationCommandOptionSubcommand, "name": "archive",
 			"options": []any{
 				map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"},
@@ -381,7 +647,7 @@ func TestHandlerConfiguresAndAcceptsMissionAttachment(t *testing.T) {
 	)
 	var configuredDecoded interactionResponse
 	decodeResponse(t, configuredResponse, &configuredDecoded)
-	if configuredDecoded.Data == nil || !strings.Contains(configuredDecoded.Data.Content, "Revision: `1`") {
+	if configuredDecoded.Data == nil || !strings.Contains(configuredDecoded.Data.Content, "Configuration: `1`") {
 		t.Fatalf("configure content = %#v", configuredDecoded.Data)
 	}
 	stored, err := repository.Get(context.Background(), "session-1")
@@ -391,7 +657,7 @@ func TestHandlerConfiguresAndAcceptsMissionAttachment(t *testing.T) {
 	if stored.ConfigurationRevision != 1 || !stored.TeamSpeakEnabled {
 		t.Errorf("stored configuration = %#v", stored)
 	}
-	if !stored.Vanilla || configuredDecoded.Data == nil || !strings.Contains(configuredDecoded.Data.Content, "Vanilla: `true`") {
+	if !stored.Vanilla || configuredDecoded.Data == nil || !strings.Contains(configuredDecoded.Data.Content, "Mode: Vanilla") {
 		t.Errorf("vanilla configuration/response = %#v / %#v", stored, configuredDecoded.Data)
 	}
 
@@ -536,6 +802,39 @@ func newTestHandler(
 	return handler, repository, privateKey
 }
 
+func seedAutocompleteSession(
+	t *testing.T,
+	repository *memory.SessionRepository,
+	sessionID string,
+	displayName string,
+	slug string,
+	ownerID string,
+	guildID string,
+) {
+	t.Helper()
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: sessionID, Slug: slug, DisplayName: displayName, GameType: "arma3",
+		OwnerDiscordUserID: ownerID, GuildID: guildID, ChannelID: "channel-1",
+	}, testNow)
+	if err != nil {
+		t.Fatalf("NewSession() returned error: %v", err)
+	}
+	event := domain.NewSessionCreatedEvent("event-"+sessionID, "correlation-"+sessionID, testActorForInteraction(ownerID), session, testNow)
+	idempotency, err := domain.NewCompletedIdempotencyRecord(
+		"autocomplete:"+sessionID, "hash-"+sessionID, sessionID, testNow, time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("NewCompletedIdempotencyRecord() returned error: %v", err)
+	}
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatalf("seed autocomplete session: %v", err)
+	}
+}
+
+func testActorForInteraction(userID string) domain.Actor {
+	return domain.Actor{Type: domain.ActorTypeDiscordUser, ID: userID}
+}
+
 func executeSignedRequest(
 	t *testing.T,
 	handler *Handler,
@@ -579,7 +878,7 @@ func createCommandBody(interactionID, ownerID, guildID, channelID string) []byte
 			"roles": []string{"role-1"},
 		},
 		"data": map[string]any{
-			"name": "session",
+			"name": "rb",
 			"options": []any{
 				map[string]any{
 					"type": applicationCommandOptionSubcommand,
@@ -633,7 +932,7 @@ func uploadCommandBody(interactionID, ownerID, guildID, channelID, sessionID str
 		"guild_id": guildID, "channel_id": channelID,
 		"member": map[string]any{"user": map[string]any{"id": ownerID}, "roles": []string{"role-1"}},
 		"data": map[string]any{
-			"name": "session",
+			"name": "rb",
 			"options": []any{map[string]any{
 				"type": applicationCommandOptionSubcommand, "name": "upload-mission",
 				"options": []any{
@@ -672,7 +971,7 @@ func commandBody(
 			"roles": []string{"role-1"},
 		},
 		"data": map[string]any{
-			"name": "session",
+			"name": "rb",
 			"options": []any{
 				map[string]any{
 					"type":    applicationCommandOptionSubcommand,

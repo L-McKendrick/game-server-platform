@@ -3,71 +3,249 @@ package interactions
 import (
 	"fmt"
 	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
 
-func formatConfiguredSession(session domain.Session) string {
+const maximumDiscordContentRunes = 1900
+
+type discordRenderer struct{}
+
+var renderer discordRenderer
+
+func (discordRenderer) messageData(
+	content string,
+	flags int,
+	components *[]interactionComponent,
+) *interactionResponseData {
+	return &interactionResponseData{
+		Content:         boundDiscordContent(content),
+		Flags:           flags,
+		AllowedMentions: suppressedAllowedMentions(),
+		Components:      components,
+	}
+}
+
+func suppressedAllowedMentions() *interactionAllowedMentions {
+	return &interactionAllowedMentions{Parse: []string{}}
+}
+
+func (discordRenderer) configuredSession(session domain.Session) string {
 	return fmt.Sprintf(
-		"**Session configured**\nID: `%s`\nRevision: `%d`\nProfile: `%s`\nVanilla: `%t`\nSleep after: `%d minutes`\nArchive after: `%d days`\nTeamSpeak: `%t`",
-		sanitizeInline(session.ID),
+		"**Session configured**\nName: %s\nSlug: `%s`\nConfiguration: `%d`\nProfile: `%s`\nMode: %s\nSleep after: `%d minutes`\nArchive after: `%d days`\nTeamSpeak: %s\nUpdated: %s",
+		sanitizeInline(session.DisplayName),
+		sanitizeCode(session.Slug),
 		session.ConfigurationRevision,
-		sanitizeInline(session.GameProfileID),
-		session.Vanilla,
+		sanitizeCode(session.GameProfileID),
+		sessionModeLabel(session.Vanilla),
 		session.SleepAfterSeconds/60,
 		session.ArchiveAfterSeconds/86400,
-		session.TeamSpeakEnabled,
+		enabledLabel(session.TeamSpeakEnabled),
+		discordTimestamp(session.UpdatedAt),
 	)
 }
 
-func formatArtifactAccepted(kind domain.ArtifactKind, filename string, sessionID string) string {
+func (discordRenderer) artifactAccepted(kind domain.ArtifactKind, filename string) string {
 	return fmt.Sprintf(
-		"**%s accepted for validation**\nFile: `%s`\nSession: `%s`\nThe platform will report the validation result asynchronously.",
-		strings.ToLower(string(kind)),
-		sanitizeInline(filename),
-		sanitizeInline(sessionID),
+		"**%s accepted for validation**\nFile: `%s`\nValidation continues in the background. Use `/rb status` to check the session.",
+		titleCase(strings.ToLower(string(kind))),
+		sanitizeCode(filename),
 	)
+}
+
+func (discordRenderer) createdSession(session domain.Session) string {
+	return fmt.Sprintf(
+		"**Draft session created**\nName: %s\nSlug: `%s`\nStatus: %s\nGame: `%s`\nCreated: %s\nNext: upload the mission%s, then configure the session.",
+		sanitizeInline(session.DisplayName),
+		sanitizeCode(session.Slug),
+		lifecyclePresentation(session.LifecycleState),
+		sanitizeCode(session.GameType),
+		discordTimestamp(session.CreatedAt),
+		presetInstruction(session.Vanilla),
+	)
+}
+
+func (discordRenderer) sessionStatus(session domain.Session, players *domain.PlayerStatus) string {
+	var builder strings.Builder
+	fmt.Fprintf(
+		&builder,
+		"**%s**\nSlug: `%s`\nStatus: %s\nHealth: %s\nConfiguration: `%d` (`%s`)\nMode: %s\nSleep after: `%d minutes`\nArchive after: `%d days`\nTeamSpeak: %s\nUpdated: %s",
+		sanitizeInline(session.DisplayName),
+		sanitizeCode(session.Slug),
+		lifecyclePresentation(session.LifecycleState),
+		healthPresentation(session.HealthStatus),
+		session.ConfigurationRevision,
+		sanitizeCode(session.GameProfileID),
+		sessionModeLabel(session.Vanilla),
+		session.SleepAfterSeconds/60,
+		session.ArchiveAfterSeconds/86400,
+		enabledLabel(session.TeamSpeakEnabled),
+		discordTimestamp(session.UpdatedAt),
+	)
+	if players == nil {
+		builder.WriteString("\nLive players (A2S): unavailable")
+		return boundDiscordContent(builder.String())
+	}
+	fmt.Fprintf(&builder, "\nLive players (A2S): `%d/%d`", players.PlayerCount, players.MaxPlayers)
+	if len(players.PlayerNames) == 0 {
+		builder.WriteString("\nPlayer names: unavailable")
+	} else {
+		builder.WriteString("\nPlayer names: ")
+		builder.WriteString(boundedNames(players.PlayerNames))
+	}
+	return boundDiscordContent(builder.String())
+}
+
+func (discordRenderer) sessionList(sessions []domain.Session) string {
+	if len(sessions) == 0 {
+		return "You do not have any sessions yet. Use `/rb create` to create one."
+	}
+
+	var builder strings.Builder
+	builder.WriteString("**Your sessions**\n")
+	for _, session := range sessions {
+		line := fmt.Sprintf(
+			"- %s\n  `%s` · %s\n",
+			sanitizeInline(session.DisplayName),
+			sanitizeCode(session.Slug),
+			lifecyclePresentation(session.LifecycleState),
+		)
+		if utf8.RuneCountInString(builder.String())+utf8.RuneCountInString(line) > maximumDiscordContentRunes-32 {
+			builder.WriteString("…additional sessions omitted")
+			break
+		}
+		builder.WriteString(line)
+	}
+	return boundDiscordContent(strings.TrimSpace(builder.String()))
+}
+
+func formatConfiguredSession(session domain.Session) string {
+	return renderer.configuredSession(session)
+}
+
+func formatArtifactAccepted(kind domain.ArtifactKind, filename string) string {
+	return renderer.artifactAccepted(kind, filename)
 }
 
 func formatCreatedSession(session domain.Session) string {
-	return fmt.Sprintf(
-		"**Draft session created**\nName: %s\nID: `%s`\nState: `%s`\nGame: `%s`",
-		sanitizeInline(session.DisplayName),
-		sanitizeInline(session.ID),
-		session.LifecycleState,
-		sanitizeInline(session.GameType),
-	)
+	return renderer.createdSession(session)
 }
 
 func formatSessionStatus(session domain.Session, players *domain.PlayerStatus) string {
-	status := fmt.Sprintf(
-		"**%s**\nID: `%s`\nSlug: `%s`\nLifecycle: `%s`\nHealth: `%s`\nConfiguration: `%d` (`%s`)\nVanilla: `%t`\nSleep after: `%d minutes`\nArchive after: `%d days`\nTeamSpeak: `%t`\nVersion: `%d`",
-		sanitizeInline(session.DisplayName),
-		sanitizeInline(session.ID),
-		sanitizeInline(session.Slug),
-		session.LifecycleState,
-		session.HealthStatus,
-		session.ConfigurationRevision,
-		sanitizeInline(session.GameProfileID),
-		session.Vanilla,
-		session.SleepAfterSeconds/60,
-		session.ArchiveAfterSeconds/86400,
-		session.TeamSpeakEnabled,
-		session.Version,
+	return renderer.sessionStatus(session, players)
+}
+
+func formatSessionList(sessions []domain.Session) string {
+	return renderer.sessionList(sessions)
+}
+
+func lifecyclePresentation(state domain.LifecycleState) string {
+	switch state {
+	case domain.StateDraft, domain.StateNew, domain.StateValidating, domain.StateProvisioning,
+		domain.StateBootstrapping, domain.StateInstalling:
+		return "Setting up"
+	case domain.StateReady:
+		return "Ready"
+	case domain.StateWaking:
+		return "Starting"
+	case domain.StateRunning, domain.StateIdle:
+		return "Running"
+	case domain.StateStopping, domain.StateSleeping, domain.StateWarning1, domain.StateWarning2,
+		domain.StateArchiving, domain.StateDestroying:
+		return "Sleeping"
+	case domain.StateArchived:
+		return "Archived"
+	case domain.StateFailed:
+		return "Action required"
+	case domain.StateDeleting, domain.StateDeleted:
+		return "Terminated"
+	default:
+		return "Action required"
+	}
+}
+
+func healthPresentation(status domain.HealthStatus) string {
+	switch status {
+	case domain.HealthStarting:
+		return "Starting"
+	case domain.HealthHealthy:
+		return "Healthy"
+	case domain.HealthDegraded:
+		return "Degraded — action may be required"
+	case domain.HealthUnhealthy:
+		return "Unhealthy — action required"
+	case domain.HealthStopped:
+		return "Stopped"
+	default:
+		return "Not available"
+	}
+}
+
+func discordTimestamp(value time.Time) string {
+	if value.IsZero() {
+		return "Not available"
+	}
+	unix := value.UTC().Unix()
+	return fmt.Sprintf("<t:%d:F> (<t:%d:R>)", unix, unix)
+}
+
+func sanitizeInline(value string) string {
+	value = normalizeSingleLine(value)
+	replacer := strings.NewReplacer(
+		"\\", "\\\\",
+		"<", "\\<",
+		"`", "\\`",
+		"*", "\\*",
+		"_", "\\_",
+		"~", "\\~",
+		"|", "\\|",
+		">", "\\>",
+		"[", "\\[",
+		"]", "\\]",
 	)
-	if players == nil {
-		return status + "\nLive players (A2S): unavailable"
+	return replacer.Replace(value)
+}
+
+func sanitizeCode(value string) string {
+	value = normalizeSingleLine(value)
+	return strings.ReplaceAll(value, "`", "ˋ")
+}
+
+func normalizeSingleLine(value string) string {
+	var builder strings.Builder
+	lastWasSpace := true
+	for _, character := range strings.TrimSpace(value) {
+		switch {
+		case unicode.IsSpace(character):
+			if !lastWasSpace {
+				builder.WriteByte(' ')
+				lastWasSpace = true
+			}
+		case unicode.IsControl(character), unicode.Is(unicode.Cf, character):
+			continue
+		default:
+			builder.WriteRune(character)
+			lastWasSpace = false
+		}
 	}
-	status += fmt.Sprintf("\nLive players (A2S): `%d/%d`", players.PlayerCount, players.MaxPlayers)
-	if len(players.PlayerNames) == 0 {
-		return status + "\nPlayer names: unavailable"
+	return strings.TrimSpace(builder.String())
+}
+
+func boundDiscordContent(content string) string {
+	content = strings.TrimSpace(content)
+	runes := []rune(content)
+	if len(runes) <= maximumDiscordContentRunes {
+		return content
 	}
-	return status + "\nPlayer names: " + boundedNames(players.PlayerNames)
+	return strings.TrimSpace(string(runes[:maximumDiscordContentRunes-1])) + "…"
 }
 
 func boundedNames(names []string) string {
 	const maxNameRunes = 64
-	const maxOutputBytes = 600
+	const maxOutputRunes = 600
 	values := make([]string, 0, len(names))
 	used := 0
 	for _, name := range names {
@@ -79,11 +257,11 @@ func boundedNames(names []string) string {
 		if name == "" {
 			name = "(unnamed)"
 		}
-		additional := len(name)
+		additional := utf8.RuneCountInString(name)
 		if len(values) > 0 {
 			additional += 2
 		}
-		if used+additional > maxOutputBytes {
+		if used+additional > maxOutputRunes {
 			values = append(values, "…")
 			break
 		}
@@ -96,37 +274,32 @@ func boundedNames(names []string) string {
 	return strings.Join(values, ", ")
 }
 
-func formatSessionList(sessions []domain.Session) string {
-	if len(sessions) == 0 {
-		return "You do not have any sessions yet. Use `/session create` to create one."
+func sessionModeLabel(vanilla bool) string {
+	if vanilla {
+		return "Vanilla"
 	}
-
-	var builder strings.Builder
-	builder.WriteString("**Your sessions**\n")
-
-	for _, session := range sessions {
-		line := fmt.Sprintf(
-			"• %s — `%s` — `%s`\n",
-			sanitizeInline(session.DisplayName),
-			session.LifecycleState,
-			sanitizeInline(session.ID),
-		)
-
-		if builder.Len()+len(line) > maximumResponseLength {
-			builder.WriteString("…additional sessions omitted")
-			break
-		}
-
-		builder.WriteString(line)
-	}
-
-	return strings.TrimSpace(builder.String())
+	return "Modded"
 }
 
-func sanitizeInline(value string) string {
-	value = strings.TrimSpace(value)
-	value = strings.ReplaceAll(value, "\r", " ")
-	value = strings.ReplaceAll(value, "\n", " ")
-	value = strings.ReplaceAll(value, "`", "ˋ")
-	return value
+func enabledLabel(enabled bool) string {
+	if enabled {
+		return "Enabled"
+	}
+	return "Disabled"
+}
+
+func presetInstruction(vanilla bool) string {
+	if vanilla {
+		return ""
+	}
+	return " and preset"
+}
+
+func titleCase(value string) string {
+	if value == "" {
+		return value
+	}
+	runes := []rune(value)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
 }

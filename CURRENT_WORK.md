@@ -2,94 +2,110 @@
 
 ## State and Objective
 
-Phases 1-9.4 are complete. The operator reports that the Phase 9.3 termination
-path was deployed and `Test Session` was permanently terminated. Replacement
-session `01KZZA8R4BGFC1FBVSBWGSBJA8` reached bootstrap after the provisioning
-IAM correction, then failed because its authenticated Steam account required a
-Steam Guard challenge.
+Phases 1-9 are complete. Phases 10 and 11 remain pending. Phase 12 is proceeding
+before them by explicit user-approved roadmap reorder because current limitations
+prevent completing those prerequisites; this does not mark either prerequisite
+phase complete.
 
-## Phase 9 Completed
+Work is on `codex/phase-12-discord-experience`. Step 12.1 is complete. Discord
+session operations use only the guild-scoped `/rb` command, the interaction
+boundary supports the protocol shapes required by Phase 12, one shared
+authorized session selector supplies safe autocomplete choices, and one
+renderer owns interaction presentation and safety.
 
-- `/session archive` is owner-only and explicitly confirms that verified
-  archival is followed by EC2 and EBS removal.
-- Archive metadata and both S3 checksums are durably recorded before the
-  session crosses into `DESTROYING`. The worker re-verifies both objects before
-  mutation.
-- Destructive EC2 operations require matching `Project`, `Environment`, and
-  `SessionId` tags. The instance terminates before the detached data volume is
-  deleted; metadata reaches `ARCHIVED` only after both observations succeed.
-- `/session restore` is owner-only and validates manifest identity,
-  configuration revision, artifact keys, sizes, and checksums before reserving
-  capacity or creating resources.
-- Restore uses fresh encrypted EC2/EBS infrastructure, the existing bootstrap,
-  safe bounded archive extraction, ownership repair, service restart, and Arma
-  plus optional TeamSpeak health acceptance before returning `RUNNING` and
-  `HEALTHY`.
-- Failure paths retain discovered resource identifiers for Phase 10
-  reconciliation. Capacity is released only when resources are known absent.
-- `/session terminate` is owner-only, requires explicit irreversible-action
-  confirmation, creates no backup, and accepts any unlocked non-deleted
-  session so failed cleanup can be retried.
-- Termination requires exact immutable EC2/EBS tags, bounds deletion
-  observations, permanently deletes every S3 object version/delete marker
-  below the exact session prefix, releases capacity, and retains only a
-  `DELETED` audit tombstone.
-- Partial termination failures retain resource and object identifiers in
-  `FAILED`; other lifecycle workflows cannot race the termination lock.
-- Non-race Go tests, vet, all command builds, eleven Lambda packages, Discord JSON
-  parsing, Terraform formatting/validation, and diff checks pass. CGO/race
-  remains assigned to GitHub CI; thorough live archive/restore acceptance is
-  reserved for the Phase 9 completion checks.
+## Task 12.1.1 Verification
 
-## Wake Correction
+- The guild bulk-registration command now loads `deploy/discord/rb-command.json`
+  and `deploy/discord/admin-command.json`; bulk overwrite removes the former
+  guild `/session` definition when deployed.
+- Active Discord responses, worker notifications, deployment tooling, README,
+  and interaction deployment runbook now point users to `/rb`.
+- A focused interaction regression verifies that a signed legacy `/session`
+  payload is rejected without creating a session.
+- Full non-race Go tests, vet, and all command builds pass.
+- Both Discord command definition files parse as JSON; stale active `/session`
+  registration, routing, and guidance scans are clean; `git diff --check` passes.
 
-- `WakeSession` now waits for the restarted instance to report `Online` in
-  Systems Manager before dispatching its health probe.
-- The readiness loop is bounded to 40 attempts at 15-second intervals and
-  fails with `ERR_SSM_TIMEOUT` rather than racing `ssm:SendCommand`.
-- The sleep/wake worker role now has the read-only
-  `ssm:DescribeInstanceInformation` permission required by the readiness check.
-- Full non-race Go tests, vet, command builds, Lambda packaging, Terraform
-  formatting/validation, and diff checks pass. CGO/race remains assigned to
-  GitHub CI. No further live wake acceptance occurred before `Test Session`
-  was terminated.
+## Task 12.1.2 Verification
 
-## Terminated Test Resource
+- The protocol models autocomplete and modal-submit interactions, focused
+  options, modal callback data, component IDs, buttons, all select variants,
+  Components V2 layout/content types, file displays, and modal file uploads.
+- Modal submissions preserve nested Label input and resolved attachment data;
+  select interactions preserve selected values and lossless resolved entities.
+- Components V2 responses support the required message flag without legacy
+  top-level content, and autocomplete safely returns an explicit empty choice
+  list until task 12.1.3 provides authorized session choices.
+- Component custom IDs use a canonical `rb:v1` envelope with a bounded action,
+  positive revision, opaque token, and Discord's 100-character limit.
+- Focused tests for `internal/adapters/discord/interactions` pass, including wire
+  encoding/decoding, handler acknowledgements, and malformed component-token
+  rejection. The broader Step 12.1 regression suite and review remain deferred
+  to task 12.1.5 as requested.
 
-- Session `01KZ5VR86TM25A6Q3EKZGGX4DT` (`Test Session`) is terminated.
-- Former instance `i-07abe4ba82ce2649f`, data volume
-  `vol-04605fd628fabaf80`, and root volume `vol-0b0c4c54fd555b99d` are no
-  longer active resources.
+## Task 12.1.3 Verification
 
-## Vanilla Session Correction
+- The session application service selects only actor-owned sessions in the
+  requested guild, supports case-insensitive name/slug/state filtering, sorts
+  deterministically, and caps results at Discord's 25-choice limit.
+- Authorized autocomplete uses the shared selector for both transitional
+  `session-id` and future `session` option names. Labels contain only
+  `Name — slug — state`; the immutable session ID is carried only as the
+  hidden choice value.
+- Labels preserve the readable slug and lifecycle state within Discord's
+  100-character choice-name limit. Unsupported, malformed, unauthorized, and
+  empty matches return a valid explicit empty choice list.
+- Focused tests for `internal/app/sessions` and
+  `internal/adapters/discord/interactions` pass. Registration-wide rollout and
+  exact-slug command resolution remain task 12.2.3; the broader Step 12.1 suite
+  and review remain deferred to task 12.1.5.
 
-- `/session configure` now accepts `vanilla:true`; the selection is persisted,
-  audited, and displayed by configuration and status responses. Omitted or
-  false remains the backward-compatible modded behavior.
-- A configured vanilla session becomes `NEW` after mission validation without
-  requiring a launcher preset. Modded sessions still require both artifacts.
-- Vanilla bootstrap uses anonymous SteamCMD for app `233780`, skips the Creator
-  DLC beta, Steam secret retrieval, preset download, and Workshop processing,
-  and launches with an empty mod list.
-- Archive manifests and restore verification preserve the vanilla selection.
-- Focused tests, all non-race Go tests, vet, command builds, Lambda packaging,
-  Discord JSON parsing, Terraform validation, Bash syntax checks, and diff
-  checks pass. CGO/race remains assigned to GitHub CI.
+## Task 12.1.4 Verification
+
+- All interaction messages now pass through one renderer that applies the
+  ephemeral flag where appropriate, explicit allowed-mention suppression, and
+  a Unicode-safe 1,900-character content bound.
+- User-controlled inline text is single-line normalized, control/format
+  characters are removed, and Discord Markdown is escaped. Code-style values
+  are normalized and protected from backtick breakout.
+- Session creation, configuration, list, status, artifact acknowledgement, and
+  lifecycle acknowledgement output no longer displays immutable session IDs.
+  Existing commands still accept IDs internally until task 12.2.3 rolls out
+  session autocomplete and exact-slug resolution across command definitions.
+- Lifecycle output and selector labels use the shared accessible vocabulary:
+  `Setting up`, `Ready`, `Starting`, `Running`, `Sleeping`, `Archived`,
+  `Action required`, and `Terminated`. Boolean state uses readable text.
+- Creation, configuration, and status output use Discord-native absolute and
+  relative timestamps. Focused interaction and notification adapter tests pass,
+  including sanitization, Unicode bounds, timestamp rendering, vocabulary, ID
+  hiding, and mention suppression. The broader Step 12.1 regression suite and
+  review remain deferred to task 12.1.5.
+
+## Task 12.1.5 and Step 12.1 Verification
+
+- Registration tests verify guild bulk overwrite sends only `/rb` and `/admin`;
+  the legacy `/session` definition is absent and both active definitions parse.
+- Signed interaction tests cover malformed and oversized payloads, unauthorized
+  autocomplete non-disclosure, owner/guild selection isolation, stale and
+  malformed components, authorization before component handling, and Discord
+  content, choice-count, label, component-ID, and mention-suppression limits.
+- Step review moved ordinary components behind the shared authorization path,
+  normalized bounded autocomplete labels, and corrected transitional deployment
+  guidance. No Step 12.2 behavior was started.
+- `go test ./...`, `go vet ./...`, `go build ./cmd/...`, active legacy-command
+  scans, command JSON parsing, and `git diff --check` pass. Race testing is not
+  available in this environment because CGO is disabled and no C compiler is
+  installed; focused and repository-wide non-race tests pass.
 
 ## Operator Attention
 
-Deploy the updated Lambda packages, Terraform-managed bootstrap artifact, and
-Discord command definition before testing Phase 9.4. Vanilla mode is selected
-only while a session is `DRAFT` by running `/session configure` with
-`vanilla:true`; configuration plus a mission upload then makes it startable
-without `/session upload-preset`. Existing session
-`01KZZA8R4BGFC1FBVSBWGSBJA8` is already `FAILED` and cannot be converted through
-the draft-only configuration command; terminate it and create a new vanilla
-session for acceptance testing. Steam Guard handling for modded sessions remains
-deferred to Step 10.3.
+Deploying the command definitions is intentionally deferred until task 12.2.3
+adds session autocomplete and exact-slug resolution to targeting commands. When
+deployment is approved after that task, use guild bulk registration so the old
+`/session` command is removed rather than upserting `/rb` alongside it.
 
 ## Exact Next Step
 
-Deploy and acceptance-test one new vanilla session through Discord. After that,
-create a new Phase 10 branch, split Step 10.1 into 1-8 numbered tasks in
-`PROJECT_PLAN.md`, and implement only the first task by default.
+Implement only task 12.2.1: add an optional normalized 64-character session
+description and record creation and later changes in immutable event history.
+Do not begin task 12.2.2.

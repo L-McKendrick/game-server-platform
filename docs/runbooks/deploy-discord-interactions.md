@@ -120,12 +120,15 @@ command.
 
 ## 9. Smoke test in Discord
 
-Run, in order:
+Do not deploy the intermediate Step 12.1 definitions for user acceptance. They
+hide immutable session IDs before task 12.2.3 enables session autocomplete and
+exact-slug resolution across every session-targeting command. After task 12.2.3
+is complete and deployment is approved, run, in order:
 
 ```text
-/session create slug:test-session name:Test Session
-/session list
-/session status session-id:<ID returned by create>
+/rb create slug:test-session name:Test Session
+/rb list
+/rb status session:<select the created session>
 ```
 
 Confirm the session is written to the development DynamoDB table and that no

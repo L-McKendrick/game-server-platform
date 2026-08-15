@@ -97,7 +97,7 @@ func TestProvisioningStagesCreateInfrastructureAndStopBeforeBootstrap(t *testing
 	if len(notifications.requests) != 1 {
 		t.Fatalf("notifications = %d; want 1", len(notifications.requests))
 	}
-	if content := notifications.requests[0].Content; !strings.Contains(content, "/session start session-1") || strings.Contains(content, "Phase 6") {
+	if content := notifications.requests[0].Content; !strings.Contains(content, "/rb start session-1") || strings.Contains(content, "Phase 6") {
 		t.Fatalf("notification content = %q", content)
 	}
 }

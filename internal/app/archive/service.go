@@ -337,7 +337,7 @@ func (service *Service) notify(ctx context.Context, session domain.Session, work
 	if err != nil {
 		return
 	}
-	content := "**Session archived**\nSession: `" + session.ID + "`\nArchive: `" + metadata.ID + "`\nDisposable EC2 and EBS resources were removed after checksum verification. Use `/session restore` to recreate it."
+	content := "**Session archived**\nSession: `" + session.ID + "`\nArchive: `" + metadata.ID + "`\nDisposable EC2 and EBS resources were removed after checksum verification. Use `/rb restore` to recreate it."
 	_ = service.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: id, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: content, CorrelationID: workflow.CorrelationID, RequestedAt: service.clock.Now().UTC()})
 }
 
