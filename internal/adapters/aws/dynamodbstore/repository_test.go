@@ -23,6 +23,27 @@ type fakeAPI struct {
 	scanInput          *dynamodb.ScanInput
 	transactWriteInput *dynamodb.TransactWriteItemsInput
 	transactWriteErr   error
+	putItemInput       *dynamodb.PutItemInput
+}
+
+func TestSaveCardReferenceUsesIndependentChannelBoundItem(t *testing.T) {
+	t.Parallel()
+	client := &fakeAPI{}
+	repository := New(client, "metadata-table")
+	if err := repository.SaveCardReference(context.Background(), domain.SessionCardReference{
+		SessionID: "session-1", ChannelID: "channel-1", MessageID: "message-1",
+	}); err != nil {
+		t.Fatalf("SaveCardReference() returned error: %v", err)
+	}
+	if client.putItemInput == nil || client.putItemInput.ConditionExpression == nil ||
+		*client.putItemInput.ConditionExpression != "attribute_not_exists(pk) OR channel_id = :channel" {
+		t.Fatalf("put input = %#v", client.putItemInput)
+	}
+	client.getItemOutput = &dynamodb.GetItemOutput{Item: client.putItemInput.Item}
+	reference, err := repository.GetCardReference(context.Background(), "session-1")
+	if err != nil || reference.MessageID != "message-1" || reference.ChannelID != "channel-1" {
+		t.Fatalf("GetCardReference() = %#v, %v", reference, err)
+	}
 }
 
 func (fake *fakeAPI) Scan(_ context.Context, input *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
@@ -78,9 +99,10 @@ func (fake *fakeAPI) Query(
 
 func (fake *fakeAPI) PutItem(
 	_ context.Context,
-	_ *dynamodb.PutItemInput,
+	input *dynamodb.PutItemInput,
 	_ ...func(*dynamodb.Options),
 ) (*dynamodb.PutItemOutput, error) {
+	fake.putItemInput = input
 	return &dynamodb.PutItemOutput{}, nil
 }
 
@@ -314,6 +336,24 @@ func TestSessionItemRoundTripPreservesVanillaMode(t *testing.T) {
 	}
 	if !stored.Vanilla {
 		t.Fatal("vanilla mode was not preserved by DynamoDB mapping")
+	}
+}
+
+func TestSessionItemReadInfersAcceptedLegacyArtifactObjectKeys(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 14, 23, 0, 0, 0, time.UTC)
+	item := toSessionItem(testSession(t, now))
+	item.MissionObjectKey = "sessions/session-1/input/mission.pbo"
+	item.PresetObjectKey = "sessions/session-1/input/preset.html"
+	item.MissionArtifactStatus = ""
+	item.PresetArtifactStatus = ""
+
+	stored, err := fromSessionItem(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.MissionArtifactStatus != domain.ArtifactAccepted || stored.PresetArtifactStatus != domain.ArtifactAccepted {
+		t.Fatalf("legacy artifact statuses = mission %q preset %q; want accepted", stored.MissionArtifactStatus, stored.PresetArtifactStatus)
 	}
 }
 

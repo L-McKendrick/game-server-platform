@@ -40,6 +40,7 @@ type Service struct {
 	repository           ports.SessionRepository
 	artifactQueue        ports.ArtifactQueue
 	commandQueue         ports.CommandQueue
+	notificationQueue    ports.NotificationQueue
 	ids                  IDGenerator
 	clock                Clock
 	idempotencyRetention time.Duration
@@ -56,6 +57,11 @@ func WithArtifactQueue(queue ports.ArtifactQueue) Option {
 // WithCommandQueue enables asynchronous lifecycle command dispatch.
 func WithCommandQueue(queue ports.CommandQueue) Option {
 	return func(service *Service) { service.commandQueue = queue }
+}
+
+// WithNotificationQueue enables durable public session-card delivery.
+func WithNotificationQueue(queue ports.NotificationQueue) Option {
+	return func(service *Service) { service.notificationQueue = queue }
 }
 
 // NewService creates a session application service.
@@ -112,6 +118,106 @@ type LifecycleCommand struct {
 	SessionID, GuildID, ChannelID, CommandID, CorrelationID, IdempotencyKey string
 	CommandType                                                             string
 	CanManageGuild                                                          bool
+}
+
+// SessionCardCommand requests an idempotent create-or-edit of the one public
+// card associated with a session.
+type SessionCardCommand struct {
+	Actor                                                                 domain.Actor
+	SessionID, GuildID, ChannelID, CorrelationID, NotificationID, Content string
+}
+
+type PrepareCreationArtifactsCommand struct {
+	Actor                                             domain.Actor
+	SessionID, GuildID, CorrelationID, IdempotencyKey string
+	HasPreset                                         bool
+}
+
+// PrepareCreationArtifacts durably records queued inputs before asynchronous
+// workers can advance session readiness.
+func (service *Service) PrepareCreationArtifacts(ctx context.Context, command PrepareCreationArtifactsCommand) (domain.Session, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Session{}, fmt.Errorf("validate actor: %w", err)
+	}
+	key := strings.TrimSpace(command.IdempotencyKey)
+	if key == "" {
+		return domain.Session{}, fmt.Errorf("idempotency key is required")
+	}
+	hash, err := hashRequest(struct {
+		CommandType string `json:"command_type"`
+		ActorID     string `json:"actor_id"`
+		SessionID   string `json:"session_id"`
+		HasPreset   bool   `json:"has_preset"`
+	}{"PrepareCreationArtifacts", command.Actor.ID, strings.TrimSpace(command.SessionID), command.HasPreset})
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("hash artifact preparation: %w", err)
+	}
+	if replayed, found, err := service.replaySession(ctx, key, hash, command.Actor); err != nil || found {
+		return replayed, err
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("get session: %w", err)
+	}
+	if err := authorizeOwner(command.Actor, session); err != nil {
+		return domain.Session{}, err
+	}
+	if session.GuildID != strings.TrimSpace(command.GuildID) {
+		return domain.Session{}, domain.ErrForbidden
+	}
+	now, expectedVersion := service.clock.Now().UTC(), session.Version
+	if err := session.PrepareCreationArtifacts(command.HasPreset, now); err != nil {
+		return domain.Session{}, err
+	}
+	eventID, err := service.newID(now, "artifact preparation event")
+	if err != nil {
+		return domain.Session{}, err
+	}
+	correlationID, err := service.resolveCorrelationID(command.CorrelationID, now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.SessionEvent{
+		ID: eventID, SessionID: session.ID, Type: domain.EventArtifactRequested, OccurredAt: now,
+		ActorType: string(command.Actor.Type), ActorID: command.Actor.ID, CorrelationID: correlationID,
+		Data: map[string]string{"mission": "pending", "preset": strconv.FormatBool(command.HasPreset)},
+	}
+	record, err := domain.NewCompletedIdempotencyRecord(key, hash, session.ID, now, service.idempotencyRetention)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, record); err != nil {
+		if replayed, found, replayErr := service.replaySession(ctx, key, hash, command.Actor); replayErr != nil || found {
+			return replayed, replayErr
+		}
+		return domain.Session{}, fmt.Errorf("persist artifact preparation: %w", err)
+	}
+	return session, nil
+}
+
+func (service *Service) RequestSessionCard(ctx context.Context, command SessionCardCommand) error {
+	if err := command.Actor.Validate(); err != nil {
+		return fmt.Errorf("validate actor: %w", err)
+	}
+	if service.notificationQueue == nil {
+		return fmt.Errorf("session card delivery is not configured")
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+	if err := authorizeOwner(command.Actor, session); err != nil {
+		return err
+	}
+	if session.GuildID != strings.TrimSpace(command.GuildID) || session.ChannelID != strings.TrimSpace(command.ChannelID) {
+		return fmt.Errorf("session card destination does not match session: %w", domain.ErrForbidden)
+	}
+	return service.notificationQueue.Enqueue(ctx, domain.NotificationRequest{
+		SchemaVersion: 1, NotificationID: strings.TrimSpace(command.NotificationID),
+		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
+		Content: command.Content, Kind: domain.NotificationSessionCard,
+		CorrelationID: strings.TrimSpace(command.CorrelationID), RequestedAt: service.clock.Now().UTC(),
+	})
 }
 
 func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleCommand) error {
@@ -210,6 +316,86 @@ type ConfigureCommand struct {
 	ArchiveAfterSeconds int64
 	TeamSpeakEnabled    bool
 	Vanilla             bool
+}
+
+type UpdateDraftSetupCommand struct {
+	Actor                                             domain.Actor
+	SessionID, GuildID, CorrelationID, IdempotencyKey string
+	DisplayName, Description                          string
+	GameProfileID                                     string
+	SleepAfterSeconds, ArchiveAfterSeconds            int64
+	TeamSpeakEnabled, Vanilla                         bool
+	ReplaceMission, ReplacePreset                     bool
+}
+
+// UpdateDraftSetup atomically edits the draft fields and marks only selected
+// missing or rejected artifacts pending.
+func (service *Service) UpdateDraftSetup(ctx context.Context, command UpdateDraftSetupCommand) (domain.Session, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Session{}, fmt.Errorf("validate actor: %w", err)
+	}
+	key := strings.TrimSpace(command.IdempotencyKey)
+	if key == "" {
+		return domain.Session{}, fmt.Errorf("idempotency key is required")
+	}
+	hash, err := hashRequest(struct {
+		CommandType                                                          string `json:"command_type"`
+		ActorID, SessionID, GuildID, DisplayName, Description, GameProfileID string
+		SleepAfterSeconds, ArchiveAfterSeconds                               int64
+		TeamSpeakEnabled, Vanilla, ReplaceMission, ReplacePreset             bool
+	}{
+		CommandType: "UpdateDraftSetup", ActorID: command.Actor.ID,
+		SessionID: strings.TrimSpace(command.SessionID), GuildID: strings.TrimSpace(command.GuildID),
+		DisplayName: strings.TrimSpace(command.DisplayName), Description: strings.TrimSpace(command.Description),
+		GameProfileID: strings.TrimSpace(command.GameProfileID), SleepAfterSeconds: command.SleepAfterSeconds,
+		ArchiveAfterSeconds: command.ArchiveAfterSeconds, TeamSpeakEnabled: command.TeamSpeakEnabled,
+		Vanilla: command.Vanilla, ReplaceMission: command.ReplaceMission, ReplacePreset: command.ReplacePreset,
+	})
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("hash draft setup: %w", err)
+	}
+	if replayed, found, err := service.replaySession(ctx, key, hash, command.Actor); err != nil || found {
+		return replayed, err
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("get session: %w", err)
+	}
+	if err := authorizeOwner(command.Actor, session); err != nil {
+		return domain.Session{}, err
+	}
+	if session.GuildID != strings.TrimSpace(command.GuildID) {
+		return domain.Session{}, domain.ErrForbidden
+	}
+	now, expectedVersion := service.clock.Now().UTC(), session.Version
+	if err := session.ConfigureDraftSetup(command.DisplayName, command.Description, domain.SessionConfiguration{
+		GameProfileID: command.GameProfileID, SleepAfterSeconds: command.SleepAfterSeconds,
+		ArchiveAfterSeconds: command.ArchiveAfterSeconds, TeamSpeakEnabled: command.TeamSpeakEnabled, Vanilla: command.Vanilla,
+	}, command.ReplaceMission, command.ReplacePreset, now); err != nil {
+		return domain.Session{}, err
+	}
+	eventID, err := service.newID(now, "draft setup event")
+	if err != nil {
+		return domain.Session{}, err
+	}
+	correlationID, err := service.resolveCorrelationID(command.CorrelationID, now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.NewSessionConfiguredEvent(eventID, correlationID, command.Actor, session, now)
+	event.Data["replacement_mission"] = strconv.FormatBool(command.ReplaceMission)
+	event.Data["replacement_preset"] = strconv.FormatBool(command.ReplacePreset)
+	record, err := domain.NewCompletedIdempotencyRecord(key, hash, session.ID, now, service.idempotencyRetention)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, record); err != nil {
+		if replayed, found, replayErr := service.replaySession(ctx, key, hash, command.Actor); replayErr != nil || found {
+			return replayed, replayErr
+		}
+		return domain.Session{}, fmt.Errorf("persist draft setup: %w", err)
+	}
+	return session, nil
 }
 
 // UpdateDescriptionCommand replaces a session's optional description.

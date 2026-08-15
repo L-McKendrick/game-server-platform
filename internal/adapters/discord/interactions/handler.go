@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -19,8 +18,6 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
-
-var discordSlugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 const (
 	defaultMaxRequestBytes = int64(64 * 1024)
@@ -64,6 +61,9 @@ type SessionService interface {
 		actor domain.Actor,
 		request domain.ArtifactIngestRequest,
 	) error
+	RequestSessionCard(ctx context.Context, command appsession.SessionCardCommand) error
+	PrepareCreationArtifacts(ctx context.Context, command appsession.PrepareCreationArtifactsCommand) (domain.Session, error)
+	UpdateDraftSetup(ctx context.Context, command appsession.UpdateDraftSetupCommand) (domain.Session, error)
 
 	RequestStart(ctx context.Context, command appsession.StartCommand) error
 	RequestLifecycle(ctx context.Context, command appsession.LifecycleCommand) error
@@ -316,8 +316,32 @@ func (handler *Handler) ServeHTTP(
 		writeAutocompleteChoices(writer, choices)
 		return
 	}
-	if payload.Type == interactionTypeModalSubmit {
+	if payload.Type == interactionTypeModalSubmit && (payload.Data == nil || (payload.Data.CustomID != createModalCustomID && !isSetupModalCustomID(payload.Data.CustomID))) {
 		writeInteractionMessage(writer, "This modal is not supported or has expired.")
+		return
+	}
+	if payload.isRBCreateCommand() {
+		if message := payload.channelCapabilities().setupBlockedMessage(false); message != "" {
+			writeInteractionMessage(writer, message)
+			return
+		}
+		writeCreateModal(writer)
+		return
+	}
+	if payload.isRBSetupCommand() {
+		if message := payload.channelCapabilities().setupBlockedMessage(true); message != "" {
+			writeInteractionMessage(writer, message)
+			return
+		}
+		correlationID, err := handler.ids.New(handler.clock.Now().UTC())
+		if err != nil {
+			writeInteractionMessage(writer, "The command could not be processed. Please try again.")
+			return
+		}
+		err = handler.openSetupModal(request.Context(), writer, payload, domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID})
+		if err != nil {
+			writeInteractionMessage(writer, handler.commandErrorMessage(err, correlationID))
+		}
 		return
 	}
 
@@ -325,6 +349,38 @@ func (handler *Handler) ServeHTTP(
 	if err != nil {
 		handler.logger.Error("failed to generate Discord correlation ID", slog.Any("error", err))
 		writeInteractionMessage(writer, "The command could not be processed. Please try again.")
+		return
+	}
+	if payload.Type == interactionTypeModalSubmit {
+		edit := isSetupModalCustomID(payload.Data.CustomID)
+		if message := payload.channelCapabilities().setupBlockedMessage(edit); message != "" {
+			writeInteractionMessage(writer, message)
+			return
+		}
+		actor := domain.Actor{
+			Type: domain.ActorTypeDiscordUser,
+			ID:   actorID,
+		}
+		var content string
+		if isSetupModalCustomID(payload.Data.CustomID) {
+			content, err = handler.submitSetupModal(request.Context(), payload, actor, correlationID)
+		} else {
+			content, err = handler.submitCreateModal(request.Context(), payload, actor, correlationID)
+		}
+		if err != nil {
+			content = handler.commandErrorMessage(err, correlationID)
+			handler.logger.Error(
+				"Discord creation modal failed",
+				slog.String("correlation_id", correlationID),
+				slog.Any("error", err),
+			)
+		} else {
+			handler.logger.Info(
+				"Discord creation modal completed",
+				slog.String("correlation_id", correlationID),
+			)
+		}
+		writeInteractionMessage(writer, content)
 		return
 	}
 
@@ -377,15 +433,6 @@ func (handler *Handler) routeCommand(
 
 	commandName := "rb " + subcommand.Name
 	switch subcommand.Name {
-	case "create":
-		content, err := handler.createSession(
-			ctx,
-			payload,
-			subcommand.Options,
-			actor,
-			correlationID,
-		)
-		return content, commandName, err
 	case "list":
 		content, err := handler.listSessions(ctx, subcommand.Options, actor, payload.GuildID)
 		return content, commandName, err
@@ -581,11 +628,11 @@ func (handler *Handler) configureSession(
 	if profile == "" {
 		profile = "arma3-default"
 	}
-	sleepMinutes, err := integerOption(options, "sleep-minutes", 30)
+	sleepMinutes, err := integerOption(options, "sleep-minutes", defaultSleepMinutes)
 	if err != nil || sleepMinutes < 10 || sleepMinutes > 1440 {
 		return "", newUserError("Sleep time must be between 10 and 1440 minutes.")
 	}
-	archiveDays, err := integerOption(options, "archive-days", 7)
+	archiveDays, err := integerOption(options, "archive-days", defaultArchiveDays)
 	if err != nil || archiveDays < 1 || archiveDays > 90 {
 		return "", newUserError("Archive time must be between 1 and 90 days.")
 	}
@@ -655,56 +702,6 @@ func (handler *Handler) requestArtifactIngest(
 		return "", fmt.Errorf("request artifact ingestion: %w", err)
 	}
 	return formatArtifactAccepted(kind, attachment.Filename), nil
-}
-
-func (handler *Handler) createSession(
-	ctx context.Context,
-	payload interactionPayload,
-	options []applicationCommandOption,
-	actor domain.Actor,
-	correlationID string,
-) (string, error) {
-	slug, err := stringOption(options, "slug", false)
-	if err != nil || (slug != "" && (len(slug) > 64 || !discordSlugPattern.MatchString(slug))) {
-		return "", newUserError(
-			"The slug must use lowercase letters, numbers, and single hyphens.",
-		)
-	}
-
-	displayName, err := stringOption(options, "name", true)
-	if err != nil || len(displayName) > 100 {
-		return "", newUserError("The session name must contain 1 to 100 characters.")
-	}
-
-	gameType, err := stringOption(options, "game", false)
-	if err != nil {
-		return "", newUserError("The game option must be text.")
-	}
-	if gameType == "" {
-		gameType = "arma3"
-	}
-	if strings.ToLower(gameType) != "arma3" {
-		return "", newUserError("Only Arma 3 is supported in the current release.")
-	}
-
-	session, err := handler.service.Create(
-		ctx,
-		appsession.CreateCommand{
-			Actor:          actor,
-			CorrelationID:  correlationID,
-			IdempotencyKey: "discord:" + strings.TrimSpace(payload.ID),
-			Slug:           slug,
-			DisplayName:    displayName,
-			GameType:       gameType,
-			GuildID:        strings.TrimSpace(payload.GuildID),
-			ChannelID:      strings.TrimSpace(payload.ChannelID),
-		},
-	)
-	if err != nil {
-		return "", fmt.Errorf("create session: %w", err)
-	}
-
-	return formatCreatedSession(session), nil
 }
 
 func (handler *Handler) listSessions(

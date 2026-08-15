@@ -56,18 +56,6 @@ func (discordRenderer) artifactAccepted(kind domain.ArtifactKind, filename strin
 	)
 }
 
-func (discordRenderer) createdSession(session domain.Session) string {
-	return fmt.Sprintf(
-		"**Draft session created**\nName: %s\nSlug: `%s`\nStatus: %s\nGame: `%s`\nCreated: %s\nNext: upload the mission%s, then configure the session.",
-		sanitizeInline(session.DisplayName),
-		sanitizeCode(session.Slug),
-		lifecyclePresentation(session.LifecycleState),
-		sanitizeCode(session.GameType),
-		discordTimestamp(session.CreatedAt),
-		presetInstruction(session.Vanilla),
-	)
-}
-
 func (discordRenderer) sessionStatus(session domain.Session, players *domain.PlayerStatus) string {
 	var builder strings.Builder
 	fmt.Fprintf(
@@ -138,10 +126,6 @@ func formatConfiguredSession(session domain.Session) string {
 
 func formatArtifactAccepted(kind domain.ArtifactKind, filename string) string {
 	return renderer.artifactAccepted(kind, filename)
-}
-
-func formatCreatedSession(session domain.Session) string {
-	return renderer.createdSession(session)
 }
 
 func formatSessionStatus(session domain.Session, players *domain.PlayerStatus) string {
@@ -300,13 +284,6 @@ func enabledLabel(enabled bool) string {
 		return "Enabled"
 	}
 	return "Disabled"
-}
-
-func presetInstruction(vanilla bool) string {
-	if vanilla {
-		return ""
-	}
-	return " and preset"
 }
 
 func titleCase(value string) string {

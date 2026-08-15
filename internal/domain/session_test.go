@@ -237,6 +237,38 @@ func TestVanillaSessionBecomesNewWithoutPreset(t *testing.T) {
 	}
 }
 
+func TestVanillaSessionWaitsForSubmittedOptionalPresetOutcome(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{
+		ID: "session-vanilla-preset", Slug: "vanilla-preset", DisplayName: "Vanilla Preset", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(SessionConfiguration{
+		GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400, Vanilla: true,
+	}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.PrepareCreationArtifacts(true, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AttachArtifact(ArtifactMission, "sessions/session-vanilla-preset/input/missions/mission.pbo", now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateDraft {
+		t.Fatalf("state = %s; want DRAFT while preset is pending", session.LifecycleState)
+	}
+	if err := session.RejectArtifact(ArtifactPreset, "invalid preset", now.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateNew || session.PresetArtifactStatus != ArtifactRejected {
+		t.Fatalf("session = %#v; want ready vanilla session with recorded optional rejection", session)
+	}
+}
+
 func TestModdedSessionStillRequiresPreset(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 14, 6, 0, 0, 0, time.UTC)
@@ -257,6 +289,66 @@ func TestModdedSessionStillRequiresPreset(t *testing.T) {
 	}
 	if session.LifecycleState != StateDraft {
 		t.Fatalf("modded session state = %s; want DRAFT until preset upload", session.LifecycleState)
+	}
+}
+
+func TestLegacyArtifactObjectKeysRemainAcceptedForReadiness(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 14, 7, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{
+		ID: "session-legacy-artifacts", Slug: "legacy-artifacts", DisplayName: "Legacy Artifacts", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.MissionObjectKey = "sessions/session-legacy-artifacts/input/mission.pbo"
+	session.PresetObjectKey = "sessions/session-legacy-artifacts/input/preset.html"
+	if err := session.Configure(SessionConfiguration{
+		GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400,
+	}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateNew {
+		t.Fatalf("legacy artifact session state = %s; want NEW", session.LifecycleState)
+	}
+}
+
+func TestDraftSetupIdentityKeepsSlugAndOnlyRejectedArtifactsCanBeReplaced(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 14, 18, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{
+		ID: "session-repair", Slug: "original-slug", DisplayName: "Original Name", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AttachArtifact(ArtifactMission, "sessions/session-repair/input/mission.pbo", now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.RejectArtifact(ArtifactPreset, "bad preset", now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.ConfigureDraftSetup(" Updated   Name ", " Updated   description ", SessionConfiguration{
+		GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400,
+	}, false, false, now.Add(4*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if session.DisplayName != "Updated Name" || session.Description != "Updated description" || session.Slug != "original-slug" {
+		t.Fatalf("updated identity = %#v; want normalized identity and stable slug", session)
+	}
+	if err := session.PrepareReplacementArtifacts(false, true, now.Add(5*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if session.PresetArtifactStatus != ArtifactPending || session.MissionArtifactStatus != ArtifactAccepted {
+		t.Fatalf("replacement statuses = mission %q preset %q", session.MissionArtifactStatus, session.PresetArtifactStatus)
+	}
+	if err := session.PrepareReplacementArtifacts(true, false, now.Add(6*time.Second)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("accepted mission replacement error = %v; want ErrConflict", err)
 	}
 }
 

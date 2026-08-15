@@ -86,14 +86,14 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.2.5** [x] Make `/rb status` an ephemeral detailed view available to approved users in the session guild while preserving mutation authorization.
       - **12.2.6** [x] Tag new and restored EC2/EBS resources with readable `Name`, `SessionName`, and `SessionSlug` values while retaining immutable `Project`, `Environment`, and `SessionId` safeguards.
       - **12.2.7** [x] Preserve descriptions and readable identity through persistence, archive/restore, deletion tombstones, and regression tests.
-    - **12.3** [ ] Replace multi-command setup with a resilient creation and setup wizard.
-      - **12.3.1** [ ] Implement `/rb create` as one private modal for name, description, vanilla/modded and TeamSpeak options, mission upload, and optional preset upload using platform policy defaults.
-      - **12.3.2** [ ] Validate modal fields and attachments, create the draft idempotently, and queue mission/preset ingestion without claiming validation success synchronously.
-      - **12.3.3** [ ] Create exactly one public session card in the invoking channel and persist its channel/message reference independently of artifact processing.
-      - **12.3.4** [ ] Update the card as each artifact is accepted or rejected and keep a partially configured draft recoverable.
-      - **12.3.5** [ ] Add `/rb setup` to edit allowed draft fields and replace only missing or rejected artifacts through the same modal contracts.
-      - **12.3.6** [ ] Add permission preflight and plain-text degradation for missing send, edit, component, embed, or attachment capabilities.
-      - **12.3.7** [ ] Test duplicate submissions, partial failures, modal limits, vanilla/modded requirements, card-delivery failure, and setup recovery.
+    - **12.3** [x] Replace multi-command setup with a resilient creation and setup wizard.
+      - **12.3.1** [x] Implement `/rb create` as one private modal for name, description, vanilla/modded and TeamSpeak options, mission upload, and optional preset upload using platform policy defaults.
+      - **12.3.2** [x] Validate modal fields and attachments, create the draft idempotently, and queue mission/preset ingestion without claiming validation success synchronously.
+      - **12.3.3** [x] Create exactly one public session card in the invoking channel and persist its channel/message reference independently of artifact processing.
+      - **12.3.4** [x] Update the card as each artifact is accepted or rejected and keep a partially configured draft recoverable.
+      - **12.3.5** [x] Add `/rb setup` to edit allowed draft fields and replace only missing or rejected artifacts through the same modal contracts.
+      - **12.3.6** [x] Add permission preflight and plain-text degradation for missing send, edit, component, embed, or attachment capabilities.
+      - **12.3.7** [x] Test duplicate submissions, partial failures, modal limits, vanilla/modded requirements, card-delivery failure, and setup recovery.
     - **12.4** [ ] Deliver the durable public session card and modlist artifact experience.
       - **12.4.1** [ ] Define one authoritative card projection for name, slug, description, lifecycle, health, stage, elapsed time, players, endpoints, mods, failures, and data freshness.
       - **12.4.2** [ ] Extend notification delivery to create and idempotently edit bot-authored card messages without relying on expiring interaction tokens.

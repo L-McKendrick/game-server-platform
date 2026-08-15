@@ -18,9 +18,11 @@ type SessionRepository struct {
 	idempotency map[string]domain.IdempotencyRecord
 	workflows   map[string]domain.Workflow
 	capacity    map[string]string
+	cards       map[string]domain.SessionCardReference
 }
 
 var _ ports.SessionRepository = (*SessionRepository)(nil)
+var _ ports.SessionCardRepository = (*SessionRepository)(nil)
 
 // NewSessionRepository creates an empty repository.
 func NewSessionRepository() *SessionRepository {
@@ -30,6 +32,7 @@ func NewSessionRepository() *SessionRepository {
 		idempotency: make(map[string]domain.IdempotencyRecord),
 		workflows:   make(map[string]domain.Workflow),
 		capacity:    make(map[string]string),
+		cards:       make(map[string]domain.SessionCardReference),
 	}
 }
 
@@ -111,6 +114,41 @@ func (repository *SessionRepository) Get(
 	}
 
 	return session, nil
+}
+
+// SaveCardReference stores replaceable delivery metadata independently of the
+// session's optimistic lifecycle version.
+func (repository *SessionRepository) GetCardReference(ctx context.Context, sessionID string) (domain.SessionCardReference, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.SessionCardReference{}, err
+	}
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	reference, found := repository.cards[sessionID]
+	if !found {
+		return domain.SessionCardReference{}, fmt.Errorf("%w: session card %s", domain.ErrNotFound, sessionID)
+	}
+	return reference, nil
+}
+
+func (repository *SessionRepository) SaveCardReference(ctx context.Context, reference domain.SessionCardReference) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := reference.Validate(); err != nil {
+		return err
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	session, found := repository.sessions[reference.SessionID]
+	if !found {
+		return fmt.Errorf("%w: session %s", domain.ErrNotFound, reference.SessionID)
+	}
+	if session.ChannelID != reference.ChannelID {
+		return fmt.Errorf("card channel does not match session channel: %w", domain.ErrForbidden)
+	}
+	repository.cards[reference.SessionID] = reference
+	return nil
 }
 
 // SaveWithEvent updates a session using optimistic concurrency.

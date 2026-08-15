@@ -34,6 +34,10 @@ type Session struct {
 	ConfigurationRevision int64
 	MissionObjectKey      string
 	PresetObjectKey       string
+	MissionArtifactStatus ArtifactStatus
+	PresetArtifactStatus  ArtifactStatus
+	MissionArtifactIssue  string
+	PresetArtifactIssue   string
 	Infrastructure        Infrastructure
 	Archive               ArchiveMetadata
 	ArchiveSourceState    LifecycleState
@@ -68,8 +72,12 @@ func (session *Session) AttachArtifact(kind ArtifactKind, objectKey string, now 
 	switch kind {
 	case ArtifactMission:
 		session.MissionObjectKey = objectKey
+		session.MissionArtifactStatus = ArtifactAccepted
+		session.MissionArtifactIssue = ""
 	case ArtifactPreset:
 		session.PresetObjectKey = objectKey
+		session.PresetArtifactStatus = ArtifactAccepted
+		session.PresetArtifactIssue = ""
 	default:
 		return fmt.Errorf("unsupported artifact kind %q", kind)
 	}
@@ -78,6 +86,73 @@ func (session *Session) AttachArtifact(kind ArtifactKind, objectKey string, now 
 	session.UpdatedAt = now.UTC()
 	session.markReadyWhenComplete()
 	return session.Validate()
+}
+
+// RejectArtifact records the latest validation outcome while leaving the
+// draft editable and any independently accepted artifact intact.
+func (session *Session) RejectArtifact(kind ArtifactKind, issue string, now time.Time) error {
+	if session.LifecycleState != StateDraft {
+		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
+	}
+	issue = normalizeSessionDescription(issue)
+	if utf8.RuneCountInString(issue) > 160 {
+		issue = string([]rune(issue)[:160])
+	}
+	if issue == "" {
+		issue = "The uploaded file did not pass validation."
+	}
+	switch kind {
+	case ArtifactMission:
+		session.MissionArtifactStatus, session.MissionArtifactIssue = ArtifactRejected, issue
+	case ArtifactPreset:
+		session.PresetArtifactStatus, session.PresetArtifactIssue = ArtifactRejected, issue
+	default:
+		return fmt.Errorf("unsupported artifact kind %q", kind)
+	}
+	if err := session.RecordMutation(now); err != nil {
+		return err
+	}
+	session.markReadyWhenComplete()
+	return session.Validate()
+}
+
+// PrepareCreationArtifacts records which uploads must finish before readiness.
+func (session *Session) PrepareCreationArtifacts(hasPreset bool, now time.Time) error {
+	if session.LifecycleState != StateDraft {
+		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
+	}
+	session.MissionArtifactStatus, session.MissionArtifactIssue = ArtifactPending, ""
+	if hasPreset {
+		session.PresetArtifactStatus, session.PresetArtifactIssue = ArtifactPending, ""
+	} else {
+		session.PresetArtifactStatus, session.PresetArtifactIssue = "", ""
+	}
+	return session.RecordMutation(now)
+}
+
+// PrepareReplacementArtifacts marks only absent or rejected draft inputs as
+// pending. Accepted and already-pending artifacts cannot be replaced through
+// the setup recovery flow.
+func (session *Session) PrepareReplacementArtifacts(mission, preset bool, now time.Time) error {
+	if session.LifecycleState != StateDraft {
+		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
+	}
+	if !mission && !preset {
+		return fmt.Errorf("at least one replacement artifact is required")
+	}
+	if mission {
+		if session.MissionObjectKey != "" || (session.MissionArtifactStatus != "" && session.MissionArtifactStatus != ArtifactRejected) {
+			return fmt.Errorf("%w: mission is not missing or rejected", ErrConflict)
+		}
+		session.MissionArtifactStatus, session.MissionArtifactIssue = ArtifactPending, ""
+	}
+	if preset {
+		if session.PresetObjectKey != "" || (session.PresetArtifactStatus != "" && session.PresetArtifactStatus != ArtifactRejected) {
+			return fmt.Errorf("%w: preset is not missing or rejected", ErrConflict)
+		}
+		session.PresetArtifactStatus, session.PresetArtifactIssue = ArtifactPending, ""
+	}
+	return session.RecordMutation(now)
 }
 
 // AcquireWorkflowLock applies an in-memory workflow lease. Durable adapters
@@ -252,6 +327,14 @@ func (session Session) Validate() error {
 		return fmt.Errorf("Discord guild ID is required")
 	case session.ChannelID == "":
 		return fmt.Errorf("Discord channel ID is required")
+	case !session.MissionArtifactStatus.Valid():
+		return fmt.Errorf("invalid mission artifact status %q", session.MissionArtifactStatus)
+	case !session.PresetArtifactStatus.Valid():
+		return fmt.Errorf("invalid preset artifact status %q", session.PresetArtifactStatus)
+	case session.MissionArtifactStatus != ArtifactRejected && session.MissionArtifactIssue != "":
+		return fmt.Errorf("mission artifact issue requires rejected status")
+	case session.PresetArtifactStatus != ArtifactRejected && session.PresetArtifactIssue != "":
+		return fmt.Errorf("preset artifact issue requires rejected status")
 	case strings.TrimSpace(session.GameProfileID) == "":
 		return fmt.Errorf("game profile ID is required")
 	case session.SleepAfterSeconds < 600:
@@ -387,6 +470,58 @@ func (session *Session) Configure(configuration SessionConfiguration, now time.T
 			ErrInvalidTransition,
 		)
 	}
+	if err := session.applyConfiguration(configuration); err != nil {
+		return err
+	}
+	session.Version++
+	session.UpdatedAt = now.UTC()
+	session.markReadyWhenComplete()
+
+	return session.Validate()
+}
+
+// ConfigureDraftSetup atomically changes draft identity and configuration so
+// persistence adapters observe one optimistic-concurrency version increment.
+func (session *Session) ConfigureDraftSetup(displayName, description string, configuration SessionConfiguration, replaceMission, replacePreset bool, now time.Time) error {
+	if session.LifecycleState != StateDraft {
+		return fmt.Errorf("%w: setup is only editable while a session is DRAFT", ErrInvalidTransition)
+	}
+	displayName = normalizeSessionDescription(displayName)
+	if count := utf8.RuneCountInString(displayName); count < 1 || count > 100 {
+		return fmt.Errorf("display name must contain 1 to 100 characters")
+	}
+	normalizedDescription, err := NormalizeSessionDescription(description)
+	if err != nil {
+		return err
+	}
+	if replaceMission {
+		if session.MissionObjectKey != "" || (session.MissionArtifactStatus != "" && session.MissionArtifactStatus != ArtifactRejected) {
+			return fmt.Errorf("%w: mission is not missing or rejected", ErrConflict)
+		}
+	}
+	if replacePreset {
+		if session.PresetObjectKey != "" || (session.PresetArtifactStatus != "" && session.PresetArtifactStatus != ArtifactRejected) {
+			return fmt.Errorf("%w: preset is not missing or rejected", ErrConflict)
+		}
+	}
+	if err := session.applyConfiguration(configuration); err != nil {
+		return err
+	}
+	if replaceMission {
+		session.MissionArtifactStatus, session.MissionArtifactIssue = ArtifactPending, ""
+	}
+	if replacePreset {
+		session.PresetArtifactStatus, session.PresetArtifactIssue = ArtifactPending, ""
+	}
+	session.DisplayName = displayName
+	session.Description = normalizedDescription
+	session.Version++
+	session.UpdatedAt = now.UTC()
+	session.markReadyWhenComplete()
+	return session.Validate()
+}
+
+func (session *Session) applyConfiguration(configuration SessionConfiguration) error {
 
 	configuration.GameProfileID = strings.ToLower(strings.TrimSpace(configuration.GameProfileID))
 	if configuration.GameProfileID != "arma3-default" {
@@ -405,20 +540,22 @@ func (session *Session) Configure(configuration SessionConfiguration, now time.T
 	session.TeamSpeakEnabled = configuration.TeamSpeakEnabled
 	session.Vanilla = configuration.Vanilla
 	session.ConfigurationRevision++
-	session.Version++
-	session.UpdatedAt = now.UTC()
-	session.markReadyWhenComplete()
-
-	return session.Validate()
+	return nil
 }
 
 func (session *Session) markReadyWhenComplete() {
 	if session.LifecycleState == StateDraft && session.ConfigurationRevision > 0 &&
-		session.MissionObjectKey != "" && (session.Vanilla || session.PresetObjectKey != "") {
+		artifactAccepted(session.MissionArtifactStatus, session.MissionObjectKey) &&
+		((session.Vanilla && session.PresetArtifactStatus != ArtifactPending) ||
+			artifactAccepted(session.PresetArtifactStatus, session.PresetObjectKey)) {
 		session.DesiredState = StateNew
 		session.ObservedState = StateNew
 		session.LifecycleState = StateNew
 	}
+}
+
+func artifactAccepted(status ArtifactStatus, objectKey string) bool {
+	return status == ArtifactAccepted || (status == "" && strings.TrimSpace(objectKey) != "")
 }
 
 // Transition performs a synchronous lifecycle transition.

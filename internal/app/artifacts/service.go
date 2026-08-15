@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -73,14 +74,10 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 
 	digest := sha256.Sum256(body)
 	digestHex := hex.EncodeToString(digest[:])
-	successContent := fmt.Sprintf(
-		"%s `%s` passed validation for session `%s`.",
-		artifactLabel(request.Kind), request.Filename, request.SessionID,
-	)
 	if replayed, replayErr := service.replayed(ctx, artifactIdempotencyKey(request), digestHex); replayErr != nil {
 		return replayErr
 	} else if replayed {
-		return service.notify(ctx, request, successContent)
+		return service.notify(ctx, session, request)
 	}
 	directory := "missions"
 	if request.Kind == domain.ArtifactPreset {
@@ -134,11 +131,15 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 			return replayErr
 		}
 		if replayed {
-			return service.notify(ctx, request, successContent)
+			persisted, getErr := service.repository.Get(ctx, request.SessionID)
+			if getErr != nil {
+				return getErr
+			}
+			return service.notify(ctx, persisted, request)
 		}
 		return fmt.Errorf("persist artifact metadata: %w", err)
 	}
-	return service.notify(ctx, request, successContent)
+	return service.notify(ctx, session, request)
 }
 
 func (service *Service) reject(
@@ -150,14 +151,13 @@ func (service *Service) reject(
 	now := service.clock.Now().UTC()
 	hash := sha256.Sum256([]byte(reason.Error()))
 	requestHash := hex.EncodeToString(hash[:])
-	rejectionContent := fmt.Sprintf("Artifact `%s` was rejected: %s", request.Filename, reason.Error())
 	if replayed, replayErr := service.replayed(ctx, artifactIdempotencyKey(request), requestHash); replayErr != nil {
 		return replayErr
 	} else if replayed {
-		return service.notify(ctx, request, rejectionContent)
+		return service.notify(ctx, session, request)
 	}
 	expectedVersion := session.Version
-	if err := session.RecordMutation(now); err != nil {
+	if err := session.RejectArtifact(request.Kind, reason.Error(), now); err != nil {
 		return err
 	}
 	eventID, err := service.ids.New(now)
@@ -182,19 +182,24 @@ func (service *Service) reject(
 			return replayErr
 		}
 		if replayed {
-			return service.notify(ctx, request, rejectionContent)
+			persisted, getErr := service.repository.Get(ctx, request.SessionID)
+			if getErr != nil {
+				return getErr
+			}
+			return service.notify(ctx, persisted, request)
 		}
 		return fmt.Errorf("persist artifact rejection: %w", err)
 	}
-	return service.notify(ctx, request, rejectionContent)
+	return service.notify(ctx, session, request)
 }
 
-func (service *Service) notify(ctx context.Context, request domain.ArtifactIngestRequest, content string) error {
+func (service *Service) notify(ctx context.Context, session domain.Session, request domain.ArtifactIngestRequest) error {
 	now := service.clock.Now().UTC()
-	notificationID := "artifact-" + strings.ToLower(string(request.Kind)) + "-" + request.AttachmentID
+	notificationID := "card-artifact-" + strings.ToLower(string(request.Kind)) + "-" + request.AttachmentID
 	return service.notifications.Enqueue(ctx, domain.NotificationRequest{
 		SchemaVersion: 1, NotificationID: notificationID, SessionID: request.SessionID,
-		GuildID: request.GuildID, ChannelID: request.ChannelID, Content: content,
+		GuildID: request.GuildID, ChannelID: request.ChannelID,
+		Content: sessioncard.RenderSetup(session, now), Kind: domain.NotificationSessionCard,
 		CorrelationID: request.CorrelationID, RequestedAt: now,
 	})
 }
@@ -211,13 +216,6 @@ func (service *Service) replayed(ctx context.Context, key string, requestHash st
 		return true, domain.ErrIdempotencyConflict
 	}
 	return true, nil
-}
-
-func artifactLabel(kind domain.ArtifactKind) string {
-	if kind == domain.ArtifactMission {
-		return "Mission"
-	}
-	return "Preset"
 }
 
 func artifactIdempotencyKey(request domain.ArtifactIngestRequest) string {

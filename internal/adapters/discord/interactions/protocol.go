@@ -83,14 +83,15 @@ var (
 )
 
 type interactionPayload struct {
-	ID            string                  `json:"id"`
-	ApplicationID string                  `json:"application_id"`
-	Type          int                     `json:"type"`
-	Data          *applicationCommandData `json:"data,omitempty"`
-	GuildID       string                  `json:"guild_id,omitempty"`
-	ChannelID     string                  `json:"channel_id,omitempty"`
-	Member        *interactionMember      `json:"member,omitempty"`
-	User          *interactionUser        `json:"user,omitempty"`
+	ID             string                  `json:"id"`
+	ApplicationID  string                  `json:"application_id"`
+	Type           int                     `json:"type"`
+	AppPermissions string                  `json:"app_permissions,omitempty"`
+	Data           *applicationCommandData `json:"data,omitempty"`
+	GuildID        string                  `json:"guild_id,omitempty"`
+	ChannelID      string                  `json:"channel_id,omitempty"`
+	Member         *interactionMember      `json:"member,omitempty"`
+	User           *interactionUser        `json:"user,omitempty"`
 }
 
 type interactionMember struct {

@@ -82,10 +82,10 @@ func TestProcessStoresValidatedMissionAndPersistsMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get() returned error: %v", err)
 	}
-	if session.MissionObjectKey != objects.objects[0].key || session.Version != 2 {
+	if session.MissionObjectKey != objects.objects[0].key || session.MissionArtifactStatus != domain.ArtifactAccepted || session.Version != 2 {
 		t.Fatalf("persisted session = %#v", session)
 	}
-	if len(notifications.requests) != 1 || notifications.requests[0].NotificationID != "artifact-mission-attachment-1" {
+	if len(notifications.requests) != 1 || notifications.requests[0].NotificationID != "card-artifact-mission-attachment-1" || notifications.requests[0].Kind != domain.NotificationSessionCard {
 		t.Fatalf("notifications = %#v", notifications.requests)
 	}
 
@@ -125,8 +125,15 @@ func TestProcessRejectsInvalidPresetWithoutWritingObject(t *testing.T) {
 	if len(objects.objects) != 0 {
 		t.Fatalf("object writes = %d; want 0", len(objects.objects))
 	}
-	if len(notifications.requests) != 1 || !strings.Contains(notifications.requests[0].Content, "was rejected") {
+	if len(notifications.requests) != 1 || !strings.Contains(notifications.requests[0].Content, "Preset:** Rejected") {
 		t.Fatalf("notifications = %#v", notifications.requests)
+	}
+	rejected, err := repository.Get(context.Background(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejected.PresetArtifactStatus != domain.ArtifactRejected || rejected.PresetArtifactIssue == "" || rejected.LifecycleState != domain.StateDraft {
+		t.Fatalf("rejected session = %#v; want recoverable rejected draft", rejected)
 	}
 	events := repository.Events("session-1")
 	if len(events) != 2 || events[1].Type != domain.EventArtifactRejected {
@@ -162,6 +169,76 @@ func TestProcessAcceptsPresetWithRepeatedWorkshopReferences(t *testing.T) {
 	}
 	if session.PresetObjectKey != objects.objects[0].key {
 		t.Fatalf("preset object key = %q; want %q", session.PresetObjectKey, objects.objects[0].key)
+	}
+}
+
+func TestProcessKeepsPartiallySuccessfulModdedDraftRecoverable(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 14, 22, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: "session-partial", Slug: "partial", DisplayName: "Partial", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(domain.SessionConfiguration{
+		GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400,
+	}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.PrepareCreationArtifacts(true, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}
+	event := domain.NewSessionCreatedEvent("create-partial", "correlation-partial", actor, session, now)
+	record, err := domain.NewCompletedIdempotencyRecord("create-partial", "hash-partial", session.ID, now, 7*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, record); err != nil {
+		t.Fatal(err)
+	}
+
+	downloader := &testDownloader{body: []byte("0123456789abcdef")}
+	objects := &testObjectStore{}
+	notifications := &testNotifications{}
+	service, err := NewService(repository, downloader, objects, notifications, &testIDs{ids: []string{"mission-accepted", "preset-rejected"}}, testClock{now}, 7*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mission := missionRequest(now, int64(len(downloader.body)))
+	mission.SessionID = session.ID
+	if err := service.Process(context.Background(), mission); err != nil {
+		t.Fatalf("mission Process() returned error: %v", err)
+	}
+
+	downloader.body = []byte("not an html preset")
+	preset := missionRequest(now, int64(len(downloader.body)))
+	preset.SessionID = session.ID
+	preset.Kind = domain.ArtifactPreset
+	preset.AttachmentID = "attachment-preset"
+	preset.Filename = "preset.html"
+	preset.IdempotencyKey = "discord:preset-partial"
+	if err := service.Process(context.Background(), preset); err != nil {
+		t.Fatalf("preset Process() returned error: %v", err)
+	}
+
+	stored, err := repository.Get(context.Background(), session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.LifecycleState != domain.StateDraft || stored.MissionArtifactStatus != domain.ArtifactAccepted ||
+		stored.PresetArtifactStatus != domain.ArtifactRejected || stored.MissionObjectKey == "" ||
+		stored.PresetObjectKey != "" || stored.PresetArtifactIssue == "" {
+		t.Fatalf("partially processed session = %#v; want accepted mission and recoverable rejected preset", stored)
+	}
+	if len(notifications.requests) != 2 ||
+		!strings.Contains(notifications.requests[1].Content, "Mission:** Accepted") ||
+		!strings.Contains(notifications.requests[1].Content, "Preset:** Rejected") {
+		t.Fatalf("partial-failure card refreshes = %#v", notifications.requests)
 	}
 }
 

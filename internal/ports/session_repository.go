@@ -20,6 +20,14 @@ type NotificationQueue interface {
 	Enqueue(ctx context.Context, request domain.NotificationRequest) error
 }
 
+// SessionCardRepository stores replaceable Discord delivery metadata without
+// coupling card delivery to lifecycle-version writes.
+type SessionCardRepository interface {
+	Get(ctx context.Context, sessionID string) (domain.Session, error)
+	GetCardReference(ctx context.Context, sessionID string) (domain.SessionCardReference, error)
+	SaveCardReference(ctx context.Context, reference domain.SessionCardReference) error
+}
+
 type ObjectStore interface {
 	Put(ctx context.Context, key string, contentType string, body []byte, sha256Base64 string) error
 }

@@ -234,6 +234,222 @@ func TestHandlerRecognizesModalSubmission(t *testing.T) {
 	}
 }
 
+func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, queue, cards, privateKey := newTestHandlerWithQueues(
+		t,
+		[]string{"correlation-modal-1", "correlation-modal-2"},
+		[]string{"session-modal", "event-created", "event-configured", "event-artifacts"},
+	)
+	body := createModalSubmissionBody(
+		"interaction-modal", "Saturday Arma", []string{createFeatureModded, createFeatureTeamSpeak}, true, "mission.pbo",
+	)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		if response.Code != http.StatusOK || decoded.Data == nil ||
+			!strings.Contains(decoded.Data.Content, "Draft session created") ||
+			!strings.Contains(decoded.Data.Content, "Mission queued for validation") ||
+			!strings.Contains(decoded.Data.Content, "Preset queued for validation") ||
+			!strings.Contains(decoded.Data.Content, "have not been validated yet") {
+			t.Fatalf("attempt %d response = %#v", attempt, decoded)
+		}
+	}
+
+	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %#v; want one idempotent draft", sessions)
+	}
+	session := sessions[0]
+	if session.ID != "session-modal" || session.Description != "Weekly co-op" ||
+		session.ConfigurationRevision != 1 || session.Vanilla || !session.TeamSpeakEnabled ||
+		session.SleepAfterSeconds != defaultSleepMinutes*60 || session.ArchiveAfterSeconds != defaultArchiveDays*86400 {
+		t.Fatalf("configured draft = %#v", session)
+	}
+	if events := repository.Events(session.ID); len(events) != 3 || events[2].Type != domain.EventArtifactRequested {
+		t.Fatalf("events = %#v; want creation, configuration, and artifact preparation", events)
+	}
+	requests := queue.Requests()
+	if len(requests) != 2 || requests[0].Kind != domain.ArtifactMission || requests[1].Kind != domain.ArtifactPreset ||
+		requests[0].SessionID != session.ID || requests[1].SessionID != session.ID ||
+		requests[0].IdempotencyKey == requests[1].IdempotencyKey {
+		t.Fatalf("queued requests = %#v", requests)
+	}
+	cardRequests := cards.Requests()
+	if len(cardRequests) != 1 || cardRequests[0].Kind != domain.NotificationSessionCard ||
+		cardRequests[0].SessionID != session.ID || !strings.Contains(cardRequests[0].Content, "Setting up: Saturday Arma") {
+		t.Fatalf("card requests = %#v; want one replay-safe public card", cardRequests)
+	}
+}
+
+func TestHandlerAcceptsVanillaCreationWithoutPreset(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(
+		t,
+		[]string{"correlation-vanilla"},
+		[]string{"session-vanilla", "event-created", "event-configured", "event-artifacts"},
+	)
+	response := executeSignedRequest(t, handler, privateKey, createModalSubmissionBody(
+		"interaction-vanilla", "Vanilla Night", nil, false, "mission.pbo",
+	), testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Mode: Vanilla") ||
+		strings.Contains(decoded.Data.Content, "add one before") {
+		t.Fatalf("vanilla response = %#v", decoded.Data)
+	}
+	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+	if err != nil || len(sessions) != 1 || !sessions[0].Vanilla || len(queue.Requests()) != 1 {
+		t.Fatalf("vanilla draft sessions=%#v requests=%#v err=%v", sessions, queue.Requests(), err)
+	}
+}
+
+func TestHandlerKeepsModdedCreationWithoutPresetRecoverable(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(
+		t,
+		[]string{"correlation-modded-missing"},
+		[]string{"session-modded-missing", "event-created", "event-configured", "event-artifacts"},
+	)
+	response := executeSignedRequest(t, handler, privateKey, createModalSubmissionBody(
+		"interaction-modded-missing", "Modded Missing Preset", []string{createFeatureModded}, false, "mission.pbo",
+	), testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Mode: Modded") ||
+		!strings.Contains(decoded.Data.Content, "add one before this modded session can become ready") {
+		t.Fatalf("modded response = %#v", decoded.Data)
+	}
+	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("modded draft sessions=%#v err=%v", sessions, err)
+	}
+	if sessions[0].Vanilla || sessions[0].LifecycleState != domain.StateDraft ||
+		sessions[0].MissionArtifactStatus != domain.ArtifactPending || sessions[0].PresetArtifactStatus != "" {
+		t.Fatalf("modded draft = %#v; want mission pending and missing preset", sessions[0])
+	}
+	if requests := queue.Requests(); len(requests) != 1 || requests[0].Kind != domain.ArtifactMission {
+		t.Fatalf("modded queued requests = %#v; want mission only", requests)
+	}
+}
+
+func TestParseCreateModalSubmissionEnforcesServerSideLimits(t *testing.T) {
+	t.Parallel()
+
+	decode := func(t *testing.T) interactionPayload {
+		t.Helper()
+		var payload interactionPayload
+		if err := json.Unmarshal(createModalSubmissionBody(
+			"interaction-limits", "Saturday Arma", []string{createFeatureModded}, true, "mission.pbo",
+		), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload
+	}
+	attachment := func(payload *interactionPayload, id string) interactionAttachment {
+		t.Helper()
+		return payload.Data.Resolved.Attachments[id]
+	}
+	setAttachment := func(payload *interactionPayload, id string, value interactionAttachment) {
+		payload.Data.Resolved.Attachments[id] = value
+	}
+
+	maximum := decode(t)
+	maximum.Data.Components[0].Component.Value = strings.Repeat("界", 100)
+	maximum.Data.Components[1].Component.Value = strings.Repeat("界", 64)
+	mission := attachment(&maximum, "attachment-mission")
+	mission.Size = 100 * 1024 * 1024
+	setAttachment(&maximum, "attachment-mission", mission)
+	preset := attachment(&maximum, "attachment-preset")
+	preset.Size = 10 * 1024 * 1024
+	setAttachment(&maximum, "attachment-preset", preset)
+	if _, err := parseCreateModalSubmission(maximum, testActorForInteraction("owner-1"), "correlation-limits", "discord:limits", testNow); err != nil {
+		t.Fatalf("maximum permitted modal values returned error: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*interactionPayload)
+		want   string
+	}{
+		{name: "name over 100 characters", want: "1 to 100 characters", mutate: func(payload *interactionPayload) {
+			payload.Data.Components[0].Component.Value = strings.Repeat("界", 101)
+		}},
+		{name: "description over 64 characters", want: "at most 64 characters", mutate: func(payload *interactionPayload) {
+			payload.Data.Components[1].Component.Value = strings.Repeat("界", 65)
+		}},
+		{name: "mission over 100 MiB", want: "no larger than 100 MiB", mutate: func(payload *interactionPayload) {
+			value := attachment(payload, "attachment-mission")
+			value.Size = 100*1024*1024 + 1
+			setAttachment(payload, "attachment-mission", value)
+		}},
+		{name: "preset over 10 MiB", want: "no larger than 10 MiB", mutate: func(payload *interactionPayload) {
+			value := attachment(payload, "attachment-preset")
+			value.Size = 10*1024*1024 + 1
+			setAttachment(payload, "attachment-preset", value)
+		}},
+		{name: "missing required mission", want: "single mission .pbo", mutate: func(payload *interactionPayload) {
+			payload.Data.Components[3].Component.Values = nil
+		}},
+		{name: "more than one preset", want: "at most one Arma Launcher", mutate: func(payload *interactionPayload) {
+			payload.Data.Components[4].Component.Values = []string{"attachment-preset", "attachment-preset-2"}
+		}},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			payload := decode(t)
+			test.mutate(&payload)
+			_, err := parseCreateModalSubmission(payload, testActorForInteraction("owner-1"), "correlation-limits", "discord:limits", testNow)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("parse error = %v; want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestHandlerRejectsInvalidCreationModalBeforePersisting(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		displayName     string
+		missionFilename string
+		want            string
+	}{
+		{name: "empty name", displayName: "   ", missionFilename: "mission.pbo", want: "1 to 100 characters"},
+		{name: "invalid mission", displayName: "Saturday Arma", missionFilename: "mission.txt", want: ".pbo file"},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(
+				t, []string{"correlation-invalid"}, nil,
+			)
+			response := executeSignedRequest(t, handler, privateKey, createModalSubmissionBody(
+				"interaction-invalid", test.displayName, []string{createFeatureModded}, false, test.missionFilename,
+			), testNow)
+			var decoded interactionResponse
+			decodeResponse(t, response, &decoded)
+			if decoded.Data == nil || !strings.Contains(decoded.Data.Content, test.want) {
+				t.Fatalf("response = %#v; want %q", decoded.Data, test.want)
+			}
+			sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+			if err != nil || len(sessions) != 0 || len(queue.Requests()) != 0 {
+				t.Fatalf("invalid submission persisted sessions=%#v requests=%#v err=%v", sessions, queue.Requests(), err)
+			}
+		})
+	}
+}
+
 func TestHandlerRejectsInvalidSignature(t *testing.T) {
 	t.Parallel()
 
@@ -346,43 +562,215 @@ func TestHandlerAuthorizesComponentBeforeReturningStaleResponse(t *testing.T) {
 	}
 }
 
-func TestHandlerCreatesAndReplaysSession(t *testing.T) {
+func TestHandlerOpensCreateModalWithoutPersistingSession(t *testing.T) {
 	t.Parallel()
 
-	handler, repository, privateKey := newTestHandler(
-		t,
-		[]string{"correlation-1", "correlation-2"},
-		[]string{"session-1", "event-1"},
-	)
+	handler, repository, privateKey := newTestHandler(t, nil, nil)
 	body := createCommandBody("interaction-create-1", "owner-1", "guild-1", "channel-1")
 
-	first := executeSignedRequest(t, handler, privateKey, body, testNow)
-	second := executeSignedRequest(t, handler, privateKey, body, testNow)
-
-	for index, response := range []*httptest.ResponseRecorder{first, second} {
-		if response.Code != http.StatusOK {
-			t.Fatalf("response %d status = %d; body = %s", index+1, response.Code, response.Body.String())
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	if response.Code != http.StatusOK {
+		t.Fatalf("response status = %d; body = %s", response.Code, response.Body.String())
+	}
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Type != interactionResponseModal || decoded.Data == nil || decoded.Data.CustomID != createModalCustomID ||
+		decoded.Data.Title != "Create Arma 3 session" || decoded.Data.Components == nil || len(*decoded.Data.Components) != 5 {
+		t.Fatalf("create modal response = %#v", decoded)
+	}
+	components := *decoded.Data.Components
+	wantTypes := []int{componentTypeTextInput, componentTypeTextInput, componentTypeCheckboxGroup, componentTypeFileUpload, componentTypeFileUpload}
+	for index, component := range components {
+		if component.Type != componentTypeLabel || component.Component == nil || component.Component.Type != wantTypes[index] {
+			t.Fatalf("modal component %d = %#v; want label wrapping type %d", index, component, wantTypes[index])
 		}
-
-		var decoded interactionResponse
-		decodeResponse(t, response, &decoded)
-		if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "saturday-arma") || strings.Contains(decoded.Data.Content, "session-1") {
-			t.Fatalf("response %d content = %#v; want slug without immutable ID", index+1, decoded.Data)
-		}
-		if decoded.Data.Flags != messageFlagEphemeral {
-			t.Errorf("response %d flags = %d; want %d", index+1, decoded.Data.Flags, messageFlagEphemeral)
-		}
+	}
+	name, description := components[0].Component, components[1].Component
+	if name.CustomID != createNameCustomID || name.Required == nil || !*name.Required ||
+		name.MinLength == nil || *name.MinLength != 1 || name.MaxLength == nil || *name.MaxLength != 100 {
+		t.Fatalf("name input = %#v", name)
+	}
+	if description.CustomID != createDescriptionCustomID || description.Required == nil || *description.Required ||
+		description.MaxLength == nil || *description.MaxLength != 64 {
+		t.Fatalf("description input = %#v", description)
+	}
+	features := components[2].Component
+	if features.CustomID != createFeaturesCustomID || features.MinValues == nil || *features.MinValues != 0 ||
+		features.MaxValues == nil || *features.MaxValues != 2 || len(features.Options) != 2 ||
+		features.Options[0].Value != createFeatureModded || !features.Options[0].Default ||
+		features.Options[1].Value != createFeatureTeamSpeak || features.Options[1].Default {
+		t.Fatalf("feature defaults = %#v; want modded on and TeamSpeak off", features.Options)
+	}
+	mission, preset := components[3].Component, components[4].Component
+	if mission.CustomID != createMissionCustomID || mission.Required == nil || !*mission.Required ||
+		mission.MinValues == nil || *mission.MinValues != 1 || mission.MaxValues == nil || *mission.MaxValues != 1 ||
+		preset.CustomID != createPresetCustomID || preset.Required == nil || *preset.Required ||
+		preset.MinValues == nil || *preset.MinValues != 0 || preset.MaxValues == nil || *preset.MaxValues != 1 {
+		t.Fatalf("file requirements mission=%#v preset=%#v", mission.Required, preset.Required)
 	}
 
 	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
 	if err != nil {
 		t.Fatalf("ListByOwner() returned error: %v", err)
 	}
-	if len(sessions) != 1 {
-		t.Fatalf("session count = %d; want 1", len(sessions))
+	if len(sessions) != 0 {
+		t.Fatalf("session count = %d; want 0", len(sessions))
 	}
-	if eventCount := len(repository.Events("session-1")); eventCount != 1 {
-		t.Errorf("event count = %d; want 1", eventCount)
+}
+
+func TestSetupModalProtectsLegacyObjectBackedArtifacts(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"mission", "preset"} {
+		description := setupArtifactDescription(kind, "", "sessions/legacy/input/artifact", false)
+		if !strings.Contains(description, "cannot be replaced") {
+			t.Fatalf("%s legacy artifact description = %q", kind, description)
+		}
+	}
+}
+
+func TestHandlerPreflightsCardPermissionsAndUsesPlainTextFallback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing send blocks create before persistence", func(t *testing.T) {
+		handler, repository, privateKey := newTestHandler(t, nil, nil)
+		body := withAppPermissions(createCommandBody("interaction-no-send", "owner-1", "guild-1", "channel-1"), viewChannelPermission)
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		if decoded.Type != interactionResponseChannelMessageWithSource || decoded.Data == nil ||
+			!strings.Contains(decoded.Data.Content, "Send Messages") || !strings.Contains(decoded.Data.Content, "/rb create") {
+			t.Fatalf("permission response = %#v", decoded)
+		}
+		sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+		if err != nil || len(sessions) != 0 {
+			t.Fatalf("preflight persisted sessions=%#v err=%v", sessions, err)
+		}
+	})
+
+	t.Run("permission loss blocks modal submission before persistence", func(t *testing.T) {
+		handler, repository, _, _, privateKey := newTestHandlerWithQueues(t, []string{"correlation-drift"}, nil)
+		body := withAppPermissions(createModalSubmissionBody(
+			"interaction-drift", "Permission Drift", nil, false, "mission.pbo",
+		), viewChannelPermission)
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Send Messages") {
+			t.Fatalf("permission drift response = %#v", decoded)
+		}
+		sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+		if err != nil || len(sessions) != 0 {
+			t.Fatalf("permission drift persisted sessions=%#v err=%v", sessions, err)
+		}
+	})
+
+	t.Run("missing edit blocks setup before opening modal", func(t *testing.T) {
+		handler, repository, _, _, privateKey := newTestHandlerWithQueues(t, nil, nil)
+		seedSetupDraft(t, repository, domain.ArtifactAccepted, domain.ArtifactRejected)
+		body := withAppPermissions(setupCommandBody("interaction-no-edit", "session-setup"), 0)
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "View Channel") || !strings.Contains(decoded.Data.Content, "/rb setup") {
+			t.Fatalf("edit preflight response = %#v", decoded)
+		}
+	})
+
+	t.Run("missing rich capabilities keeps content card", func(t *testing.T) {
+		handler, _, _, cards, privateKey := newTestHandlerWithQueues(
+			t, []string{"correlation-plain"}, []string{"session-plain", "event-created", "event-configured", "event-artifacts"},
+		)
+		body := withAppPermissions(createModalSubmissionBody(
+			"interaction-plain", "Plain Card", nil, false, "mission.pbo",
+		), viewChannelPermission|sendMessagesPermission)
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "plain-text form") {
+			t.Fatalf("fallback response = %#v", decoded)
+		}
+		requests := cards.Requests()
+		if len(requests) != 1 || requests[0].Content == "" || requests[0].Kind != domain.NotificationSessionCard {
+			t.Fatalf("fallback card requests = %#v", requests)
+		}
+	})
+}
+
+func TestHandlerSetupModalPrefillsDraftAndQueuesOnlyRejectedReplacement(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, queue, cards, privateKey := newTestHandlerWithQueues(
+		t, []string{"correlation-setup-open", "correlation-setup-submit", "correlation-setup-replay"},
+		[]string{"event-setup-configured", "event-setup-replacement"},
+	)
+	seedSetupDraft(t, repository, domain.ArtifactAccepted, domain.ArtifactRejected)
+
+	openResponse := executeSignedRequest(t, handler, privateKey, setupCommandBody("interaction-setup-open", "session-setup"), testNow)
+	var modal interactionResponse
+	decodeResponse(t, openResponse, &modal)
+	if modal.Type != interactionResponseModal || modal.Data == nil || modal.Data.CustomID != setupModalCustomIDPrefix+"session-setup" ||
+		modal.Data.Components == nil || len(*modal.Data.Components) != 5 {
+		t.Fatalf("setup modal = %#v", modal)
+	}
+	components := *modal.Data.Components
+	if components[0].Component == nil || components[0].Component.Value != "Original Setup" ||
+		components[1].Component == nil || components[1].Component.Value != "Original description" ||
+		components[3].Component == nil || components[3].Component.Required == nil || *components[3].Component.Required {
+		t.Fatalf("prefilled setup components = %#v", components)
+	}
+
+	submitResponse := executeSignedRequest(t, handler, privateKey, setupModalSubmissionBody(
+		"interaction-setup-submit", "session-setup", "Renamed Setup", []string{createFeatureModded, createFeatureTeamSpeak}, false, true,
+	), testNow)
+	var submitted interactionResponse
+	decodeResponse(t, submitResponse, &submitted)
+	if submitted.Data == nil || !strings.Contains(submitted.Data.Content, "Draft setup updated") ||
+		!strings.Contains(submitted.Data.Content, "Replacement preset queued") ||
+		!strings.Contains(submitted.Data.Content, "have not been accepted yet") {
+		t.Fatalf("setup submission = %#v body=%s", submitted, submitResponse.Body.String())
+	}
+	replayResponse := executeSignedRequest(t, handler, privateKey, setupModalSubmissionBody(
+		"interaction-setup-submit", "session-setup", "Renamed Setup", []string{createFeatureModded, createFeatureTeamSpeak}, false, true,
+	), testNow)
+	var replayed interactionResponse
+	decodeResponse(t, replayResponse, &replayed)
+	if replayed.Data == nil || !strings.Contains(replayed.Data.Content, "Draft setup updated") {
+		t.Fatalf("setup replay = %#v body=%s", replayed, replayResponse.Body.String())
+	}
+	stored, err := repository.Get(context.Background(), "session-setup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DisplayName != "Renamed Setup" || stored.Description != "Updated description" || stored.Slug != "original-setup" ||
+		!stored.TeamSpeakEnabled || stored.Vanilla || stored.MissionArtifactStatus != domain.ArtifactAccepted ||
+		stored.PresetArtifactStatus != domain.ArtifactPending {
+		t.Fatalf("updated setup = %#v", stored)
+	}
+	requests := queue.Requests()
+	if len(requests) != 1 || requests[0].Kind != domain.ArtifactPreset {
+		t.Fatalf("replacement requests = %#v; want preset only", requests)
+	}
+	if cardRequests := cards.Requests(); len(cardRequests) != 1 || cardRequests[0].SessionID != stored.ID ||
+		!strings.Contains(cardRequests[0].Content, "Renamed Setup") {
+		t.Fatalf("setup card refreshes = %#v", cardRequests)
+	}
+}
+
+func TestHandlerSetupRejectsReplacementOfAcceptedArtifactBeforeMutation(t *testing.T) {
+	t.Parallel()
+	handler, repository, queue, _, privateKey := newTestHandlerWithQueues(t, []string{"correlation-setup"}, nil)
+	seedSetupDraft(t, repository, domain.ArtifactAccepted, domain.ArtifactRejected)
+	response := executeSignedRequest(t, handler, privateKey, setupModalSubmissionBody(
+		"interaction-setup", "session-setup", "Changed Name", []string{createFeatureModded}, true, false,
+	), testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "mission is already accepted or validating") {
+		t.Fatalf("accepted replacement response = %#v body=%s", decoded, response.Body.String())
+	}
+	stored, err := repository.Get(context.Background(), "session-setup")
+	if err != nil || stored.DisplayName != "Original Setup" || len(queue.Requests()) != 0 {
+		t.Fatalf("rejected setup mutated session=%#v requests=%#v err=%v", stored, queue.Requests(), err)
 	}
 }
 
@@ -425,8 +813,8 @@ func TestHandlerGuildManagerConfiguresRolesWithSelectMenu(t *testing.T) {
 
 	handler, _, privateKey := newTestHandler(
 		t,
-		[]string{"correlation-admin-command", "correlation-admin-select", "correlation-create"},
-		[]string{"session-1", "event-1"},
+		[]string{"correlation-admin-command", "correlation-admin-select"},
+		nil,
 	)
 	menuResponse := executeSignedRequest(
 		t,
@@ -468,7 +856,7 @@ func TestHandlerGuildManagerConfiguresRolesWithSelectMenu(t *testing.T) {
 	)
 	var created interactionResponse
 	decodeResponse(t, createResponse, &created)
-	if created.Data == nil || !strings.Contains(created.Data.Content, "saturday-arma") || strings.Contains(created.Data.Content, "session-1") {
+	if created.Type != interactionResponseModal || created.Data == nil || created.Data.CustomID != createModalCustomID {
 		t.Fatalf("command after role configuration = %#v", created)
 	}
 }
@@ -492,22 +880,8 @@ func TestHandlerRejectsAccessConfigurationWithoutGuildManagementPermission(t *te
 func TestHandlerListsAndShowsSessionStatus(t *testing.T) {
 	t.Parallel()
 
-	handler, _, privateKey := newTestHandler(
-		t,
-		[]string{"correlation-create", "correlation-list", "correlation-status"},
-		[]string{"session-1", "event-1"},
-	)
-
-	createResponse := executeSignedRequest(
-		t,
-		handler,
-		privateKey,
-		createCommandBody("interaction-create", "owner-1", "guild-1", "channel-1"),
-		testNow,
-	)
-	if createResponse.Code != http.StatusOK {
-		t.Fatalf("create status = %d; body = %s", createResponse.Code, createResponse.Body.String())
-	}
+	handler, repository, privateKey := newTestHandler(t, []string{"correlation-list", "correlation-status"}, nil)
+	seedAutocompleteSession(t, repository, "session-1", "Saturday Arma", "saturday-arma", "owner-1", "guild-1")
 
 	listResponse := executeSignedRequest(
 		t,
@@ -670,10 +1044,10 @@ func TestHandlerConfiguresAndAcceptsMissionAttachment(t *testing.T) {
 
 	handler, repository, privateKey := newTestHandler(
 		t,
-		[]string{"correlation-create", "correlation-configure", "correlation-upload"},
-		[]string{"session-1", "event-create", "event-configure"},
+		[]string{"correlation-configure", "correlation-upload"},
+		[]string{"event-configure"},
 	)
-	executeSignedRequest(t, handler, privateKey, createCommandBody("interaction-create", "owner-1", "guild-1", "channel-1"), testNow)
+	seedAutocompleteSession(t, repository, "session-1", "Saturday Arma", "saturday-arma", "owner-1", "guild-1")
 
 	configuredResponse := executeSignedRequest(
 		t,
@@ -746,19 +1120,8 @@ func TestHandlerRejectsUnapprovedGuildWithoutCallingService(t *testing.T) {
 func TestHandlerShowsGuildSessionStatusToApprovedNonOwner(t *testing.T) {
 	t.Parallel()
 
-	handler, _, privateKey := newTestHandler(
-		t,
-		[]string{"correlation-create", "correlation-status"},
-		[]string{"session-1", "event-1"},
-	)
-
-	executeSignedRequest(
-		t,
-		handler,
-		privateKey,
-		createCommandBody("interaction-create", "owner-1", "guild-1", "channel-1"),
-		testNow,
-	)
+	handler, repository, privateKey := newTestHandler(t, []string{"correlation-status"}, nil)
+	seedAutocompleteSession(t, repository, "session-1", "Saturday Arma", "saturday-arma", "owner-1", "guild-1")
 
 	response := executeSignedRequest(
 		t,
@@ -779,9 +1142,9 @@ func TestHandlerDoesNotBroadenMutationAuthorizationWithGuildStatusAccess(t *test
 	t.Parallel()
 
 	handler, repository, privateKey := newTestHandler(
-		t, []string{"correlation-create", "correlation-configure"}, []string{"session-1", "event-1"},
+		t, []string{"correlation-configure"}, nil,
 	)
-	executeSignedRequest(t, handler, privateKey, createCommandBody("interaction-create", "owner-1", "guild-1", "channel-1"), testNow)
+	seedAutocompleteSession(t, repository, "session-1", "Saturday Arma", "saturday-arma", "owner-1", "guild-1")
 	response := executeSignedRequest(
 		t, handler, privateKey,
 		configureCommandBody("interaction-configure", "owner-2", "guild-1", "channel-1", "session-1"), testNow,
@@ -814,6 +1177,24 @@ func newTestHandler(
 	correlationIDs []string,
 	serviceIDs []string,
 ) (*Handler, *memory.SessionRepository, ed25519.PrivateKey) {
+	handler, repository, _, privateKey := newTestHandlerWithArtifactQueue(t, correlationIDs, serviceIDs)
+	return handler, repository, privateKey
+}
+
+func newTestHandlerWithArtifactQueue(
+	t *testing.T,
+	correlationIDs []string,
+	serviceIDs []string,
+) (*Handler, *memory.SessionRepository, *memory.ArtifactQueue, ed25519.PrivateKey) {
+	handler, repository, artifacts, _, privateKey := newTestHandlerWithQueues(t, correlationIDs, serviceIDs)
+	return handler, repository, artifacts, privateKey
+}
+
+func newTestHandlerWithQueues(
+	t *testing.T,
+	correlationIDs []string,
+	serviceIDs []string,
+) (*Handler, *memory.SessionRepository, *memory.ArtifactQueue, *memory.NotificationQueue, ed25519.PrivateKey) {
 	t.Helper()
 
 	seed := bytes.Repeat([]byte{7}, ed25519.SeedSize)
@@ -821,12 +1202,15 @@ func newTestHandler(
 	publicKey := privateKey.Public().(ed25519.PublicKey)
 
 	repository := memory.NewSessionRepository()
+	artifactQueue := memory.NewArtifactQueue()
+	notificationQueue := memory.NewNotificationQueue()
 	service, err := appsession.NewService(
 		repository,
 		&sequenceGenerator{ids: serviceIDs},
 		fixedClock{now: testNow},
 		7*24*time.Hour,
-		appsession.WithArtifactQueue(memory.NewArtifactQueue()),
+		appsession.WithArtifactQueue(artifactQueue),
+		appsession.WithNotificationQueue(notificationQueue),
 		appsession.WithCommandQueue(discardCommandQueue{}),
 	)
 	if err != nil {
@@ -861,7 +1245,7 @@ func newTestHandler(
 		t.Fatalf("NewHandler() returned error: %v", err)
 	}
 
-	return handler, repository, privateKey
+	return handler, repository, artifactQueue, notificationQueue, privateKey
 }
 
 func seedAutocompleteSession(
@@ -974,12 +1358,139 @@ func createCommandBody(interactionID, ownerID, guildID, channelID string) []byte
 				map[string]any{
 					"type": applicationCommandOptionSubcommand,
 					"name": "create",
-					"options": []any{
-						map[string]any{"type": applicationCommandOptionString, "name": "name", "value": "Saturday Arma"},
-						map[string]any{"type": applicationCommandOptionString, "name": "game", "value": "arma3"},
-					},
 				},
 			},
+		},
+	})
+}
+
+func withAppPermissions(body []byte, permissions uint64) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		panic(err)
+	}
+	payload["app_permissions"] = strconv.FormatUint(permissions, 10)
+	return marshalPayload(payload)
+}
+
+func setupCommandBody(interactionID, sessionID string) []byte {
+	return commandBody(interactionID, "owner-1", "guild-1", "channel-1", "setup", []any{
+		map[string]any{"type": applicationCommandOptionString, "name": "session", "value": sessionID},
+	})
+}
+
+func setupModalSubmissionBody(interactionID, sessionID, displayName string, features []string, includeMission, includePreset bool) []byte {
+	attachments := map[string]any{}
+	missionValues, presetValues := []string{}, []string{}
+	if includeMission {
+		missionValues = []string{"attachment-mission"}
+		attachments["attachment-mission"] = map[string]any{
+			"id": "attachment-mission", "filename": "replacement.pbo", "size": 1024,
+			"url": "https://cdn.discordapp.com/attachments/1/2/replacement.pbo",
+		}
+	}
+	if includePreset {
+		presetValues = []string{"attachment-preset"}
+		attachments["attachment-preset"] = map[string]any{
+			"id": "attachment-preset", "filename": "replacement.html", "size": 2048,
+			"url": "https://cdn.discordapp.com/attachments/1/2/replacement.html",
+		}
+	}
+	label := func(component map[string]any) map[string]any {
+		return map[string]any{"type": componentTypeLabel, "component": component}
+	}
+	return marshalPayload(map[string]any{
+		"id": interactionID, "application_id": "app-1", "type": interactionTypeModalSubmit,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{
+			"custom_id": setupModalCustomIDPrefix + sessionID,
+			"components": []any{
+				label(map[string]any{"type": componentTypeTextInput, "custom_id": createNameCustomID, "value": displayName}),
+				label(map[string]any{"type": componentTypeTextInput, "custom_id": createDescriptionCustomID, "value": " Updated   description "}),
+				label(map[string]any{"type": componentTypeCheckboxGroup, "custom_id": createFeaturesCustomID, "values": features}),
+				label(map[string]any{"type": componentTypeFileUpload, "custom_id": createMissionCustomID, "values": missionValues}),
+				label(map[string]any{"type": componentTypeFileUpload, "custom_id": createPresetCustomID, "values": presetValues}),
+			},
+			"resolved": map[string]any{"attachments": attachments},
+		},
+	})
+}
+
+func seedSetupDraft(t *testing.T, repository *memory.SessionRepository, missionStatus, presetStatus domain.ArtifactStatus) {
+	t.Helper()
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: "session-setup", Slug: "original-setup", DisplayName: "Original Setup", Description: "Original description",
+		GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(domain.SessionConfiguration{
+		GameProfileID: defaultGameProfileID, SleepAfterSeconds: defaultSleepMinutes * 60,
+		ArchiveAfterSeconds: defaultArchiveDays * 86400,
+	}, testNow); err != nil {
+		t.Fatal(err)
+	}
+	session.MissionArtifactStatus = missionStatus
+	session.PresetArtifactStatus = presetStatus
+	if missionStatus == domain.ArtifactAccepted {
+		session.MissionObjectKey = "sessions/session-setup/input/mission.pbo"
+	}
+	if presetStatus == domain.ArtifactRejected {
+		session.PresetArtifactIssue = "Preset rejected"
+	}
+	if err := session.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	event := domain.NewSessionCreatedEvent("event-session-setup", "correlation-seed", testActorForInteraction("owner-1"), session, testNow)
+	idempotency, err := domain.NewCompletedIdempotencyRecord("seed:session-setup", "hash-session-setup", session.ID, testNow, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func createModalSubmissionBody(
+	interactionID string,
+	displayName string,
+	features []string,
+	includePreset bool,
+	missionFilename string,
+) []byte {
+	attachments := map[string]any{
+		"attachment-mission": map[string]any{
+			"id": "attachment-mission", "filename": missionFilename, "size": 1024,
+			"url": "https://cdn.discordapp.com/attachments/1/2/" + missionFilename,
+		},
+	}
+	presetValues := []string{}
+	if includePreset {
+		presetValues = []string{"attachment-preset"}
+		attachments["attachment-preset"] = map[string]any{
+			"id": "attachment-preset", "filename": "preset.html", "size": 2048,
+			"url": "https://cdn.discordapp.com/attachments/1/2/preset.html",
+		}
+	}
+	label := func(component map[string]any) map[string]any {
+		return map[string]any{"type": componentTypeLabel, "component": component}
+	}
+	return marshalPayload(map[string]any{
+		"id": interactionID, "application_id": "app-1", "type": interactionTypeModalSubmit,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{
+			"custom_id": createModalCustomID,
+			"components": []any{
+				label(map[string]any{"type": componentTypeTextInput, "custom_id": createNameCustomID, "value": displayName}),
+				label(map[string]any{"type": componentTypeTextInput, "custom_id": createDescriptionCustomID, "value": " Weekly   co-op\n"}),
+				label(map[string]any{"type": componentTypeCheckboxGroup, "custom_id": createFeaturesCustomID, "values": features}),
+				label(map[string]any{"type": componentTypeFileUpload, "custom_id": createMissionCustomID, "values": []string{"attachment-mission"}}),
+				label(map[string]any{"type": componentTypeFileUpload, "custom_id": createPresetCustomID, "values": presetValues}),
+			},
+			"resolved": map[string]any{"attachments": attachments},
 		},
 	})
 }

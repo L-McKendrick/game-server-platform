@@ -65,6 +65,7 @@ func TestProtocolDecodesAutocompleteAndModalFileUpload(t *testing.T) {
 
 	autocompleteBody := []byte(`{
 		"id":"autocomplete-1","application_id":"app-1","type":4,
+		"app_permissions":"52224",
 		"guild_id":"guild-1","channel_id":"channel-1",
 		"data":{"name":"rb","options":[{"type":1,"name":"status","options":[
 			{"type":3,"name":"session","value":"sat","focused":true}
@@ -75,7 +76,7 @@ func TestProtocolDecodesAutocompleteAndModalFileUpload(t *testing.T) {
 		t.Fatalf("decode autocomplete payload: %v", err)
 	}
 	focused := autocomplete.Data.Options[0].Options[0]
-	if autocomplete.Type != interactionTypeApplicationCommandAutocomplete || !focused.Focused || string(focused.Value) != `"sat"` {
+	if autocomplete.Type != interactionTypeApplicationCommandAutocomplete || autocomplete.AppPermissions != "52224" || !focused.Focused || string(focused.Value) != `"sat"` {
 		t.Fatalf("autocomplete payload = %#v", autocomplete)
 	}
 

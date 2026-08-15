@@ -11,10 +11,21 @@ import (
 // ArtifactKind identifies an input artifact accepted from Discord.
 type ArtifactKind string
 
+// ArtifactStatus is the durable user-facing validation projection. An empty
+// value is backward-compatible and means validation has not produced a result.
+type ArtifactStatus string
+
 const (
-	ArtifactMission ArtifactKind = "MISSION"
-	ArtifactPreset  ArtifactKind = "PRESET"
+	ArtifactMission  ArtifactKind   = "MISSION"
+	ArtifactPreset   ArtifactKind   = "PRESET"
+	ArtifactPending  ArtifactStatus = "PENDING"
+	ArtifactAccepted ArtifactStatus = "ACCEPTED"
+	ArtifactRejected ArtifactStatus = "REJECTED"
 )
+
+func (status ArtifactStatus) Valid() bool {
+	return status == "" || status == ArtifactPending || status == ArtifactAccepted || status == ArtifactRejected
+}
 
 // ArtifactIngestRequest is the durable contract between Discord and the ingest worker.
 type ArtifactIngestRequest struct {

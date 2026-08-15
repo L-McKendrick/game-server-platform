@@ -181,6 +181,9 @@ func NewSessionConfiguredEvent(
 		ActorID:       actor.ID,
 		CorrelationID: correlationID,
 		Data: map[string]string{
+			"display_name":           session.DisplayName,
+			"slug":                   session.Slug,
+			"description":            session.Description,
 			"configuration_revision": fmt.Sprintf("%d", session.ConfigurationRevision),
 			"game_profile_id":        session.GameProfileID,
 			"sleep_after_seconds":    fmt.Sprintf("%d", session.SleepAfterSeconds),

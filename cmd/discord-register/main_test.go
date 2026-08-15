@@ -63,10 +63,13 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAndAdmin(t *testing.T)
 		t.Fatalf("registered commands = %#v; want rb and admin only", received)
 	}
 	targeting := map[string]bool{
-		"status": true, "configure": true, "upload-mission": true, "upload-preset": true,
+		"status": true, "setup": true,
 		"start": true, "sleep": true, "wake": true, "archive": true, "restore": true, "terminate": true,
 	}
 	for _, subcommand := range received[0].Options {
+		if subcommand.Name == "create" && len(subcommand.Options) != 0 {
+			t.Errorf("create options = %#v; want optionless modal launcher", subcommand.Options)
+		}
 		if subcommand.Name == "list" {
 			if len(subcommand.Options) != 2 || subcommand.Options[0].Name != "state" || subcommand.Options[1].Name != "page" {
 				t.Errorf("list options = %#v; want state filter and page", subcommand.Options)

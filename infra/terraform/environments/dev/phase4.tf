@@ -189,6 +189,12 @@ resource "aws_lambda_event_source_mapping" "artifact_worker" {
 
 data "aws_iam_policy_document" "notification_worker" {
   statement {
+    sid       = "SessionCardMetadata"
+    actions   = ["dynamodb:GetItem", "dynamodb:PutItem"]
+    resources = [aws_dynamodb_table.metadata.arn]
+  }
+
+  statement {
     sid       = "DiscordTokenRead"
     actions   = ["secretsmanager:GetSecretValue"]
     resources = [aws_secretsmanager_secret.discord_bot_token.arn]

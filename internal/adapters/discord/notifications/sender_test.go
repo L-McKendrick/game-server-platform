@@ -73,3 +73,43 @@ func TestSenderRetriesSecretReadAndDisablesMentions(t *testing.T) {
 		t.Fatalf("allowed_mentions.parse = %#v; want empty array", allowedMentions["parse"])
 	}
 }
+
+func TestSenderCreatesCardWithEnforcedNonceAndEditsKnownMessage(t *testing.T) {
+	t.Parallel()
+	var methods []string
+	var payloads []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		methods = append(methods, request.Method+" "+request.URL.Path)
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode: %v", err)
+		}
+		payloads = append(payloads, payload)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"id":"message-1"}`))
+	}))
+	defer server.Close()
+	sender := New(&fakeSecrets{}, "secret")
+	sender.apiBase = server.URL
+	request := domain.NotificationRequest{
+		SchemaVersion: 1, NotificationID: "card-create-1", Kind: domain.NotificationSessionCard,
+		SessionID: "session-1", GuildID: "guild-1", ChannelID: "channel-1", Content: "card",
+		CorrelationID: "correlation-1", RequestedAt: time.Now().UTC(),
+	}
+	messageID, err := sender.SendCard(context.Background(), request, "")
+	if err != nil || messageID != "message-1" {
+		t.Fatalf("create = %q, %v", messageID, err)
+	}
+	if _, err := sender.SendCard(context.Background(), request, messageID); err != nil {
+		t.Fatal(err)
+	}
+	if len(methods) != 2 || methods[0] != "POST /channels/channel-1/messages" || methods[1] != "PATCH /channels/channel-1/messages/message-1" {
+		t.Fatalf("methods = %#v", methods)
+	}
+	if payloads[0]["enforce_nonce"] != true || payloads[0]["nonce"] == "" {
+		t.Fatalf("create payload = %#v", payloads[0])
+	}
+	if _, exists := payloads[1]["nonce"]; exists {
+		t.Fatalf("edit payload contains nonce: %#v", payloads[1])
+	}
+}

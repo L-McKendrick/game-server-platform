@@ -21,6 +21,7 @@ import (
 
 const (
 	sessionSortKey        = "METADATA"
+	sessionCardSortKey    = "DISCORD_CARD"
 	idempotencySortKey    = "RESULT"
 	ownerIndexName        = "gsi1"
 	schemaVersion         = 3
@@ -68,6 +69,7 @@ type Repository struct {
 }
 
 var _ ports.SessionRepository = (*Repository)(nil)
+var _ ports.SessionCardRepository = (*Repository)(nil)
 
 // New creates a DynamoDB session repository.
 func New(client API, tableName string) *Repository {
@@ -99,6 +101,10 @@ type sessionItem struct {
 	ConfigurationRevision    int64    `dynamodbav:"configuration_revision"`
 	MissionObjectKey         string   `dynamodbav:"mission_object_key,omitempty"`
 	PresetObjectKey          string   `dynamodbav:"preset_object_key,omitempty"`
+	MissionArtifactStatus    string   `dynamodbav:"mission_artifact_status,omitempty"`
+	PresetArtifactStatus     string   `dynamodbav:"preset_artifact_status,omitempty"`
+	MissionArtifactIssue     string   `dynamodbav:"mission_artifact_issue,omitempty"`
+	PresetArtifactIssue      string   `dynamodbav:"preset_artifact_issue,omitempty"`
 	CapacitySlotID           string   `dynamodbav:"capacity_slot_id,omitempty"`
 	AvailabilityZone         string   `dynamodbav:"availability_zone,omitempty"`
 	SubnetID                 string   `dynamodbav:"subnet_id,omitempty"`
@@ -139,6 +145,16 @@ type sessionItem struct {
 
 	GSI1PK string `dynamodbav:"gsi1pk"`
 	GSI1SK string `dynamodbav:"gsi1sk"`
+}
+
+type sessionCardItem struct {
+	PK            string `dynamodbav:"pk"`
+	SK            string `dynamodbav:"sk"`
+	EntityType    string `dynamodbav:"entity_type"`
+	SchemaVersion int    `dynamodbav:"schema_version"`
+	SessionID     string `dynamodbav:"session_id"`
+	ChannelID     string `dynamodbav:"channel_id"`
+	MessageID     string `dynamodbav:"message_id"`
 }
 
 type eventItem struct {
@@ -424,6 +440,67 @@ func (repository *Repository) Get(
 	}
 
 	return session, nil
+}
+
+// SaveCardReference updates delivery metadata without changing the session
+// lifecycle version, so Discord delivery retries do not contend with workers.
+func (repository *Repository) GetCardReference(ctx context.Context, sessionID string) (domain.SessionCardReference, error) {
+	if err := repository.validate(); err != nil {
+		return domain.SessionCardReference{}, err
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return domain.SessionCardReference{}, fmt.Errorf("session ID is required")
+	}
+	output, err := repository.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(repository.tableName), Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: sessionPartitionKey(sessionID)},
+			"sk": &types.AttributeValueMemberS{Value: sessionCardSortKey},
+		}, ConsistentRead: aws.Bool(true),
+	})
+	if err != nil {
+		return domain.SessionCardReference{}, fmt.Errorf("get Discord card reference: %w", err)
+	}
+	if len(output.Item) == 0 {
+		return domain.SessionCardReference{}, fmt.Errorf("%w: session card %s", domain.ErrNotFound, sessionID)
+	}
+	var item sessionCardItem
+	if err := attributevalue.UnmarshalMap(output.Item, &item); err != nil {
+		return domain.SessionCardReference{}, err
+	}
+	reference := domain.SessionCardReference{SessionID: item.SessionID, ChannelID: item.ChannelID, MessageID: item.MessageID}
+	if err := reference.Validate(); err != nil {
+		return domain.SessionCardReference{}, err
+	}
+	return reference, nil
+}
+
+func (repository *Repository) SaveCardReference(ctx context.Context, reference domain.SessionCardReference) error {
+	if err := repository.validate(); err != nil {
+		return err
+	}
+	if err := reference.Validate(); err != nil {
+		return err
+	}
+	attributes, err := attributevalue.MarshalMap(sessionCardItem{
+		PK: sessionPartitionKey(reference.SessionID), SK: sessionCardSortKey,
+		EntityType: "SessionCard", SchemaVersion: schemaVersion,
+		SessionID: reference.SessionID, ChannelID: reference.ChannelID, MessageID: reference.MessageID,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal Discord card reference: %w", err)
+	}
+	_, err = repository.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(repository.tableName), Item: attributes,
+		ConditionExpression: aws.String("attribute_not_exists(pk) OR channel_id = :channel"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":channel": &types.AttributeValueMemberS{Value: reference.ChannelID},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("save Discord card reference: %w", err)
+	}
+	return nil
 }
 
 // SaveWithEvent atomically writes a version-checked session and an event.
@@ -824,6 +901,10 @@ func toSessionItem(session domain.Session) sessionItem {
 		ConfigurationRevision:        session.ConfigurationRevision,
 		MissionObjectKey:             session.MissionObjectKey,
 		PresetObjectKey:              session.PresetObjectKey,
+		MissionArtifactStatus:        string(session.MissionArtifactStatus),
+		PresetArtifactStatus:         string(session.PresetArtifactStatus),
+		MissionArtifactIssue:         session.MissionArtifactIssue,
+		PresetArtifactIssue:          session.PresetArtifactIssue,
 		CapacitySlotID:               session.Infrastructure.CapacitySlotID,
 		AvailabilityZone:             session.Infrastructure.AvailabilityZone,
 		SubnetID:                     session.Infrastructure.SubnetID,
@@ -912,6 +993,14 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("parse monitoring started_at: %w", err)
 	}
+	missionStatus := domain.ArtifactStatus(item.MissionArtifactStatus)
+	if missionStatus == "" && strings.TrimSpace(item.MissionObjectKey) != "" {
+		missionStatus = domain.ArtifactAccepted
+	}
+	presetStatus := domain.ArtifactStatus(item.PresetArtifactStatus)
+	if presetStatus == "" && strings.TrimSpace(item.PresetObjectKey) != "" {
+		presetStatus = domain.ArtifactAccepted
+	}
 
 	session := domain.Session{
 		ID:                    item.SessionID,
@@ -930,6 +1019,10 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		ConfigurationRevision: item.ConfigurationRevision,
 		MissionObjectKey:      item.MissionObjectKey,
 		PresetObjectKey:       item.PresetObjectKey,
+		MissionArtifactStatus: missionStatus,
+		PresetArtifactStatus:  presetStatus,
+		MissionArtifactIssue:  item.MissionArtifactIssue,
+		PresetArtifactIssue:   item.PresetArtifactIssue,
 		Infrastructure: domain.Infrastructure{
 			CapacitySlotID: item.CapacitySlotID, AvailabilityZone: item.AvailabilityZone,
 			SubnetID: item.SubnetID, SecurityGroupIDs: append([]string(nil), item.SecurityGroupIDs...),

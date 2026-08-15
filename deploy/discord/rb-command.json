@@ -6,29 +6,7 @@
     {
       "type": 1,
       "name": "create",
-      "description": "Create a draft game-server session",
-      "options": [
-        {
-          "type": 3,
-          "name": "name",
-          "description": "Human-readable session name",
-          "required": true,
-          "min_length": 1,
-          "max_length": 100
-        },
-        {
-          "type": 3,
-          "name": "game",
-          "description": "Dedicated-server game",
-          "required": false,
-          "choices": [
-            {
-              "name": "Arma 3",
-              "value": "arma3"
-            }
-          ]
-        }
-      ]
+      "description": "Open the guided Arma 3 session setup"
     },
     {
       "type": 1,
@@ -80,94 +58,17 @@
     },
     {
       "type": 1,
-      "name": "configure",
-      "description": "Configure a draft session",
+      "name": "setup",
+      "description": "Edit or repair a draft session setup",
       "options": [
         {
           "type": 3,
           "name": "session",
-          "description": "Choose a session or enter its exact slug",
+          "description": "Choose a draft session or enter its exact slug",
           "required": true,
           "autocomplete": true,
           "min_length": 1,
           "max_length": 64
-        },
-        {
-          "type": 3,
-          "name": "profile",
-          "description": "Game-server profile",
-          "required": false,
-          "choices": [
-            { "name": "Arma 3 default", "value": "arma3-default" }
-          ]
-        },
-        {
-          "type": 4,
-          "name": "sleep-minutes",
-          "description": "Minutes empty before sleeping",
-          "required": false,
-          "min_value": 10,
-          "max_value": 1440
-        },
-        {
-          "type": 4,
-          "name": "archive-days",
-          "description": "Days sleeping before archival",
-          "required": false,
-          "min_value": 1,
-          "max_value": 90
-        },
-        {
-          "type": 5,
-          "name": "teamspeak",
-          "description": "Enable TeamSpeak for this session",
-          "required": false
-        },
-        {
-          "type": 5,
-          "name": "vanilla",
-          "description": "Use anonymous SteamCMD without a mod preset",
-          "required": false
-        }
-      ]
-    },
-    {
-      "type": 1,
-      "name": "upload-mission",
-      "description": "Submit an Arma mission for validation",
-      "options": [
-        {
-          "type": 3,
-          "name": "session",
-          "description": "Choose a session or enter its exact slug",
-          "required": true,
-          "autocomplete": true
-        },
-        {
-          "type": 11,
-          "name": "file",
-          "description": "Mission .pbo file (maximum 100 MiB)",
-          "required": true
-        }
-      ]
-    },
-    {
-      "type": 1,
-      "name": "upload-preset",
-      "description": "Submit an Arma launcher preset for validation",
-      "options": [
-        {
-          "type": 3,
-          "name": "session",
-          "description": "Choose a session or enter its exact slug",
-          "required": true,
-          "autocomplete": true
-        },
-        {
-          "type": 11,
-          "name": "file",
-          "description": "Launcher preset .html file (maximum 10 MiB)",
-          "required": true
         }
       ]
     },
