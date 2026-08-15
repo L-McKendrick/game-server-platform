@@ -260,6 +260,9 @@ type ArchiveManifest struct {
 	SchemaVersion         int      `json:"schema_version"`
 	ArchiveID             string   `json:"archive_id"`
 	SessionID             string   `json:"session_id"`
+	SessionName           string   `json:"session_name,omitempty"`
+	SessionSlug           string   `json:"session_slug,omitempty"`
+	Description           string   `json:"description,omitempty"`
 	CreatedAt             string   `json:"created_at"`
 	Format                string   `json:"format"`
 	ObjectKey             string   `json:"object_key"`
@@ -298,7 +301,22 @@ func (manifest ArchiveManifest) Validate() error {
 		return fmt.Errorf("manifest game profile is required")
 	case strings.TrimSpace(manifest.SourceInstanceID) == "" || strings.TrimSpace(manifest.SourceDataVolumeID) == "":
 		return fmt.Errorf("manifest source infrastructure is required")
-	default:
+	}
+	if !manifest.IncludesReadableIdentity() {
 		return nil
 	}
+	if strings.TrimSpace(manifest.SessionName) == "" || !slugPattern.MatchString(manifest.SessionSlug) {
+		return fmt.Errorf("manifest readable session identity is invalid")
+	}
+	description, err := NormalizeSessionDescription(manifest.Description)
+	if err != nil || description != manifest.Description {
+		return fmt.Errorf("manifest session description is invalid")
+	}
+	return nil
+}
+
+// IncludesReadableIdentity distinguishes additive Phase 12 manifests from
+// legacy schema-v1 manifests, whose identity remains authoritative in metadata.
+func (manifest ArchiveManifest) IncludesReadableIdentity() bool {
+	return manifest.SessionName != "" || manifest.SessionSlug != "" || manifest.Description != ""
 }

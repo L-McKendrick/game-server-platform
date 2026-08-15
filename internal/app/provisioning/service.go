@@ -337,7 +337,8 @@ func (service *Service) launchRequest(session domain.Session) domain.ComputeLaun
 		securityGroups = append(securityGroups, service.config.VoiceSecurityGroupID)
 	}
 	return domain.ComputeLaunchRequest{
-		SessionID: session.ID, GameType: session.GameType, Project: service.config.Project,
+		SessionID: session.ID, SessionName: session.DisplayName, SessionSlug: session.Slug,
+		GameType: session.GameType, Project: service.config.Project,
 		Environment: service.config.Environment, AMIID: service.config.AMIID,
 		InstanceType: service.config.InstanceType, SubnetID: service.config.SubnetID,
 		SecurityGroupIDs: securityGroups, InstanceProfile: service.config.InstanceProfile,

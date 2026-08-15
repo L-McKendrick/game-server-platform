@@ -34,6 +34,8 @@ func (infrastructure Infrastructure) Empty() bool {
 // parameters for one session. Discord input never supplies these values.
 type ComputeLaunchRequest struct {
 	SessionID        string
+	SessionName      string
+	SessionSlug      string
 	GameType         string
 	Environment      string
 	Project          string

@@ -132,13 +132,20 @@ func (service *Service) verifyArchive(ctx context.Context, session domain.Sessio
 	if err := manifest.Validate(); err != nil {
 		return TaskResult{}, err
 	}
-	if manifest.SessionID != session.ID || manifest.ArchiveID != archive.ID || manifest.ObjectKey != archive.ObjectKey || manifest.SHA256 != archive.SHA256 || manifest.SizeBytes != archive.SizeBytes || manifest.GameProfileID != session.GameProfileID || manifest.ConfigurationRevision != session.ConfigurationRevision || manifest.MissionObjectKey != session.MissionObjectKey || manifest.PresetObjectKey != session.PresetObjectKey || manifest.Vanilla != session.Vanilla {
+	if manifest.SessionID != session.ID || manifest.ArchiveID != archive.ID || manifest.ObjectKey != archive.ObjectKey || manifest.SHA256 != archive.SHA256 || manifest.SizeBytes != archive.SizeBytes || manifest.GameProfileID != session.GameProfileID || manifest.ConfigurationRevision != session.ConfigurationRevision || manifest.MissionObjectKey != session.MissionObjectKey || manifest.PresetObjectKey != session.PresetObjectKey || manifest.Vanilla != session.Vanilla || !manifestReadableIdentityMatches(manifest, session) {
 		return TaskResult{}, fmt.Errorf("archive manifest does not match authoritative session metadata")
 	}
 	if err := service.store.Verify(ctx, ports.ArchiveObject{Key: archive.ObjectKey, SHA256: archive.SHA256, SizeBytes: archive.SizeBytes, ContentType: "application/gzip"}); err != nil {
 		return TaskResult{}, err
 	}
 	return result(session, workflow), nil
+}
+
+func manifestReadableIdentityMatches(manifest domain.ArchiveManifest, session domain.Session) bool {
+	if !manifest.IncludesReadableIdentity() {
+		return true
+	}
+	return manifest.SessionName == session.DisplayName && manifest.SessionSlug == session.Slug && manifest.Description == session.Description
 }
 
 func (service *Service) prepare(ctx context.Context, session domain.Session, workflow domain.Workflow) (TaskResult, error) {
@@ -338,7 +345,7 @@ func (service *Service) launchRequest(session domain.Session, workflow domain.Wo
 	if len(token) > 64 {
 		token = token[:64]
 	}
-	return domain.ComputeLaunchRequest{SessionID: session.ID, GameType: session.GameType, Environment: service.config.Environment, Project: service.config.Project, AMIID: service.config.AMIID, InstanceType: service.config.InstanceType, SubnetID: service.config.SubnetID, SecurityGroupIDs: securityGroups, InstanceProfile: service.config.InstanceProfile, RootVolumeGiB: service.config.RootVolumeGiB, DataVolumeGiB: service.config.DataVolumeGiB, ClientToken: token}
+	return domain.ComputeLaunchRequest{SessionID: session.ID, SessionName: session.DisplayName, SessionSlug: session.Slug, GameType: session.GameType, Environment: service.config.Environment, Project: service.config.Project, AMIID: service.config.AMIID, InstanceType: service.config.InstanceType, SubnetID: service.config.SubnetID, SecurityGroupIDs: securityGroups, InstanceProfile: service.config.InstanceProfile, RootVolumeGiB: service.config.RootVolumeGiB, DataVolumeGiB: service.config.DataVolumeGiB, ClientToken: token}
 }
 
 func (service *Service) infrastructure(session domain.Session, observation domain.ComputeObservation) domain.Infrastructure {

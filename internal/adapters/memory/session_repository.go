@@ -74,6 +74,11 @@ func (repository *SessionRepository) Create(
 			session.ID,
 		)
 	}
+	for _, existing := range repository.sessions {
+		if existing.GuildID == session.GuildID && existing.Slug == session.Slug {
+			return fmt.Errorf("%w: %s", domain.ErrSlugConflict, session.Slug)
+		}
+	}
 
 	repository.sessions[session.ID] = session
 	repository.events[session.ID] = []domain.SessionEvent{
@@ -252,6 +257,42 @@ func (repository *SessionRepository) ListByOwner(
 		sessions = sessions[:limit]
 	}
 
+	return sessions, nil
+}
+
+// ListByGuild returns sessions in one Discord guild, newest first.
+func (repository *SessionRepository) ListByGuild(
+	ctx context.Context,
+	guildID string,
+	limit int32,
+) ([]domain.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 25
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	sessions := make([]domain.Session, 0)
+	for _, session := range repository.sessions {
+		if session.GuildID == guildID {
+			sessions = append(sessions, session)
+		}
+	}
+	sort.Slice(sessions, func(first, second int) bool {
+		if sessions[first].UpdatedAt.Equal(sessions[second].UpdatedAt) {
+			return sessions[first].ID > sessions[second].ID
+		}
+		return sessions[first].UpdatedAt.After(sessions[second].UpdatedAt)
+	})
+	if len(sessions) > int(limit) {
+		sessions = sessions[:limit]
+	}
 	return sessions, nil
 }
 

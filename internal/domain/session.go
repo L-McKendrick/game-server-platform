@@ -5,15 +5,23 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+
+const (
+	MaximumSessionDescriptionRunes = 64
+	MaximumGeneratedSlugLength     = 64
+)
 
 // Session represents the persistent platform identity of a game server.
 type Session struct {
 	ID                    string
 	Slug                  string
 	DisplayName           string
+	Description           string
 	GameType              string
 	OwnerDiscordUserID    string
 	GuildID               string
@@ -132,6 +140,7 @@ type NewSessionInput struct {
 	ID                 string
 	Slug               string
 	DisplayName        string
+	Description        string
 	GameType           string
 	OwnerDiscordUserID string
 	GuildID            string
@@ -141,11 +150,16 @@ type NewSessionInput struct {
 // NewSession creates a valid draft session.
 func NewSession(input NewSessionInput, now time.Time) (Session, error) {
 	now = now.UTC()
+	description, err := NormalizeSessionDescription(input.Description)
+	if err != nil {
+		return Session{}, err
+	}
 
 	session := Session{
 		ID:                    strings.TrimSpace(input.ID),
 		Slug:                  strings.TrimSpace(input.Slug),
 		DisplayName:           strings.TrimSpace(input.DisplayName),
+		Description:           description,
 		GameType:              strings.ToLower(strings.TrimSpace(input.GameType)),
 		OwnerDiscordUserID:    strings.TrimSpace(input.OwnerDiscordUserID),
 		GuildID:               strings.TrimSpace(input.GuildID),
@@ -172,6 +186,38 @@ func NewSession(input NewSessionInput, now time.Time) (Session, error) {
 	return session, nil
 }
 
+// GenerateSessionSlug derives a stable, URL-style lowercase slug from a
+// display name. Existing explicit slugs continue to pass through NewSession
+// unchanged; this helper is only for new creation flows that omit one.
+func GenerateSessionSlug(displayName string) string {
+	var builder strings.Builder
+	separatorPending := false
+	for _, character := range strings.ToLower(displayName) {
+		isASCIIAlpha := character >= 'a' && character <= 'z'
+		isASCIIDigit := character >= '0' && character <= '9'
+		if isASCIIAlpha || isASCIIDigit {
+			if separatorPending && builder.Len() > 0 {
+				builder.WriteByte('-')
+			}
+			separatorPending = false
+			builder.WriteRune(character)
+			continue
+		}
+		if builder.Len() > 0 {
+			separatorPending = true
+		}
+	}
+
+	slug := strings.Trim(builder.String(), "-")
+	if slug == "" {
+		return "session"
+	}
+	if len(slug) > MaximumGeneratedSlugLength {
+		slug = strings.TrimRight(slug[:MaximumGeneratedSlugLength], "-")
+	}
+	return slug
+}
+
 // Validate verifies the session's domain invariants.
 func (session Session) Validate() error {
 	if err := session.Infrastructure.Validate(); err != nil {
@@ -194,6 +240,10 @@ func (session Session) Validate() error {
 		)
 	case session.DisplayName == "":
 		return fmt.Errorf("session display name is required")
+	case utf8.RuneCountInString(session.Description) > MaximumSessionDescriptionRunes:
+		return fmt.Errorf("session description must contain at most %d characters", MaximumSessionDescriptionRunes)
+	case session.Description != normalizeSessionDescription(session.Description):
+		return fmt.Errorf("session description must be normalized")
 	case session.GameType == "":
 		return fmt.Errorf("game type is required")
 	case session.OwnerDiscordUserID == "":
@@ -243,6 +293,58 @@ func (session Session) Validate() error {
 	default:
 		return nil
 	}
+}
+
+// NormalizeSessionDescription makes an optional user description safe for
+// durable single-line storage while preserving ordinary Unicode text.
+func NormalizeSessionDescription(value string) (string, error) {
+	normalized := normalizeSessionDescription(value)
+	if utf8.RuneCountInString(normalized) > MaximumSessionDescriptionRunes {
+		return "", fmt.Errorf("session description must contain at most %d characters", MaximumSessionDescriptionRunes)
+	}
+	return normalized, nil
+}
+
+func normalizeSessionDescription(value string) string {
+	var builder strings.Builder
+	spacePending := false
+	for _, character := range value {
+		switch {
+		case unicode.IsSpace(character):
+			if builder.Len() > 0 {
+				spacePending = true
+			}
+		case unicode.IsControl(character), unicode.Is(unicode.Cf, character):
+			continue
+		default:
+			if spacePending {
+				builder.WriteByte(' ')
+				spacePending = false
+			}
+			builder.WriteRune(character)
+		}
+	}
+	return builder.String()
+}
+
+// SetDescription replaces the optional normalized description and records a
+// metadata mutation. Deleted session tombstones are immutable.
+func (session *Session) SetDescription(description string, now time.Time) (string, error) {
+	if session.LifecycleState == StateDeleted {
+		return "", fmt.Errorf("%w: a deleted session description cannot be changed", ErrInvalidTransition)
+	}
+	normalized, err := NormalizeSessionDescription(description)
+	if err != nil {
+		return "", err
+	}
+	previous := session.Description
+	updated := *session
+	updated.Description = normalized
+	if err := updated.RecordMutation(now); err != nil {
+		return "", err
+	}
+	*session = updated
+	return previous, nil
 }
 
 // BeginMonitoring records a short, read-only Systems Manager probe. Monitoring

@@ -126,10 +126,12 @@ exact-slug resolution across every session-targeting command. After task 12.2.3
 is complete and deployment is approved, run, in order:
 
 ```text
-/rb create slug:test-session name:Test Session
+/rb create name:Test Session
 /rb list
 /rb status session:<select the created session>
+/rb list state:Terminated records only
 ```
 
-Confirm the session is written to the development DynamoDB table and that no
-duplicate event is created when Discord retries the same interaction.
+Confirm the generated slug is readable, autocomplete never shows the immutable
+ID, the status response is private, the default list excludes deleted records,
+and no duplicate event is created when Discord retries the same interaction.

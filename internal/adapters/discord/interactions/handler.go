@@ -49,6 +49,11 @@ type SessionService interface {
 		query appsession.SelectQuery,
 	) ([]appsession.Selection, error)
 
+	Resolve(
+		ctx context.Context,
+		query appsession.ResolveQuery,
+	) (appsession.Selection, error)
+
 	Configure(
 		ctx context.Context,
 		command appsession.ConfigureCommand,
@@ -382,7 +387,7 @@ func (handler *Handler) routeCommand(
 		)
 		return content, commandName, err
 	case "list":
-		content, err := handler.listSessions(ctx, actor, payload.GuildID)
+		content, err := handler.listSessions(ctx, subcommand.Options, actor, payload.GuildID)
 		return content, commandName, err
 	case "status":
 		content, err := handler.sessionStatus(
@@ -429,9 +434,13 @@ func (handler *Handler) routeCommand(
 }
 
 func (handler *Handler) requestLifecycle(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, correlationID, action string) (string, error) {
-	sessionID, err := stringOption(options, "session-id", true)
+	sessionID, err := handler.resolveSessionID(
+		ctx, options, actor, payload.GuildID,
+		payload.memberCanManageGuild() && (action == "sleep" || action == "wake"),
+		false,
+	)
 	if err != nil {
-		return "", newUserError("Select a session.")
+		return "", err
 	}
 	roles := []string{}
 	if payload.Member != nil {
@@ -468,9 +477,9 @@ func (handler *Handler) startSession(
 	actor domain.Actor,
 	correlationID string,
 ) (string, error) {
-	sessionID, err := stringOption(options, "session-id", true)
+	sessionID, err := handler.resolveSessionID(ctx, options, actor, payload.GuildID, false, false)
 	if err != nil {
-		return "", newUserError("Select a session.")
+		return "", err
 	}
 	roles := []string{}
 	if payload.Member != nil {
@@ -561,9 +570,9 @@ func (handler *Handler) configureSession(
 	actor domain.Actor,
 	correlationID string,
 ) (string, error) {
-	sessionID, err := stringOption(options, "session-id", true)
+	sessionID, err := handler.resolveSessionID(ctx, options, actor, payload.GuildID, false, false)
 	if err != nil {
-		return "", newUserError("Select a session.")
+		return "", err
 	}
 	profile, err := stringOption(options, "profile", false)
 	if err != nil {
@@ -615,9 +624,9 @@ func (handler *Handler) requestArtifactIngest(
 	correlationID string,
 	kind domain.ArtifactKind,
 ) (string, error) {
-	sessionID, err := stringOption(options, "session-id", true)
+	sessionID, err := handler.resolveSessionID(ctx, options, actor, payload.GuildID, false, false)
 	if err != nil {
-		return "", newUserError("Select a session.")
+		return "", err
 	}
 	attachment, err := attachmentOption(payload.Data, options, "file")
 	if err != nil {
@@ -655,8 +664,8 @@ func (handler *Handler) createSession(
 	actor domain.Actor,
 	correlationID string,
 ) (string, error) {
-	slug, err := stringOption(options, "slug", true)
-	if err != nil || len(slug) > 64 || !discordSlugPattern.MatchString(slug) {
+	slug, err := stringOption(options, "slug", false)
+	if err != nil || (slug != "" && (len(slug) > 64 || !discordSlugPattern.MatchString(slug))) {
 		return "", newUserError(
 			"The slug must use lowercase letters, numbers, and single hyphens.",
 		)
@@ -700,31 +709,79 @@ func (handler *Handler) createSession(
 
 func (handler *Handler) listSessions(
 	ctx context.Context,
+	options []applicationCommandOption,
 	actor domain.Actor,
 	guildID string,
 ) (string, error) {
+	filter, err := stringOption(options, "state", false)
+	if err != nil {
+		return "", newUserError("The lifecycle filter is invalid.")
+	}
+	states, filterLabel, err := sessionListStates(filter)
+	if err != nil {
+		return "", err
+	}
+	page, err := integerOption(options, "page", 1)
+	if err != nil || page < 1 || page > 20 {
+		return "", newUserError("Page must be between 1 and 20.")
+	}
 	sessions, err := handler.service.List(
 		ctx,
-		appsession.ListQuery{Actor: actor, Limit: 100},
+		appsession.ListQuery{Actor: actor, Limit: 100, States: states},
 	)
 	if err != nil {
 		return "", fmt.Errorf("list sessions: %w", err)
 	}
 
 	guildID = strings.TrimSpace(guildID)
-	visible := make([]domain.Session, 0, 10)
+	visible := make([]domain.Session, 0, len(sessions))
 	for _, session := range sessions {
 		if session.GuildID != guildID {
 			continue
 		}
-
 		visible = append(visible, session)
-		if len(visible) == 10 {
-			break
-		}
 	}
+	const pageSize = 5
+	totalPages := (len(visible) + pageSize - 1) / pageSize
+	if totalPages == 0 {
+		totalPages = 1
+	}
+	if int(page) > totalPages {
+		return "", newUserError(fmt.Sprintf("Page %d is not available. This list has %d page(s).", page, totalPages))
+	}
+	start := (int(page) - 1) * pageSize
+	end := start + pageSize
+	if end > len(visible) {
+		end = len(visible)
+	}
+	return formatSessionListPage(visible[start:end], int(page), totalPages, filterLabel), nil
+}
 
-	return formatSessionList(visible), nil
+func sessionListStates(filter string) ([]domain.LifecycleState, string, error) {
+	switch strings.ToLower(strings.TrimSpace(filter)) {
+	case "":
+		return nil, "Active sessions", nil
+	case "setting-up":
+		return []domain.LifecycleState{domain.StateDraft, domain.StateNew, domain.StateValidating, domain.StateProvisioning, domain.StateBootstrapping, domain.StateInstalling}, "Setting up", nil
+	case "ready":
+		return []domain.LifecycleState{domain.StateReady}, "Ready", nil
+	case "starting":
+		return []domain.LifecycleState{domain.StateWaking, domain.StateRestoring}, "Starting", nil
+	case "running":
+		return []domain.LifecycleState{domain.StateRunning, domain.StateIdle}, "Running", nil
+	case "sleeping":
+		return []domain.LifecycleState{domain.StateStopping, domain.StateSleeping, domain.StateWarning1, domain.StateWarning2, domain.StateArchiving, domain.StateDestroying}, "Sleeping", nil
+	case "archived":
+		return []domain.LifecycleState{domain.StateArchived}, "Archived", nil
+	case "action-required":
+		return []domain.LifecycleState{domain.StateFailed}, "Action required", nil
+	case "terminated":
+		return []domain.LifecycleState{domain.StateDeleting, domain.StateDeleted}, "Terminated", nil
+	case "deleted":
+		return []domain.LifecycleState{domain.StateDeleted}, "Terminated records", nil
+	default:
+		return nil, "", newUserError("Choose a supported lifecycle filter.")
+	}
 }
 
 func (handler *Handler) sessionStatus(
@@ -733,14 +790,14 @@ func (handler *Handler) sessionStatus(
 	actor domain.Actor,
 	guildID string,
 ) (string, error) {
-	sessionID, err := stringOption(options, "session-id", true)
+	sessionID, err := handler.resolveSessionID(ctx, options, actor, guildID, false, true)
 	if err != nil {
-		return "", newUserError("Select a session.")
+		return "", err
 	}
 
 	session, err := handler.service.Get(
 		ctx,
-		appsession.GetQuery{Actor: actor, SessionID: sessionID},
+		appsession.GetQuery{Actor: actor, SessionID: sessionID, GuildID: guildID, AllowGuildMember: true},
 	)
 	if err != nil {
 		return "", fmt.Errorf("get session status: %w", err)
@@ -768,6 +825,33 @@ func (handler *Handler) sessionStatus(
 		return formatSessionStatus(session, nil), nil
 	}
 	return formatSessionStatus(session, &players), nil
+}
+
+func (handler *Handler) resolveSessionID(
+	ctx context.Context,
+	options []applicationCommandOption,
+	actor domain.Actor,
+	guildID string,
+	canManageGuild bool,
+	allowGuildMember bool,
+) (string, error) {
+	reference, err := stringOption(options, "session", true)
+	if err != nil {
+		// Accept the previous option name only for in-flight payloads while the
+		// registered command definition is replaced.
+		reference, err = stringOption(options, "session-id", true)
+	}
+	if err != nil {
+		return "", newUserError("Select a session or enter its exact slug.")
+	}
+	selection, err := handler.service.Resolve(ctx, appsession.ResolveQuery{
+		Actor: actor, GuildID: guildID, Reference: reference,
+		CanManageGuild: canManageGuild, AllowGuildMember: allowGuildMember,
+	})
+	if err != nil {
+		return "", err
+	}
+	return selection.ID, nil
 }
 
 func (handler *Handler) commandErrorMessage(err error, correlationID string) string {

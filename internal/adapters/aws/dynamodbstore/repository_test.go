@@ -2,6 +2,7 @@ package dynamodbstore
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -17,12 +18,46 @@ type fakeAPI struct {
 	getItemErr         error
 	queryOutput        *dynamodb.QueryOutput
 	queryErr           error
+	scanOutput         *dynamodb.ScanOutput
+	scanErr            error
+	scanInput          *dynamodb.ScanInput
 	transactWriteInput *dynamodb.TransactWriteItemsInput
 	transactWriteErr   error
 }
 
-func (fake *fakeAPI) Scan(_ context.Context, _ *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
-	return &dynamodb.ScanOutput{}, nil
+func (fake *fakeAPI) Scan(_ context.Context, input *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
+	fake.scanInput = input
+	if fake.scanOutput == nil {
+		return &dynamodb.ScanOutput{}, fake.scanErr
+	}
+	return fake.scanOutput, fake.scanErr
+}
+
+func TestListByGuildReadsLegacySessionMetadataWithBoundedScan(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
+	session := testSession(t, now)
+	attributes, err := attributevalue.MarshalMap(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeAPI{scanOutput: &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{attributes}, ScannedCount: 7}}
+	repository := New(client, "metadata-table")
+
+	sessions, err := repository.ListByGuild(context.Background(), "guild-1", 25)
+	if err != nil {
+		t.Fatalf("ListByGuild() returned error: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != session.ID {
+		t.Fatalf("ListByGuild() = %#v", sessions)
+	}
+	if client.scanInput == nil || client.scanInput.FilterExpression == nil || *client.scanInput.FilterExpression != "entity_type = :type AND guild_id = :guild" {
+		t.Fatalf("scan input = %#v", client.scanInput)
+	}
+	if client.scanInput.Limit == nil || *client.scanInput.Limit > 100 {
+		t.Fatalf("scan limit = %#v; want bounded page", client.scanInput.Limit)
+	}
 }
 
 func (fake *fakeAPI) GetItem(
@@ -101,8 +136,8 @@ func TestCreateWritesSessionEventAndIdempotencyAtomically(t *testing.T) {
 	}
 
 	items := client.transactWriteInput.TransactItems
-	if len(items) != 3 {
-		t.Fatalf("transaction item count = %d; want 3", len(items))
+	if len(items) != 4 {
+		t.Fatalf("transaction item count = %d; want 4", len(items))
 	}
 
 	idempotencyPut := items[2].Put
@@ -120,6 +155,73 @@ func TestCreateWritesSessionEventAndIdempotencyAtomically(t *testing.T) {
 
 	if got := stringAttribute(t, idempotencyPut.Item["sk"]); got != idempotencySortKey {
 		t.Errorf("idempotency sk = %q; want %q", got, idempotencySortKey)
+	}
+
+	slugClaimPut := items[3].Put
+	if slugClaimPut == nil {
+		t.Fatal("fourth transaction item is not a Put")
+	}
+	if got := stringAttribute(t, slugClaimPut.Item["pk"]); got != "GUILD#guild-1" {
+		t.Errorf("slug claim pk = %q; want %q", got, "GUILD#guild-1")
+	}
+	if got := stringAttribute(t, slugClaimPut.Item["sk"]); got != "SLUG#saturday-arma" {
+		t.Errorf("slug claim sk = %q; want %q", got, "SLUG#saturday-arma")
+	}
+}
+
+func TestCreateClassifiesAtomicSlugClaimConflict(t *testing.T) {
+	t.Parallel()
+
+	code := "ConditionalCheckFailed"
+	client := &fakeAPI{transactWriteErr: &types.TransactionCanceledException{
+		CancellationReasons: []types.CancellationReason{{}, {}, {}, {Code: &code}},
+	}}
+	repository := New(client, "metadata-table")
+	now := time.Date(2026, 8, 14, 21, 0, 0, 0, time.UTC)
+	session := testSession(t, now)
+	event := domain.NewSessionCreatedEvent("event-1", "correlation-1", domain.Actor{
+		Type: domain.ActorTypeDiscordUser, ID: session.OwnerDiscordUserID,
+	}, session, now)
+
+	err := repository.Create(context.Background(), session, event, testIdempotency(t, now, session.ID))
+	if !errors.Is(err, domain.ErrSlugConflict) {
+		t.Fatalf("Create() error = %v; want ErrSlugConflict", err)
+	}
+}
+
+func TestCreateRejectsSlugUsedByLegacySessionWithoutClaim(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 14, 21, 30, 0, 0, time.UTC)
+	legacy := testSession(t, now.Add(-time.Hour))
+	attributes, err := attributevalue.MarshalMap(toSessionItem(legacy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeAPI{scanOutput: &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{attributes}, ScannedCount: 1}}
+	repository := New(client, "metadata-table")
+	session := testSession(t, now)
+	session.ID = "session-2"
+	event := domain.NewSessionCreatedEvent("event-2", "correlation-2", domain.Actor{Type: domain.ActorTypeDiscordUser, ID: session.OwnerDiscordUserID}, session, now)
+
+	err = repository.Create(context.Background(), session, event, testIdempotency(t, now, session.ID))
+	if !errors.Is(err, domain.ErrSlugConflict) {
+		t.Fatalf("Create() error = %v; want ErrSlugConflict", err)
+	}
+	if client.transactWriteInput != nil {
+		t.Fatal("Create() attempted a transaction after finding a legacy slug collision")
+	}
+}
+
+func TestCreateTransactionTokenChangesWithCollisionCandidate(t *testing.T) {
+	t.Parallel()
+
+	first := createTransactionToken("01KTESTEVENTIDENTIFIER000001", "friday-operations")
+	second := createTransactionToken("01KTESTEVENTIDENTIFIER000001", "friday-operations-2")
+	if first == second {
+		t.Fatal("transaction token did not change with the collision candidate")
+	}
+	if len(first) > 36 || len(second) > 36 {
+		t.Fatalf("transaction token lengths = %d/%d; want at most 36", len(first), len(second))
 	}
 }
 
@@ -212,6 +314,35 @@ func TestSessionItemRoundTripPreservesVanillaMode(t *testing.T) {
 	}
 	if !stored.Vanilla {
 		t.Fatal("vanilla mode was not preserved by DynamoDB mapping")
+	}
+}
+
+func TestSessionItemRoundTripPreservesOptionalDescription(t *testing.T) {
+	t.Parallel()
+	session := testSession(t, time.Date(2026, 8, 14, 20, 0, 0, 0, time.UTC))
+	session.Description = "Weekly co-op night"
+
+	stored, err := fromSessionItem(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DisplayName != session.DisplayName || stored.Slug != session.Slug || stored.Description != session.Description {
+		t.Fatalf("readable identity = (%q, %q, %q); want (%q, %q, %q)", stored.DisplayName, stored.Slug, stored.Description, session.DisplayName, session.Slug, session.Description)
+	}
+}
+
+func TestSessionItemWithoutDescriptionRemainsReadable(t *testing.T) {
+	t.Parallel()
+	session := testSession(t, time.Date(2026, 8, 14, 20, 0, 0, 0, time.UTC))
+	item := toSessionItem(session)
+	item.Description = ""
+
+	stored, err := fromSessionItem(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Description != "" {
+		t.Fatalf("Description = %q; want empty legacy default", stored.Description)
 	}
 }
 

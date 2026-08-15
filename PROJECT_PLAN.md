@@ -78,14 +78,14 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.1.3** [x] Add a shared session selector that returns authorized name/slug/state labels while carrying the immutable ID only as the hidden value.
       - **12.1.4** [x] Centralize Discord rendering, sanitization, native timestamps, status vocabulary, accessibility text, response bounds, and allowed-mention suppression.
       - **12.1.5** [x] Add interaction, command-registration, authorization, malformed-payload, stale-component, and response-limit tests for the new foundation.
-    - **12.2** [ ] Make session identity, discovery, and AWS presentation human-readable.
-      - **12.2.1** [ ] Add an optional normalized 64-character session description and record creation and later changes in immutable event history.
-      - **12.2.2** [ ] Generate a stable slug from the display name, add readable collision suffixes, and preserve explicit legacy slugs without changing immutable identity.
-      - **12.2.3** [ ] Add authorized session autocomplete and exact-slug resolution to every session-targeting `/rb` command without exposing IDs.
-      - **12.2.4** [ ] Make `/rb list` exclude `DELETED` by default, support lifecycle filters including deleted sessions, and add bounded ephemeral pagination with readable headings or mobile-safe stacked rows.
-      - **12.2.5** [ ] Make `/rb status` an ephemeral detailed view available to approved users in the session guild while preserving mutation authorization.
-      - **12.2.6** [ ] Tag new and restored EC2/EBS resources with readable `Name`, `SessionName`, and `SessionSlug` values while retaining immutable `Project`, `Environment`, and `SessionId` safeguards.
-      - **12.2.7** [ ] Preserve descriptions and readable identity through persistence, archive/restore, deletion tombstones, and regression tests.
+    - **12.2** [x] Make session identity, discovery, and AWS presentation human-readable.
+      - **12.2.1** [x] Add an optional normalized 64-character session description and record creation and later changes in immutable event history.
+      - **12.2.2** [x] Generate a stable slug from the display name, add readable collision suffixes, and preserve explicit legacy slugs without changing immutable identity.
+      - **12.2.3** [x] Add authorized session autocomplete and exact-slug resolution to every session-targeting `/rb` command without exposing IDs.
+      - **12.2.4** [x] Make `/rb list` exclude `DELETED` by default, support lifecycle filters including deleted sessions, and add bounded ephemeral pagination with readable headings or mobile-safe stacked rows.
+      - **12.2.5** [x] Make `/rb status` an ephemeral detailed view available to approved users in the session guild while preserving mutation authorization.
+      - **12.2.6** [x] Tag new and restored EC2/EBS resources with readable `Name`, `SessionName`, and `SessionSlug` values while retaining immutable `Project`, `Environment`, and `SessionId` safeguards.
+      - **12.2.7** [x] Preserve descriptions and readable identity through persistence, archive/restore, deletion tombstones, and regression tests.
     - **12.3** [ ] Replace multi-command setup with a resilient creation and setup wizard.
       - **12.3.1** [ ] Implement `/rb create` as one private modal for name, description, vanilla/modded and TeamSpeak options, mission upload, and optional preset upload using platform policy defaults.
       - **12.3.2** [ ] Validate modal fields and attachments, create the draft idempotently, and queue mission/preset ingestion without claiming validation success synchronously.

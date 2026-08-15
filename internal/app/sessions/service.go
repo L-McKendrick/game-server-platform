@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -211,6 +212,71 @@ type ConfigureCommand struct {
 	Vanilla             bool
 }
 
+// UpdateDescriptionCommand replaces a session's optional description.
+type UpdateDescriptionCommand struct {
+	Actor          domain.Actor
+	SessionID      string
+	GuildID        string
+	CorrelationID  string
+	IdempotencyKey string
+	Description    string
+}
+
+// UpdateDescription normalizes and atomically persists a description change
+// with its immutable audit event.
+func (service *Service) UpdateDescription(ctx context.Context, command UpdateDescriptionCommand) (domain.Session, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Session{}, fmt.Errorf("validate actor: %w", err)
+	}
+
+	idempotencyKey, requestHash, err := updateDescriptionRequestIdentity(command)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if replayed, found, err := service.replaySession(ctx, idempotencyKey, requestHash, command.Actor); err != nil || found {
+		return replayed, err
+	}
+
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("get session: %w", err)
+	}
+	if err := authorizeOwner(command.Actor, session); err != nil {
+		return domain.Session{}, err
+	}
+	if session.GuildID != strings.TrimSpace(command.GuildID) {
+		return domain.Session{}, fmt.Errorf("session belongs to another guild: %w", domain.ErrForbidden)
+	}
+
+	now := service.clock.Now().UTC()
+	expectedVersion := session.Version
+	previous, err := session.SetDescription(command.Description, now)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("update session description: %w", err)
+	}
+
+	eventID, err := service.newID(now, "description event")
+	if err != nil {
+		return domain.Session{}, err
+	}
+	correlationID, err := service.resolveCorrelationID(command.CorrelationID, now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.NewSessionDescriptionChangedEvent(eventID, correlationID, command.Actor, session, previous, now)
+	idempotency, err := domain.NewCompletedIdempotencyRecord(idempotencyKey, requestHash, session.ID, now, service.idempotencyRetention)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("construct idempotency record: %w", err)
+	}
+	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, idempotency); err != nil {
+		if replayed, found, replayErr := service.replaySession(ctx, idempotencyKey, requestHash, command.Actor); replayErr != nil || found {
+			return replayed, replayErr
+		}
+		return domain.Session{}, fmt.Errorf("persist session description: %w", err)
+	}
+	return session, nil
+}
+
 // Configure validates and persists a new immutable configuration revision.
 func (service *Service) Configure(ctx context.Context, command ConfigureCommand) (domain.Session, error) {
 	if err := command.Actor.Validate(); err != nil {
@@ -311,10 +377,13 @@ type CreateCommand struct {
 
 	Slug        string
 	DisplayName string
+	Description string
 	GameType    string
 	GuildID     string
 	ChannelID   string
 }
+
+const maximumSlugCollisionAttempts = 1000
 
 // Create creates a draft session and its initial event.
 func (service *Service) Create(
@@ -359,11 +428,19 @@ func (service *Service) Create(
 		return domain.Session{}, err
 	}
 
+	explicitSlug := strings.TrimSpace(command.Slug)
+	generatedSlug := explicitSlug == ""
+	baseSlug := explicitSlug
+	if generatedSlug {
+		baseSlug = domain.GenerateSessionSlug(command.DisplayName)
+	}
+
 	session, err := domain.NewSession(
 		domain.NewSessionInput{
 			ID:                 sessionID,
-			Slug:               command.Slug,
+			Slug:               baseSlug,
 			DisplayName:        command.DisplayName,
+			Description:        command.Description,
 			GameType:           command.GameType,
 			OwnerDiscordUserID: command.Actor.ID,
 			GuildID:            command.GuildID,
@@ -374,21 +451,6 @@ func (service *Service) Create(
 	if err != nil {
 		return domain.Session{}, fmt.Errorf(
 			"construct session: %w",
-			err,
-		)
-	}
-
-	event := domain.NewSessionCreatedEvent(
-		eventID,
-		correlationID,
-		command.Actor,
-		session,
-		now,
-	)
-
-	if err := event.Validate(); err != nil {
-		return domain.Session{}, fmt.Errorf(
-			"construct creation event: %w",
 			err,
 		)
 	}
@@ -407,12 +469,17 @@ func (service *Service) Create(
 		)
 	}
 
-	if err := service.repository.Create(
-		ctx,
-		session,
-		event,
-		idempotency,
-	); err != nil {
+	for attempt := 1; attempt <= maximumSlugCollisionAttempts; attempt++ {
+		session.Slug = slugCollisionCandidate(baseSlug, attempt)
+		event := domain.NewSessionCreatedEvent(eventID, correlationID, command.Actor, session, now)
+		if err := event.Validate(); err != nil {
+			return domain.Session{}, fmt.Errorf("construct creation event: %w", err)
+		}
+
+		err := service.repository.Create(ctx, session, event, idempotency)
+		if err == nil {
+			return session, nil
+		}
 		if replayed, found, replayErr := service.replaySession(
 			ctx,
 			idempotencyKey,
@@ -421,23 +488,39 @@ func (service *Service) Create(
 		); replayErr != nil || found {
 			return replayed, replayErr
 		}
-
-		return domain.Session{}, fmt.Errorf(
-			"persist session: %w",
-			err,
-		)
+		if !generatedSlug || !errors.Is(err, domain.ErrSlugConflict) {
+			return domain.Session{}, fmt.Errorf("persist session: %w", err)
+		}
 	}
 
-	return session, nil
+	return domain.Session{}, fmt.Errorf("persist session: no readable slug available after %d attempts: %w", maximumSlugCollisionAttempts, domain.ErrSlugConflict)
+}
+
+func slugCollisionCandidate(base string, attempt int) string {
+	if attempt <= 1 {
+		return base
+	}
+	suffix := "-" + strconv.Itoa(attempt)
+	maximumBaseLength := domain.MaximumGeneratedSlugLength - len(suffix)
+	if maximumBaseLength < 1 {
+		return "session" + suffix
+	}
+	if len(base) > maximumBaseLength {
+		base = strings.TrimRight(base[:maximumBaseLength], "-")
+	}
+	return base + suffix
 }
 
 // GetQuery identifies a session read operation.
 type GetQuery struct {
-	Actor     domain.Actor
-	SessionID string
+	Actor            domain.Actor
+	SessionID        string
+	GuildID          string
+	AllowGuildMember bool
 }
 
-// Get returns a session when the requesting actor owns it.
+// Get returns a session when the actor owns it or an authorized caller has
+// explicitly enabled guild-member read access for the requested guild.
 func (service *Service) Get(
 	ctx context.Context,
 	query GetQuery,
@@ -454,7 +537,11 @@ func (service *Service) Get(
 		return domain.Session{}, fmt.Errorf("get session: %w", err)
 	}
 
-	if err := authorizeOwner(query.Actor, session); err != nil {
+	if query.AllowGuildMember {
+		if session.GuildID != strings.TrimSpace(query.GuildID) {
+			return domain.Session{}, domain.ErrNotFound
+		}
+	} else if err := authorizeOwner(query.Actor, session); err != nil {
 		return domain.Session{}, err
 	}
 
@@ -463,8 +550,9 @@ func (service *Service) Get(
 
 // ListQuery identifies an owner-session query.
 type ListQuery struct {
-	Actor domain.Actor
-	Limit int32
+	Actor  domain.Actor
+	Limit  int32
+	States []domain.LifecycleState
 }
 
 // List returns sessions owned by the requesting actor.
@@ -474,6 +562,13 @@ func (service *Service) List(
 ) ([]domain.Session, error) {
 	if err := query.Actor.Validate(); err != nil {
 		return nil, fmt.Errorf("validate actor: %w", err)
+	}
+	allowed := make(map[domain.LifecycleState]struct{}, len(query.States))
+	for _, state := range query.States {
+		if !state.Valid() {
+			return nil, fmt.Errorf("invalid lifecycle filter %q", state)
+		}
+		allowed[state] = struct{}{}
 	}
 
 	sessions, err := service.repository.ListByOwner(
@@ -485,7 +580,18 @@ func (service *Service) List(
 		return nil, fmt.Errorf("list owner sessions: %w", err)
 	}
 
-	return sessions, nil
+	filtered := make([]domain.Session, 0, len(sessions))
+	for _, session := range sessions {
+		if len(allowed) == 0 {
+			if session.LifecycleState == domain.StateDeleted {
+				continue
+			}
+		} else if _, ok := allowed[session.LifecycleState]; !ok {
+			continue
+		}
+		filtered = append(filtered, session)
+	}
+	return filtered, nil
 }
 
 // TransitionCommand identifies a requested lifecycle transition.
@@ -618,6 +724,10 @@ func createRequestIdentity(
 	if key == "" {
 		return "", "", fmt.Errorf("idempotency key is required")
 	}
+	description, err := domain.NormalizeSessionDescription(command.Description)
+	if err != nil {
+		return "", "", err
+	}
 
 	hash, err := hashRequest(struct {
 		CommandType string `json:"command_type"`
@@ -625,6 +735,7 @@ func createRequestIdentity(
 		ActorID     string `json:"actor_id"`
 		Slug        string `json:"slug"`
 		DisplayName string `json:"display_name"`
+		Description string `json:"description,omitempty"`
 		GameType    string `json:"game_type"`
 		GuildID     string `json:"guild_id"`
 		ChannelID   string `json:"channel_id"`
@@ -634,6 +745,7 @@ func createRequestIdentity(
 		ActorID:     strings.TrimSpace(command.Actor.ID),
 		Slug:        strings.TrimSpace(command.Slug),
 		DisplayName: strings.TrimSpace(command.DisplayName),
+		Description: description,
 		GameType:    strings.ToLower(strings.TrimSpace(command.GameType)),
 		GuildID:     strings.TrimSpace(command.GuildID),
 		ChannelID:   strings.TrimSpace(command.ChannelID),
@@ -642,6 +754,34 @@ func createRequestIdentity(
 		return "", "", fmt.Errorf("hash create-session request: %w", err)
 	}
 
+	return key, hash, nil
+}
+
+func updateDescriptionRequestIdentity(command UpdateDescriptionCommand) (string, string, error) {
+	key := strings.TrimSpace(command.IdempotencyKey)
+	if key == "" {
+		return "", "", fmt.Errorf("idempotency key is required")
+	}
+	description, err := domain.NormalizeSessionDescription(command.Description)
+	if err != nil {
+		return "", "", err
+	}
+	hash, err := hashRequest(struct {
+		CommandType string `json:"command_type"`
+		ActorID     string `json:"actor_id"`
+		SessionID   string `json:"session_id"`
+		GuildID     string `json:"guild_id"`
+		Description string `json:"description"`
+	}{
+		CommandType: "UpdateSessionDescription",
+		ActorID:     strings.TrimSpace(command.Actor.ID),
+		SessionID:   strings.TrimSpace(command.SessionID),
+		GuildID:     strings.TrimSpace(command.GuildID),
+		Description: description,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("hash update-description request: %w", err)
+	}
 	return key, hash, nil
 }
 

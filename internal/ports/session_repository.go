@@ -182,4 +182,10 @@ type SessionRepository interface {
 		ownerDiscordUserID string,
 		limit int32,
 	) ([]domain.Session, error)
+
+	ListByGuild(
+		ctx context.Context,
+		guildID string,
+		limit int32,
+	) ([]domain.Session, error)
 }

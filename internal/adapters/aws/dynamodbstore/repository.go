@@ -2,8 +2,10 @@ package dynamodbstore
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -18,10 +20,11 @@ import (
 )
 
 const (
-	sessionSortKey     = "METADATA"
-	idempotencySortKey = "RESULT"
-	ownerIndexName     = "gsi1"
-	schemaVersion      = 3
+	sessionSortKey        = "METADATA"
+	idempotencySortKey    = "RESULT"
+	ownerIndexName        = "gsi1"
+	schemaVersion         = 3
+	maximumGuildScanItems = int32(1000)
 )
 
 // API contains the DynamoDB operations used by the repository.
@@ -83,6 +86,7 @@ type sessionItem struct {
 	SessionID                string   `dynamodbav:"session_id"`
 	Slug                     string   `dynamodbav:"slug"`
 	DisplayName              string   `dynamodbav:"display_name"`
+	Description              string   `dynamodbav:"description,omitempty"`
 	GameType                 string   `dynamodbav:"game_type"`
 	OwnerDiscordUserID       string   `dynamodbav:"owner_discord_user_id"`
 	GuildID                  string   `dynamodbav:"guild_id"`
@@ -166,6 +170,16 @@ type idempotencyItem struct {
 	ExpiresAtEpoch  int64  `dynamodbav:"expires_at_epoch"`
 }
 
+type slugClaimItem struct {
+	PK            string `dynamodbav:"pk"`
+	SK            string `dynamodbav:"sk"`
+	EntityType    string `dynamodbav:"entity_type"`
+	SchemaVersion int    `dynamodbav:"schema_version"`
+	GuildID       string `dynamodbav:"guild_id"`
+	Slug          string `dynamodbav:"slug"`
+	SessionID     string `dynamodbav:"session_id"`
+}
+
 // Create atomically creates the session and its initial event.
 func (repository *Repository) Create(
 	ctx context.Context,
@@ -188,6 +202,13 @@ func (repository *Repository) Create(
 	if err := validateIdempotency(session.ID, idempotency); err != nil {
 		return err
 	}
+	legacyCollision, err := repository.legacyGuildSlugExists(ctx, session.GuildID, session.Slug)
+	if err != nil {
+		return fmt.Errorf("check legacy session slug: %w", err)
+	}
+	if legacyCollision {
+		return fmt.Errorf("%w: %s", domain.ErrSlugConflict, session.Slug)
+	}
 
 	sessionAttributes, err := attributevalue.MarshalMap(toSessionItem(session))
 	if err != nil {
@@ -205,11 +226,15 @@ func (repository *Repository) Create(
 	if err != nil {
 		return fmt.Errorf("marshal idempotency record: %w", err)
 	}
+	slugClaimAttributes, err := attributevalue.MarshalMap(toSlugClaimItem(session))
+	if err != nil {
+		return fmt.Errorf("marshal slug claim: %w", err)
+	}
 
 	_, err = repository.client.TransactWriteItems(
 		ctx,
 		&dynamodb.TransactWriteItemsInput{
-			ClientRequestToken: aws.String(event.ID),
+			ClientRequestToken: aws.String(createTransactionToken(event.ID, session.Slug)),
 			TransactItems: []types.TransactWriteItem{
 				{
 					Put: &types.Put{
@@ -238,12 +263,28 @@ func (repository *Repository) Create(
 						),
 					},
 				},
+				{
+					Put: &types.Put{
+						TableName: aws.String(repository.tableName),
+						Item:      slugClaimAttributes,
+						ConditionExpression: aws.String(
+							"attribute_not_exists(pk) AND attribute_not_exists(sk)",
+						),
+					},
+				},
 			},
 		},
 	)
 	if err != nil {
 		var transactionCanceled *types.TransactionCanceledException
 		if errors.As(err, &transactionCanceled) {
+			if len(transactionCanceled.CancellationReasons) > 3 &&
+				aws.ToString(transactionCanceled.CancellationReasons[3].Code) == "ConditionalCheckFailed" {
+				return fmt.Errorf("%w: %s", domain.ErrSlugConflict, session.Slug)
+			}
+			if claimed, lookupErr := repository.slugClaimExists(ctx, session.GuildID, session.Slug); lookupErr == nil && claimed {
+				return fmt.Errorf("%w: %s", domain.ErrSlugConflict, session.Slug)
+			}
 			return fmt.Errorf(
 				"%w: session %s",
 				domain.ErrAlreadyExists,
@@ -255,6 +296,80 @@ func (repository *Repository) Create(
 	}
 
 	return nil
+}
+
+func (repository *Repository) slugClaimExists(ctx context.Context, guildID string, slug string) (bool, error) {
+	output, err := repository.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      aws.String(repository.tableName),
+		ConsistentRead: aws.Bool(true),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: "GUILD#" + guildID},
+			"sk": &types.AttributeValueMemberS{Value: "SLUG#" + slug},
+		},
+	})
+	if err != nil {
+		return false, err
+	}
+	return output != nil && len(output.Item) > 0, nil
+}
+
+// legacyGuildSlugExists protects sessions created before guild-scoped slug
+// claims were introduced. New concurrent writers are still serialized by the
+// transactional claim in Create.
+func (repository *Repository) legacyGuildSlugExists(ctx context.Context, guildID string, slug string) (bool, error) {
+	var startKey map[string]types.AttributeValue
+	var scanned int32
+	pages := 0
+	for scanned < maximumGuildScanItems && pages < 10 {
+		pages++
+		pageLimit := maximumGuildScanItems - scanned
+		if pageLimit > 100 {
+			pageLimit = 100
+		}
+		output, err := repository.client.Scan(ctx, &dynamodb.ScanInput{
+			TableName:         aws.String(repository.tableName),
+			Limit:             aws.Int32(pageLimit),
+			ExclusiveStartKey: startKey,
+			FilterExpression:  aws.String("entity_type = :type AND guild_id = :guild AND slug = :slug"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":type":  &types.AttributeValueMemberS{Value: "Session"},
+				":guild": &types.AttributeValueMemberS{Value: guildID},
+				":slug":  &types.AttributeValueMemberS{Value: slug},
+			},
+		})
+		if err != nil {
+			return false, err
+		}
+		if len(output.Items) > 0 {
+			return true, nil
+		}
+		scanned += output.ScannedCount
+		startKey = output.LastEvaluatedKey
+		if len(startKey) == 0 {
+			return false, nil
+		}
+	}
+	return false, nil
+}
+
+func toSlugClaimItem(session domain.Session) slugClaimItem {
+	return slugClaimItem{
+		PK:            "GUILD#" + session.GuildID,
+		SK:            "SLUG#" + session.Slug,
+		EntityType:    "SessionSlugClaim",
+		SchemaVersion: schemaVersion,
+		GuildID:       session.GuildID,
+		Slug:          session.Slug,
+		SessionID:     session.ID,
+	}
+}
+
+func createTransactionToken(eventID string, slug string) string {
+	digest := sha256.Sum256([]byte(slug))
+	if len(eventID) > 27 {
+		eventID = eventID[:27]
+	}
+	return fmt.Sprintf("%s-%x", eventID, digest[:4])
 }
 
 // Get returns the authoritative session metadata record.
@@ -553,6 +668,81 @@ func (repository *Repository) ListByOwner(
 	return sessions, nil
 }
 
+// ListByGuild returns recent session metadata from one guild. The bounded scan
+// includes legacy sessions that predate guild slug claims and secondary-index
+// attributes.
+func (repository *Repository) ListByGuild(
+	ctx context.Context,
+	guildID string,
+	limit int32,
+) ([]domain.Session, error) {
+	if err := repository.validate(); err != nil {
+		return nil, err
+	}
+	guildID = strings.TrimSpace(guildID)
+	if guildID == "" {
+		return nil, fmt.Errorf("Discord guild ID is required")
+	}
+	if limit <= 0 {
+		limit = 25
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	sessions := make([]domain.Session, 0, limit)
+	var startKey map[string]types.AttributeValue
+	var scanned int32
+	pages := 0
+	for scanned < maximumGuildScanItems && pages < 10 {
+		pages++
+		remainingScan := maximumGuildScanItems - scanned
+		if remainingScan > 100 {
+			remainingScan = 100
+		}
+		output, err := repository.client.Scan(ctx, &dynamodb.ScanInput{
+			TableName:         aws.String(repository.tableName),
+			Limit:             aws.Int32(remainingScan),
+			ExclusiveStartKey: startKey,
+			FilterExpression:  aws.String("entity_type = :type AND guild_id = :guild"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":type":  &types.AttributeValueMemberS{Value: "Session"},
+				":guild": &types.AttributeValueMemberS{Value: guildID},
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("scan sessions by guild: %w", err)
+		}
+		scanned += output.ScannedCount
+		for _, attributes := range output.Items {
+			var item sessionItem
+			if err := attributevalue.UnmarshalMap(attributes, &item); err != nil {
+				return nil, fmt.Errorf("unmarshal guild session: %w", err)
+			}
+			session, err := fromSessionItem(item)
+			if err != nil {
+				return nil, fmt.Errorf("decode guild session: %w", err)
+			}
+			sessions = append(sessions, session)
+		}
+		startKey = output.LastEvaluatedKey
+		if len(startKey) == 0 {
+			break
+		}
+	}
+
+	sort.Slice(sessions, func(first, second int) bool {
+		if sessions[first].UpdatedAt.Equal(sessions[second].UpdatedAt) {
+			return sessions[first].ID > sessions[second].ID
+		}
+		return sessions[first].UpdatedAt.After(sessions[second].UpdatedAt)
+	})
+	if int32(len(sessions)) > limit {
+		sessions = sessions[:limit]
+	}
+	return sessions, nil
+}
+
 func (repository *Repository) validate() error {
 	if repository == nil {
 		return fmt.Errorf("DynamoDB repository is nil")
@@ -621,6 +811,7 @@ func toSessionItem(session domain.Session) sessionItem {
 		SessionID:                    session.ID,
 		Slug:                         session.Slug,
 		DisplayName:                  session.DisplayName,
+		Description:                  session.Description,
 		GameType:                     session.GameType,
 		OwnerDiscordUserID:           session.OwnerDiscordUserID,
 		GuildID:                      session.GuildID,
@@ -726,6 +917,7 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		ID:                    item.SessionID,
 		Slug:                  item.Slug,
 		DisplayName:           item.DisplayName,
+		Description:           item.Description,
 		GameType:              item.GameType,
 		OwnerDiscordUserID:    item.OwnerDiscordUserID,
 		GuildID:               item.GuildID,

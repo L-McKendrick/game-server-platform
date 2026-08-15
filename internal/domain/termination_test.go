@@ -8,6 +8,9 @@ import (
 func TestSessionTerminationLifecycle(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	session := archiveTestSession(t, now)
+	session.DisplayName = "Saturday Arma"
+	session.Slug = "saturday-arma"
+	session.Description = "Weekly co-op night"
 	session.MissionObjectKey = "sessions/session-1/input/mission.pbo"
 	session.PresetObjectKey = "sessions/session-1/input/preset.html"
 
@@ -25,6 +28,9 @@ func TestSessionTerminationLifecycle(t *testing.T) {
 	}
 	if session.CanTerminate() {
 		t.Fatal("deleted session remained terminable")
+	}
+	if session.DisplayName != "Saturday Arma" || session.Slug != "saturday-arma" || session.Description != "Weekly co-op night" {
+		t.Fatalf("deleted session lost readable tombstone identity: %#v", session)
 	}
 }
 

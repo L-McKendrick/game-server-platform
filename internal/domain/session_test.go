@@ -2,8 +2,10 @@ package domain
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestNewSessionCreatesDraft(t *testing.T) {
@@ -37,6 +39,80 @@ func TestNewSessionCreatesDraft(t *testing.T) {
 
 	if session.Version != 1 {
 		t.Errorf("Version = %d; want 1", session.Version)
+	}
+}
+
+func TestGenerateSessionSlugProducesStableReadableValue(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]string{
+		"Saturday Arma":         "saturday-arma",
+		"  ARMA 3: Friday!  ":   "arma-3-friday",
+		"Café / Co-op Night":    "caf-co-op-night",
+		"世界":                    "session",
+		strings.Repeat("A", 80): strings.Repeat("a", MaximumGeneratedSlugLength),
+	}
+	for input, expected := range tests {
+		if got := GenerateSessionSlug(input); got != expected {
+			t.Errorf("GenerateSessionSlug(%q) = %q; want %q", input, got, expected)
+		}
+	}
+}
+
+func TestNewSessionNormalizesOptionalDescription(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 14, 20, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{
+		ID: "session-1", Slug: "saturday-arma", DisplayName: "Saturday Arma",
+		Description: "  Weekly\nco-op\t​night  ", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatalf("NewSession() returned error: %v", err)
+	}
+	if session.Description != "Weekly co-op night" {
+		t.Fatalf("Description = %q; want %q", session.Description, "Weekly co-op night")
+	}
+}
+
+func TestNormalizeSessionDescriptionCountsUnicodeCharacters(t *testing.T) {
+	t.Parallel()
+
+	description := strings.Repeat("界", MaximumSessionDescriptionRunes)
+	normalized, err := NormalizeSessionDescription(description)
+	if err != nil {
+		t.Fatalf("NormalizeSessionDescription() returned error: %v", err)
+	}
+	if got := utf8.RuneCountInString(normalized); got != MaximumSessionDescriptionRunes {
+		t.Fatalf("description length = %d; want %d", got, MaximumSessionDescriptionRunes)
+	}
+	if _, err := NormalizeSessionDescription(description + "x"); err == nil {
+		t.Fatal("NormalizeSessionDescription() accepted more than 64 characters")
+	}
+}
+
+func TestSetDescriptionAdvancesVersionAndRejectsDeletedSession(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 14, 20, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{
+		ID: "session-1", Slug: "saturday-arma", DisplayName: "Saturday Arma", Description: "First",
+		GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err := session.SetDescription(" Updated\n description ", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("SetDescription() returned error: %v", err)
+	}
+	if previous != "First" || session.Description != "Updated description" || session.Version != 2 {
+		t.Fatalf("updated session = %#v, previous = %q", session, previous)
+	}
+	session.LifecycleState = StateDeleted
+	if _, err := session.SetDescription("Too late", now.Add(2*time.Second)); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("SetDescription(deleted) error = %v; want ErrInvalidTransition", err)
 	}
 }
 

@@ -98,6 +98,33 @@ func TestSessionRestoreLifecycle_ReplacesDisposableInfrastructure(t *testing.T) 
 	}
 }
 
+func TestArchiveManifestReadableIdentityIsAdditiveAndValidated(t *testing.T) {
+	t.Parallel()
+	manifest := ArchiveManifest{
+		SchemaVersion: 1, ArchiveID: "archive-1", SessionID: "session-1",
+		CreatedAt: time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+		Format:    "tar+gzip", ObjectKey: "sessions/session-1/archives/archive-1/session.tar.gz",
+		SHA256: base64.StdEncoding.EncodeToString(make([]byte, 32)), SizeBytes: 42,
+		ContentRoots: []string{"/srv/game-server/config"}, GameProfileID: "arma3-default",
+		SourceInstanceID: "i-1", SourceDataVolumeID: "vol-1",
+	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("legacy manifest validation failed: %v", err)
+	}
+	manifest.SessionName, manifest.SessionSlug, manifest.Description = "Saturday Arma", "saturday-arma", "Weekly co-op night"
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("readable manifest validation failed: %v", err)
+	}
+	manifest.SessionSlug = ""
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("manifest accepted partial readable identity")
+	}
+	manifest.SessionSlug, manifest.Description = "saturday-arma", "two\nlines"
+	if err := manifest.Validate(); err == nil {
+		t.Fatal("manifest accepted an unnormalized description")
+	}
+}
+
 func archiveTestSession(t *testing.T, now time.Time) Session {
 	t.Helper()
 	session, err := NewSession(NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)

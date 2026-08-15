@@ -33,10 +33,11 @@ func (handler *Handler) sessionAutocompleteChoices(
 		return nil, nil
 	}
 	selections, err := handler.service.Select(ctx, appsession.SelectQuery{
-		Actor:   actor,
-		GuildID: payload.GuildID,
-		Search:  search,
-		Limit:   maximumAutocompleteChoices,
+		Actor:            actor,
+		GuildID:          payload.GuildID,
+		Search:           search,
+		Limit:            maximumAutocompleteChoices,
+		AllowGuildMember: subcommand.Name == "status",
 	})
 	if err != nil {
 		return nil, fmt.Errorf("select authorized sessions: %w", err)

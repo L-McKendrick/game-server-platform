@@ -10,38 +10,39 @@ import (
 type EventType string
 
 const (
-	EventSessionCreated          EventType = "SessionCreated"
-	EventStateChanged            EventType = "SessionStateChanged"
-	EventSessionConfigured       EventType = "SessionConfigured"
-	EventArtifactRequested       EventType = "ArtifactUploadRequested"
-	EventArtifactValidated       EventType = "ArtifactValidated"
-	EventArtifactRejected        EventType = "ArtifactRejected"
-	EventWorkflowStarted         EventType = "WorkflowStarted"
-	EventWorkflowFailed          EventType = "WorkflowFailed"
-	EventWorkflowCompleted       EventType = "WorkflowCompleted"
-	EventProvisioningStage       EventType = "ProvisioningStageCompleted"
-	EventInfrastructureReady     EventType = "InfrastructureReady"
-	EventProvisioningFailed      EventType = "InfrastructureProvisioningFailed"
-	EventBootstrapStage          EventType = "BootstrapStageCompleted"
-	EventGameServerReady         EventType = "GameServerReady"
-	EventBootstrapFailed         EventType = "GameServerBootstrapFailed"
-	EventHealthChanged           EventType = "GameServerHealthChanged"
-	EventSleepStarted            EventType = "GameServerSleepStarted"
-	EventSessionSleeping         EventType = "GameServerSleeping"
-	EventWakeStarted             EventType = "GameServerWakeStarted"
-	EventSessionWoken            EventType = "GameServerWoken"
-	EventSleepWakeFailed         EventType = "GameServerSleepWakeFailed"
-	EventArchiveStarted          EventType = "SessionArchiveStarted"
-	EventArchiveVerified         EventType = "SessionArchiveVerified"
-	EventArchiveFailed           EventType = "SessionArchiveFailed"
-	EventInfrastructureDestroyed EventType = "SessionInfrastructureDestroyed"
-	EventRestoreStarted          EventType = "SessionRestoreStarted"
-	EventRestoreStage            EventType = "SessionRestoreStage"
-	EventSessionRestored         EventType = "SessionRestored"
-	EventRestoreFailed           EventType = "SessionRestoreFailed"
-	EventTerminationStarted      EventType = "SessionTerminationStarted"
-	EventSessionTerminated       EventType = "SessionTerminated"
-	EventTerminationFailed       EventType = "SessionTerminationFailed"
+	EventSessionCreated            EventType = "SessionCreated"
+	EventSessionDescriptionChanged EventType = "SessionDescriptionChanged"
+	EventStateChanged              EventType = "SessionStateChanged"
+	EventSessionConfigured         EventType = "SessionConfigured"
+	EventArtifactRequested         EventType = "ArtifactUploadRequested"
+	EventArtifactValidated         EventType = "ArtifactValidated"
+	EventArtifactRejected          EventType = "ArtifactRejected"
+	EventWorkflowStarted           EventType = "WorkflowStarted"
+	EventWorkflowFailed            EventType = "WorkflowFailed"
+	EventWorkflowCompleted         EventType = "WorkflowCompleted"
+	EventProvisioningStage         EventType = "ProvisioningStageCompleted"
+	EventInfrastructureReady       EventType = "InfrastructureReady"
+	EventProvisioningFailed        EventType = "InfrastructureProvisioningFailed"
+	EventBootstrapStage            EventType = "BootstrapStageCompleted"
+	EventGameServerReady           EventType = "GameServerReady"
+	EventBootstrapFailed           EventType = "GameServerBootstrapFailed"
+	EventHealthChanged             EventType = "GameServerHealthChanged"
+	EventSleepStarted              EventType = "GameServerSleepStarted"
+	EventSessionSleeping           EventType = "GameServerSleeping"
+	EventWakeStarted               EventType = "GameServerWakeStarted"
+	EventSessionWoken              EventType = "GameServerWoken"
+	EventSleepWakeFailed           EventType = "GameServerSleepWakeFailed"
+	EventArchiveStarted            EventType = "SessionArchiveStarted"
+	EventArchiveVerified           EventType = "SessionArchiveVerified"
+	EventArchiveFailed             EventType = "SessionArchiveFailed"
+	EventInfrastructureDestroyed   EventType = "SessionInfrastructureDestroyed"
+	EventRestoreStarted            EventType = "SessionRestoreStarted"
+	EventRestoreStage              EventType = "SessionRestoreStage"
+	EventSessionRestored           EventType = "SessionRestored"
+	EventRestoreFailed             EventType = "SessionRestoreFailed"
+	EventTerminationStarted        EventType = "SessionTerminationStarted"
+	EventSessionTerminated         EventType = "SessionTerminated"
+	EventTerminationFailed         EventType = "SessionTerminationFailed"
 )
 
 func NewTerminationEvent(eventID string, eventType EventType, stage string, workflow Workflow, session Session, objectsDeleted int, now time.Time) SessionEvent {
@@ -51,6 +52,7 @@ func NewTerminationEvent(eventID string, eventType EventType, stage string, work
 		Data: map[string]string{
 			"workflow_id": workflow.ID, "stage": strings.TrimSpace(stage), "state": string(session.LifecycleState),
 			"objects_deleted": fmt.Sprintf("%d", objectsDeleted),
+			"display_name":    session.DisplayName, "slug": session.Slug, "description": session.Description,
 		},
 	}
 }
@@ -189,6 +191,31 @@ func NewSessionConfiguredEvent(
 	}
 }
 
+// NewSessionDescriptionChangedEvent records both sides of a user-visible
+// description change without mutating earlier history.
+func NewSessionDescriptionChangedEvent(
+	eventID string,
+	correlationID string,
+	actor Actor,
+	session Session,
+	previous string,
+	now time.Time,
+) SessionEvent {
+	return SessionEvent{
+		ID:            eventID,
+		SessionID:     session.ID,
+		Type:          EventSessionDescriptionChanged,
+		OccurredAt:    now.UTC(),
+		ActorType:     string(actor.Type),
+		ActorID:       actor.ID,
+		CorrelationID: correlationID,
+		Data: map[string]string{
+			"previous_description": previous,
+			"description":          session.Description,
+		},
+	}
+}
+
 // Validate verifies that an event contains its required audit fields.
 func (event SessionEvent) Validate() error {
 	switch {
@@ -228,9 +255,11 @@ func NewSessionCreatedEvent(
 		ActorID:       actor.ID,
 		CorrelationID: correlationID,
 		Data: map[string]string{
-			"slug":      session.Slug,
-			"game_type": session.GameType,
-			"state":     string(session.LifecycleState),
+			"display_name": session.DisplayName,
+			"slug":         session.Slug,
+			"description":  session.Description,
+			"game_type":    session.GameType,
+			"state":        string(session.LifecycleState),
 		},
 	}
 }

@@ -13,9 +13,12 @@ import (
 func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAndAdmin(t *testing.T) {
 	t.Parallel()
 
-	var received []struct {
-		Name string `json:"name"`
+	type commandOption struct {
+		Name         string          `json:"name"`
+		Options      []commandOption `json:"options"`
+		Autocomplete bool            `json:"autocomplete"`
 	}
+	var received []commandOption
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPut {
 			t.Errorf("method = %s; want PUT", request.Method)
@@ -58,5 +61,26 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAndAdmin(t *testing.T)
 	}
 	if len(received) != 2 || received[0].Name != "rb" || received[1].Name != "admin" {
 		t.Fatalf("registered commands = %#v; want rb and admin only", received)
+	}
+	targeting := map[string]bool{
+		"status": true, "configure": true, "upload-mission": true, "upload-preset": true,
+		"start": true, "sleep": true, "wake": true, "archive": true, "restore": true, "terminate": true,
+	}
+	for _, subcommand := range received[0].Options {
+		if subcommand.Name == "list" {
+			if len(subcommand.Options) != 2 || subcommand.Options[0].Name != "state" || subcommand.Options[1].Name != "page" {
+				t.Errorf("list options = %#v; want state filter and page", subcommand.Options)
+			}
+		}
+		if !targeting[subcommand.Name] {
+			continue
+		}
+		if len(subcommand.Options) == 0 || subcommand.Options[0].Name != "session" || !subcommand.Options[0].Autocomplete {
+			t.Errorf("%s session selector = %#v; want autocomplete session option", subcommand.Name, subcommand.Options)
+		}
+		delete(targeting, subcommand.Name)
+	}
+	if len(targeting) != 0 {
+		t.Fatalf("session-targeting commands not verified: %#v", targeting)
 	}
 }

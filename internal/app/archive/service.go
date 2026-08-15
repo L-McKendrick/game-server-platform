@@ -150,6 +150,7 @@ func (service *Service) verify(ctx context.Context, session domain.Session, work
 	}
 	manifest := domain.ArchiveManifest{
 		SchemaVersion: 1, ArchiveID: workflow.ID, SessionID: session.ID,
+		SessionName: session.DisplayName, SessionSlug: session.Slug, Description: session.Description,
 		CreatedAt: workflow.StartedAt.UTC().Format(time.RFC3339Nano), Format: "tar+gzip",
 		ObjectKey: request.ObjectKey, SHA256: request.SHA256, SizeBytes: request.SizeBytes,
 		ContentRoots: archiveRoots(session), GameProfileID: session.GameProfileID,

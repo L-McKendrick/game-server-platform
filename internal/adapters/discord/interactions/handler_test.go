@@ -104,7 +104,7 @@ func TestHandlerAcknowledgesAutocompleteWithExplicitEmptyChoices(t *testing.T) {
 	}
 }
 
-func TestHandlerReturnsAuthorizedSessionAutocompleteChoices(t *testing.T) {
+func TestHandlerReturnsGuildVisibleStatusAutocompleteChoices(t *testing.T) {
 	t.Parallel()
 
 	handler, repository, privateKey := newTestHandler(t, nil, nil)
@@ -126,15 +126,18 @@ func TestHandlerReturnsAuthorizedSessionAutocompleteChoices(t *testing.T) {
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
 	if response.Code != http.StatusOK || decoded.Type != interactionResponseAutocompleteResult ||
-		decoded.Data == nil || decoded.Data.Choices == nil || len(*decoded.Data.Choices) != 1 {
+		decoded.Data == nil || decoded.Data.Choices == nil || len(*decoded.Data.Choices) != 2 {
 		t.Fatalf("autocomplete response = %#v; body = %s", decoded, response.Body.String())
 	}
-	choice := (*decoded.Data.Choices)[0]
-	if choice.Name != "Saturday Arma — saturday-arma — Setting up" || choice.Value != "session-visible" {
-		t.Fatalf("choice = %#v", choice)
+	values := map[any]bool{}
+	for _, choice := range *decoded.Data.Choices {
+		values[choice.Value] = true
+		if strings.Contains(choice.Name, "session-visible") || strings.Contains(choice.Name, "session-other-owner") {
+			t.Fatalf("choice label exposes immutable ID: %q", choice.Name)
+		}
 	}
-	if strings.Contains(choice.Name, "session-visible") {
-		t.Fatalf("choice label exposes immutable ID: %q", choice.Name)
+	if !values["session-visible"] || !values["session-other-owner"] || values["session-other-guild"] {
+		t.Fatalf("choice values = %#v; want both guild sessions only", values)
 	}
 }
 
@@ -522,13 +525,46 @@ func TestHandlerListsAndShowsSessionStatus(t *testing.T) {
 		t,
 		handler,
 		privateKey,
-		statusCommandBody("interaction-status", "owner-1", "guild-1", "channel-1", "session-1"),
+		statusCommandBody("interaction-status", "owner-1", "guild-1", "channel-1", "saturday-arma"),
 		testNow,
 	)
 	var statusDecoded interactionResponse
 	decodeResponse(t, statusResponse, &statusDecoded)
 	if statusDecoded.Data == nil || !strings.Contains(statusDecoded.Data.Content, "Status: Setting up") || strings.Contains(statusDecoded.Data.Content, "session-1") {
 		t.Fatalf("status content = %#v; want readable status without immutable ID", statusDecoded.Data)
+	}
+}
+
+func TestHandlerListsActiveSessionsWithLifecycleFilterAndPagination(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(t, []string{"correlation-page-2", "correlation-deleted"}, nil)
+	for index := 1; index <= 7; index++ {
+		suffix := strconv.Itoa(index)
+		seedAutocompleteSession(t, repository, "session-"+suffix, "Session "+suffix, "session-"+suffix, "owner-1", "guild-1")
+	}
+	seedHandlerSessionState(t, repository, "session-deleted", "Deleted Session", "deleted-session", "owner-1", "guild-1", domain.StateDeleted)
+
+	pageResponse := executeSignedRequest(t, handler, privateKey, commandBody(
+		"interaction-page-2", "owner-1", "guild-1", "channel-1", "list",
+		[]any{map[string]any{"type": applicationCommandOptionInteger, "name": "page", "value": 2}},
+	), testNow)
+	var pageDecoded interactionResponse
+	decodeResponse(t, pageResponse, &pageDecoded)
+	if pageDecoded.Data == nil || !strings.Contains(pageDecoded.Data.Content, "Page 2 of 2") ||
+		strings.Count(pageDecoded.Data.Content, "Slug:") != 2 || strings.Contains(pageDecoded.Data.Content, "deleted-session") {
+		t.Fatalf("page response = %#v", pageDecoded.Data)
+	}
+
+	deletedResponse := executeSignedRequest(t, handler, privateKey, commandBody(
+		"interaction-deleted", "owner-1", "guild-1", "channel-1", "list",
+		[]any{map[string]any{"type": applicationCommandOptionString, "name": "state", "value": "deleted"}},
+	), testNow)
+	var deletedDecoded interactionResponse
+	decodeResponse(t, deletedResponse, &deletedDecoded)
+	if deletedDecoded.Data == nil || !strings.Contains(deletedDecoded.Data.Content, "Terminated records") ||
+		!strings.Contains(deletedDecoded.Data.Content, "deleted-session") || strings.Contains(deletedDecoded.Data.Content, "session-1`") {
+		t.Fatalf("deleted response = %#v", deletedDecoded.Data)
 	}
 }
 
@@ -542,7 +578,7 @@ func TestHandlerAllowsGuildAdministratorToRequestAnotherOwnersSleep(t *testing.T
 		"member": map[string]any{"user": map[string]any{"id": "admin-1"}, "permissions": "8"},
 		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
 			"type": applicationCommandOptionSubcommand, "name": "sleep",
-			"options": []any{map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"}},
+			"options": []any{map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "running-session"}},
 		}}},
 	})
 	response := executeSignedRequest(t, handler, privateKey, body, testNow)
@@ -564,7 +600,7 @@ func TestHandlerArchiveRequiresExplicitConfirmation(t *testing.T) {
 		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
 			"type": applicationCommandOptionSubcommand, "name": "archive",
 			"options": []any{
-				map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"},
+				map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "running-session"},
 				map[string]any{"type": applicationCommandOptionBoolean, "name": "confirm", "value": false},
 			},
 		}}},
@@ -588,7 +624,7 @@ func TestHandlerArchiveAcceptsOwnerConfirmationAndWarnsAboutInterruption(t *test
 		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
 			"type": applicationCommandOptionSubcommand, "name": "archive",
 			"options": []any{
-				map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"},
+				map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "running-session"},
 				map[string]any{"type": applicationCommandOptionBoolean, "name": "confirm", "value": true},
 			},
 		}}},
@@ -615,7 +651,7 @@ func TestHandlerTerminateRequiresOwnerConfirmationAndWarnsIrreversible(t *testin
 			handler, repository, privateKey := newTestHandler(t, []string{"correlation-terminate"}, nil)
 			seedRunningHandlerSession(t, repository)
 			body := commandBody(test.interactionID, "owner-1", "guild-1", "channel-1", "terminate", []any{
-				map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"},
+				map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "running-session"},
 				map[string]any{"type": applicationCommandOptionBoolean, "name": "confirm", "value": test.confirmed},
 			})
 			response := executeSignedRequest(t, handler, privateKey, body, testNow)
@@ -706,7 +742,7 @@ func TestHandlerRejectsUnapprovedGuildWithoutCallingService(t *testing.T) {
 	}
 }
 
-func TestHandlerReturnsNotFoundForAnotherOwnersSession(t *testing.T) {
+func TestHandlerShowsGuildSessionStatusToApprovedNonOwner(t *testing.T) {
 	t.Parallel()
 
 	handler, _, privateKey := newTestHandler(
@@ -733,8 +769,33 @@ func TestHandlerReturnsNotFoundForAnotherOwnersSession(t *testing.T) {
 
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "do not have access") {
-		t.Fatalf("content = %#v; want access rejection", decoded.Data)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Saturday Arma") || strings.Contains(decoded.Data.Content, "session-1") {
+		t.Fatalf("content = %#v; want readable guild-visible status without ID", decoded.Data)
+	}
+}
+
+func TestHandlerDoesNotBroadenMutationAuthorizationWithGuildStatusAccess(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(
+		t, []string{"correlation-create", "correlation-configure"}, []string{"session-1", "event-1"},
+	)
+	executeSignedRequest(t, handler, privateKey, createCommandBody("interaction-create", "owner-1", "guild-1", "channel-1"), testNow)
+	response := executeSignedRequest(
+		t, handler, privateKey,
+		configureCommandBody("interaction-configure", "owner-2", "guild-1", "channel-1", "session-1"), testNow,
+	)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Session not found") {
+		t.Fatalf("mutation response = %#v; want owner-scoped rejection", decoded.Data)
+	}
+	session, err := repository.Get(context.Background(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.ConfigurationRevision != 0 {
+		t.Fatalf("configuration revision = %d; want unchanged", session.ConfigurationRevision)
 	}
 }
 
@@ -831,6 +892,35 @@ func seedAutocompleteSession(
 	}
 }
 
+func seedHandlerSessionState(
+	t *testing.T,
+	repository *memory.SessionRepository,
+	sessionID string,
+	displayName string,
+	slug string,
+	ownerID string,
+	guildID string,
+	state domain.LifecycleState,
+) {
+	t.Helper()
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: sessionID, Slug: slug, DisplayName: displayName, GameType: "arma3",
+		OwnerDiscordUserID: ownerID, GuildID: guildID, ChannelID: "channel-1",
+	}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState = state, state, state
+	event := domain.NewSessionCreatedEvent("event-"+sessionID, "correlation-"+sessionID, testActorForInteraction(ownerID), session, testNow)
+	idempotency, err := domain.NewCompletedIdempotencyRecord("state:"+sessionID, "hash-"+sessionID, sessionID, testNow, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatalf("seed state session: %v", err)
+	}
+}
+
 func testActorForInteraction(userID string) domain.Actor {
 	return domain.Actor{Type: domain.ActorTypeDiscordUser, ID: userID}
 }
@@ -884,7 +974,6 @@ func createCommandBody(interactionID, ownerID, guildID, channelID string) []byte
 					"type": applicationCommandOptionSubcommand,
 					"name": "create",
 					"options": []any{
-						map[string]any{"type": applicationCommandOptionString, "name": "slug", "value": "saturday-arma"},
 						map[string]any{"type": applicationCommandOptionString, "name": "name", "value": "Saturday Arma"},
 						map[string]any{"type": applicationCommandOptionString, "name": "game", "value": "arma3"},
 					},
@@ -908,7 +997,7 @@ func statusCommandBody(interactionID, ownerID, guildID, channelID, sessionID str
 		[]any{
 			map[string]any{
 				"type":  applicationCommandOptionString,
-				"name":  "session-id",
+				"name":  "session",
 				"value": sessionID,
 			},
 		},
@@ -917,7 +1006,7 @@ func statusCommandBody(interactionID, ownerID, guildID, channelID, sessionID str
 
 func configureCommandBody(interactionID, ownerID, guildID, channelID, sessionID string) []byte {
 	return commandBody(interactionID, ownerID, guildID, channelID, "configure", []any{
-		map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": sessionID},
+		map[string]any{"type": applicationCommandOptionString, "name": "session", "value": sessionID},
 		map[string]any{"type": applicationCommandOptionString, "name": "profile", "value": "arma3-default"},
 		map[string]any{"type": applicationCommandOptionInteger, "name": "sleep-minutes", "value": 60},
 		map[string]any{"type": applicationCommandOptionInteger, "name": "archive-days", "value": 14},
@@ -936,7 +1025,7 @@ func uploadCommandBody(interactionID, ownerID, guildID, channelID, sessionID str
 			"options": []any{map[string]any{
 				"type": applicationCommandOptionSubcommand, "name": "upload-mission",
 				"options": []any{
-					map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": sessionID},
+					map[string]any{"type": applicationCommandOptionString, "name": "session", "value": sessionID},
 					map[string]any{"type": applicationCommandOptionAttachment, "name": "file", "value": "attachment-1"},
 				},
 			}},

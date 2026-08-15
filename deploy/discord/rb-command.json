@@ -10,14 +10,6 @@
       "options": [
         {
           "type": 3,
-          "name": "slug",
-          "description": "Lowercase identifier, for example saturday-arma",
-          "required": true,
-          "min_length": 1,
-          "max_length": 64
-        },
-        {
-          "type": 3,
           "name": "name",
           "description": "Human-readable session name",
           "required": true,
@@ -41,7 +33,34 @@
     {
       "type": 1,
       "name": "list",
-      "description": "List your game-server sessions"
+      "description": "List your game-server sessions",
+      "options": [
+        {
+          "type": 3,
+          "name": "state",
+          "description": "Filter sessions by lifecycle",
+          "required": false,
+          "choices": [
+            {"name": "Setting up", "value": "setting-up"},
+            {"name": "Ready", "value": "ready"},
+            {"name": "Starting", "value": "starting"},
+            {"name": "Running", "value": "running"},
+            {"name": "Sleeping", "value": "sleeping"},
+            {"name": "Archived", "value": "archived"},
+            {"name": "Action required", "value": "action-required"},
+            {"name": "Terminated", "value": "terminated"},
+            {"name": "Terminated records only", "value": "deleted"}
+          ]
+        },
+        {
+          "type": 4,
+          "name": "page",
+          "description": "Results page (five sessions per page)",
+          "required": false,
+          "min_value": 1,
+          "max_value": 20
+        }
+      ]
     },
     {
       "type": 1,
@@ -50,9 +69,10 @@
       "options": [
         {
           "type": 3,
-          "name": "session-id",
-          "description": "Platform session identifier",
+          "name": "session",
+          "description": "Choose a session or enter its exact slug",
           "required": true,
+          "autocomplete": true,
           "min_length": 1,
           "max_length": 64
         }
@@ -65,9 +85,10 @@
       "options": [
         {
           "type": 3,
-          "name": "session-id",
-          "description": "Platform session identifier",
+          "name": "session",
+          "description": "Choose a session or enter its exact slug",
           "required": true,
+          "autocomplete": true,
           "min_length": 1,
           "max_length": 64
         },
@@ -117,9 +138,10 @@
       "options": [
         {
           "type": 3,
-          "name": "session-id",
-          "description": "Platform session identifier",
-          "required": true
+          "name": "session",
+          "description": "Choose a session or enter its exact slug",
+          "required": true,
+          "autocomplete": true
         },
         {
           "type": 11,
@@ -136,9 +158,10 @@
       "options": [
         {
           "type": 3,
-          "name": "session-id",
-          "description": "Platform session identifier",
-          "required": true
+          "name": "session",
+          "description": "Choose a session or enter its exact slug",
+          "required": true,
+          "autocomplete": true
         },
         {
           "type": 11,
@@ -155,9 +178,10 @@
       "options": [
         {
           "type": 3,
-          "name": "session-id",
-          "description": "Platform session identifier",
+          "name": "session",
+          "description": "Choose a session or enter its exact slug",
           "required": true,
+          "autocomplete": true,
           "min_length": 1,
           "max_length": 64
         }
@@ -167,20 +191,20 @@
       "type": 1,
       "name": "sleep",
       "description": "Stop a running server while retaining its EBS volumes",
-      "options": [{"type": 3, "name": "session-id", "description": "Session identifier", "required": true}]
+      "options": [{"type": 3, "name": "session", "description": "Choose a session or enter its exact slug", "required": true, "autocomplete": true}]
     },
     {
       "type": 1,
       "name": "wake",
       "description": "Start a sleeping server and verify its health",
-      "options": [{"type": 3, "name": "session-id", "description": "Session identifier", "required": true}]
+      "options": [{"type": 3, "name": "session", "description": "Choose a session or enter its exact slug", "required": true, "autocomplete": true}]
     },
     {
       "type": 1,
       "name": "archive",
       "description": "Verify a portable backup, then remove EC2 and EBS",
       "options": [
-        {"type": 3, "name": "session-id", "description": "Session identifier", "required": true},
+        {"type": 3, "name": "session", "description": "Choose a session or enter its exact slug", "required": true, "autocomplete": true},
         {"type": 5, "name": "confirm", "description": "Confirm verified backup followed by EC2 and EBS removal", "required": true}
       ]
     },
@@ -189,7 +213,7 @@
       "name": "restore",
       "description": "Recreate infrastructure and restore a verified archive",
       "options": [
-        {"type": 3, "name": "session-id", "description": "Archived session identifier", "required": true}
+        {"type": 3, "name": "session", "description": "Choose an archived session or enter its exact slug", "required": true, "autocomplete": true}
       ]
     },
     {
@@ -197,7 +221,7 @@
       "name": "terminate",
       "description": "Permanently delete a session and all associated resources",
       "options": [
-        {"type": 3, "name": "session-id", "description": "Session identifier", "required": true},
+        {"type": 3, "name": "session", "description": "Choose a session or enter its exact slug", "required": true, "autocomplete": true},
         {"type": 5, "name": "confirm", "description": "Confirm irreversible deletion without creating a backup", "required": true}
       ]
     }

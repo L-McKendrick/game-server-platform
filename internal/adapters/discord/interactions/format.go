@@ -72,9 +72,16 @@ func (discordRenderer) sessionStatus(session domain.Session, players *domain.Pla
 	var builder strings.Builder
 	fmt.Fprintf(
 		&builder,
-		"**%s**\nSlug: `%s`\nStatus: %s\nHealth: %s\nConfiguration: `%d` (`%s`)\nMode: %s\nSleep after: `%d minutes`\nArchive after: `%d days`\nTeamSpeak: %s\nUpdated: %s",
+		"**%s**\nSlug: `%s`",
 		sanitizeInline(session.DisplayName),
 		sanitizeCode(session.Slug),
+	)
+	if session.Description != "" {
+		fmt.Fprintf(&builder, "\nDescription: %s", sanitizeInline(session.Description))
+	}
+	fmt.Fprintf(
+		&builder,
+		"\nStatus: %s\nHealth: %s\nConfiguration: `%d` (`%s`)\nMode: %s\nSleep after: `%d minutes`\nArchive after: `%d days`\nTeamSpeak: %s\nUpdated: %s",
 		lifecyclePresentation(session.LifecycleState),
 		healthPresentation(session.HealthStatus),
 		session.ConfigurationRevision,
@@ -99,16 +106,19 @@ func (discordRenderer) sessionStatus(session domain.Session, players *domain.Pla
 	return boundDiscordContent(builder.String())
 }
 
-func (discordRenderer) sessionList(sessions []domain.Session) string {
+func (discordRenderer) sessionList(sessions []domain.Session, page int, totalPages int, filterLabel string) string {
 	if len(sessions) == 0 {
-		return "You do not have any sessions yet. Use `/rb create` to create one."
+		if filterLabel == "Active sessions" {
+			return "You do not have any active sessions. Use `/rb create` to create one, or choose the terminated filter to view deleted records."
+		}
+		return fmt.Sprintf("No sessions match **%s**. Choose another lifecycle filter.", sanitizeInline(filterLabel))
 	}
 
 	var builder strings.Builder
-	builder.WriteString("**Your sessions**\n")
+	fmt.Fprintf(&builder, "**Your sessions - Page %d of %d**\nFilter: %s\n\n", page, totalPages, sanitizeInline(filterLabel))
 	for _, session := range sessions {
 		line := fmt.Sprintf(
-			"- %s\n  `%s` · %s\n",
+			"**%s**\nSlug: `%s`\nStatus: %s\n\n",
 			sanitizeInline(session.DisplayName),
 			sanitizeCode(session.Slug),
 			lifecyclePresentation(session.LifecycleState),
@@ -139,7 +149,11 @@ func formatSessionStatus(session domain.Session, players *domain.PlayerStatus) s
 }
 
 func formatSessionList(sessions []domain.Session) string {
-	return renderer.sessionList(sessions)
+	return renderer.sessionList(sessions, 1, 1, "Active sessions")
+}
+
+func formatSessionListPage(sessions []domain.Session, page int, totalPages int, filterLabel string) string {
+	return renderer.sessionList(sessions, page, totalPages, filterLabel)
 }
 
 func lifecyclePresentation(state domain.LifecycleState) string {
@@ -149,7 +163,7 @@ func lifecyclePresentation(state domain.LifecycleState) string {
 		return "Setting up"
 	case domain.StateReady:
 		return "Ready"
-	case domain.StateWaking:
+	case domain.StateWaking, domain.StateRestoring:
 		return "Starting"
 	case domain.StateRunning, domain.StateIdle:
 		return "Running"

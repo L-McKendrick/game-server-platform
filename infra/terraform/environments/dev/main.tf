@@ -246,6 +246,7 @@ data "aws_iam_policy_document" "discord_lambda" {
       "dynamodb:GetItem",
       "dynamodb:PutItem",
       "dynamodb:Query",
+      "dynamodb:Scan",
       "dynamodb:TransactWriteItems",
     ]
     resources = [

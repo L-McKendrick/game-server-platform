@@ -107,7 +107,7 @@ func TestService_VerifiesManifestBeforeCompletingDestruction(t *testing.T) {
 	if err := json.Unmarshal(store.body, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.SchemaVersion != 1 || manifest.SourceInstanceID != "i-1" || manifest.SourceDataVolumeID != "vol-1" || !manifest.Vanilla {
+	if manifest.SchemaVersion != 1 || manifest.SourceInstanceID != "i-1" || manifest.SourceDataVolumeID != "vol-1" || !manifest.Vanilla || manifest.SessionName != session.DisplayName || manifest.SessionSlug != session.Slug || manifest.Description != session.Description {
 		t.Fatalf("manifest = %#v", manifest)
 	}
 
@@ -135,7 +135,7 @@ func TestService_VerifiesManifestBeforeCompletingDestruction(t *testing.T) {
 
 func archiveServiceSession(t *testing.T, now time.Time) domain.Session {
 	t.Helper()
-	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "saturday-arma", DisplayName: "Saturday Arma", Description: "Weekly co-op night", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}

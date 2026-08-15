@@ -26,14 +26,15 @@ func TestDiscordRendererUsesSafeReadableSessionPresentation(t *testing.T) {
 	now := time.Date(2026, 8, 14, 12, 30, 0, 0, time.UTC)
 	session := domain.Session{
 		ID: "immutable-session-id", DisplayName: "*Saturday*\n@everyone", Slug: "saturday-arma",
-		GameType: "arma3", GameProfileID: "arma3-default", LifecycleState: domain.StateRunning,
+		Description: "Weekly *co-op*",
+		GameType:    "arma3", GameProfileID: "arma3-default", LifecycleState: domain.StateRunning,
 		HealthStatus: domain.HealthHealthy, SleepAfterSeconds: 1800, ArchiveAfterSeconds: 604800,
 		UpdatedAt: now,
 	}
 
 	content := renderer.sessionStatus(session, nil)
 	for _, expected := range []string{
-		`\*Saturday\* @everyone`, "Slug: `saturday-arma`", "Status: Running", "Health: Healthy",
+		`\*Saturday\* @everyone`, "Slug: `saturday-arma`", `Description: Weekly \*co-op\*`, "Status: Running", "Health: Healthy",
 		"<t:1786710600:F> (<t:1786710600:R>)",
 	} {
 		if !strings.Contains(content, expected) {
@@ -85,7 +86,7 @@ func TestDiscordRendererBoundsLongSessionListWithoutExposingIDs(t *testing.T) {
 			LifecycleState: domain.StateRunning,
 		})
 	}
-	content := renderer.sessionList(sessions)
+	content := renderer.sessionList(sessions, 1, 20, "Active sessions")
 	if utf8.RuneCountInString(content) > maximumDiscordContentRunes || !utf8.ValidString(content) {
 		t.Fatalf("session list is not a valid bounded Discord response")
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,7 @@ func TestCreatePersistsDraftSessionAndEvent(t *testing.T) {
 			IdempotencyKey: "discord:create-1",
 			Slug:           "saturday-arma",
 			DisplayName:    "Saturday Arma",
+			Description:    "  Weekly\nco-op night  ",
 			GameType:       "arma3",
 			GuildID:        "guild-1",
 			ChannelID:      "channel-1",
@@ -89,6 +91,9 @@ func TestCreatePersistsDraftSessionAndEvent(t *testing.T) {
 	if session.Version != 1 {
 		t.Errorf("Version = %d; want 1", session.Version)
 	}
+	if session.Description != "Weekly co-op night" {
+		t.Errorf("Description = %q; want normalized description", session.Description)
+	}
 
 	events := repository.Events(session.ID)
 	if len(events) != 1 {
@@ -109,6 +114,161 @@ func TestCreatePersistsDraftSessionAndEvent(t *testing.T) {
 			events[0].ActorID,
 			actor.ID,
 		)
+	}
+	if events[0].Data["description"] != session.Description {
+		t.Errorf("creation event description = %q; want %q", events[0].Data["description"], session.Description)
+	}
+}
+
+func TestCreateGeneratesStableSlugAndReadableCollisionSuffixes(t *testing.T) {
+	t.Parallel()
+
+	repository := memory.NewSessionRepository()
+	service := newTestService(t, repository,
+		"session-1", "event-1",
+		"session-2", "event-2",
+		"session-3", "event-3",
+	)
+	actor := testActor("owner-1")
+
+	for index, expectedSlug := range []string{"friday-operations", "friday-operations-2", "friday-operations-3"} {
+		session, err := service.Create(context.Background(), CreateCommand{
+			Actor: actor, CorrelationID: fmt.Sprintf("correlation-%d", index+1),
+			IdempotencyKey: fmt.Sprintf("discord:generated-%d", index+1),
+			DisplayName:    "Friday Operations", GameType: "arma3",
+			GuildID: "guild-1", ChannelID: "channel-1",
+		})
+		if err != nil {
+			t.Fatalf("Create(%d) returned error: %v", index+1, err)
+		}
+		if session.Slug != expectedSlug {
+			t.Fatalf("Create(%d) slug = %q; want %q", index+1, session.Slug, expectedSlug)
+		}
+		events := repository.Events(session.ID)
+		if len(events) != 1 || events[0].Data["slug"] != expectedSlug {
+			t.Fatalf("Create(%d) events = %#v", index+1, events)
+		}
+	}
+}
+
+func TestCreatePreservesExplicitLegacySlug(t *testing.T) {
+	t.Parallel()
+
+	repository := memory.NewSessionRepository()
+	service := newTestService(t, repository,
+		"session-1", "event-1",
+		"session-2", "event-2",
+		"session-3", "event-3",
+	)
+	session, err := service.Create(context.Background(), CreateCommand{
+		Actor: testActor("owner-1"), CorrelationID: "correlation-1",
+		IdempotencyKey: "discord:legacy-slug", Slug: "legacy-explicit-slug",
+		DisplayName: "A Different Display Name", GameType: "arma3",
+		GuildID: "guild-1", ChannelID: "channel-1",
+	})
+	if err != nil {
+		t.Fatalf("Create() returned error: %v", err)
+	}
+	if session.Slug != "legacy-explicit-slug" {
+		t.Fatalf("Slug = %q; want explicit legacy slug", session.Slug)
+	}
+
+	generated, err := service.Create(context.Background(), CreateCommand{
+		Actor: testActor("owner-2"), CorrelationID: "correlation-2",
+		IdempotencyKey: "discord:generated-around-legacy",
+		DisplayName:    "Legacy Explicit Slug", GameType: "arma3",
+		GuildID: "guild-1", ChannelID: "channel-1",
+	})
+	if err != nil {
+		t.Fatalf("generated collision Create() returned error: %v", err)
+	}
+	if generated.Slug != "legacy-explicit-slug-2" {
+		t.Fatalf("generated collision slug = %q; want legacy-explicit-slug-2", generated.Slug)
+	}
+	storedLegacy, err := repository.Get(context.Background(), session.ID)
+	if err != nil || storedLegacy.Slug != "legacy-explicit-slug" {
+		t.Fatalf("legacy slug changed: session = %#v, error = %v", storedLegacy, err)
+	}
+
+	_, err = service.Create(context.Background(), CreateCommand{
+		Actor: testActor("owner-3"), CorrelationID: "correlation-3",
+		IdempotencyKey: "discord:legacy-conflict", Slug: "legacy-explicit-slug",
+		DisplayName: "Another Session", GameType: "arma3",
+		GuildID: "guild-1", ChannelID: "channel-1",
+	})
+	if !errors.Is(err, domain.ErrSlugConflict) {
+		t.Fatalf("duplicate explicit slug error = %v; want ErrSlugConflict", err)
+	}
+}
+
+func TestSlugCollisionSuffixStaysWithinGeneratedLimit(t *testing.T) {
+	t.Parallel()
+	base := strings.Repeat("a", domain.MaximumGeneratedSlugLength)
+	if got := slugCollisionCandidate(base, 12); len(got) != domain.MaximumGeneratedSlugLength || !strings.HasSuffix(got, "-12") {
+		t.Fatalf("slugCollisionCandidate() = %q (length %d)", got, len(got))
+	}
+}
+
+func TestUpdateDescriptionPersistsNormalizedValueAndImmutableEvent(t *testing.T) {
+	t.Parallel()
+
+	repository := memory.NewSessionRepository()
+	service := newTestService(t, repository, "session-1", "event-create", "event-description")
+	actor := testActor("owner-1")
+	created := mustCreateSession(t, service, actor, "correlation-create", "saturday-arma")
+
+	updated, err := service.UpdateDescription(context.Background(), UpdateDescriptionCommand{
+		Actor: actor, SessionID: created.ID, GuildID: "guild-1",
+		CorrelationID: "correlation-description", IdempotencyKey: "discord:description-1",
+		Description: "  Friday\n​operations  ",
+	})
+	if err != nil {
+		t.Fatalf("UpdateDescription() returned error: %v", err)
+	}
+	if updated.Description != "Friday operations" || updated.Version != created.Version+1 {
+		t.Fatalf("updated session = %#v", updated)
+	}
+
+	events := repository.Events(created.ID)
+	if len(events) != 2 || events[1].Type != domain.EventSessionDescriptionChanged {
+		t.Fatalf("events = %#v; want description change event", events)
+	}
+	if events[1].Data["previous_description"] != "" || events[1].Data["description"] != "Friday operations" {
+		t.Fatalf("description event data = %#v", events[1].Data)
+	}
+
+	replayed, err := service.UpdateDescription(context.Background(), UpdateDescriptionCommand{
+		Actor: actor, SessionID: created.ID, GuildID: "guild-1",
+		CorrelationID: "different-correlation", IdempotencyKey: "discord:description-1",
+		Description: "Friday   operations",
+	})
+	if err != nil {
+		t.Fatalf("replayed UpdateDescription() returned error: %v", err)
+	}
+	if replayed.Version != updated.Version || len(repository.Events(created.ID)) != 2 {
+		t.Fatalf("replay created another mutation: %#v", replayed)
+	}
+}
+
+func TestUpdateDescriptionEnforcesOwnerAndGuild(t *testing.T) {
+	t.Parallel()
+
+	repository := memory.NewSessionRepository()
+	service := newTestService(t, repository, "session-1", "event-create")
+	owner := testActor("owner-1")
+	created := mustCreateSession(t, service, owner, "correlation-create", "saturday-arma")
+
+	tests := []UpdateDescriptionCommand{
+		{Actor: testActor("other-owner"), SessionID: created.ID, GuildID: "guild-1", IdempotencyKey: "discord:description-owner", Description: "No"},
+		{Actor: owner, SessionID: created.ID, GuildID: "other-guild", IdempotencyKey: "discord:description-guild", Description: "No"},
+	}
+	for _, command := range tests {
+		if _, err := service.UpdateDescription(context.Background(), command); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("UpdateDescription(%q, %q) error = %v; want ErrForbidden", command.Actor.ID, command.GuildID, err)
+		}
+	}
+	if len(repository.Events(created.ID)) != 1 {
+		t.Fatal("unauthorized update wrote an event")
 	}
 }
 
@@ -334,6 +494,29 @@ func TestGetRejectsNonOwner(t *testing.T) {
 			"Get() error = %v; want ErrForbidden",
 			err,
 		)
+	}
+}
+
+func TestGetAllowsExplicitGuildMemberReadWithoutBroadeningOwnerDefault(t *testing.T) {
+	t.Parallel()
+
+	repository := memory.NewSessionRepository()
+	service := newTestService(t, repository, "session-1", "event-1")
+	created := mustCreateSession(t, service, testActor("owner-1"), "correlation-create", "guild-visible")
+
+	got, err := service.Get(context.Background(), GetQuery{
+		Actor: testActor("member-2"), SessionID: created.ID,
+		GuildID: created.GuildID, AllowGuildMember: true,
+	})
+	if err != nil || got.ID != created.ID {
+		t.Fatalf("Get(guild member) = %#v, %v", got, err)
+	}
+	_, err = service.Get(context.Background(), GetQuery{
+		Actor: testActor("member-2"), SessionID: created.ID,
+		GuildID: "other-guild", AllowGuildMember: true,
+	})
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Get(other guild) error = %v; want ErrNotFound", err)
 	}
 }
 

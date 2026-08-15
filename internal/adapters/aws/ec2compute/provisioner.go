@@ -103,11 +103,14 @@ func (provisioner *Provisioner) EnsureInstance(ctx context.Context, request doma
 		return domain.ComputeObservation{}, err
 	}
 	tags := []ec2types.Tag{
+		{Key: aws.String("Name"), Value: aws.String(request.SessionName)},
 		{Key: aws.String("Project"), Value: aws.String(request.Project)},
 		{Key: aws.String("Environment"), Value: aws.String(request.Environment)},
 		{Key: aws.String("ManagedBy"), Value: aws.String("game-server-platform")},
 		{Key: aws.String("Component"), Value: aws.String("game-server")},
 		{Key: aws.String("SessionId"), Value: aws.String(request.SessionID)},
+		{Key: aws.String("SessionName"), Value: aws.String(request.SessionName)},
+		{Key: aws.String("SessionSlug"), Value: aws.String(request.SessionSlug)},
 		{Key: aws.String("GameType"), Value: aws.String(request.GameType)},
 		{Key: aws.String("LifecycleState"), Value: aws.String("PROVISIONING")},
 	}
@@ -202,7 +205,8 @@ func (provisioner *Provisioner) findSessionInstances(ctx context.Context, reques
 
 func validateLaunchRequest(request domain.ComputeLaunchRequest) error {
 	switch {
-	case request.SessionID == "", request.Project == "", request.Environment == "", request.GameType == "":
+	case strings.TrimSpace(request.SessionID) == "", strings.TrimSpace(request.SessionName) == "", strings.TrimSpace(request.SessionSlug) == "",
+		strings.TrimSpace(request.Project) == "", strings.TrimSpace(request.Environment) == "", strings.TrimSpace(request.GameType) == "":
 		return fmt.Errorf("session launch tags are required")
 	case request.AMIID == "", request.InstanceType == "", request.SubnetID == "":
 		return fmt.Errorf("AMI, instance type, and subnet are required")
