@@ -94,14 +94,14 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.3.5** [x] Add `/rb setup` to edit allowed draft fields and replace only missing or rejected artifacts through the same modal contracts.
       - **12.3.6** [x] Add permission preflight and plain-text degradation for missing send, edit, component, embed, or attachment capabilities.
       - **12.3.7** [x] Test duplicate submissions, partial failures, modal limits, vanilla/modded requirements, card-delivery failure, and setup recovery.
-    - **12.4** [ ] Deliver the durable public session card and modlist artifact experience.
-      - **12.4.1** [ ] Define one authoritative card projection for name, slug, description, lifecycle, health, stage, elapsed time, players, endpoints, mods, failures, and data freshness.
-      - **12.4.2** [ ] Extend notification delivery to create and idempotently edit bot-authored card messages without relying on expiring interaction tokens.
-      - **12.4.3** [ ] Persist normalized major-stage progress and rate-limit card edits to accepted, infrastructure ready, game/content setup, health verification, and terminal milestones.
-      - **12.4.4** [ ] Show copy-friendly Arma and optional TeamSpeak DNS/IP plus ports when available, and clearly label retained endpoints offline while sleeping or archived.
-      - **12.4.5** [ ] Publish a separate stable channel message containing the sanitized Arma-compatible active modlist attachment and link it from the card; recreate it from S3 if deleted.
-      - **12.4.6** [ ] Add authorized `View details`, bounded `Refresh`, `Download modlist`, and `Help` controls with state/revision revalidation and concise Discord button labels.
-      - **12.4.7** [ ] Automatically repair missing cards and add an explicit admin repair action, with tests for deletion, duplicate delivery, stale controls, rate limits, and partial Discord outages.
+    - **12.4** [x] Deliver the durable public session card and modlist artifact experience.
+      - **12.4.1** [x] Define one authoritative card projection for name, slug, description, lifecycle, health, stage, elapsed time, players, endpoints, mods, failures, and data freshness.
+      - **12.4.2** [x] Extend notification delivery to create and idempotently edit bot-authored card messages without relying on expiring interaction tokens.
+      - **12.4.3** [x] Persist normalized major-stage progress and rate-limit card edits to accepted, infrastructure ready, game/content setup, health verification, and terminal milestones.
+      - **12.4.4** [x] Show copy-friendly Arma and optional TeamSpeak DNS/IP plus ports when available, and clearly label retained endpoints offline while sleeping or archived.
+      - **12.4.5** [x] Publish a separate stable channel message containing the sanitized Arma-compatible active modlist attachment and link it from the card; recreate it from S3 if deleted.
+      - **12.4.6** [x] Add authorized `View details`, bounded `Refresh`, `Download modlist`, and `Help` controls with state/revision revalidation and concise Discord button labels.
+      - **12.4.7** [x] Automatically repair missing cards and add an explicit admin repair action, with tests for deletion, duplicate delivery, stale controls, rate limits, and partial Discord outages.
     - **12.5** [ ] Replace opaque failures and inline booleans with actionable errors and durable confirmations.
       - **12.5.1** [ ] Persist a sanitized failure projection containing stable internal code, failed stage, retry disposition, resource/cost impact, bounded detail, timestamp, and support reference.
       - **12.5.2** [ ] Maintain a user-facing error catalog that renders what happened, likely reason, platform action, exact user action, and billing implications without leaking raw AWS/SSM data or IDs.
@@ -130,11 +130,12 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.8.4** [ ] Add `/rb help`, first-run guidance, state-aware next actions, and useful empty/success responses without duplicating the operational runbook.
       - **12.8.5** [ ] Apply guild-only contexts, least-visible admin command defaults, mobile-safe layouts, concise controls, text-plus-color states, and graceful stale-interaction handling.
       - **12.8.6** [ ] Update deployment/runbook documentation and complete unit, integration, packaging, Terraform, Discord registration, and live guild acceptance for the phase.
+      - **12.8.7** [ ] Make one `/rb start` orchestrate ready-session infrastructure provisioning through bootstrap and playable health acceptance; keep `/rb create` non-billable and return existing progress for repeated starts instead of requiring a second command.
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.
     - **13.2** [ ] Add multiple mission uploads and safe in-game mission rotation with artifact history and authorization.
     - **13.3** [ ] Add an admin-configurable maximum session duration, owner warnings, and auditable admin extension.
     - **13.4** [ ] Evaluate scheduling and operational analytics using the Phase 12 admin and presentation contracts.
-    - **13.5** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities.
+    - **13.5** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; add an autocomplete game field to `/rb create` and route the selected supported game into its game-specific setup contract.
     - **13.6** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.

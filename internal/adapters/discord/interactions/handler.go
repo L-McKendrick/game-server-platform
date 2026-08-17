@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
@@ -50,6 +51,7 @@ type SessionService interface {
 		ctx context.Context,
 		query appsession.ResolveQuery,
 	) (appsession.Selection, error)
+	ResolveCardControl(ctx context.Context, query appsession.CardControlQuery) (domain.Session, error)
 
 	Configure(
 		ctx context.Context,
@@ -62,6 +64,7 @@ type SessionService interface {
 		request domain.ArtifactIngestRequest,
 	) error
 	RequestSessionCard(ctx context.Context, command appsession.SessionCardCommand) error
+	GetActiveModlist(ctx context.Context, query appsession.ActiveModlistQuery) (appsession.ActiveModlist, error)
 	PrepareCreationArtifacts(ctx context.Context, command appsession.PrepareCreationArtifactsCommand) (domain.Session, error)
 	UpdateDraftSetup(ctx context.Context, command appsession.UpdateDraftSetupCommand) (domain.Session, error)
 
@@ -268,10 +271,24 @@ func (handler *Handler) ServeHTTP(
 	if payload.Member != nil {
 		roles = payload.Member.Roles
 	}
-	if payload.isAdminAccessCommand() || payload.isAdminRoleSelection() {
+	if payload.isAdminCommand() || payload.isAdminRoleSelection() {
 		if !payload.memberCanManageGuild() {
-			handler.logger.Warn("rejected Discord access configuration without Manage Server permission", slog.String("guild_id", payload.GuildID))
-			writeInteractionMessage(writer, "Only members with Administrator or Manage Server permission can configure bot access.")
+			handler.logger.Warn("rejected Discord administration without Manage Server permission", slog.String("guild_id", payload.GuildID))
+			if payload.Type == interactionTypeApplicationCommandAutocomplete {
+				writeAutocompleteChoices(writer, nil)
+			} else {
+				writeInteractionMessage(writer, "Only members with Administrator or Manage Server permission can use `/admin` actions.")
+			}
+			return
+		}
+		if payload.Type == interactionTypeApplicationCommandAutocomplete {
+			choices, err := handler.sessionAutocompleteChoices(request.Context(), payload, domain.Actor{
+				Type: domain.ActorTypeDiscordUser, ID: actorID,
+			})
+			if err != nil {
+				handler.logger.Warn("Discord admin autocomplete failed", slog.String("guild_id", payload.GuildID), slog.Any("error", err))
+			}
+			writeAutocompleteChoices(writer, choices)
 			return
 		}
 		correlationID, err := handler.ids.New(handler.clock.Now().UTC())
@@ -280,12 +297,12 @@ func (handler *Handler) ServeHTTP(
 			writeInteractionMessage(writer, "The command could not be processed. Please try again.")
 			return
 		}
-		if err := handler.handleAdminAccess(request.Context(), writer, payload, actorID); err != nil {
-			handler.logger.Error("Discord access configuration failed", slog.String("correlation_id", correlationID), slog.Any("error", err))
+		if err := handler.handleAdmin(request.Context(), writer, payload, actorID, correlationID); err != nil {
+			handler.logger.Error("Discord administration failed", slog.String("correlation_id", correlationID), slog.Any("error", err))
 			writeInteractionMessage(writer, handler.commandErrorMessage(err, correlationID))
 			return
 		}
-		handler.logger.Info("Discord access configuration completed", slog.String("correlation_id", correlationID), slog.String("guild_id", payload.GuildID))
+		handler.logger.Info("Discord administration completed", slog.String("correlation_id", correlationID), slog.String("guild_id", payload.GuildID))
 		return
 	}
 	if err := handler.access.Authorize(request.Context(), payload.GuildID, payload.ChannelID, actorID, roles); err != nil && !payload.memberCanManageGuild() {
@@ -298,7 +315,14 @@ func (handler *Handler) ServeHTTP(
 		return
 	}
 	if payload.Type == interactionTypeMessageComponent {
-		writeInteractionMessage(writer, "This component is not supported or has expired.")
+		content, err := handler.handleSessionCardControl(request.Context(), payload, domain.Actor{
+			Type: domain.ActorTypeDiscordUser, ID: actorID,
+		})
+		if err != nil {
+			handler.logger.Warn("Discord session card control failed", slog.String("guild_id", payload.GuildID), slog.Any("error", err))
+			content = componentErrorMessage(err)
+		}
+		writeInteractionMessage(writer, content)
 		return
 	}
 	if payload.Type == interactionTypeApplicationCommandAutocomplete {
@@ -543,11 +567,22 @@ func (handler *Handler) startSession(
 	return "**Start request accepted**\nUse `/rb status` to follow provisioning or bootstrap progress.", nil
 }
 
-func (handler *Handler) handleAdminAccess(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actorID string) error {
-	if payload.isAdminAccessCommand() {
+func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actorID, correlationID string) error {
+	if payload.isAdminCommand() {
 		subcommand, err := payload.namedSubcommand("admin")
-		if err != nil || subcommand.Name != "access" {
-			return newUserError("Use `/admin access` to configure bot access.")
+		if err != nil {
+			return newUserError("Use a supported `/admin` action.")
+		}
+		if subcommand.Name == "repair-card" {
+			content, repairErr := handler.repairSessionCard(ctx, payload, subcommand.Options, actorID, correlationID)
+			if repairErr != nil {
+				return repairErr
+			}
+			writeInteractionMessage(writer, content)
+			return nil
+		}
+		if subcommand.Name != "access" {
+			return newUserError("Use `/admin access` or `/admin repair-card`.")
 		}
 		minimum, maximum := 1, 25
 		components := []interactionComponent{{
@@ -590,8 +625,38 @@ func (handler *Handler) handleAdminAccess(ctx context.Context, writer http.Respo
 	return nil
 }
 
-func (payload interactionPayload) isAdminAccessCommand() bool {
-	return payload.Type == interactionTypeApplicationCommand && payload.Data != nil && strings.TrimSpace(payload.Data.Name) == "admin"
+func (handler *Handler) repairSessionCard(
+	ctx context.Context,
+	payload interactionPayload,
+	options []applicationCommandOption,
+	actorID string,
+	correlationID string,
+) (string, error) {
+	actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID}
+	sessionID, err := handler.resolveSessionID(ctx, options, actor, payload.GuildID, true, true)
+	if err != nil {
+		return "", err
+	}
+	session, err := handler.service.Get(ctx, appsession.GetQuery{
+		Actor: actor, SessionID: sessionID, GuildID: payload.GuildID, AllowGuildMember: true,
+	})
+	if err != nil {
+		return "", err
+	}
+	content := sessioncard.RenderPublic(sessioncard.Project(session, sessioncard.Options{Now: session.UpdatedAt.UTC()}))
+	if err := handler.service.RequestSessionCard(ctx, appsession.SessionCardCommand{
+		Actor: actor, SessionID: session.ID, GuildID: payload.GuildID, ChannelID: session.ChannelID,
+		CorrelationID: correlationID, NotificationID: "card-admin-repair-" + strings.TrimSpace(payload.ID),
+		Content: content, CardRevision: session.Version, AllowGuildMember: true, RequireCurrentRevision: true,
+	}); err != nil {
+		return "", fmt.Errorf("request session card repair: %w", err)
+	}
+	return "**Session card repair queued**\nThe bot will refresh the current card or recreate it in its original channel if it was deleted.", nil
+}
+
+func (payload interactionPayload) isAdminCommand() bool {
+	return (payload.Type == interactionTypeApplicationCommand || payload.Type == interactionTypeApplicationCommandAutocomplete) &&
+		payload.Data != nil && strings.TrimSpace(payload.Data.Name) == "admin"
 }
 
 func (payload interactionPayload) isAdminRoleSelection() bool {
@@ -807,21 +872,7 @@ func (handler *Handler) sessionStatus(
 		)
 	}
 
-	if session.LifecycleState != domain.StateRunning && session.LifecycleState != domain.StateIdle {
-		return formatSessionStatus(session, nil), nil
-	}
-	if strings.TrimSpace(session.Infrastructure.PublicIPv4) == "" || handler.playerQuery == nil {
-		return formatSessionStatus(session, nil), nil
-	}
-
-	queryContext, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
-	defer cancel()
-	players, err := handler.playerQuery.Query(queryContext, session.Infrastructure.PublicIPv4)
-	if err != nil {
-		handler.logger.Warn("live player query unavailable", slog.String("session_id", session.ID), slog.String("reason", "A2S query failed"))
-		return formatSessionStatus(session, nil), nil
-	}
-	return formatSessionStatus(session, &players), nil
+	return handler.renderDetailedSession(ctx, session), nil
 }
 
 func (handler *Handler) resolveSessionID(

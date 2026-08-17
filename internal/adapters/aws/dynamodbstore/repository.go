@@ -22,6 +22,7 @@ import (
 const (
 	sessionSortKey        = "METADATA"
 	sessionCardSortKey    = "DISCORD_CARD"
+	sessionModlistSortKey = "DISCORD_MODLIST"
 	idempotencySortKey    = "RESULT"
 	ownerIndexName        = "gsi1"
 	schemaVersion         = 3
@@ -126,6 +127,10 @@ type sessionItem struct {
 	ArchiveFormat            string   `dynamodbav:"archive_format,omitempty"`
 	ArchiveVerifiedAt        string   `dynamodbav:"archive_verified_at,omitempty"`
 	ArchiveSourceState       string   `dynamodbav:"archive_source_state,omitempty"`
+	ProgressWorkflowID       string   `dynamodbav:"progress_workflow_id,omitempty"`
+	ProgressWorkflowType     string   `dynamodbav:"progress_workflow_type,omitempty"`
+	ProgressMilestone        string   `dynamodbav:"progress_milestone,omitempty"`
+	ProgressUpdatedAt        string   `dynamodbav:"progress_updated_at,omitempty"`
 
 	ActiveWorkflowID             string `dynamodbav:"active_workflow_id,omitempty"`
 	ActiveWorkflowType           string `dynamodbav:"active_workflow_type,omitempty"`
@@ -148,13 +153,31 @@ type sessionItem struct {
 }
 
 type sessionCardItem struct {
-	PK            string `dynamodbav:"pk"`
-	SK            string `dynamodbav:"sk"`
-	EntityType    string `dynamodbav:"entity_type"`
-	SchemaVersion int    `dynamodbav:"schema_version"`
-	SessionID     string `dynamodbav:"session_id"`
-	ChannelID     string `dynamodbav:"channel_id"`
-	MessageID     string `dynamodbav:"message_id"`
+	PK                      string `dynamodbav:"pk"`
+	SK                      string `dynamodbav:"sk"`
+	EntityType              string `dynamodbav:"entity_type"`
+	SchemaVersion           int    `dynamodbav:"schema_version"`
+	SessionID               string `dynamodbav:"session_id"`
+	ChannelID               string `dynamodbav:"channel_id"`
+	MessageID               string `dynamodbav:"message_id"`
+	DeliveredRevision       int64  `dynamodbav:"delivered_revision,omitempty"`
+	DeliveredNotificationID string `dynamodbav:"delivered_notification_id,omitempty"`
+	ContentSHA256           string `dynamodbav:"content_sha256,omitempty"`
+}
+
+type sessionModlistItem struct {
+	PK                      string `dynamodbav:"pk"`
+	SK                      string `dynamodbav:"sk"`
+	EntityType              string `dynamodbav:"entity_type"`
+	SchemaVersion           int    `dynamodbav:"schema_version"`
+	SessionID               string `dynamodbav:"session_id"`
+	ChannelID               string `dynamodbav:"channel_id"`
+	MessageID               string `dynamodbav:"message_id"`
+	ObjectKey               string `dynamodbav:"object_key"`
+	Filename                string `dynamodbav:"filename"`
+	DeliveredRevision       int64  `dynamodbav:"delivered_revision"`
+	DeliveredNotificationID string `dynamodbav:"delivered_notification_id"`
+	ContentSHA256           string `dynamodbav:"content_sha256"`
 }
 
 type eventItem struct {
@@ -468,7 +491,11 @@ func (repository *Repository) GetCardReference(ctx context.Context, sessionID st
 	if err := attributevalue.UnmarshalMap(output.Item, &item); err != nil {
 		return domain.SessionCardReference{}, err
 	}
-	reference := domain.SessionCardReference{SessionID: item.SessionID, ChannelID: item.ChannelID, MessageID: item.MessageID}
+	reference := domain.SessionCardReference{
+		SessionID: item.SessionID, ChannelID: item.ChannelID, MessageID: item.MessageID,
+		DeliveredRevision: item.DeliveredRevision, DeliveredNotificationID: item.DeliveredNotificationID,
+		ContentSHA256: item.ContentSHA256,
+	}
 	if err := reference.Validate(); err != nil {
 		return domain.SessionCardReference{}, err
 	}
@@ -486,6 +513,8 @@ func (repository *Repository) SaveCardReference(ctx context.Context, reference d
 		PK: sessionPartitionKey(reference.SessionID), SK: sessionCardSortKey,
 		EntityType: "SessionCard", SchemaVersion: schemaVersion,
 		SessionID: reference.SessionID, ChannelID: reference.ChannelID, MessageID: reference.MessageID,
+		DeliveredRevision: reference.DeliveredRevision, DeliveredNotificationID: reference.DeliveredNotificationID,
+		ContentSHA256: reference.ContentSHA256,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal Discord card reference: %w", err)
@@ -499,6 +528,71 @@ func (repository *Repository) SaveCardReference(ctx context.Context, reference d
 	})
 	if err != nil {
 		return fmt.Errorf("save Discord card reference: %w", err)
+	}
+	return nil
+}
+
+func (repository *Repository) GetModlistReference(ctx context.Context, sessionID string) (domain.SessionModlistReference, error) {
+	if err := repository.validate(); err != nil {
+		return domain.SessionModlistReference{}, err
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return domain.SessionModlistReference{}, fmt.Errorf("session ID is required")
+	}
+	output, err := repository.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(repository.tableName), Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: sessionPartitionKey(sessionID)},
+			"sk": &types.AttributeValueMemberS{Value: sessionModlistSortKey},
+		}, ConsistentRead: aws.Bool(true),
+	})
+	if err != nil {
+		return domain.SessionModlistReference{}, fmt.Errorf("get Discord modlist reference: %w", err)
+	}
+	if len(output.Item) == 0 {
+		return domain.SessionModlistReference{}, fmt.Errorf("%w: session modlist %s", domain.ErrNotFound, sessionID)
+	}
+	var item sessionModlistItem
+	if err := attributevalue.UnmarshalMap(output.Item, &item); err != nil {
+		return domain.SessionModlistReference{}, err
+	}
+	reference := domain.SessionModlistReference{
+		SessionID: item.SessionID, ChannelID: item.ChannelID, MessageID: item.MessageID,
+		ObjectKey: item.ObjectKey, Filename: item.Filename, DeliveredRevision: item.DeliveredRevision,
+		DeliveredNotificationID: item.DeliveredNotificationID, ContentSHA256: item.ContentSHA256,
+	}
+	if err := reference.Validate(); err != nil {
+		return domain.SessionModlistReference{}, err
+	}
+	return reference, nil
+}
+
+func (repository *Repository) SaveModlistReference(ctx context.Context, reference domain.SessionModlistReference) error {
+	if err := repository.validate(); err != nil {
+		return err
+	}
+	if err := reference.Validate(); err != nil {
+		return err
+	}
+	attributes, err := attributevalue.MarshalMap(sessionModlistItem{
+		PK: sessionPartitionKey(reference.SessionID), SK: sessionModlistSortKey,
+		EntityType: "SessionModlist", SchemaVersion: schemaVersion,
+		SessionID: reference.SessionID, ChannelID: reference.ChannelID, MessageID: reference.MessageID,
+		ObjectKey: reference.ObjectKey, Filename: reference.Filename, DeliveredRevision: reference.DeliveredRevision,
+		DeliveredNotificationID: reference.DeliveredNotificationID, ContentSHA256: reference.ContentSHA256,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal Discord modlist reference: %w", err)
+	}
+	_, err = repository.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(repository.tableName), Item: attributes,
+		ConditionExpression: aws.String("attribute_not_exists(pk) OR channel_id = :channel"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":channel": &types.AttributeValueMemberS{Value: reference.ChannelID},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("save Discord modlist reference: %w", err)
 	}
 	return nil
 }
@@ -926,6 +1020,10 @@ func toSessionItem(session domain.Session) sessionItem {
 		ArchiveFormat:                session.Archive.Format,
 		ArchiveVerifiedAt:            optionalTimestamp(session.Archive.VerifiedAt),
 		ArchiveSourceState:           string(session.ArchiveSourceState),
+		ProgressWorkflowID:           session.Progress.WorkflowID,
+		ProgressWorkflowType:         session.Progress.WorkflowType,
+		ProgressMilestone:            string(session.Progress.Milestone),
+		ProgressUpdatedAt:            optionalTimestamp(session.Progress.UpdatedAt),
 		ActiveWorkflowID:             session.ActiveWorkflowID,
 		ActiveWorkflowType:           session.ActiveWorkflowType,
 		ActiveWorkflowStartedAt:      fixedTimestamp(session.ActiveWorkflowStartedAt),
@@ -993,6 +1091,10 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("parse monitoring started_at: %w", err)
 	}
+	progressUpdatedAt, err := parseOptionalTimestamp(item.ProgressUpdatedAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse progress updated_at: %w", err)
+	}
 	missionStatus := domain.ArtifactStatus(item.MissionArtifactStatus)
 	if missionStatus == "" && strings.TrimSpace(item.MissionObjectKey) != "" {
 		missionStatus = domain.ArtifactAccepted
@@ -1037,7 +1139,11 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 			ManifestSizeBytes: item.ArchiveManifestSizeBytes,
 			SizeBytes:         item.ArchiveSizeBytes, Format: item.ArchiveFormat, VerifiedAt: archiveVerifiedAt,
 		},
-		ArchiveSourceState:           domain.LifecycleState(item.ArchiveSourceState),
+		ArchiveSourceState: domain.LifecycleState(item.ArchiveSourceState),
+		Progress: domain.SessionProgress{
+			WorkflowID: item.ProgressWorkflowID, WorkflowType: item.ProgressWorkflowType,
+			Milestone: domain.ProgressMilestone(item.ProgressMilestone), UpdatedAt: progressUpdatedAt,
+		},
 		ActiveWorkflowID:             item.ActiveWorkflowID,
 		ActiveWorkflowType:           item.ActiveWorkflowType,
 		ActiveWorkflowStartedAt:      activeWorkflowStartedAt,

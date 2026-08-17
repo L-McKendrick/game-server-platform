@@ -3,10 +3,12 @@ package sleepwake
 import (
 	"context"
 	"fmt"
-	"github.com/L-McKendrick/game-server-platform/internal/domain"
-	"github.com/L-McKendrick/game-server-platform/internal/ports"
 	"strings"
 	"time"
+
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
+	"github.com/L-McKendrick/game-server-platform/internal/domain"
+	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
 const (
@@ -84,6 +86,17 @@ func (s *Service) Handle(ctx context.Context, r TaskRequest) (TaskResult, error)
 	case ActionCheckManaged:
 		return s.checkManaged(ctx, session, wf)
 	case ActionHealthDispatch:
+		expected := session.Version
+		changed, progressErr := session.AdvanceProgress(wf.ID, domain.ProgressHealthVerification, s.clock.Now())
+		if progressErr != nil {
+			return TaskResult{}, progressErr
+		}
+		if changed {
+			if progressErr := s.saveProgress(ctx, session, expected, wf); progressErr != nil {
+				return TaskResult{}, progressErr
+			}
+			s.notify(ctx, session, wf)
+		}
 		commandID, err := s.monitor.Start(ctx, session)
 		if err != nil {
 			return TaskResult{}, err
@@ -201,6 +214,7 @@ func (s *Service) fail(ctx context.Context, session domain.Session, wf domain.Wo
 	if err = s.workflows.CompleteWorkflow(ctx, session, expected, wf, event); err != nil {
 		return TaskResult{}, err
 	}
+	s.notify(ctx, session, wf)
 	return result(session, wf), nil
 }
 func (s *Service) load(ctx context.Context, r TaskRequest) (domain.Session, domain.Workflow, error) {
@@ -221,18 +235,17 @@ func (s *Service) load(ctx context.Context, r TaskRequest) (domain.Session, doma
 	return session, wf, nil
 }
 func (s *Service) notify(ctx context.Context, session domain.Session, wf domain.Workflow) {
-	if s.notifications == nil {
-		return
-	}
-	id, err := s.ids.New(s.clock.Now())
+	_ = sessioncard.EnqueueProgress(ctx, s.notifications, session, wf, s.clock.Now().UTC())
+}
+
+func (s *Service) saveProgress(ctx context.Context, session domain.Session, expectedVersion int64, workflow domain.Workflow) error {
+	now := s.clock.Now().UTC()
+	id, err := s.ids.New(now)
 	if err != nil {
-		return
+		return err
 	}
-	content := "**Game server sleeping**\nSession: `" + session.ID + "`"
-	if wf.Type == domain.WakeWorkflowType {
-		content = "**Game server awake**\nSession: `" + session.ID + "`\nAddress: `" + session.Infrastructure.PublicIPv4 + ":2302`"
-	}
-	_ = s.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: id, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: content, CorrelationID: wf.CorrelationID, RequestedAt: s.clock.Now().UTC()})
+	event := domain.NewProgressMilestoneEvent(id, workflow, session, now)
+	return s.stages.SaveProvisioningStage(ctx, session, expectedVersion, event)
 }
 func result(s domain.Session, w domain.Workflow) TaskResult {
 	return TaskResult{SessionID: s.ID, WorkflowID: w.ID, State: string(s.LifecycleState)}

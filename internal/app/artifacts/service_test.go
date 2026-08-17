@@ -85,7 +85,8 @@ func TestProcessStoresValidatedMissionAndPersistsMetadata(t *testing.T) {
 	if session.MissionObjectKey != objects.objects[0].key || session.MissionArtifactStatus != domain.ArtifactAccepted || session.Version != 2 {
 		t.Fatalf("persisted session = %#v", session)
 	}
-	if len(notifications.requests) != 1 || notifications.requests[0].NotificationID != "card-artifact-mission-attachment-1" || notifications.requests[0].Kind != domain.NotificationSessionCard {
+	if len(notifications.requests) != 1 || notifications.requests[0].NotificationID != "card-artifact-mission-attachment-1" ||
+		notifications.requests[0].Kind != domain.NotificationSessionCard || notifications.requests[0].CardRevision != session.Version {
 		t.Fatalf("notifications = %#v", notifications.requests)
 	}
 
@@ -160,8 +161,10 @@ func TestProcessAcceptsPresetWithRepeatedWorkshopReferences(t *testing.T) {
 	if err := service.Process(context.Background(), request); err != nil {
 		t.Fatalf("Process() returned error: %v", err)
 	}
-	if len(objects.objects) != 1 || !strings.HasPrefix(objects.objects[0].key, "sessions/session-1/input/presets/") {
-		t.Fatalf("stored objects = %#v; want one preset object", objects.objects)
+	if len(objects.objects) != 2 || !strings.HasPrefix(objects.objects[0].key, "sessions/session-1/input/presets/") ||
+		!strings.HasPrefix(objects.objects[1].key, "sessions/session-1/input/modlists/") ||
+		strings.Contains(string(objects.objects[1].contents), "data-publishedfileid") {
+		t.Fatalf("stored objects = %#v; want source preset and sanitized modlist", objects.objects)
 	}
 	session, err := repository.Get(context.Background(), "session-1")
 	if err != nil {
@@ -169,6 +172,59 @@ func TestProcessAcceptsPresetWithRepeatedWorkshopReferences(t *testing.T) {
 	}
 	if session.PresetObjectKey != objects.objects[0].key {
 		t.Fatalf("preset object key = %q; want %q", session.PresetObjectKey, objects.objects[0].key)
+	}
+	if len(notifications.requests) != 1 || notifications.requests[0].Kind != domain.NotificationSessionModlist ||
+		notifications.requests[0].Attachment == nil || notifications.requests[0].Attachment.ObjectKey != objects.objects[1].key ||
+		notifications.requests[0].Attachment.Filename != "saturday-arma-modlist.html" {
+		t.Fatalf("modlist notification = %#v", notifications.requests)
+	}
+	if err := service.Process(context.Background(), request); err != nil {
+		t.Fatalf("replayed Process() returned error: %v", err)
+	}
+	if len(objects.objects) != 3 || objects.objects[1].key != objects.objects[2].key ||
+		len(notifications.requests) != 2 || notifications.requests[0].NotificationID != notifications.requests[1].NotificationID {
+		t.Fatalf("replay objects=%#v notifications=%#v; want durable modlist repair with deterministic delivery", objects.objects, notifications.requests)
+	}
+}
+
+func TestProcessVanillaPresetDoesNotPublishActiveModlist(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 16, 13, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: "session-vanilla", Slug: "vanilla", DisplayName: "Vanilla", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Vanilla = true
+	event := domain.NewSessionCreatedEvent("create-vanilla", "correlation-vanilla", domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}, session, now)
+	record, err := domain.NewCompletedIdempotencyRecord("create-vanilla", "hash-vanilla", session.ID, now, 7*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, record); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`<html><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=450814997">mod</a></html>`)
+	downloader := &testDownloader{body: body}
+	objects := &testObjectStore{}
+	notifications := &testNotifications{}
+	service, err := NewService(repository, downloader, objects, notifications, &testIDs{ids: []string{"preset-vanilla"}}, testClock{now}, 7*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := missionRequest(now, int64(len(body)))
+	request.SessionID, request.Kind, request.Filename = session.ID, domain.ArtifactPreset, "preset.html"
+	if err := service.Process(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(objects.objects) != 1 || !strings.Contains(objects.objects[0].key, "/presets/") {
+		t.Fatalf("vanilla objects = %#v; want only validated source preset", objects.objects)
+	}
+	if len(notifications.requests) != 1 || notifications.requests[0].Kind != domain.NotificationSessionCard || notifications.requests[0].Attachment != nil {
+		t.Fatalf("vanilla notifications = %#v; want card without active modlist", notifications.requests)
 	}
 }
 

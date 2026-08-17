@@ -17,8 +17,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/discord/componentid"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
 	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
@@ -27,6 +29,19 @@ var testNow = time.Date(2026, 8, 3, 20, 0, 0, 0, time.UTC)
 
 type fixedClock struct {
 	now time.Time
+}
+
+type sequencePlayerQuery struct {
+	statuses []domain.PlayerStatus
+	index    int
+}
+
+func (query *sequencePlayerQuery) Query(context.Context, string) (domain.PlayerStatus, error) {
+	status := query.statuses[query.index]
+	if query.index < len(query.statuses)-1 {
+		query.index++
+	}
+	return status, nil
 }
 
 type discardCommandQueue struct{}
@@ -283,7 +298,8 @@ func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testi
 	}
 	cardRequests := cards.Requests()
 	if len(cardRequests) != 1 || cardRequests[0].Kind != domain.NotificationSessionCard ||
-		cardRequests[0].SessionID != session.ID || !strings.Contains(cardRequests[0].Content, "Setting up: Saturday Arma") {
+		cardRequests[0].SessionID != session.ID || cardRequests[0].CardRevision != session.Version ||
+		!strings.Contains(cardRequests[0].Content, "Setting up: Saturday Arma") {
 		t.Fatalf("card requests = %#v; want one replay-safe public card", cardRequests)
 	}
 }
@@ -562,6 +578,119 @@ func TestHandlerAuthorizesComponentBeforeReturningStaleResponse(t *testing.T) {
 	}
 }
 
+func TestHandlerExecutesAuthorizedRevisionBoundCardControls(t *testing.T) {
+	t.Parallel()
+	handler, repository, _, notifications, privateKey := newTestHandlerWithQueues(
+		t, []string{"correlation-refresh-1", "correlation-refresh-2"}, nil,
+	)
+	session := seedCardControlSession(t, repository)
+	token := sessioncard.ControlToken(session.ID)
+	click := func(action string, revision uint64) interactionResponse {
+		t.Helper()
+		customID, err := componentid.New(action, revision, token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := executeSignedRequest(t, handler, privateKey, cardControlBody(action, customID), testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		if response.Code != http.StatusOK || decoded.Type != interactionResponseChannelMessageWithSource ||
+			decoded.Data == nil || decoded.Data.Flags != messageFlagEphemeral || decoded.Data.AllowedMentions == nil ||
+			len(decoded.Data.AllowedMentions.Parse) != 0 {
+			t.Fatalf("%s response = %#v", action, decoded)
+		}
+		return decoded
+	}
+
+	details := click(componentid.ActionViewDetails, uint64(session.Version))
+	if !strings.Contains(details.Data.Content, "Slug: `card-controls`") || strings.Contains(details.Data.Content, session.ID) {
+		t.Fatalf("details = %q", details.Data.Content)
+	}
+	help := click(componentid.ActionHelp, uint64(session.Version))
+	if !strings.Contains(help.Data.Content, "Card controls are read-only") || !strings.Contains(help.Data.Content, "/rb setup") {
+		t.Fatalf("help = %q", help.Data.Content)
+	}
+	download := click(componentid.ActionDownload, uint64(session.Version))
+	if !strings.Contains(download.Data.Content, "https://discord.com/channels/guild-1/channel-1/modlist-message-1") ||
+		!strings.Contains(download.Data.Content, "card-controls-modlist.html") {
+		t.Fatalf("download = %q", download.Data.Content)
+	}
+	refresh := click(componentid.ActionRefresh, uint64(session.Version-1))
+	if !strings.Contains(refresh.Data.Content, "latest persisted revision was queued") {
+		t.Fatalf("refresh = %q", refresh.Data.Content)
+	}
+	requests := notifications.Requests()
+	if len(requests) != 1 || requests[0].Kind != domain.NotificationSessionCard ||
+		requests[0].CardRevision != session.Version || !strings.HasPrefix(requests[0].NotificationID, "card-refresh-") {
+		t.Fatalf("refresh notifications = %#v", requests)
+	}
+	currentRefresh := click(componentid.ActionRefresh, uint64(session.Version))
+	if !strings.Contains(currentRefresh.Data.Content, "bounded live-player check") || len(notifications.Requests()) != 1 {
+		t.Fatalf("bounded refresh = %q notifications=%#v", currentRefresh.Data.Content, notifications.Requests())
+	}
+
+	stale := click(componentid.ActionHelp, uint64(session.Version-1))
+	if !strings.Contains(stale.Data.Content, "card changed") || len(notifications.Requests()) != 1 {
+		t.Fatalf("stale help = %q notifications=%#v", stale.Data.Content, notifications.Requests())
+	}
+}
+
+func TestHandlerRateLimitsChangedLiveRefreshWithinWindow(t *testing.T) {
+	t.Parallel()
+	handler, repository, _, notifications, privateKey := newTestHandlerWithQueues(
+		t, []string{"correlation-live-refresh-1", "correlation-live-refresh-2"}, nil,
+	)
+	seedRunningHandlerSession(t, repository)
+	session, err := repository.Get(context.Background(), "running-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.playerQuery = &sequencePlayerQuery{statuses: []domain.PlayerStatus{
+		{PlayerCount: 1, MaxPlayers: 32}, {PlayerCount: 2, MaxPlayers: 32},
+	}}
+	customID, err := componentid.New(componentid.ActionRefresh, uint64(session.Version), sessioncard.ControlToken(session.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := cardControlBody(componentid.ActionRefresh, customID)
+	first := executeSignedRequest(t, handler, privateKey, body, testNow)
+	second := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var firstResponse, secondResponse interactionResponse
+	decodeResponse(t, first, &firstResponse)
+	decodeResponse(t, second, &secondResponse)
+	if firstResponse.Data == nil || !strings.Contains(firstResponse.Data.Content, "refresh queued") ||
+		secondResponse.Data == nil || !strings.Contains(secondResponse.Data.Content, "already queued") {
+		t.Fatalf("refresh responses first=%#v second=%#v", firstResponse, secondResponse)
+	}
+	requests := notifications.Requests()
+	if len(requests) != 1 || !strings.Contains(requests[0].Content, "**Players:** `1/32`") {
+		t.Fatalf("rate-limited refresh requests = %#v", requests)
+	}
+}
+
+func TestHandlerRejectsCardControlFromWrongChannel(t *testing.T) {
+	t.Parallel()
+	handler, repository, privateKey := newTestHandler(t, nil, nil)
+	session := seedCardControlSession(t, repository)
+	token := sessioncard.ControlToken(session.ID)
+	customID, err := componentid.New(componentid.ActionViewDetails, uint64(session.Version), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := cardControlBody(componentid.ActionViewDetails, customID)
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["channel_id"] = "channel-other"
+	response := executeSignedRequest(t, handler, privateKey, marshalPayload(payload), testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "not authorized") {
+		t.Fatalf("wrong-channel response = %#v", decoded)
+	}
+}
+
 func TestHandlerOpensCreateModalWithoutPersistingSession(t *testing.T) {
 	t.Parallel()
 
@@ -751,7 +880,7 @@ func TestHandlerSetupModalPrefillsDraftAndQueuesOnlyRejectedReplacement(t *testi
 		t.Fatalf("replacement requests = %#v; want preset only", requests)
 	}
 	if cardRequests := cards.Requests(); len(cardRequests) != 1 || cardRequests[0].SessionID != stored.ID ||
-		!strings.Contains(cardRequests[0].Content, "Renamed Setup") {
+		cardRequests[0].CardRevision != stored.Version || !strings.Contains(cardRequests[0].Content, "Renamed Setup") {
 		t.Fatalf("setup card refreshes = %#v", cardRequests)
 	}
 }
@@ -874,6 +1003,70 @@ func TestHandlerRejectsAccessConfigurationWithoutGuildManagementPermission(t *te
 	decodeResponse(t, response, &decoded)
 	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Manage Server") || decoded.Data.Components != nil {
 		t.Fatalf("unauthorized admin response = %#v", decoded)
+	}
+}
+
+func TestHandlerAdminRepairCardAutocompleteIsGuildScopedAndManagerOnly(t *testing.T) {
+	t.Parallel()
+	handler, repository, _, notifications, privateKey := newTestHandlerWithQueues(t, nil, nil)
+	seedAutocompleteSession(t, repository, "session-owned", "Owned Session", "owned-session", "owner-1", "guild-1")
+	seedAutocompleteSession(t, repository, "session-other-owner", "Other Session", "other-session", "owner-2", "guild-1")
+	seedAutocompleteSession(t, repository, "session-other-guild", "Elsewhere", "elsewhere", "owner-2", "guild-2")
+	seedHandlerSessionState(t, repository, "session-terminated", "Terminated", "terminated", "owner-2", "guild-1", domain.StateDeleted)
+
+	response := executeSignedRequest(t, handler, privateKey, adminRepairAutocompleteBody("autocomplete-repair", "manager-1", "32"), testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Type != interactionResponseAutocompleteResult || decoded.Data == nil || decoded.Data.Choices == nil {
+		t.Fatalf("admin autocomplete response = %#v", decoded)
+	}
+	values := map[any]bool{}
+	for _, choice := range *decoded.Data.Choices {
+		values[choice.Value] = true
+	}
+	if !values["session-owned"] || !values["session-other-owner"] || values["session-other-guild"] || values["session-terminated"] {
+		t.Fatalf("admin autocomplete values = %#v", values)
+	}
+
+	unauthorized := executeSignedRequest(t, handler, privateKey, adminRepairAutocompleteBody("autocomplete-repair-denied", "member-1", "0"), testNow)
+	var denied interactionResponse
+	decodeResponse(t, unauthorized, &denied)
+	if denied.Type != interactionResponseAutocompleteResult || denied.Data == nil || denied.Data.Choices == nil || len(*denied.Data.Choices) != 0 {
+		t.Fatalf("unauthorized admin autocomplete = %#v", denied)
+	}
+	if len(notifications.Requests()) != 0 {
+		t.Fatalf("autocomplete queued notifications = %#v", notifications.Requests())
+	}
+}
+
+func TestHandlerGuildManagerQueuesIdempotentCurrentCardRepair(t *testing.T) {
+	t.Parallel()
+	handler, repository, _, notifications, privateKey := newTestHandlerWithQueues(
+		t, []string{"correlation-repair-1", "correlation-repair-2"}, nil,
+	)
+	seedAutocompleteSession(t, repository, "session-repair", "Repair Me", "repair-me", "owner-2", "guild-1")
+	body := adminRepairCommandBody("interaction-repair", "manager-1", "32", "session-repair")
+	for attempt := 1; attempt <= 2; attempt++ {
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "repair queued") ||
+			!strings.Contains(decoded.Data.Content, "original channel") {
+			t.Fatalf("repair attempt %d response = %#v", attempt, decoded)
+		}
+	}
+	requests := notifications.Requests()
+	if len(requests) != 1 || requests[0].NotificationID != "card-admin-repair-interaction-repair" ||
+		requests[0].SessionID != "session-repair" || requests[0].ChannelID != "channel-1" ||
+		requests[0].CardRevision != 1 || strings.Contains(requests[0].Content, "session-repair") {
+		t.Fatalf("repair notifications = %#v", requests)
+	}
+
+	denied := executeSignedRequest(t, handler, privateKey, adminRepairCommandBody("interaction-repair-denied", "member-1", "0", "session-repair"), testNow)
+	var deniedResponse interactionResponse
+	decodeResponse(t, denied, &deniedResponse)
+	if deniedResponse.Data == nil || !strings.Contains(deniedResponse.Data.Content, "Manage Server") || len(notifications.Requests()) != 1 {
+		t.Fatalf("denied repair response = %#v notifications=%#v", deniedResponse, notifications.Requests())
 	}
 }
 
@@ -1306,6 +1499,52 @@ func seedHandlerSessionState(
 	}
 }
 
+func seedCardControlSession(t *testing.T, repository *memory.SessionRepository) domain.Session {
+	t.Helper()
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: "session-card-controls", Slug: "card-controls", DisplayName: "Card Controls", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.PresetArtifactStatus = domain.ArtifactAccepted
+	session.PresetObjectKey = "sessions/session-card-controls/input/presets/source.html"
+	if err := session.RecordMutation(testNow.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	event := domain.NewSessionCreatedEvent(
+		"event-session-card-controls", "correlation-card-controls", testActorForInteraction("owner-1"), session, testNow,
+	)
+	record, err := domain.NewCompletedIdempotencyRecord(
+		"seed:session-card-controls", "hash-session-card-controls", session.ID, testNow, time.Hour,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, record); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SaveModlistReference(context.Background(), domain.SessionModlistReference{
+		SessionID: session.ID, ChannelID: session.ChannelID, MessageID: "modlist-message-1",
+		ObjectKey: "sessions/session-card-controls/input/modlists/digest/card-controls-modlist.html",
+		Filename:  "card-controls-modlist.html", DeliveredRevision: 1,
+		DeliveredNotificationID: "modlist-card-controls", ContentSHA256: strings.Repeat("a", 64),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return session
+}
+
+func cardControlBody(action string, customID string) []byte {
+	return marshalPayload(map[string]any{
+		"id": "component-" + action, "application_id": "app-1", "type": interactionTypeMessageComponent,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "member-2"}, "roles": []string{"role-1"}},
+		"data":   map[string]any{"custom_id": customID, "component_type": componentTypeButton},
+	})
+}
+
 func testActorForInteraction(userID string) domain.Actor {
 	return domain.Actor{Type: domain.ActorTypeDiscordUser, ID: userID}
 }
@@ -1597,6 +1836,40 @@ func adminAccessCommandBodyWithPermissions(interactionID, ownerID, guildID, chan
 			"name": "admin",
 			"options": []any{map[string]any{
 				"type": applicationCommandOptionSubcommand, "name": "access",
+			}},
+		},
+	})
+}
+
+func adminRepairCommandBody(interactionID, ownerID, permissions, sessionReference string) []byte {
+	return marshalPayload(map[string]any{
+		"id": interactionID, "application_id": "app-1", "type": interactionTypeApplicationCommand,
+		"guild_id": "guild-1", "channel_id": "channel-other",
+		"member": map[string]any{"user": map[string]any{"id": ownerID}, "roles": []string{}, "permissions": permissions},
+		"data": map[string]any{
+			"name": "admin",
+			"options": []any{map[string]any{
+				"type": applicationCommandOptionSubcommand, "name": "repair-card",
+				"options": []any{map[string]any{
+					"type": applicationCommandOptionString, "name": "session", "value": sessionReference,
+				}},
+			}},
+		},
+	})
+}
+
+func adminRepairAutocompleteBody(interactionID, ownerID, permissions string) []byte {
+	return marshalPayload(map[string]any{
+		"id": interactionID, "application_id": "app-1", "type": interactionTypeApplicationCommandAutocomplete,
+		"guild_id": "guild-1", "channel_id": "channel-other",
+		"member": map[string]any{"user": map[string]any{"id": ownerID}, "roles": []string{}, "permissions": permissions},
+		"data": map[string]any{
+			"name": "admin",
+			"options": []any{map[string]any{
+				"type": applicationCommandOptionSubcommand, "name": "repair-card",
+				"options": []any{map[string]any{
+					"type": applicationCommandOptionString, "name": "session", "value": "", "focused": true,
+				}},
 			}},
 		},
 	})

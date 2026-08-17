@@ -67,6 +67,13 @@ not claim that uploads are valid before workers accept them. A partial failure
 retains the draft and successful artifact. `/rb setup` reuses the same
 contracts to edit allowed draft fields or replace only missing/rejected input.
 
+Creation must not allocate billable game infrastructure automatically. Once a
+draft is ready, one `/rb start` request owns the full user-visible transition
+through infrastructure provisioning, game/content bootstrap, health checks,
+and playable readiness. Users must not issue a second start merely to advance
+from provisioned infrastructure into bootstrap. A repeated start while that
+operation is active returns the existing operation and progress.
+
 ### Public status card
 
 The card projection is authoritative and derived from persisted state. Show

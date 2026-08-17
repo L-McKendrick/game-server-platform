@@ -26,10 +26,16 @@ type SessionCardRepository interface {
 	Get(ctx context.Context, sessionID string) (domain.Session, error)
 	GetCardReference(ctx context.Context, sessionID string) (domain.SessionCardReference, error)
 	SaveCardReference(ctx context.Context, reference domain.SessionCardReference) error
+	GetModlistReference(ctx context.Context, sessionID string) (domain.SessionModlistReference, error)
+	SaveModlistReference(ctx context.Context, reference domain.SessionModlistReference) error
 }
 
 type ObjectStore interface {
 	Put(ctx context.Context, key string, contentType string, body []byte, sha256Base64 string) error
+}
+
+type ObjectReader interface {
+	Get(ctx context.Context, key string) ([]byte, error)
 }
 
 type ArchiveCommandStatus struct {

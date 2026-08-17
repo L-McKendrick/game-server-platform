@@ -356,6 +356,12 @@ data "aws_iam_policy_document" "command_worker" {
   }
 
   statement {
+    sid       = "PublishCardProgress"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.notifications.arn]
+  }
+
+  statement {
     sid = "RuntimeLogDelivery"
     actions = [
       "logs:CreateLogStream",
@@ -405,6 +411,7 @@ resource "aws_lambda_function" "command_worker" {
       ARCHIVE_STATE_MACHINE_ARN   = aws_sfn_state_machine.workflow["ArchiveSession"].arn
       RESTORE_STATE_MACHINE_ARN   = aws_sfn_state_machine.workflow["RestoreSession"].arn
       TERMINATE_STATE_MACHINE_ARN = aws_sfn_state_machine.workflow["DestroySession"].arn
+      NOTIFICATION_QUEUE_URL      = aws_sqs_queue.notifications.url
       DISCORD_PUBLIC_KEY          = var.discord_public_key
       DISCORD_APPLICATION_ID      = var.discord_application_id
       DISCORD_ALLOWED_GUILD_IDS   = join(",", sort(tolist(var.discord_allowed_guild_ids)))

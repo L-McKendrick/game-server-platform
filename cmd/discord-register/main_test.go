@@ -86,4 +86,9 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAndAdmin(t *testing.T)
 	if len(targeting) != 0 {
 		t.Fatalf("session-targeting commands not verified: %#v", targeting)
 	}
+	if len(received[1].Options) != 2 || received[1].Options[1].Name != "repair-card" ||
+		len(received[1].Options[1].Options) != 1 || received[1].Options[1].Options[0].Name != "session" ||
+		!received[1].Options[1].Options[0].Autocomplete {
+		t.Fatalf("admin repair-card definition = %#v", received[1].Options)
+	}
 }

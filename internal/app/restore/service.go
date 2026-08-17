@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/L-McKendrick/game-server-platform/internal/app/provisioning"
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -97,10 +98,18 @@ func (service *Service) Handle(ctx context.Context, request TaskRequest) (TaskRe
 	case ActionCheckManaged:
 		return service.checkManaged(ctx, session, workflow)
 	case ActionDispatchBootstrap:
+		session, err = service.advanceProgress(ctx, session, workflow, domain.ProgressGameContentSetup)
+		if err != nil {
+			return TaskResult{}, err
+		}
 		return service.dispatch(ctx, session, workflow, service.bootstrap)
 	case ActionObserveBootstrap:
 		return service.observeCommand(ctx, session, workflow, request.CommandID, service.bootstrap)
 	case ActionDispatchRestore:
+		session, err = service.advanceProgress(ctx, session, workflow, domain.ProgressHealthVerification)
+		if err != nil {
+			return TaskResult{}, err
+		}
 		return service.dispatch(ctx, session, workflow, service.restore)
 	case ActionObserveRestore:
 		return service.observeCommand(ctx, session, workflow, request.CommandID, service.restore)
@@ -209,6 +218,12 @@ func (service *Service) checkManaged(ctx context.Context, session domain.Session
 	if err != nil {
 		return TaskResult{}, err
 	}
+	if managed {
+		session, err = service.advanceProgress(ctx, session, workflow, domain.ProgressInfrastructureReady)
+		if err != nil {
+			return TaskResult{}, err
+		}
+	}
 	response := result(session, workflow)
 	response.Managed = managed
 	return response, nil
@@ -261,12 +276,7 @@ func (service *Service) complete(ctx context.Context, session domain.Session, wo
 	}
 	response := result(session, workflow)
 	response.Succeeded = true
-	if service.notifications != nil {
-		id, idErr := service.ids.New(now)
-		if idErr == nil {
-			response.Warning = notificationWarning(service.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: id, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: "**Session restored**\nSession: `" + session.ID + "`\nA new host and data volume passed archive, bootstrap, and service-health verification.", CorrelationID: workflow.CorrelationID, RequestedAt: now}))
-		}
-	}
+	response.Warning = notificationWarning(sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now))
 	return response, nil
 }
 
@@ -304,7 +314,29 @@ func (service *Service) fail(ctx context.Context, session domain.Session, workfl
 		return TaskResult{}, err
 	}
 	response := result(session, workflow)
+	response.Warning = notificationWarning(sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now))
 	return response, nil
+}
+
+func (service *Service) advanceProgress(ctx context.Context, session domain.Session, workflow domain.Workflow, milestone domain.ProgressMilestone) (domain.Session, error) {
+	expected, now := session.Version, service.clock.Now().UTC()
+	changed, err := session.AdvanceProgress(workflow.ID, milestone, now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if !changed {
+		return session, nil
+	}
+	id, err := service.ids.New(now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.NewProgressMilestoneEvent(id, workflow, session, now)
+	if err := service.stages.SaveProvisioningStage(ctx, session, expected, event); err != nil {
+		return domain.Session{}, err
+	}
+	_ = sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now)
+	return session, nil
 }
 
 func (service *Service) load(ctx context.Context, request TaskRequest) (domain.Session, domain.Workflow, error) {

@@ -118,6 +118,9 @@ func (session *Session) CompleteArchive(workflowID string, now time.Time) error 
 	if session.LifecycleState != StateDestroying || session.Archive.Validate() != nil {
 		return fmt.Errorf("%w: verified archive is required before destruction completes", ErrInvalidTransition)
 	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressCompleted, now); err != nil {
+		return err
+	}
 	session.Infrastructure = Infrastructure{}
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateArchived, StateArchived, StateArchived
 	session.HealthStatus = HealthStopped
@@ -134,6 +137,9 @@ func (session *Session) AbortArchiveWorkflowStart(workflowID string, now time.Ti
 	if session.ArchiveSourceState != StateRunning && session.ArchiveSourceState != StateIdle {
 		return fmt.Errorf("%w: archive source state is invalid", ErrConflict)
 	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
+		return err
+	}
 	sourceState := session.ArchiveSourceState
 	session.ArchiveSourceState = ""
 	session.DesiredState, session.ObservedState, session.LifecycleState = sourceState, sourceState, sourceState
@@ -147,6 +153,9 @@ func (session *Session) AbortArchiveWorkflowStart(workflowID string, now time.Ti
 func (session *Session) FailArchive(workflowID string, now time.Time) error {
 	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) || session.ActiveWorkflowType != ArchiveWorkflowType {
 		return ErrConflict
+	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
+		return err
 	}
 	session.ArchiveSourceState = ""
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateFailed, StateFailed, StateFailed
@@ -213,6 +222,9 @@ func (session *Session) CompleteRestore(workflowID string, now time.Time) error 
 	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" {
 		return fmt.Errorf("%w: restored infrastructure is incomplete", ErrInvalidTransition)
 	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressCompleted, now); err != nil {
+		return err
+	}
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateRunning, StateRunning, StateRunning
 	session.HealthStatus = HealthHealthy
 	session.clearWorkflowLock()
@@ -223,6 +235,9 @@ func (session *Session) CompleteRestore(workflowID string, now time.Time) error 
 
 func (session *Session) FailRestore(workflowID string, now time.Time) error {
 	if err := session.requireRestoreWorkflow(workflowID); err != nil {
+		return err
+	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
 		return err
 	}
 	session.ObservedState, session.LifecycleState = StateFailed, StateFailed
@@ -239,6 +254,9 @@ func (session *Session) AbortRestoreWorkflowStart(workflowID string, now time.Ti
 	}
 	if !session.Infrastructure.Empty() {
 		return fmt.Errorf("%w: restore resources already exist", ErrConflict)
+	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
+		return err
 	}
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateArchived, StateArchived, StateArchived
 	session.HealthStatus = HealthStopped

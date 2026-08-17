@@ -107,6 +107,9 @@ func (session *Session) AcquireProvisioningWorkflowLock(workflowID string, lease
 	session.ActiveWorkflowType = "ProvisionSession"
 	session.ActiveWorkflowStartedAt = now
 	session.ActiveWorkflowLeaseExpiresAt = now.Add(lease)
+	if err := session.beginProgress(workflowID, "ProvisionSession", now); err != nil {
+		return err
+	}
 	session.DesiredState = StateRunning
 	session.ObservedState = StateValidating
 	session.LifecycleState = StateValidating
@@ -181,6 +184,9 @@ func (session *Session) CompleteInfrastructureProvisioning(workflowID string, no
 	if session.LifecycleState != StateProvisioning || session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" {
 		return fmt.Errorf("%w: complete infrastructure is required", ErrInvalidTransition)
 	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressInfrastructureReady, now); err != nil {
+		return err
+	}
 	session.ObservedState = StateBootstrapping
 	session.LifecycleState = StateBootstrapping
 	session.ActiveWorkflowID = ""
@@ -196,6 +202,9 @@ func (session *Session) CompleteInfrastructureProvisioning(workflowID string, no
 // explicit reconciliation and cleanup while releasing the workflow lease.
 func (session *Session) FailInfrastructureProvisioning(workflowID string, now time.Time) error {
 	if err := session.requireProvisioningWorkflow(workflowID); err != nil {
+		return err
+	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
 		return err
 	}
 	session.ObservedState = StateFailed
@@ -218,6 +227,9 @@ func (session *Session) AbortProvisioningWorkflowStart(workflowID string, now ti
 	}
 	if session.Infrastructure.InstanceID != "" || session.Infrastructure.CapacitySlotID != "" {
 		return fmt.Errorf("%w: provisioning resources already exist", ErrConflict)
+	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
+		return err
 	}
 	session.DesiredState = StateNew
 	session.ObservedState = StateNew

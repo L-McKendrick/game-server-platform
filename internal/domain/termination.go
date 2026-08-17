@@ -32,6 +32,9 @@ func (session *Session) CompleteTermination(workflowID string, now time.Time) er
 	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) || session.ActiveWorkflowType != TerminationWorkflowType || session.LifecycleState != StateDeleting {
 		return ErrConflict
 	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressCompleted, now); err != nil {
+		return err
+	}
 	session.Infrastructure = Infrastructure{}
 	session.Archive = ArchiveMetadata{}
 	session.MissionObjectKey = ""
@@ -50,6 +53,9 @@ func (session *Session) FailTermination(workflowID string, now time.Time) error 
 	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) || session.ActiveWorkflowType != TerminationWorkflowType {
 		return ErrConflict
 	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
+		return err
+	}
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateDeleted, StateFailed, StateFailed
 	session.HealthStatus = HealthUnhealthy
 	session.clearWorkflowLock()
@@ -61,6 +67,9 @@ func (session *Session) FailTermination(workflowID string, now time.Time) error 
 func (session *Session) AbortTerminationWorkflowStart(workflowID string, now time.Time) error {
 	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) || session.ActiveWorkflowType != TerminationWorkflowType || session.LifecycleState != StateDeleting {
 		return ErrConflict
+	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
+		return err
 	}
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateDeleted, StateFailed, StateFailed
 	session.HealthStatus = HealthUnhealthy

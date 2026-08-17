@@ -7,11 +7,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/discord/componentid"
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -75,9 +79,11 @@ func (sender *Sender) Send(ctx context.Context, request domain.NotificationReque
 	return nil
 }
 
-// SendCard idempotently creates or edits a bot-authored session card. Discord
-// enforces nonce uniqueness for creates and returns the existing message when a
-// delivery retry uses the same nonce.
+// SendCard creates or edits a bot-authored session card through the channel
+// message API and a bot token, independently of interaction webhook tokens.
+// The enforced nonce protects an ambiguous create retry during Discord's
+// documented short deduplication window; durable edit idempotency is owned by
+// the notification worker's persisted delivery reference.
 func (sender *Sender) SendCard(ctx context.Context, request domain.NotificationRequest, messageID string) (string, error) {
 	if err := request.Validate(); err != nil {
 		return "", err
@@ -93,48 +99,223 @@ func (sender *Sender) SendCard(ctx context.Context, request domain.NotificationR
 		"content":          request.Content,
 		"allowed_mentions": map[string]any{"parse": []string{}},
 	}
-	method := http.MethodPatch
-	endpoint := sender.apiBase + "/channels/" + request.ChannelID + "/messages/" + strings.TrimSpace(messageID)
-	if strings.TrimSpace(messageID) == "" {
-		method = http.MethodPost
+	components, err := sessionCardControls(request)
+	if err != nil {
+		return "", err
+	}
+	if len(components) > 0 {
+		payload["components"] = components
+	}
+	messageID = strings.TrimSpace(messageID)
+	if messageID != "" {
+		result, status, sendErr := sender.sendCardRequest(ctx, token, request, payload, http.MethodPatch, messageID)
+		if sendErr == nil {
+			return result, nil
+		}
+		if status != http.StatusNotFound {
+			return "", sendErr
+		}
+	}
+	result, _, err := sender.sendCardRequest(ctx, token, request, payload, http.MethodPost, "")
+	return result, err
+}
+
+func (sender *Sender) sendCardRequest(
+	ctx context.Context,
+	token string,
+	request domain.NotificationRequest,
+	basePayload map[string]any,
+	method string,
+	messageID string,
+) (string, int, error) {
+	payload := make(map[string]any, len(basePayload)+2)
+	for key, value := range basePayload {
+		payload[key] = value
+	}
+	endpoint := sender.apiBase + "/channels/" + request.ChannelID + "/messages/" + messageID
+	if method == http.MethodPost {
 		endpoint = sender.apiBase + "/channels/" + request.ChannelID + "/messages"
-		digest := sha256.Sum256([]byte(request.SessionID))
-		payload["nonce"] = fmt.Sprintf("%x", digest[:12])
+		payload["nonce"] = notificationNonce("card", request)
 		payload["enforce_nonce"] = true
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	httpRequest, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	httpRequest.Header.Set("Authorization", "Bot "+token)
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("User-Agent", "game-server-platform-notifications/1")
 	response, err := sender.client.Do(httpRequest)
 	if err != nil {
-		return "", fmt.Errorf("deliver Discord session card: %w", err)
+		return "", 0, fmt.Errorf("deliver Discord session card: %w", err)
 	}
 	defer response.Body.Close()
 	responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, 64*1024))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("Discord session card returned %s: %s", response.Status, strings.TrimSpace(string(responseBody)))
+		return "", response.StatusCode, fmt.Errorf("Discord session card returned %s: %s", response.Status, strings.TrimSpace(string(responseBody)))
 	}
 	if readErr != nil {
-		return "", fmt.Errorf("read Discord session card response: %w", readErr)
+		return "", response.StatusCode, fmt.Errorf("read Discord session card response: %w", readErr)
 	}
 	var message struct {
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(responseBody, &message); err != nil {
-		return "", fmt.Errorf("decode Discord session card response: %w", err)
+		return "", response.StatusCode, fmt.Errorf("decode Discord session card response: %w", err)
 	}
 	if strings.TrimSpace(message.ID) == "" {
-		return "", fmt.Errorf("Discord session card response omitted message ID")
+		return "", response.StatusCode, fmt.Errorf("Discord session card response omitted message ID")
 	}
-	return strings.TrimSpace(message.ID), nil
+	return strings.TrimSpace(message.ID), response.StatusCode, nil
+}
+
+func sessionCardControls(request domain.NotificationRequest) ([]map[string]any, error) {
+	if request.CardRevision < 1 {
+		return nil, nil
+	}
+	token := sessioncard.ControlToken(request.SessionID)
+	if token == "" {
+		return nil, nil
+	}
+	revision := uint64(request.CardRevision)
+	type control struct {
+		action string
+		label  string
+		style  int
+	}
+	controls := []control{
+		{componentid.ActionViewDetails, "View details", 2},
+		{componentid.ActionRefresh, "Refresh", 1},
+		{componentid.ActionDownload, "Download modlist", 2},
+		{componentid.ActionHelp, "Help", 2},
+	}
+	buttons := make([]map[string]any, 0, len(controls))
+	for _, control := range controls {
+		customID, customIDErr := componentid.New(control.action, revision, token)
+		if customIDErr != nil {
+			return nil, fmt.Errorf("build session card control: %w", customIDErr)
+		}
+		buttons = append(buttons, map[string]any{
+			"type": 2, "style": control.style, "label": control.label, "custom_id": customID,
+		})
+	}
+	return []map[string]any{{"type": 1, "components": buttons}}, nil
+}
+
+// SendModlist edits the stable attachment message when it exists. A 404 means
+// the bot-authored message was deleted, so the same durable S3 body is posted
+// as a replacement and its new ID is returned for persistence.
+func (sender *Sender) SendModlist(ctx context.Context, request domain.NotificationRequest, body []byte, messageID string) (string, error) {
+	if err := request.Validate(); err != nil {
+		return "", err
+	}
+	if request.Kind != domain.NotificationSessionModlist || request.Attachment == nil {
+		return "", fmt.Errorf("notification is not a session modlist")
+	}
+	if int64(len(body)) != request.Attachment.SizeBytes {
+		return "", fmt.Errorf("modlist body size does not match notification metadata")
+	}
+	digest := sha256.Sum256(body)
+	if fmt.Sprintf("%x", digest[:]) != request.Attachment.SHA256 {
+		return "", fmt.Errorf("modlist body checksum does not match notification metadata")
+	}
+	token, err := sender.botToken(ctx)
+	if err != nil {
+		return "", err
+	}
+	messageID = strings.TrimSpace(messageID)
+	if messageID != "" {
+		result, status, sendErr := sender.sendModlistRequest(ctx, token, request, body, http.MethodPatch, messageID)
+		if sendErr == nil {
+			return result, nil
+		}
+		if status != http.StatusNotFound {
+			return "", sendErr
+		}
+	}
+	result, _, err := sender.sendModlistRequest(ctx, token, request, body, http.MethodPost, "")
+	return result, err
+}
+
+func (sender *Sender) sendModlistRequest(ctx context.Context, token string, request domain.NotificationRequest, body []byte, method, messageID string) (string, int, error) {
+	payload := map[string]any{
+		"content":          request.Content,
+		"allowed_mentions": map[string]any{"parse": []string{}},
+		"attachments": []map[string]any{{
+			"id": 0, "filename": request.Attachment.Filename,
+			"description": "Sanitized Arma 3 Launcher modlist",
+		}},
+	}
+	endpoint := sender.apiBase + "/channels/" + request.ChannelID + "/messages/" + messageID
+	if method == http.MethodPost {
+		endpoint = sender.apiBase + "/channels/" + request.ChannelID + "/messages"
+		payload["nonce"] = notificationNonce("modlist", request)
+		payload["enforce_nonce"] = true
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return "", 0, err
+	}
+	var encoded bytes.Buffer
+	writer := multipart.NewWriter(&encoded)
+	payloadPart, err := writer.CreateFormField("payload_json")
+	if err != nil {
+		return "", 0, err
+	}
+	if _, err := payloadPart.Write(payloadJSON); err != nil {
+		return "", 0, err
+	}
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="files[0]"; filename="%s"`, request.Attachment.Filename))
+	header.Set("Content-Type", request.Attachment.ContentType)
+	filePart, err := writer.CreatePart(header)
+	if err != nil {
+		return "", 0, err
+	}
+	if _, err := filePart.Write(body); err != nil {
+		return "", 0, err
+	}
+	if err := writer.Close(); err != nil {
+		return "", 0, err
+	}
+	httpRequest, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(encoded.Bytes()))
+	if err != nil {
+		return "", 0, err
+	}
+	httpRequest.Header.Set("Authorization", "Bot "+token)
+	httpRequest.Header.Set("Content-Type", writer.FormDataContentType())
+	httpRequest.Header.Set("User-Agent", "game-server-platform-notifications/1")
+	response, err := sender.client.Do(httpRequest)
+	if err != nil {
+		return "", 0, fmt.Errorf("deliver Discord session modlist: %w", err)
+	}
+	defer response.Body.Close()
+	responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, 64*1024))
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", response.StatusCode, fmt.Errorf("Discord session modlist returned %s: %s", response.Status, strings.TrimSpace(string(responseBody)))
+	}
+	if readErr != nil {
+		return "", response.StatusCode, fmt.Errorf("read Discord session modlist response: %w", readErr)
+	}
+	var message struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(responseBody, &message); err != nil {
+		return "", response.StatusCode, fmt.Errorf("decode Discord session modlist response: %w", err)
+	}
+	if strings.TrimSpace(message.ID) == "" {
+		return "", response.StatusCode, fmt.Errorf("Discord session modlist response omitted message ID")
+	}
+	return strings.TrimSpace(message.ID), response.StatusCode, nil
+}
+
+func notificationNonce(kind string, request domain.NotificationRequest) string {
+	digest := sha256.Sum256([]byte(kind + ":" + request.SessionID + ":" + request.NotificationID))
+	return fmt.Sprintf("%x", digest[:12])
 }
 
 func (sender *Sender) botToken(ctx context.Context) (string, error) {

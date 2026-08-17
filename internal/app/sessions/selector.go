@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
 
@@ -39,6 +40,42 @@ type ResolveQuery struct {
 	Reference        string
 	CanManageGuild   bool
 	AllowGuildMember bool
+}
+
+// CardControlQuery resolves a one-way public-card token only within the
+// authorized Discord guild. It never accepts a visible name or slug fallback.
+type CardControlQuery struct {
+	Actor   domain.Actor
+	GuildID string
+	Token   string
+}
+
+func (service *Service) ResolveCardControl(ctx context.Context, query CardControlQuery) (domain.Session, error) {
+	if err := query.Actor.Validate(); err != nil {
+		return domain.Session{}, fmt.Errorf("validate actor: %w", err)
+	}
+	guildID, token := strings.TrimSpace(query.GuildID), strings.TrimSpace(query.Token)
+	if guildID == "" || !sessioncard.ValidControlToken(token) {
+		return domain.Session{}, domain.ErrNotFound
+	}
+	sessions, err := service.selectableSessions(ctx, query.Actor, guildID, true)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	var matched domain.Session
+	for _, session := range sessions {
+		if session.GuildID != guildID || sessioncard.ControlToken(session.ID) != token {
+			continue
+		}
+		if matched.ID != "" {
+			return domain.Session{}, fmt.Errorf("card control token is ambiguous: %w", domain.ErrConflict)
+		}
+		matched = session
+	}
+	if matched.ID == "" {
+		return domain.Session{}, domain.ErrNotFound
+	}
+	return matched, nil
 }
 
 // Resolve accepts the immutable ID carried by autocomplete or an exact slug.

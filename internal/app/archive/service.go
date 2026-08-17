@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -279,7 +280,7 @@ func (service *Service) complete(ctx context.Context, session domain.Session, wo
 	if err := service.workflows.CompleteWorkflow(ctx, session, expectedVersion, workflow, event); err != nil {
 		return TaskResult{}, err
 	}
-	service.notify(ctx, session, workflow, metadata)
+	service.notify(ctx, session, workflow)
 	result := taskResult(session, workflow)
 	result.Done, result.Succeeded = true, true
 	result.ObjectKey, result.SHA256, result.SizeBytes, result.ManifestObjectKey, result.ManifestSHA256, result.ManifestSizeBytes = metadata.ObjectKey, metadata.SHA256, metadata.SizeBytes, metadata.ManifestObjectKey, metadata.ManifestSHA256, metadata.ManifestSizeBytes
@@ -306,6 +307,7 @@ func (service *Service) fail(ctx context.Context, session domain.Session, workfl
 	if err := service.workflows.CompleteWorkflow(ctx, session, expectedVersion, workflow, event); err != nil {
 		return TaskResult{}, err
 	}
+	service.notify(ctx, session, workflow)
 	return taskResult(session, workflow), nil
 }
 
@@ -330,16 +332,8 @@ func (service *Service) load(ctx context.Context, request TaskRequest) (domain.S
 	return session, workflow, nil
 }
 
-func (service *Service) notify(ctx context.Context, session domain.Session, workflow domain.Workflow, metadata domain.ArchiveMetadata) {
-	if service.notifications == nil {
-		return
-	}
-	id, err := service.ids.New(service.clock.Now())
-	if err != nil {
-		return
-	}
-	content := "**Session archived**\nSession: `" + session.ID + "`\nArchive: `" + metadata.ID + "`\nDisposable EC2 and EBS resources were removed after checksum verification. Use `/rb restore` to recreate it."
-	_ = service.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: id, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: content, CorrelationID: workflow.CorrelationID, RequestedAt: service.clock.Now().UTC()})
+func (service *Service) notify(ctx context.Context, session domain.Session, workflow domain.Workflow) {
+	_ = sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, service.clock.Now().UTC())
 }
 
 func taskResult(session domain.Session, workflow domain.Workflow) TaskResult {

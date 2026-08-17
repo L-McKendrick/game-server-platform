@@ -88,7 +88,7 @@ func (handler *Handler) submitSetupModal(ctx context.Context, payload interactio
 	if err := handler.service.RequestSessionCard(ctx, appsession.SessionCardCommand{
 		Actor: actor, SessionID: session.ID, GuildID: payload.GuildID, ChannelID: session.ChannelID,
 		CorrelationID: correlationID, NotificationID: keyPrefix + ":card",
-		Content: sessioncard.RenderSetup(session, handler.clock.Now().UTC()),
+		Content: sessioncard.RenderPublic(sessioncard.Project(session, sessioncard.Options{Now: handler.clock.Now().UTC()})), CardRevision: session.Version,
 	}); err != nil {
 		return "", fmt.Errorf("refresh setup session card: %w", err)
 	}

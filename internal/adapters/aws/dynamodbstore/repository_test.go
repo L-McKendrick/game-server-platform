@@ -3,6 +3,7 @@ package dynamodbstore
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,7 @@ func TestSaveCardReferenceUsesIndependentChannelBoundItem(t *testing.T) {
 	repository := New(client, "metadata-table")
 	if err := repository.SaveCardReference(context.Background(), domain.SessionCardReference{
 		SessionID: "session-1", ChannelID: "channel-1", MessageID: "message-1",
+		DeliveredRevision: 4, DeliveredNotificationID: "card-4", ContentSHA256: "digest-4",
 	}); err != nil {
 		t.Fatalf("SaveCardReference() returned error: %v", err)
 	}
@@ -41,8 +43,56 @@ func TestSaveCardReferenceUsesIndependentChannelBoundItem(t *testing.T) {
 	}
 	client.getItemOutput = &dynamodb.GetItemOutput{Item: client.putItemInput.Item}
 	reference, err := repository.GetCardReference(context.Background(), "session-1")
-	if err != nil || reference.MessageID != "message-1" || reference.ChannelID != "channel-1" {
+	if err != nil || reference.MessageID != "message-1" || reference.ChannelID != "channel-1" ||
+		reference.DeliveredRevision != 4 || reference.DeliveredNotificationID != "card-4" || reference.ContentSHA256 != "digest-4" {
 		t.Fatalf("GetCardReference() = %#v, %v", reference, err)
+	}
+}
+
+func TestGetCardReferenceReadsLegacyDeliveryMetadata(t *testing.T) {
+	t.Parallel()
+	attributes, err := attributevalue.MarshalMap(sessionCardItem{
+		PK: sessionPartitionKey("session-legacy"), SK: sessionCardSortKey,
+		EntityType: "SessionCard", SchemaVersion: schemaVersion,
+		SessionID: "session-legacy", ChannelID: "channel-1", MessageID: "message-legacy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := New(&fakeAPI{getItemOutput: &dynamodb.GetItemOutput{Item: attributes}}, "metadata-table")
+	reference, err := repository.GetCardReference(context.Background(), "session-legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reference.MessageID != "message-legacy" || reference.DeliveredRevision != 0 || reference.DeliveredNotificationID != "" {
+		t.Fatalf("legacy reference = %#v", reference)
+	}
+}
+
+func TestSaveModlistReferenceUsesIndependentChannelBoundItem(t *testing.T) {
+	t.Parallel()
+	client := &fakeAPI{}
+	repository := New(client, "metadata-table")
+	reference := domain.SessionModlistReference{
+		SessionID: "session-1", ChannelID: "channel-1", MessageID: "modlist-message-1",
+		ObjectKey: "sessions/session-1/input/modlists/digest/saturday-arma-modlist.html",
+		Filename:  "saturday-arma-modlist.html", DeliveredRevision: 4,
+		DeliveredNotificationID: "modlist-4", ContentSHA256: strings.Repeat("a", 64),
+	}
+	if err := repository.SaveModlistReference(context.Background(), reference); err != nil {
+		t.Fatalf("SaveModlistReference() returned error: %v", err)
+	}
+	if client.putItemInput == nil || client.putItemInput.ConditionExpression == nil ||
+		*client.putItemInput.ConditionExpression != "attribute_not_exists(pk) OR channel_id = :channel" {
+		t.Fatalf("put input = %#v", client.putItemInput)
+	}
+	if got := stringAttribute(t, client.putItemInput.Item["sk"]); got != sessionModlistSortKey {
+		t.Fatalf("sort key = %q; want %q", got, sessionModlistSortKey)
+	}
+	client.getItemOutput = &dynamodb.GetItemOutput{Item: client.putItemInput.Item}
+	stored, err := repository.GetModlistReference(context.Background(), reference.SessionID)
+	if err != nil || stored != reference {
+		t.Fatalf("GetModlistReference() = %#v, %v; want %#v", stored, err, reference)
 	}
 }
 
@@ -368,6 +418,41 @@ func TestSessionItemRoundTripPreservesOptionalDescription(t *testing.T) {
 	}
 	if stored.DisplayName != session.DisplayName || stored.Slug != session.Slug || stored.Description != session.Description {
 		t.Fatalf("readable identity = (%q, %q, %q); want (%q, %q, %q)", stored.DisplayName, stored.Slug, stored.Description, session.DisplayName, session.Slug, session.Description)
+	}
+}
+
+func TestSessionItemRoundTripPreservesProgressMilestone(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 15, 10, 30, 0, 0, time.UTC)
+	session := testSession(t, now)
+	if err := session.AcquireWorkflowLock("workflow-1", "ProvisionSession", time.Hour, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.AdvanceProgress("workflow-1", domain.ProgressInfrastructureReady, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	stored, err := fromSessionItem(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Progress != session.Progress {
+		t.Fatalf("progress = %#v; want %#v", stored.Progress, session.Progress)
+	}
+}
+
+func TestSessionItemWithoutProgressRemainsReadable(t *testing.T) {
+	t.Parallel()
+	session := testSession(t, time.Date(2026, 8, 15, 11, 0, 0, 0, time.UTC))
+	item := toSessionItem(session)
+	item.ProgressWorkflowID, item.ProgressWorkflowType, item.ProgressMilestone, item.ProgressUpdatedAt = "", "", "", ""
+
+	stored, err := fromSessionItem(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.Progress.Empty() {
+		t.Fatalf("legacy progress = %#v; want empty", stored.Progress)
 	}
 }
 

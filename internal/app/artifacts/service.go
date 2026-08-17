@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/modlist"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
@@ -71,13 +72,24 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 	if err := validateContent(request, body); err != nil {
 		return service.reject(ctx, session, request, err)
 	}
+	var publicModlist *modlist.Artifact
+	if request.Kind == domain.ArtifactPreset && !session.Vanilla {
+		generated, generateErr := modlist.Generate(body, session.ID, session.DisplayName, session.Slug)
+		if generateErr != nil {
+			return service.reject(ctx, session, request, generateErr)
+		}
+		publicModlist = &generated
+	}
 
 	digest := sha256.Sum256(body)
 	digestHex := hex.EncodeToString(digest[:])
 	if replayed, replayErr := service.replayed(ctx, artifactIdempotencyKey(request), digestHex); replayErr != nil {
 		return replayErr
 	} else if replayed {
-		return service.notify(ctx, session, request)
+		if err := service.storePublicModlist(ctx, publicModlist); err != nil {
+			return err
+		}
+		return service.notify(ctx, session, request, publicModlist)
 	}
 	directory := "missions"
 	if request.Kind == domain.ArtifactPreset {
@@ -98,6 +110,9 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 		base64.StdEncoding.EncodeToString(digest[:]),
 	); err != nil {
 		return fmt.Errorf("store validated artifact: %w", err)
+	}
+	if err := service.storePublicModlist(ctx, publicModlist); err != nil {
+		return err
 	}
 
 	now := service.clock.Now().UTC()
@@ -135,11 +150,11 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 			if getErr != nil {
 				return getErr
 			}
-			return service.notify(ctx, persisted, request)
+			return service.notify(ctx, persisted, request, publicModlist)
 		}
 		return fmt.Errorf("persist artifact metadata: %w", err)
 	}
-	return service.notify(ctx, session, request)
+	return service.notify(ctx, session, request, publicModlist)
 }
 
 func (service *Service) reject(
@@ -154,7 +169,7 @@ func (service *Service) reject(
 	if replayed, replayErr := service.replayed(ctx, artifactIdempotencyKey(request), requestHash); replayErr != nil {
 		return replayErr
 	} else if replayed {
-		return service.notify(ctx, session, request)
+		return service.notify(ctx, session, request, nil)
 	}
 	expectedVersion := session.Version
 	if err := session.RejectArtifact(request.Kind, reason.Error(), now); err != nil {
@@ -186,20 +201,44 @@ func (service *Service) reject(
 			if getErr != nil {
 				return getErr
 			}
-			return service.notify(ctx, persisted, request)
+			return service.notify(ctx, persisted, request, nil)
 		}
 		return fmt.Errorf("persist artifact rejection: %w", err)
 	}
-	return service.notify(ctx, session, request)
+	return service.notify(ctx, session, request, nil)
 }
 
-func (service *Service) notify(ctx context.Context, session domain.Session, request domain.ArtifactIngestRequest) error {
+func (service *Service) storePublicModlist(ctx context.Context, artifact *modlist.Artifact) error {
+	if artifact == nil {
+		return nil
+	}
+	if err := service.objects.Put(ctx, artifact.ObjectKey, artifact.ContentType, artifact.Body, artifact.SHA256Base64); err != nil {
+		return fmt.Errorf("store sanitized modlist: %w", err)
+	}
+	return nil
+}
+
+func (service *Service) notify(ctx context.Context, session domain.Session, request domain.ArtifactIngestRequest, publicModlist *modlist.Artifact) error {
 	now := service.clock.Now().UTC()
+	if request.Kind == domain.ArtifactPreset && publicModlist != nil && !session.Vanilla && session.PresetArtifactStatus == domain.ArtifactAccepted {
+		return service.notifications.Enqueue(ctx, domain.NotificationRequest{
+			SchemaVersion: 1, NotificationID: "modlist-preset-" + request.AttachmentID,
+			SessionID: request.SessionID, GuildID: request.GuildID, ChannelID: request.ChannelID,
+			Content: sessioncard.RenderModlistMessage(session, publicModlist.Filename, publicModlist.WorkshopCount, now),
+			Kind:    domain.NotificationSessionModlist,
+			Attachment: &domain.NotificationAttachment{
+				ObjectKey: publicModlist.ObjectKey, Filename: publicModlist.Filename, ContentType: publicModlist.ContentType,
+				SHA256: publicModlist.SHA256Hex, SizeBytes: int64(len(publicModlist.Body)), Revision: session.Version,
+			},
+			CorrelationID: request.CorrelationID, RequestedAt: now,
+		})
+	}
 	notificationID := "card-artifact-" + strings.ToLower(string(request.Kind)) + "-" + request.AttachmentID
 	return service.notifications.Enqueue(ctx, domain.NotificationRequest{
 		SchemaVersion: 1, NotificationID: notificationID, SessionID: request.SessionID,
 		GuildID: request.GuildID, ChannelID: request.ChannelID,
-		Content: sessioncard.RenderSetup(session, now), Kind: domain.NotificationSessionCard,
+		Content: sessioncard.RenderPublic(sessioncard.Project(session, sessioncard.Options{Now: now})), Kind: domain.NotificationSessionCard,
+		CardRevision:  session.Version,
 		CorrelationID: request.CorrelationID, RequestedAt: now,
 	})
 }

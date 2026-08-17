@@ -41,6 +41,7 @@ type Session struct {
 	Infrastructure        Infrastructure
 	Archive               ArchiveMetadata
 	ArchiveSourceState    LifecycleState
+	Progress              SessionProgress
 
 	ActiveWorkflowID             string
 	ActiveWorkflowType           string
@@ -174,6 +175,9 @@ func (session *Session) AcquireWorkflowLock(workflowID string, workflowType stri
 	session.ActiveWorkflowType = workflowType
 	session.ActiveWorkflowStartedAt = now
 	session.ActiveWorkflowLeaseExpiresAt = now.Add(lease)
+	if err := session.beginProgress(workflowID, workflowType, now); err != nil {
+		return err
+	}
 	session.Version++
 	session.UpdatedAt = now
 	return session.Validate()
@@ -183,6 +187,9 @@ func (session *Session) AcquireWorkflowLock(workflowID string, workflowType stri
 func (session *Session) ReleaseWorkflowLock(workflowID string, now time.Time) error {
 	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) {
 		return fmt.Errorf("%w: workflow %s does not hold the session lock", ErrConflict, workflowID)
+	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
+		return err
 	}
 	session.ActiveWorkflowID = ""
 	session.ActiveWorkflowType = ""
@@ -303,6 +310,9 @@ func (session Session) Validate() error {
 			return err
 		}
 	}
+	if err := session.Progress.Validate(); err != nil {
+		return err
+	}
 	switch {
 	case session.ID == "":
 		return fmt.Errorf("session ID is required")
@@ -373,6 +383,10 @@ func (session Session) Validate() error {
 		return fmt.Errorf("updated timestamp is required")
 	case session.UpdatedAt.Before(session.CreatedAt):
 		return fmt.Errorf("updated timestamp cannot precede created timestamp")
+	case !session.Progress.Empty() && session.Progress.UpdatedAt.Before(session.CreatedAt):
+		return fmt.Errorf("progress timestamp cannot precede session creation")
+	case !session.Progress.Empty() && session.Progress.UpdatedAt.After(session.UpdatedAt):
+		return fmt.Errorf("progress timestamp cannot follow session update")
 	default:
 		return nil
 	}

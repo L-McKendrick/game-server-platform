@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -183,6 +184,7 @@ func (service *Service) fail(ctx context.Context, session domain.Session, workfl
 	if err := service.workflows.CompleteWorkflow(ctx, session, expectedVersion, workflow, event); err != nil {
 		return TaskResult{}, err
 	}
+	service.notify(ctx, session, workflow)
 	return taskResult(session, workflow), nil
 }
 
@@ -208,15 +210,7 @@ func (service *Service) load(ctx context.Context, request TaskRequest) (domain.S
 }
 
 func (service *Service) notify(ctx context.Context, session domain.Session, workflow domain.Workflow) {
-	if service.notifications == nil {
-		return
-	}
-	id, err := service.ids.New(service.clock.Now())
-	if err != nil {
-		return
-	}
-	content := "**Session terminated**\nSession: `" + session.ID + "`\nTagged EC2/EBS infrastructure and every stored session artifact/version were deleted. Only the audit tombstone remains."
-	_ = service.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: id, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: content, CorrelationID: workflow.CorrelationID, RequestedAt: service.clock.Now().UTC()})
+	_ = sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, service.clock.Now().UTC())
 }
 
 func taskResult(session domain.Session, workflow domain.Workflow) TaskResult {

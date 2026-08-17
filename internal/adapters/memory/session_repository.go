@@ -19,6 +19,7 @@ type SessionRepository struct {
 	workflows   map[string]domain.Workflow
 	capacity    map[string]string
 	cards       map[string]domain.SessionCardReference
+	modlists    map[string]domain.SessionModlistReference
 }
 
 var _ ports.SessionRepository = (*SessionRepository)(nil)
@@ -33,6 +34,7 @@ func NewSessionRepository() *SessionRepository {
 		workflows:   make(map[string]domain.Workflow),
 		capacity:    make(map[string]string),
 		cards:       make(map[string]domain.SessionCardReference),
+		modlists:    make(map[string]domain.SessionModlistReference),
 	}
 }
 
@@ -148,6 +150,39 @@ func (repository *SessionRepository) SaveCardReference(ctx context.Context, refe
 		return fmt.Errorf("card channel does not match session channel: %w", domain.ErrForbidden)
 	}
 	repository.cards[reference.SessionID] = reference
+	return nil
+}
+
+func (repository *SessionRepository) GetModlistReference(ctx context.Context, sessionID string) (domain.SessionModlistReference, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.SessionModlistReference{}, err
+	}
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	reference, found := repository.modlists[sessionID]
+	if !found {
+		return domain.SessionModlistReference{}, fmt.Errorf("%w: session modlist %s", domain.ErrNotFound, sessionID)
+	}
+	return reference, nil
+}
+
+func (repository *SessionRepository) SaveModlistReference(ctx context.Context, reference domain.SessionModlistReference) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := reference.Validate(); err != nil {
+		return err
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	session, found := repository.sessions[reference.SessionID]
+	if !found {
+		return fmt.Errorf("%w: session %s", domain.ErrNotFound, reference.SessionID)
+	}
+	if session.ChannelID != reference.ChannelID {
+		return fmt.Errorf("modlist channel does not match session channel: %w", domain.ErrForbidden)
+	}
+	repository.modlists[reference.SessionID] = reference
 	return nil
 }
 

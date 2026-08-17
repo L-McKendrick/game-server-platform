@@ -195,6 +195,12 @@ data "aws_iam_policy_document" "notification_worker" {
   }
 
   statement {
+    sid       = "ReadSanitizedModlists"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.session_assets.arn}/sessions/*/input/modlists/*"]
+  }
+
+  statement {
     sid       = "DiscordTokenRead"
     actions   = ["secretsmanager:GetSecretValue"]
     resources = [aws_secretsmanager_secret.discord_bot_token.arn]
@@ -245,15 +251,16 @@ resource "aws_lambda_function" "notification_worker" {
   architectures    = ["x86_64"]
   filename         = local.notification_worker_package_path
   source_code_hash = var.notification_worker_lambda_source_hash != null ? var.notification_worker_lambda_source_hash : try(filebase64sha256(local.notification_worker_package_path), null)
-  timeout          = 15
+  timeout          = 30
   memory_size      = 256
 
   environment {
     variables = {
-      APP_ENV             = var.environment
-      LOG_LEVEL           = "info"
-      METADATA_TABLE_NAME = aws_dynamodb_table.metadata.name
-      DISCORD_SECRET_NAME = aws_secretsmanager_secret.discord_bot_token.name
+      APP_ENV               = var.environment
+      LOG_LEVEL             = "info"
+      METADATA_TABLE_NAME   = aws_dynamodb_table.metadata.name
+      DISCORD_SECRET_NAME   = aws_secretsmanager_secret.discord_bot_token.name
+      SESSION_ASSETS_BUCKET = aws_s3_bucket.session_assets.id
     }
   }
 

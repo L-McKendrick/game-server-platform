@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
 
@@ -30,6 +31,140 @@ type recordingCommandQueue struct{ commands []domain.CommandEnvelope }
 func (queue *recordingCommandQueue) Enqueue(_ context.Context, command domain.CommandEnvelope) error {
 	queue.commands = append(queue.commands, command)
 	return nil
+}
+
+func TestRequestSessionCardPinsRenderedRevision(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 15, 1, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	notifications := memory.NewNotificationQueue()
+	service, err := NewService(
+		repository,
+		&sequenceIDGenerator{ids: []string{"session-card", "event-card"}},
+		fixedClock{now: now}, time.Hour,
+		WithNotificationQueue(notifications),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := testActor("owner-1")
+	session := mustCreateSession(t, service, actor, "correlation-create-card", "card-session")
+	command := SessionCardCommand{
+		Actor: actor, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
+		CorrelationID: "correlation-card", NotificationID: "notification-card", Content: "card",
+		CardRevision: session.Version,
+	}
+	if err := service.RequestSessionCard(context.Background(), command); err != nil {
+		t.Fatal(err)
+	}
+	requests := notifications.Requests()
+	if len(requests) != 1 || requests[0].CardRevision != session.Version {
+		t.Fatalf("card requests = %#v", requests)
+	}
+	command.NotificationID = "notification-future"
+	command.CardRevision = session.Version + 1
+	if err := service.RequestSessionCard(context.Background(), command); err == nil {
+		t.Fatal("future card revision returned nil error")
+	}
+}
+
+func TestGuildMemberCardRefreshRequiresCurrentRevision(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 16, 14, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	notifications := memory.NewNotificationQueue()
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour, WithNotificationQueue(notifications))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := seedReadableCardSession(t, repository, now)
+	member := testActor("member-2")
+	command := SessionCardCommand{
+		Actor: member, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
+		CorrelationID: "correlation-refresh", NotificationID: "card-refresh-1", Content: "refreshed card",
+		CardRevision: session.Version, AllowGuildMember: true, RequireCurrentRevision: true,
+	}
+	if err := service.RequestSessionCard(context.Background(), command); err != nil {
+		t.Fatalf("guild-member refresh error = %v", err)
+	}
+	command.NotificationID = "card-refresh-stale"
+	command.CardRevision--
+	if err := service.RequestSessionCard(context.Background(), command); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("stale refresh error = %v; want ErrConflict", err)
+	}
+	command.CardRevision = session.Version
+	command.GuildID = "guild-other"
+	if err := service.RequestSessionCard(context.Background(), command); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("cross-guild refresh error = %v; want ErrNotFound", err)
+	}
+}
+
+func TestGetActiveModlistAuthorizesGuildReadAndPinsRevision(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 16, 14, 30, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := seedReadableCardSession(t, repository, now)
+	resolved, err := service.ResolveCardControl(context.Background(), CardControlQuery{
+		Actor: testActor("member-2"), GuildID: session.GuildID, Token: sessioncard.ControlToken(session.ID),
+	})
+	if err != nil || resolved.ID != session.ID {
+		t.Fatalf("ResolveCardControl() = %#v, %v", resolved, err)
+	}
+	if _, err := service.ResolveCardControl(context.Background(), CardControlQuery{
+		Actor: testActor("member-2"), GuildID: "guild-other", Token: sessioncard.ControlToken(session.ID),
+	}); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("cross-guild control resolution error = %v; want ErrNotFound", err)
+	}
+	reference := domain.SessionModlistReference{
+		SessionID: session.ID, ChannelID: session.ChannelID, MessageID: "modlist-message-1",
+		ObjectKey: "sessions/card-session/input/modlists/digest/card-session-modlist.html",
+		Filename:  "card-session-modlist.html", DeliveredRevision: 1,
+		DeliveredNotificationID: "modlist-1", ContentSHA256: strings.Repeat("a", 64),
+	}
+	if err := repository.SaveModlistReference(context.Background(), reference); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := service.GetActiveModlist(context.Background(), ActiveModlistQuery{
+		Actor: testActor("member-2"), SessionID: session.ID, GuildID: session.GuildID, ExpectedRevision: session.Version,
+	})
+	if err != nil || stored.ChannelID != reference.ChannelID || stored.MessageID != reference.MessageID || stored.Filename != reference.Filename {
+		t.Fatalf("GetActiveModlist() = %#v, %v; want safe fields from %#v", stored, err, reference)
+	}
+	if _, err := service.GetActiveModlist(context.Background(), ActiveModlistQuery{
+		Actor: testActor("member-2"), SessionID: session.ID, GuildID: session.GuildID, ExpectedRevision: session.Version - 1,
+	}); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("stale modlist query error = %v; want ErrConflict", err)
+	}
+}
+
+func seedReadableCardSession(t *testing.T, repository *memory.SessionRepository, now time.Time) domain.Session {
+	t.Helper()
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: "card-session", Slug: "card-session", DisplayName: "Card Session", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.PresetArtifactStatus = domain.ArtifactAccepted
+	session.PresetObjectKey = "sessions/card-session/input/presets/source.html"
+	if err := session.RecordMutation(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	actor := testActor("owner-1")
+	event := domain.NewSessionCreatedEvent("event-card-session", "correlation-card-session", actor, session, now)
+	record, err := domain.NewCompletedIdempotencyRecord("seed:card-session", "hash-card-session", session.ID, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, record); err != nil {
+		t.Fatal(err)
+	}
+	return session
 }
 
 func (generator *sequenceIDGenerator) New(

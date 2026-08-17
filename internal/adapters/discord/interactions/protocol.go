@@ -3,9 +3,9 @@ package interactions
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
+
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/discord/componentid"
 )
 
 const (
@@ -68,18 +68,13 @@ const (
 	separatorSpacingSmall = 1
 	separatorSpacingLarge = 2
 
-	componentCustomIDPrefix     = "rb:v1"
-	maximumComponentCustomIDLen = 100
+	componentCustomIDPrefix     = componentid.Prefix
+	maximumComponentCustomIDLen = componentid.MaximumCustomIDLength
 
 	administratorPermission = uint64(1 << 3)
 	manageGuildPermission   = uint64(1 << 5)
 
 	adminRoleSelectCustomID = "admin:access:roles"
-)
-
-var (
-	componentActionPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
-	componentTokenPattern  = regexp.MustCompile(`^[A-Za-z0-9_-]{8,64}$`)
 )
 
 type interactionPayload struct {
@@ -303,41 +298,15 @@ type componentReference struct {
 }
 
 func newComponentCustomID(action string, revision uint64, token string) (string, error) {
-	action = strings.TrimSpace(action)
-	token = strings.TrimSpace(token)
-	if !componentActionPattern.MatchString(action) {
-		return "", fmt.Errorf("component action is invalid")
-	}
-	if revision == 0 {
-		return "", fmt.Errorf("component revision must be positive")
-	}
-	if !componentTokenPattern.MatchString(token) {
-		return "", fmt.Errorf("component token is invalid")
-	}
-	customID := componentCustomIDPrefix + ":" + action + ":" + strconv.FormatUint(revision, 10) + ":" + token
-	if len(customID) > maximumComponentCustomIDLen {
-		return "", fmt.Errorf("component custom ID exceeds %d characters", maximumComponentCustomIDLen)
-	}
-	return customID, nil
+	return componentid.New(action, revision, token)
 }
 
 func parseComponentCustomID(customID string) (componentReference, error) {
-	if customID == "" || customID != strings.TrimSpace(customID) || len(customID) > maximumComponentCustomIDLen {
-		return componentReference{}, fmt.Errorf("component custom ID is invalid")
-	}
-	parts := strings.Split(customID, ":")
-	if len(parts) != 5 || parts[0]+":"+parts[1] != componentCustomIDPrefix {
-		return componentReference{}, fmt.Errorf("component custom ID schema is unsupported")
-	}
-	revision, err := strconv.ParseUint(parts[3], 10, 64)
+	reference, err := componentid.Parse(customID)
 	if err != nil {
-		return componentReference{}, fmt.Errorf("component revision is invalid")
+		return componentReference{}, err
 	}
-	canonical, err := newComponentCustomID(parts[2], revision, parts[4])
-	if err != nil || canonical != customID {
-		return componentReference{}, fmt.Errorf("component custom ID is invalid")
-	}
-	return componentReference{Action: parts[2], Revision: revision, Token: parts[4]}, nil
+	return componentReference{Action: reference.Action, Revision: reference.Revision, Token: reference.Token}, nil
 }
 
 func (payload interactionPayload) actorID() string {

@@ -125,6 +125,23 @@ type LifecycleCommand struct {
 type SessionCardCommand struct {
 	Actor                                                                 domain.Actor
 	SessionID, GuildID, ChannelID, CorrelationID, NotificationID, Content string
+	CardRevision                                                          int64
+	AllowGuildMember, RequireCurrentRevision                              bool
+}
+
+// ActiveModlistQuery authorizes a read of safe delivery metadata at a specific
+// card revision.
+type ActiveModlistQuery struct {
+	Actor            domain.Actor
+	SessionID        string
+	GuildID          string
+	ExpectedRevision int64
+}
+
+type ActiveModlist struct {
+	ChannelID string
+	MessageID string
+	Filename  string
 }
 
 type PrepareCreationArtifactsCommand struct {
@@ -206,18 +223,60 @@ func (service *Service) RequestSessionCard(ctx context.Context, command SessionC
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
 	}
-	if err := authorizeOwner(command.Actor, session); err != nil {
+	if command.AllowGuildMember {
+		if session.GuildID != strings.TrimSpace(command.GuildID) {
+			return domain.ErrNotFound
+		}
+	} else if err := authorizeOwner(command.Actor, session); err != nil {
 		return err
 	}
 	if session.GuildID != strings.TrimSpace(command.GuildID) || session.ChannelID != strings.TrimSpace(command.ChannelID) {
 		return fmt.Errorf("session card destination does not match session: %w", domain.ErrForbidden)
 	}
+	if command.CardRevision < 1 || command.CardRevision > session.Version {
+		return fmt.Errorf("session card revision must reference a persisted session version")
+	}
+	if command.RequireCurrentRevision && command.CardRevision != session.Version {
+		return fmt.Errorf("session card revision is stale: %w", domain.ErrConflict)
+	}
 	return service.notificationQueue.Enqueue(ctx, domain.NotificationRequest{
 		SchemaVersion: 1, NotificationID: strings.TrimSpace(command.NotificationID),
 		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
-		Content: command.Content, Kind: domain.NotificationSessionCard,
+		Content: command.Content, Kind: domain.NotificationSessionCard, CardRevision: command.CardRevision,
 		CorrelationID: strings.TrimSpace(command.CorrelationID), RequestedAt: service.clock.Now().UTC(),
 	})
+}
+
+// GetActiveModlist returns only the safe Discord delivery reference after
+// guild-read authorization and an exact persisted revision check.
+func (service *Service) GetActiveModlist(ctx context.Context, query ActiveModlistQuery) (ActiveModlist, error) {
+	session, err := service.Get(ctx, GetQuery{
+		Actor: query.Actor, SessionID: query.SessionID, GuildID: query.GuildID, AllowGuildMember: true,
+	})
+	if err != nil {
+		return ActiveModlist{}, err
+	}
+	if query.ExpectedRevision < 1 || query.ExpectedRevision != session.Version {
+		return ActiveModlist{}, fmt.Errorf("session card revision is stale: %w", domain.ErrConflict)
+	}
+	if session.Vanilla || session.PresetArtifactStatus != domain.ArtifactAccepted {
+		return ActiveModlist{}, domain.ErrNotFound
+	}
+	repository, ok := service.repository.(ports.SessionCardRepository)
+	if !ok {
+		return ActiveModlist{}, fmt.Errorf("session modlist delivery metadata is not configured")
+	}
+	reference, err := repository.GetModlistReference(ctx, session.ID)
+	if err != nil {
+		return ActiveModlist{}, err
+	}
+	if err := reference.Validate(); err != nil {
+		return ActiveModlist{}, fmt.Errorf("validate active modlist reference: %w", err)
+	}
+	if reference.SessionID != session.ID || reference.ChannelID != session.ChannelID || reference.DeliveredRevision > session.Version {
+		return ActiveModlist{}, fmt.Errorf("active modlist reference does not match session")
+	}
+	return ActiveModlist{ChannelID: reference.ChannelID, MessageID: reference.MessageID, Filename: reference.Filename}, nil
 }
 
 func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleCommand) error {

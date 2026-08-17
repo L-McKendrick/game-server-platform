@@ -43,45 +43,52 @@ const (
 	EventTerminationStarted        EventType = "SessionTerminationStarted"
 	EventSessionTerminated         EventType = "SessionTerminated"
 	EventTerminationFailed         EventType = "SessionTerminationFailed"
+	EventProgressMilestone         EventType = "SessionProgressMilestone"
 )
 
 func NewTerminationEvent(eventID string, eventType EventType, stage string, workflow Workflow, session Session, objectsDeleted int, now time.Time) SessionEvent {
+	data := map[string]string{
+		"workflow_id": workflow.ID, "stage": strings.TrimSpace(stage), "state": string(session.LifecycleState),
+		"objects_deleted": fmt.Sprintf("%d", objectsDeleted),
+		"display_name":    session.DisplayName, "slug": session.Slug, "description": session.Description,
+	}
+	addProgressEventData(data, session, workflow)
 	return SessionEvent{
 		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
 		ActorType: string(ActorTypeSystem), ActorID: TerminationWorkflowType, CorrelationID: workflow.CorrelationID,
-		Data: map[string]string{
-			"workflow_id": workflow.ID, "stage": strings.TrimSpace(stage), "state": string(session.LifecycleState),
-			"objects_deleted": fmt.Sprintf("%d", objectsDeleted),
-			"display_name":    session.DisplayName, "slug": session.Slug, "description": session.Description,
-		},
+		Data: data,
 	}
 }
 
 func NewArchiveEvent(eventID string, eventType EventType, stage string, workflow Workflow, session Session, archive ArchiveMetadata, now time.Time) SessionEvent {
+	data := map[string]string{
+		"workflow_id": workflow.ID, "stage": strings.TrimSpace(stage), "state": string(session.LifecycleState),
+		"archive_id": archive.ID, "archive_object_key": archive.ObjectKey,
+		"archive_manifest_object_key": archive.ManifestObjectKey,
+		"archive_manifest_sha256":     archive.ManifestSHA256,
+		"archive_manifest_size_bytes": fmt.Sprintf("%d", archive.ManifestSizeBytes),
+	}
+	addProgressEventData(data, session, workflow)
 	return SessionEvent{
 		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
 		ActorType: string(ActorTypeSystem), ActorID: ArchiveWorkflowType, CorrelationID: workflow.CorrelationID,
-		Data: map[string]string{
-			"workflow_id": workflow.ID, "stage": strings.TrimSpace(stage), "state": string(session.LifecycleState),
-			"archive_id": archive.ID, "archive_object_key": archive.ObjectKey,
-			"archive_manifest_object_key": archive.ManifestObjectKey,
-			"archive_manifest_sha256":     archive.ManifestSHA256,
-			"archive_manifest_size_bytes": fmt.Sprintf("%d", archive.ManifestSizeBytes),
-		},
+		Data: data,
 	}
 }
 
 // NewProvisioningEvent records a stable workflow stage without exposing cloud
 // account identifiers or credentials.
 func NewProvisioningEvent(eventID string, eventType EventType, stage string, workflow Workflow, session Session, now time.Time) SessionEvent {
+	data := map[string]string{
+		"workflow_id": workflow.ID, "stage": strings.TrimSpace(stage),
+		"state": string(session.LifecycleState), "instance_id": session.Infrastructure.InstanceID,
+		"volume_id": session.Infrastructure.DataVolumeID,
+	}
+	addProgressEventData(data, session, workflow)
 	return SessionEvent{
 		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
 		ActorType: string(ActorTypeSystem), ActorID: "ProvisionSession", CorrelationID: workflow.CorrelationID,
-		Data: map[string]string{
-			"workflow_id": workflow.ID, "stage": strings.TrimSpace(stage),
-			"state": string(session.LifecycleState), "instance_id": session.Infrastructure.InstanceID,
-			"volume_id": session.Infrastructure.DataVolumeID,
-		},
+		Data: data,
 	}
 }
 
@@ -101,13 +108,15 @@ func NewHealthChangedEvent(eventID string, session Session, from HealthStatus, o
 // NewBootstrapEvent records progress without including commands, output, or
 // credentials from the managed node.
 func NewBootstrapEvent(eventID string, eventType EventType, stage string, workflow Workflow, session Session, now time.Time) SessionEvent {
+	data := map[string]string{
+		"workflow_id": workflow.ID, "stage": strings.TrimSpace(stage),
+		"state": string(session.LifecycleState), "instance_id": session.Infrastructure.InstanceID,
+	}
+	addProgressEventData(data, session, workflow)
 	return SessionEvent{
 		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
 		ActorType: string(ActorTypeSystem), ActorID: BootstrapWorkflowType, CorrelationID: workflow.CorrelationID,
-		Data: map[string]string{
-			"workflow_id": workflow.ID, "stage": strings.TrimSpace(stage),
-			"state": string(session.LifecycleState), "instance_id": session.Infrastructure.InstanceID,
-		},
+		Data: data,
 	}
 }
 
@@ -153,15 +162,38 @@ func NewWorkflowEvent(
 	workflow Workflow,
 	now time.Time,
 ) SessionEvent {
+	data := map[string]string{
+		"workflow_id":     workflow.ID,
+		"workflow_type":   workflow.Type,
+		"workflow_status": string(workflow.Status),
+	}
+	addProgressEventData(data, session, workflow)
 	return SessionEvent{
 		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
 		ActorType: string(actor.Type), ActorID: actor.ID, CorrelationID: correlationID,
-		Data: map[string]string{
-			"workflow_id":     workflow.ID,
-			"workflow_type":   workflow.Type,
-			"workflow_status": string(workflow.Status),
-		},
+		Data: data,
 	}
+}
+
+func NewProgressMilestoneEvent(eventID string, workflow Workflow, session Session, now time.Time) SessionEvent {
+	data := map[string]string{
+		"workflow_id": workflow.ID, "workflow_type": workflow.Type,
+		"state": string(session.LifecycleState),
+	}
+	addProgressEventData(data, session, workflow)
+	return SessionEvent{
+		ID: eventID, SessionID: session.ID, Type: EventProgressMilestone, OccurredAt: now.UTC(),
+		ActorType: string(ActorTypeSystem), ActorID: workflow.Type, CorrelationID: workflow.CorrelationID,
+		Data: data,
+	}
+}
+
+func addProgressEventData(data map[string]string, session Session, workflow Workflow) {
+	if session.Progress.WorkflowID != workflow.ID || session.Progress.Milestone == "" {
+		return
+	}
+	data["progress_milestone"] = string(session.Progress.Milestone)
+	data["progress_updated_at"] = session.Progress.UpdatedAt.UTC().Format(time.RFC3339Nano)
 }
 
 // NewSessionConfiguredEvent records an immutable configuration revision.

@@ -3,7 +3,6 @@ package provisioning
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -106,8 +105,13 @@ func TestProvisioningStagesCreateInfrastructureAndStopBeforeBootstrap(t *testing
 	if len(notifications.requests) != 1 {
 		t.Fatalf("notifications = %d; want 1", len(notifications.requests))
 	}
-	if content := notifications.requests[0].Content; !strings.Contains(content, "/rb start session-1") || strings.Contains(content, "Phase 6") {
-		t.Fatalf("notification content = %q", content)
+	notification := notifications.requests[0]
+	if notification.Kind != domain.NotificationSessionCard || notification.NotificationID != "card-progress-"+workflow.ID+"-infrastructure-ready" ||
+		notification.CardRevision != session.Version {
+		t.Fatalf("notification = %#v", notification)
+	}
+	if session.Progress.Milestone != domain.ProgressInfrastructureReady || session.Progress.WorkflowID != workflow.ID {
+		t.Fatalf("progress = %#v", session.Progress)
 	}
 }
 

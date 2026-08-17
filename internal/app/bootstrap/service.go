@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -98,7 +99,9 @@ func (service *Service) prepare(ctx context.Context, request TaskRequest) (TaskR
 	if err := service.saveStage(ctx, session, expectedVersion, workflow, "InstallationStarted"); err != nil {
 		return TaskResult{}, err
 	}
-	return taskResult(session, workflow), nil
+	result := taskResult(session, workflow)
+	service.notify(ctx, &result, session, workflow)
+	return result, nil
 }
 
 func (service *Service) dispatch(ctx context.Context, request TaskRequest) (TaskResult, error) {
@@ -138,6 +141,17 @@ func (service *Service) observe(ctx context.Context, request TaskRequest) (TaskR
 	switch status.Status {
 	case "Success":
 		result.Done, result.Succeeded = true, true
+		expectedVersion := session.Version
+		changed, progressErr := session.AdvanceProgress(workflow.ID, domain.ProgressHealthVerification, service.clock.Now())
+		if progressErr != nil {
+			return TaskResult{}, progressErr
+		}
+		if changed {
+			if progressErr := service.saveProgress(ctx, session, expectedVersion, workflow); progressErr != nil {
+				return TaskResult{}, progressErr
+			}
+			service.notify(ctx, &result, session, workflow)
+		}
 	case "Cancelled", "Cancelling", "Failed", "TimedOut":
 		result.Done = true
 		result.ErrorCode = "ERR_BOOTSTRAP_COMMAND_" + strings.ToUpper(status.Status)
@@ -173,7 +187,7 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 		return TaskResult{}, err
 	}
 	result := taskResult(session, workflow)
-	service.notify(ctx, &result, session, workflow, "**Game server ready**\nSession: `%s`\nAddress: `%s:2302`")
+	service.notify(ctx, &result, session, workflow)
 	return result, nil
 }
 
@@ -206,31 +220,23 @@ func (service *Service) fail(ctx context.Context, request TaskRequest) (TaskResu
 		return TaskResult{}, err
 	}
 	result := taskResult(session, workflow)
-	service.notify(ctx, &result, session, workflow, "**Game server bootstrap failed**\nSession: `%s`\nReference: `%s`")
+	service.notify(ctx, &result, session, workflow)
 	return result, nil
 }
 
-func (service *Service) notify(ctx context.Context, result *TaskResult, session domain.Session, workflow domain.Workflow, format string) {
-	if service.notifications == nil {
-		return
+func (service *Service) notify(ctx context.Context, result *TaskResult, session domain.Session, workflow domain.Workflow) {
+	if err := sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, service.clock.Now().UTC()); err != nil {
+		result.Warning = err.Error()
 	}
+}
+
+func (service *Service) saveProgress(ctx context.Context, session domain.Session, expectedVersion int64, workflow domain.Workflow) error {
 	now := service.clock.Now().UTC()
-	notificationID, err := service.ids.New(now)
+	event, err := service.event(now, domain.EventProgressMilestone, string(session.Progress.Milestone), workflow, session)
 	if err != nil {
-		result.Warning = err.Error()
-		return
+		return err
 	}
-	second := session.Infrastructure.PublicIPv4
-	if workflow.Status == domain.WorkflowFailed {
-		second = workflow.CorrelationID
-	}
-	if err := service.notifications.Enqueue(ctx, domain.NotificationRequest{
-		SchemaVersion: 1, NotificationID: notificationID, SessionID: session.ID,
-		GuildID: session.GuildID, ChannelID: session.ChannelID,
-		Content: fmt.Sprintf(format, session.ID, second), CorrelationID: workflow.CorrelationID, RequestedAt: now,
-	}); err != nil {
-		result.Warning = err.Error()
-	}
+	return service.stages.SaveBootstrapStage(ctx, session, expectedVersion, event)
 }
 
 func (service *Service) saveStage(ctx context.Context, session domain.Session, expectedVersion int64, workflow domain.Workflow, stage string) error {

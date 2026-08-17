@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -19,23 +20,36 @@ type Authorizer interface {
 }
 
 type Service struct {
-	sessions   ports.SessionRepository
-	workflows  ports.WorkflowRepository
-	starter    ports.WorkflowStarter
-	authorizer Authorizer
-	ids        IDGenerator
-	clock      Clock
-	lease      time.Duration
+	sessions      ports.SessionRepository
+	workflows     ports.WorkflowRepository
+	starter       ports.WorkflowStarter
+	authorizer    Authorizer
+	ids           IDGenerator
+	clock         Clock
+	lease         time.Duration
+	notifications ports.NotificationQueue
 }
 
-func NewService(sessions ports.SessionRepository, workflows ports.WorkflowRepository, starter ports.WorkflowStarter, authorizer Authorizer, ids IDGenerator, clock Clock, lease time.Duration) (*Service, error) {
+type Option func(*Service)
+
+func WithNotificationQueue(queue ports.NotificationQueue) Option {
+	return func(service *Service) { service.notifications = queue }
+}
+
+func NewService(sessions ports.SessionRepository, workflows ports.WorkflowRepository, starter ports.WorkflowStarter, authorizer Authorizer, ids IDGenerator, clock Clock, lease time.Duration, options ...Option) (*Service, error) {
 	if sessions == nil || workflows == nil || starter == nil || authorizer == nil || ids == nil || clock == nil {
 		return nil, fmt.Errorf("workflow service dependencies are required")
 	}
 	if lease <= 0 {
 		return nil, fmt.Errorf("workflow lease must be positive")
 	}
-	return &Service{sessions, workflows, starter, authorizer, ids, clock, lease}, nil
+	service := &Service{sessions: sessions, workflows: workflows, starter: starter, authorizer: authorizer, ids: ids, clock: clock, lease: lease}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service, nil
 }
 
 // Start validates a normalized command, acquires the metadata lock before
@@ -145,6 +159,7 @@ func (service *Service) resumePending(ctx context.Context, workflow domain.Workf
 }
 
 func (service *Service) startExecution(ctx context.Context, session domain.Session, workflow domain.Workflow, actor domain.Actor) (domain.Workflow, error) {
+	_ = sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, service.clock.Now().UTC())
 	executionARN, err := service.starter.Start(ctx, workflow)
 	if err != nil {
 		return domain.Workflow{}, service.failStart(ctx, session, workflow, actor, err)
@@ -188,5 +203,6 @@ func (service *Service) failStart(ctx context.Context, session domain.Session, w
 	if err := service.workflows.CompleteWorkflow(ctx, session, expectedVersion, workflow, event); err != nil {
 		return err
 	}
+	_ = sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now)
 	return fmt.Errorf("start workflow: %w", startErr)
 }

@@ -7,6 +7,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
 
@@ -57,41 +58,7 @@ func (discordRenderer) artifactAccepted(kind domain.ArtifactKind, filename strin
 }
 
 func (discordRenderer) sessionStatus(session domain.Session, players *domain.PlayerStatus) string {
-	var builder strings.Builder
-	fmt.Fprintf(
-		&builder,
-		"**%s**\nSlug: `%s`",
-		sanitizeInline(session.DisplayName),
-		sanitizeCode(session.Slug),
-	)
-	if session.Description != "" {
-		fmt.Fprintf(&builder, "\nDescription: %s", sanitizeInline(session.Description))
-	}
-	fmt.Fprintf(
-		&builder,
-		"\nStatus: %s\nHealth: %s\nConfiguration: `%d` (`%s`)\nMode: %s\nSleep after: `%d minutes`\nArchive after: `%d days`\nTeamSpeak: %s\nUpdated: %s",
-		lifecyclePresentation(session.LifecycleState),
-		healthPresentation(session.HealthStatus),
-		session.ConfigurationRevision,
-		sanitizeCode(session.GameProfileID),
-		sessionModeLabel(session.Vanilla),
-		session.SleepAfterSeconds/60,
-		session.ArchiveAfterSeconds/86400,
-		enabledLabel(session.TeamSpeakEnabled),
-		discordTimestamp(session.UpdatedAt),
-	)
-	if players == nil {
-		builder.WriteString("\nLive players (A2S): unavailable")
-		return boundDiscordContent(builder.String())
-	}
-	fmt.Fprintf(&builder, "\nLive players (A2S): `%d/%d`", players.PlayerCount, players.MaxPlayers)
-	if len(players.PlayerNames) == 0 {
-		builder.WriteString("\nPlayer names: unavailable")
-	} else {
-		builder.WriteString("\nPlayer names: ")
-		builder.WriteString(boundedNames(players.PlayerNames))
-	}
-	return boundDiscordContent(builder.String())
+	return renderSessionStatusAt(session, players, session.UpdatedAt)
 }
 
 func (discordRenderer) sessionList(sessions []domain.Session, page int, totalPages int, filterLabel string) string {
@@ -132,6 +99,14 @@ func formatSessionStatus(session domain.Session, players *domain.PlayerStatus) s
 	return renderer.sessionStatus(session, players)
 }
 
+func renderSessionStatusAt(session domain.Session, players *domain.PlayerStatus, now time.Time) string {
+	options := sessioncard.Options{Now: now, Players: players}
+	if players != nil {
+		options.PlayersObservedAt = now
+	}
+	return sessioncard.RenderDetailed(sessioncard.Project(session, options))
+}
+
 func formatSessionList(sessions []domain.Session) string {
 	return renderer.sessionList(sessions, 1, 1, "Active sessions")
 }
@@ -141,45 +116,11 @@ func formatSessionListPage(sessions []domain.Session, page int, totalPages int, 
 }
 
 func lifecyclePresentation(state domain.LifecycleState) string {
-	switch state {
-	case domain.StateDraft, domain.StateNew, domain.StateValidating, domain.StateProvisioning,
-		domain.StateBootstrapping, domain.StateInstalling:
-		return "Setting up"
-	case domain.StateReady:
-		return "Ready"
-	case domain.StateWaking, domain.StateRestoring:
-		return "Starting"
-	case domain.StateRunning, domain.StateIdle:
-		return "Running"
-	case domain.StateStopping, domain.StateSleeping, domain.StateWarning1, domain.StateWarning2,
-		domain.StateArchiving, domain.StateDestroying:
-		return "Sleeping"
-	case domain.StateArchived:
-		return "Archived"
-	case domain.StateFailed:
-		return "Action required"
-	case domain.StateDeleting, domain.StateDeleted:
-		return "Terminated"
-	default:
-		return "Action required"
-	}
+	return sessioncard.LifecycleLabel(state)
 }
 
 func healthPresentation(status domain.HealthStatus) string {
-	switch status {
-	case domain.HealthStarting:
-		return "Starting"
-	case domain.HealthHealthy:
-		return "Healthy"
-	case domain.HealthDegraded:
-		return "Degraded — action may be required"
-	case domain.HealthUnhealthy:
-		return "Unhealthy — action required"
-	case domain.HealthStopped:
-		return "Stopped"
-	default:
-		return "Not available"
-	}
+	return sessioncard.HealthLabel(status)
 }
 
 func discordTimestamp(value time.Time) string {

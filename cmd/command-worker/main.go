@@ -14,9 +14,11 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sfnworkflow"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/app/workflows"
@@ -44,6 +46,9 @@ func build(ctx context.Context) (*handler, error) {
 	baseConfig, err := config.Load()
 	if err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(baseConfig.NotificationQueueURL) == "" {
+		return nil, fmt.Errorf("NOTIFICATION_QUEUE_URL is required")
 	}
 	discordConfig, err := config.LoadDiscord()
 	if err != nil {
@@ -94,6 +99,7 @@ func build(ctx context.Context) (*handler, error) {
 			domain.TerminationWorkflowType: terminateARN,
 		}),
 		authorizer, identity.Generator{}, clock, 8*time.Hour,
+		workflows.WithNotificationQueue(sqsnotification.New(sqs.NewFromConfig(awsConfig), baseConfig.NotificationQueueURL)),
 	)
 	if err != nil {
 		return nil, err

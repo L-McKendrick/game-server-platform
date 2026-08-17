@@ -3,6 +3,7 @@ package interactions
 import (
 	"context"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
@@ -19,7 +20,11 @@ func (handler *Handler) sessionAutocompleteChoices(
 	payload interactionPayload,
 	actor domain.Actor,
 ) ([]applicationCommandChoice, error) {
-	subcommand, err := payload.subcommand()
+	commandName := "rb"
+	if payload.Data != nil && strings.TrimSpace(payload.Data.Name) == "admin" {
+		commandName = "admin"
+	}
+	subcommand, err := payload.namedSubcommand(commandName)
 	if err != nil {
 		return nil, nil
 	}
@@ -37,7 +42,7 @@ func (handler *Handler) sessionAutocompleteChoices(
 		GuildID:          payload.GuildID,
 		Search:           search,
 		Limit:            maximumAutocompleteChoices,
-		AllowGuildMember: subcommand.Name == "status",
+		AllowGuildMember: subcommand.Name == "status" || (commandName == "admin" && subcommand.Name == "repair-card"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("select authorized sessions: %w", err)

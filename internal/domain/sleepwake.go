@@ -34,6 +34,9 @@ func (session *Session) CompleteSleep(workflowID string, now time.Time) error {
 	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) || session.ActiveWorkflowType != SleepWorkflowType {
 		return ErrConflict
 	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressCompleted, now); err != nil {
+		return err
+	}
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateSleeping, StateSleeping, StateSleeping, HealthStopped
 	session.clearWorkflowLock()
 	session.Version++
@@ -56,6 +59,9 @@ func (session *Session) CompleteWake(workflowID string, publicIPv4 string, now t
 	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) || session.ActiveWorkflowType != WakeWorkflowType {
 		return ErrConflict
 	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressCompleted, now); err != nil {
+		return err
+	}
 	session.Infrastructure.PublicIPv4, session.Infrastructure.LastObservedAt = strings.TrimSpace(publicIPv4), now.UTC()
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateRunning, StateRunning, StateRunning, HealthHealthy
 	session.clearWorkflowLock()
@@ -67,6 +73,9 @@ func (session *Session) CompleteWake(workflowID string, publicIPv4 string, now t
 func (session *Session) FailSleepWake(workflowID string, now time.Time) error {
 	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) || (session.ActiveWorkflowType != SleepWorkflowType && session.ActiveWorkflowType != WakeWorkflowType) {
 		return ErrConflict
+	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
+		return err
 	}
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateFailed, StateFailed, StateFailed, HealthUnhealthy
 	session.clearWorkflowLock()

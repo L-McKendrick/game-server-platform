@@ -34,14 +34,14 @@ func TestDiscordRendererUsesSafeReadableSessionPresentation(t *testing.T) {
 
 	content := renderer.sessionStatus(session, nil)
 	for _, expected := range []string{
-		`\*Saturday\* @everyone`, "Slug: `saturday-arma`", `Description: Weekly \*co-op\*`, "Status: Running", "Health: Healthy",
+		`\*Saturday\*`, "Slug: `saturday-arma`", `Description: Weekly \*co-op\*`, "Status: Running", "Health: Healthy",
 		"<t:1786710600:F> (<t:1786710600:R>)",
 	} {
 		if !strings.Contains(content, expected) {
 			t.Errorf("content missing %q: %q", expected, content)
 		}
 	}
-	if strings.Contains(content, session.ID) || strings.Contains(content, "\n@everyone") {
+	if strings.Contains(content, session.ID) || strings.Contains(content, "@everyone") {
 		t.Fatalf("content exposes internal identity or multiline input: %q", content)
 	}
 }

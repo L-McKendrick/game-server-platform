@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -247,18 +248,8 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 		return TaskResult{}, err
 	}
 	response := result(session, workflow)
-	if service.notifications != nil {
-		notificationID, idErr := service.ids.New(now)
-		if idErr != nil {
-			response.Warning = idErr.Error()
-		} else if notifyErr := service.notifications.Enqueue(ctx, domain.NotificationRequest{
-			SchemaVersion: 1, NotificationID: notificationID, SessionID: session.ID,
-			GuildID: session.GuildID, ChannelID: session.ChannelID,
-			Content:       fmt.Sprintf("**Infrastructure ready**\nSession: `%s`\nThe instance is managed by Systems Manager. Run `/rb start %s` again to begin the Arma bootstrap.", session.ID, session.ID),
-			CorrelationID: workflow.CorrelationID, RequestedAt: now,
-		}); notifyErr != nil {
-			response.Warning = notifyErr.Error()
-		}
+	if notifyErr := sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now); notifyErr != nil {
+		response.Warning = notifyErr.Error()
 	}
 	return response, nil
 }
@@ -328,6 +319,9 @@ func (service *Service) fail(ctx context.Context, request TaskRequest) (TaskResu
 	}
 	response := result(session, workflow)
 	response.Warning = warning
+	if notifyErr := sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now); notifyErr != nil && response.Warning == "" {
+		response.Warning = notifyErr.Error()
+	}
 	return response, nil
 }
 

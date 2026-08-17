@@ -43,6 +43,9 @@ func (session *Session) BeginBootstrapInstallation(workflowID string, now time.T
 	if session.LifecycleState != StateBootstrapping && session.LifecycleState != StateInstalling {
 		return fmt.Errorf("%w: bootstrap installation requires BOOTSTRAPPING", ErrInvalidTransition)
 	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressGameContentSetup, now); err != nil {
+		return err
+	}
 	session.ObservedState = StateInstalling
 	session.LifecycleState = StateInstalling
 	session.HealthStatus = HealthStarting
@@ -60,6 +63,9 @@ func (session *Session) CompleteBootstrap(workflowID string, now time.Time) erro
 	if session.LifecycleState != StateInstalling {
 		return fmt.Errorf("%w: bootstrap completion requires INSTALLING", ErrInvalidTransition)
 	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressCompleted, now); err != nil {
+		return err
+	}
 	session.DesiredState = StateRunning
 	session.ObservedState = StateRunning
 	session.LifecycleState = StateRunning
@@ -74,6 +80,9 @@ func (session *Session) CompleteBootstrap(workflowID string, now time.Time) erro
 // same session can resume without reinstalling completed content.
 func (session *Session) FailBootstrap(workflowID string, now time.Time) error {
 	if err := session.requireBootstrapWorkflow(workflowID); err != nil {
+		return err
+	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
 		return err
 	}
 	session.ObservedState = StateFailed

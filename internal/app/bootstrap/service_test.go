@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,7 +58,7 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 	repository, workflow := seedBootstrap(t, now)
 	runner := &testRunner{commandID: "command-1", status: ports.BootstrapCommandStatus{Status: "Success"}}
 	notifications := &testNotifications{}
-	service, err := NewService(repository, repository, repository, runner, notifications, &testIDs{values: []string{"stage-event", "ready-event", "notification-1"}}, testClock{now})
+	service, err := NewService(repository, repository, repository, runner, notifications, &testIDs{values: []string{"stage-event", "health-event", "ready-event"}}, testClock{now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,9 +90,24 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 	if session.LifecycleState != domain.StateRunning || session.HealthStatus != domain.HealthHealthy || session.ActiveWorkflowID != "" {
 		t.Fatalf("session = %#v", session)
 	}
-	if len(notifications.requests) != 1 {
+	if len(notifications.requests) != 3 {
 		t.Fatalf("notifications = %#v", notifications.requests)
 	}
+	wantMilestones := []domain.ProgressMilestone{domain.ProgressGameContentSetup, domain.ProgressHealthVerification, domain.ProgressCompleted}
+	for index, milestone := range wantMilestones {
+		request := notifications.requests[index]
+		if request.Kind != domain.NotificationSessionCard || request.NotificationID != "card-progress-"+workflow.ID+"-"+progressIDPart(milestone) {
+			t.Fatalf("notification %d = %#v", index, request)
+		}
+	}
+	if session.Progress.Milestone != domain.ProgressCompleted || session.Progress.WorkflowID != workflow.ID {
+		t.Fatalf("progress = %#v", session.Progress)
+	}
+}
+
+func progressIDPart(milestone domain.ProgressMilestone) string {
+	value := strings.ToLower(string(milestone))
+	return strings.ReplaceAll(value, "_", "-")
 }
 
 func TestObserveSanitizesFailedCommand(t *testing.T) {
