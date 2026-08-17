@@ -421,6 +421,30 @@ func TestSessionItemRoundTripPreservesOptionalDescription(t *testing.T) {
 	}
 }
 
+func TestSessionItemRoundTripPreservesSanitizedFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	session := testSession(t, now)
+	failure, err := domain.NewFailureRecord(domain.FailureRecordInput{
+		Code: "ERR_BOOTSTRAP_FAILED", Stage: "Game and content setup",
+		RetryDisposition: domain.RetryNotScheduled, ResourceImpact: domain.ResourceCostRetained,
+		Detail: "Setup stopped before health verification.", FailedAt: now,
+		SupportReference: "support_ABC123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Failure = failure
+
+	stored, err := fromSessionItem(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Failure != failure {
+		t.Fatalf("failure = %#v; want %#v", stored.Failure, failure)
+	}
+}
+
 func TestSessionItemRoundTripPreservesProgressMilestone(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 15, 10, 30, 0, 0, time.UTC)

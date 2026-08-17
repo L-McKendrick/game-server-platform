@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
@@ -233,6 +234,7 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 	}
 	expectedVersion := session.Version
 	now := service.clock.Now().UTC()
+	session.ClearFailure()
 	if err := session.CompleteInfrastructureProvisioning(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}
@@ -294,6 +296,10 @@ func (service *Service) fail(ctx context.Context, request TaskRequest) (TaskResu
 	}
 	expectedVersion := session.Version
 	now := service.clock.Now().UTC()
+	if err := failurestate.Record(&session, workflow, request.ErrorCode, "ERR_PROVISIONING_FAILED", workflow.CurrentStage,
+		"Infrastructure provisioning stopped before readiness was confirmed.", failurestate.Impact(session, warning != "" || strings.EqualFold(strings.TrimSpace(request.ErrorCode), "ERR_AMBIGUOUS_LAUNCH")), now); err != nil {
+		return TaskResult{}, err
+	}
 	if err := session.FailInfrastructureProvisioning(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}

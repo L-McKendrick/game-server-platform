@@ -42,6 +42,7 @@ type Session struct {
 	Archive               ArchiveMetadata
 	ArchiveSourceState    LifecycleState
 	Progress              SessionProgress
+	Failure               FailureRecord
 
 	ActiveWorkflowID             string
 	ActiveWorkflowType           string
@@ -313,6 +314,9 @@ func (session Session) Validate() error {
 	if err := session.Progress.Validate(); err != nil {
 		return err
 	}
+	if err := session.Failure.Validate(); err != nil {
+		return err
+	}
 	switch {
 	case session.ID == "":
 		return fmt.Errorf("session ID is required")
@@ -387,9 +391,31 @@ func (session Session) Validate() error {
 		return fmt.Errorf("progress timestamp cannot precede session creation")
 	case !session.Progress.Empty() && session.Progress.UpdatedAt.After(session.UpdatedAt):
 		return fmt.Errorf("progress timestamp cannot follow session update")
+	case !session.Failure.Empty() && session.Failure.FailedAt.After(session.UpdatedAt):
+		return fmt.Errorf("failure timestamp cannot follow session update")
 	default:
 		return nil
 	}
+}
+
+// SetFailure replaces the currently visible sanitized failure without
+// advancing session version metadata. Workflow lifecycle methods own the
+// surrounding atomic mutation and event.
+func (session *Session) SetFailure(failure FailureRecord) error {
+	if failure.Empty() {
+		return fmt.Errorf("failure record is required")
+	}
+	if err := failure.Validate(); err != nil {
+		return err
+	}
+	session.Failure = failure
+	return nil
+}
+
+// ClearFailure removes only the active presentation projection. Immutable
+// workflow and session events retain prior failure audit history.
+func (session *Session) ClearFailure() {
+	session.Failure = FailureRecord{}
 }
 
 // NormalizeSessionDescription makes an optional user description safe for

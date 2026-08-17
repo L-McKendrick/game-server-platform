@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
@@ -268,6 +269,7 @@ func (service *Service) complete(ctx context.Context, session domain.Session, wo
 			return TaskResult{}, err
 		}
 	}
+	session.ClearFailure()
 	if err := session.CompleteArchive(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}
@@ -293,6 +295,10 @@ func (service *Service) fail(ctx context.Context, session domain.Session, workfl
 	}
 	expectedVersion := session.Version
 	now := service.clock.Now().UTC()
+	if err := failurestate.Record(&session, workflow, request.ErrorCode, "ERR_ARCHIVE_FAILED", workflow.CurrentStage,
+		"Archive processing stopped before every guarded stage was verified.", failurestate.Impact(session, true), now); err != nil {
+		return TaskResult{}, err
+	}
 	if err := session.FailArchive(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}

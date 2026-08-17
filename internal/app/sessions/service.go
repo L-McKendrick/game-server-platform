@@ -40,6 +40,7 @@ type Service struct {
 	repository           ports.SessionRepository
 	artifactQueue        ports.ArtifactQueue
 	commandQueue         ports.CommandQueue
+	confirmations        ports.ConfirmationRepository
 	notificationQueue    ports.NotificationQueue
 	ids                  IDGenerator
 	clock                Clock
@@ -57,6 +58,11 @@ func WithArtifactQueue(queue ports.ArtifactQueue) Option {
 // WithCommandQueue enables asynchronous lifecycle command dispatch.
 func WithCommandQueue(queue ports.CommandQueue) Option {
 	return func(service *Service) { service.commandQueue = queue }
+}
+
+// WithConfirmationRepository enables durable destructive-action confirmation.
+func WithConfirmationRepository(repository ports.ConfirmationRepository) Option {
+	return func(service *Service) { service.confirmations = repository }
 }
 
 // WithNotificationQueue enables durable public session-card delivery.
@@ -110,14 +116,38 @@ type StartCommand struct {
 	IdempotencyKey string
 }
 
-// LifecycleCommand requests an explicit sleep, wake, archive, restore, or termination.
-// Archive and restore remain owner-only; sleep and wake also allow guild managers.
+// LifecycleCommand requests sleep, wake, or restore. Archive and termination
+// must enter through the durable confirmation service.
 type LifecycleCommand struct {
 	Actor                                                                   domain.Actor
 	Roles                                                                   []string
 	SessionID, GuildID, ChannelID, CommandID, CorrelationID, IdempotencyKey string
 	CommandType                                                             string
 	CanManageGuild                                                          bool
+}
+
+type ConfirmationRequest struct {
+	Actor     domain.Actor
+	SessionID string
+	GuildID   string
+	RequestID string
+	Action    domain.ConfirmationAction
+}
+
+type ConfirmCommand struct {
+	Actor          domain.Actor
+	GuildID        string
+	ChannelID      string
+	Code           string
+	CommandID      string
+	CorrelationID  string
+	IdempotencyKey string
+}
+
+type CancelConfirmationCommand struct {
+	Actor   domain.Actor
+	GuildID string
+	Code    string
 }
 
 // SessionCardCommand requests an idempotent create-or-edit of the one public
@@ -279,6 +309,116 @@ func (service *Service) GetActiveModlist(ctx context.Context, query ActiveModlis
 	return ActiveModlist{ChannelID: reference.ChannelID, MessageID: reference.MessageID, Filename: reference.Filename}, nil
 }
 
+func (service *Service) RequestConfirmation(ctx context.Context, command ConfirmationRequest) (domain.Confirmation, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Confirmation{}, fmt.Errorf("validate actor: %w", err)
+	}
+	if service.confirmations == nil || service.commandQueue == nil {
+		return domain.Confirmation{}, fmt.Errorf("%w: destructive confirmations", domain.ErrFeatureDisabled)
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return domain.Confirmation{}, err
+	}
+	if err := authorizeOwner(command.Actor, session); err != nil {
+		return domain.Confirmation{}, err
+	}
+	if session.GuildID != strings.TrimSpace(command.GuildID) {
+		return domain.Confirmation{}, domain.ErrForbidden
+	}
+	if operation := activeOperation(session, service.clock.Now().UTC()); operation != nil {
+		return domain.Confirmation{}, *operation
+	}
+	switch command.Action {
+	case domain.ConfirmationArchive:
+		if !session.CanArchive() {
+			return domain.Confirmation{}, fmt.Errorf("session cannot archive now: %w", domain.ErrInvalidTransition)
+		}
+	case domain.ConfirmationTerminate:
+		if !session.CanTerminate() {
+			return domain.Confirmation{}, fmt.Errorf("session cannot terminate now: %w", domain.ErrInvalidTransition)
+		}
+	default:
+		return domain.Confirmation{}, fmt.Errorf("unsupported confirmation action")
+	}
+	requestID := strings.TrimSpace(command.RequestID)
+	if requestID == "" {
+		return domain.Confirmation{}, fmt.Errorf("confirmation request ID is required")
+	}
+	confirmation, err := domain.NewConfirmation(requestID, domain.ConfirmationCode(requestID), session, command.Action, service.clock.Now().UTC())
+	if err != nil {
+		return domain.Confirmation{}, err
+	}
+	if err := service.confirmations.CreateConfirmation(ctx, confirmation); err != nil {
+		if !errors.Is(err, domain.ErrAlreadyExists) {
+			return domain.Confirmation{}, err
+		}
+		existing, getErr := service.confirmations.GetConfirmation(ctx, confirmation.Code)
+		if getErr != nil {
+			return domain.Confirmation{}, getErr
+		}
+		if existing.ID != confirmation.ID || existing.SessionID != confirmation.SessionID || existing.Action != confirmation.Action || existing.OwnerDiscordUserID != confirmation.OwnerDiscordUserID || existing.GuildID != confirmation.GuildID {
+			return domain.Confirmation{}, domain.ErrIdempotencyConflict
+		}
+		if existing.BoundState != session.LifecycleState || existing.BoundVersion != session.Version {
+			return domain.Confirmation{}, domain.ErrConfirmationStateDrift
+		}
+		if err := existing.CheckPending(service.clock.Now().UTC()); err != nil {
+			return domain.Confirmation{}, err
+		}
+		return existing, nil
+	}
+	return confirmation, nil
+}
+
+func (service *Service) Confirm(ctx context.Context, command ConfirmCommand) (domain.Confirmation, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Confirmation{}, fmt.Errorf("validate actor: %w", err)
+	}
+	if service.confirmations == nil || service.commandQueue == nil {
+		return domain.Confirmation{}, fmt.Errorf("%w: destructive confirmations", domain.ErrFeatureDisabled)
+	}
+	now := service.clock.Now().UTC()
+	confirmation, session, err := service.confirmations.ConsumeConfirmation(ctx, command.Code, command.Actor.ID, command.GuildID, now)
+	if err != nil {
+		return domain.Confirmation{}, err
+	}
+	commandType := ""
+	switch confirmation.Action {
+	case domain.ConfirmationArchive:
+		if !session.CanArchive() {
+			return domain.Confirmation{}, domain.ErrConfirmationStateDrift
+		}
+		commandType = domain.CommandArchiveSession
+	case domain.ConfirmationTerminate:
+		if !session.CanTerminate() {
+			return domain.Confirmation{}, domain.ErrConfirmationStateDrift
+		}
+		commandType = domain.CommandDestroySession
+	default:
+		return domain.Confirmation{}, domain.ErrConfirmationMismatch
+	}
+	envelope := domain.CommandEnvelope{
+		SchemaVersion: 1, CommandID: strings.TrimSpace(command.CommandID), CommandType: commandType,
+		RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID)},
+		SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: map[string]string{},
+	}
+	if err := service.commandQueue.Enqueue(ctx, envelope); err != nil {
+		return domain.Confirmation{}, fmt.Errorf("%w: %v", domain.ErrConfirmationDispatchUncertain, err)
+	}
+	return confirmation, nil
+}
+
+func (service *Service) CancelConfirmation(ctx context.Context, command CancelConfirmationCommand) (domain.Confirmation, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Confirmation{}, fmt.Errorf("validate actor: %w", err)
+	}
+	if service.confirmations == nil {
+		return domain.Confirmation{}, fmt.Errorf("%w: destructive confirmations", domain.ErrFeatureDisabled)
+	}
+	return service.confirmations.CancelConfirmation(ctx, command.Code, command.Actor.ID, command.GuildID, service.clock.Now().UTC())
+}
+
 func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleCommand) error {
 	if err := command.Actor.Validate(); err != nil {
 		return fmt.Errorf("validate actor: %w", err)
@@ -297,22 +437,22 @@ func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleC
 	if session.GuildID != strings.TrimSpace(command.GuildID) {
 		return domain.ErrForbidden
 	}
+	if operation := activeOperation(session, service.clock.Now().UTC()); operation != nil {
+		return *operation
+	}
+	if command.CommandType == domain.CommandArchiveSession || command.CommandType == domain.CommandDestroySession {
+		return domain.ErrConfirmationRequired
+	}
 	if command.CommandType == domain.CommandSleepSession && !session.CanSleep() {
 		return fmt.Errorf("session cannot sleep now: %w", domain.ErrInvalidTransition)
 	}
 	if command.CommandType == domain.CommandWakeSession && !session.CanWake() {
 		return fmt.Errorf("session cannot wake now: %w", domain.ErrInvalidTransition)
 	}
-	if command.CommandType == domain.CommandArchiveSession && !session.CanArchive() {
-		return fmt.Errorf("session cannot archive now: %w", domain.ErrInvalidTransition)
-	}
 	if command.CommandType == domain.CommandRestoreSession && !session.CanRestore() {
 		return fmt.Errorf("session cannot restore now: %w", domain.ErrInvalidTransition)
 	}
-	if command.CommandType == domain.CommandDestroySession && !session.CanTerminate() {
-		return fmt.Errorf("session cannot terminate now: %w", domain.ErrInvalidTransition)
-	}
-	if command.CommandType != domain.CommandSleepSession && command.CommandType != domain.CommandWakeSession && command.CommandType != domain.CommandArchiveSession && command.CommandType != domain.CommandRestoreSession && command.CommandType != domain.CommandDestroySession {
+	if command.CommandType != domain.CommandSleepSession && command.CommandType != domain.CommandWakeSession && command.CommandType != domain.CommandRestoreSession {
 		return fmt.Errorf("unsupported lifecycle command")
 	}
 	return service.commandQueue.Enqueue(ctx, domain.CommandEnvelope{SchemaVersion: 1, CommandID: strings.TrimSpace(command.CommandID), CommandType: command.CommandType, RequestedAt: service.clock.Now().UTC(), Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID), Roles: append([]string(nil), command.Roles...), CanManageGuild: command.CanManageGuild}, SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: map[string]string{}})
@@ -338,6 +478,9 @@ func (service *Service) RequestStart(ctx context.Context, command StartCommand) 
 	if session.GuildID != strings.TrimSpace(command.GuildID) {
 		return fmt.Errorf("session belongs to another guild: %w", domain.ErrForbidden)
 	}
+	if operation := activeOperation(session, service.clock.Now().UTC()); operation != nil {
+		return *operation
+	}
 	commandType := domain.CommandStartSession
 	switch {
 	case session.CanStartInfrastructureProvisioning():
@@ -361,6 +504,16 @@ func (service *Service) RequestStart(ctx context.Context, command StartCommand) 
 		return fmt.Errorf("enqueue start command: %w", err)
 	}
 	return nil
+}
+
+func activeOperation(session domain.Session, now time.Time) *domain.OperationInProgressError {
+	if session.ActiveWorkflowID == "" || !session.ActiveWorkflowLeaseExpiresAt.After(now.UTC()) {
+		return nil
+	}
+	return &domain.OperationInProgressError{
+		WorkflowType: session.ActiveWorkflowType, Milestone: session.Progress.Milestone,
+		StartedAt: session.ActiveWorkflowStartedAt, UpdatedAt: session.Progress.UpdatedAt,
+	}
 }
 
 // ConfigureCommand replaces the editable configuration of a draft session.

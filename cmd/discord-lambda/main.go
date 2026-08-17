@@ -71,7 +71,7 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 	}
 	if baseConfig.ProvisioningEnabled {
 		commandQueue := sqscommand.New(sqs.NewFromConfig(awsConfiguration), baseConfig.CommandQueueURL)
-		serviceOptions = append(serviceOptions, appsession.WithCommandQueue(commandQueue))
+		serviceOptions = append(serviceOptions, appsession.WithCommandQueue(commandQueue), appsession.WithConfirmationRepository(repository))
 	}
 	service, err := appsession.NewService(
 		repository,

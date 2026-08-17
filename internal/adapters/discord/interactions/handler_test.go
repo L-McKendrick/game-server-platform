@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1157,9 +1158,9 @@ func TestHandlerAllowsGuildAdministratorToRequestAnotherOwnersSleep(t *testing.T
 	}
 }
 
-func TestHandlerArchiveRequiresExplicitConfirmation(t *testing.T) {
+func TestHandlerArchiveCreatesThenConsumesDurableConfirmation(t *testing.T) {
 	t.Parallel()
-	handler, repository, privateKey := newTestHandler(t, []string{"correlation-archive"}, nil)
+	handler, repository, privateKey := newTestHandler(t, []string{"correlation-archive", "correlation-confirm"}, nil)
 	seedRunningHandlerSession(t, repository)
 	body := marshalPayload(map[string]any{
 		"id": "interaction-archive", "application_id": "app-1", "type": interactionTypeApplicationCommand,
@@ -1169,66 +1170,66 @@ func TestHandlerArchiveRequiresExplicitConfirmation(t *testing.T) {
 			"type": applicationCommandOptionSubcommand, "name": "archive",
 			"options": []any{
 				map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "running-session"},
-				map[string]any{"type": applicationCommandOptionBoolean, "name": "confirm", "value": false},
 			},
 		}}},
 	})
 	response := executeSignedRequest(t, handler, privateKey, body, testNow)
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "removes the current EC2 instance and EBS volumes") {
+	code := domain.ConfirmationCode("interaction-archive")
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "No destructive work has been queued") || !strings.Contains(decoded.Data.Content, code) {
 		t.Fatalf("response = %#v", decoded.Data)
+	}
+	confirmation, err := repository.GetConfirmation(context.Background(), code)
+	if err != nil || confirmation.Status != domain.ConfirmationPending {
+		t.Fatalf("confirmation = %#v, err %v", confirmation, err)
+	}
+
+	confirmBody := commandBody("interaction-confirm", "owner-1", "guild-1", "channel-1", "confirm", []any{
+		map[string]any{"type": applicationCommandOptionString, "name": "code", "value": code},
+	})
+	response = executeSignedRequest(t, handler, privateKey, confirmBody, testNow)
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Archive request accepted") || !strings.Contains(decoded.Data.Content, "cannot be replayed") {
+		t.Fatalf("response = %#v", decoded.Data)
+	}
+	confirmation, err = repository.GetConfirmation(context.Background(), code)
+	if err != nil || confirmation.Status != domain.ConfirmationConsumed {
+		t.Fatalf("consumed confirmation = %#v, err %v", confirmation, err)
 	}
 }
 
-func TestHandlerArchiveAcceptsOwnerConfirmationAndWarnsAboutInterruption(t *testing.T) {
+func TestHandlerTerminateConfirmationCanBeCancelled(t *testing.T) {
 	t.Parallel()
-	handler, repository, privateKey := newTestHandler(t, []string{"correlation-archive"}, nil)
+	handler, repository, privateKey := newTestHandler(t, []string{"correlation-terminate", "correlation-cancel"}, nil)
 	seedRunningHandlerSession(t, repository)
-	body := marshalPayload(map[string]any{
-		"id": "interaction-archive", "application_id": "app-1", "type": interactionTypeApplicationCommand,
-		"guild_id": "guild-1", "channel_id": "channel-1",
-		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
-		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
-			"type": applicationCommandOptionSubcommand, "name": "archive",
-			"options": []any{
-				map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "running-session"},
-				map[string]any{"type": applicationCommandOptionBoolean, "name": "confirm", "value": true},
-			},
-		}}},
+	body := commandBody("interaction-terminate", "owner-1", "guild-1", "channel-1", "terminate", []any{
+		map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "running-session"},
 	})
 	response := executeSignedRequest(t, handler, privateKey, body, testNow)
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Archive request accepted") || !strings.Contains(decoded.Data.Content, "removed only after") {
+	code := domain.ConfirmationCode("interaction-terminate")
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "irreversible") || !strings.Contains(decoded.Data.Content, code) {
+		t.Fatalf("response = %#v", decoded.Data)
+	}
+	cancelBody := commandBody("interaction-cancel", "owner-1", "guild-1", "channel-1", "cancel-confirmation", []any{
+		map[string]any{"type": applicationCommandOptionString, "name": "code", "value": code},
+	})
+	response = executeSignedRequest(t, handler, privateKey, cancelBody, testNow)
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "confirmation cancelled") || !strings.Contains(decoded.Data.Content, "No destructive work was queued") {
 		t.Fatalf("response = %#v", decoded.Data)
 	}
 }
 
-func TestHandlerTerminateRequiresOwnerConfirmationAndWarnsIrreversible(t *testing.T) {
+func TestConfirmationQueueUncertaintyNeverPromisesRetry(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name, interactionID string
-		confirmed           bool
-		want                string
-	}{
-		{name: "confirmation required", interactionID: "interaction-terminate-no", confirmed: false, want: "immediate and irreversible"},
-		{name: "confirmed request", interactionID: "interaction-terminate-yes", confirmed: true, want: "Terminate request accepted"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			handler, repository, privateKey := newTestHandler(t, []string{"correlation-terminate"}, nil)
-			seedRunningHandlerSession(t, repository)
-			body := commandBody(test.interactionID, "owner-1", "guild-1", "channel-1", "terminate", []any{
-				map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "running-session"},
-				map[string]any{"type": applicationCommandOptionBoolean, "name": "confirm", "value": test.confirmed},
-			})
-			response := executeSignedRequest(t, handler, privateKey, body, testNow)
-			var decoded interactionResponse
-			decodeResponse(t, response, &decoded)
-			if decoded.Data == nil || !strings.Contains(decoded.Data.Content, test.want) {
-				t.Fatalf("response = %#v; want %q", decoded.Data, test.want)
-			}
-		})
+	err := confirmationUserError(domain.ErrConfirmationDispatchUncertain)
+	var userErr userError
+	if !errors.As(err, &userErr) || !strings.Contains(userErr.message, "No automatic retry is scheduled") ||
+		!strings.Contains(userErr.message, "may remain and incur cost") || strings.Contains(userErr.message, "will retry") {
+		t.Fatalf("confirmation uncertainty message = %v", err)
 	}
 }
 
@@ -1405,6 +1406,7 @@ func newTestHandlerWithQueues(
 		appsession.WithArtifactQueue(artifactQueue),
 		appsession.WithNotificationQueue(notificationQueue),
 		appsession.WithCommandQueue(discardCommandQueue{}),
+		appsession.WithConfirmationRepository(repository),
 	)
 	if err != nil {
 		t.Fatalf("NewService() returned error: %v", err)

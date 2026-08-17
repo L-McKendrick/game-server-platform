@@ -14,6 +14,7 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAndAdmin(t *testing.T)
 	t.Parallel()
 
 	type commandOption struct {
+		Type         int             `json:"type"`
 		Name         string          `json:"name"`
 		Options      []commandOption `json:"options"`
 		Autocomplete bool            `json:"autocomplete"`
@@ -74,6 +75,14 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAndAdmin(t *testing.T)
 			if len(subcommand.Options) != 2 || subcommand.Options[0].Name != "state" || subcommand.Options[1].Name != "page" {
 				t.Errorf("list options = %#v; want state filter and page", subcommand.Options)
 			}
+		}
+		if subcommand.Name == "confirm" || subcommand.Name == "cancel-confirmation" {
+			if len(subcommand.Options) != 1 || subcommand.Options[0].Name != "code" || subcommand.Options[0].Type != 3 {
+				t.Errorf("%s options = %#v; want one required string code", subcommand.Name, subcommand.Options)
+			}
+		}
+		if (subcommand.Name == "archive" || subcommand.Name == "terminate") && len(subcommand.Options) != 1 {
+			t.Errorf("%s options = %#v; inline confirmation boolean must be absent", subcommand.Name, subcommand.Options)
 		}
 		if !targeting[subcommand.Name] {
 			continue

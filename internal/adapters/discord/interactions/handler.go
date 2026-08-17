@@ -70,6 +70,9 @@ type SessionService interface {
 
 	RequestStart(ctx context.Context, command appsession.StartCommand) error
 	RequestLifecycle(ctx context.Context, command appsession.LifecycleCommand) error
+	RequestConfirmation(ctx context.Context, command appsession.ConfirmationRequest) (domain.Confirmation, error)
+	Confirm(ctx context.Context, command appsession.ConfirmCommand) (domain.Confirmation, error)
+	CancelConfirmation(ctx context.Context, command appsession.CancelConfirmationCommand) (domain.Confirmation, error)
 }
 
 type AccessService interface {
@@ -483,24 +486,91 @@ func (handler *Handler) routeCommand(
 	case "sleep", "wake", "restore":
 		content, err := handler.requestLifecycle(ctx, payload, subcommand.Options, actor, correlationID, subcommand.Name)
 		return content, commandName, err
-	case "archive":
-		confirmed, err := booleanOption(subcommand.Options, "confirm", false)
-		if err != nil || !confirmed {
-			return "", commandName, newUserError("Archiving stops the game services and removes the current EC2 instance and EBS volumes after the portable backup is verified. A later restore creates billable replacement resources. Set `confirm` to true to continue.")
-		}
-		content, err := handler.requestLifecycle(ctx, payload, subcommand.Options, actor, correlationID, subcommand.Name)
+	case "archive", "terminate":
+		content, err := handler.createConfirmation(ctx, payload, subcommand.Options, actor, subcommand.Name)
 		return content, commandName, err
-	case "terminate":
-		confirmed, err := booleanOption(subcommand.Options, "confirm", false)
-		if err != nil || !confirmed {
-			return "", commandName, newUserError("Termination is immediate and irreversible. It permanently deletes the session's tagged EC2/EBS infrastructure and every stored artifact/archive version without creating a backup. Set `confirm` to true to continue.")
-		}
-		content, err := handler.requestLifecycle(ctx, payload, subcommand.Options, actor, correlationID, subcommand.Name)
+	case "confirm":
+		content, err := handler.confirmAction(ctx, payload, subcommand.Options, actor, correlationID)
+		return content, commandName, err
+	case "cancel-confirmation":
+		content, err := handler.cancelConfirmation(ctx, payload, subcommand.Options, actor)
 		return content, commandName, err
 	default:
 		return "", commandName, newUserError(
 			"That `/rb` subcommand is not supported yet.",
 		)
+	}
+}
+
+func (handler *Handler) createConfirmation(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, action string) (string, error) {
+	sessionID, err := handler.resolveSessionID(ctx, options, actor, payload.GuildID, false, false)
+	if err != nil {
+		return "", err
+	}
+	confirmationAction := domain.ConfirmationArchive
+	if action == "terminate" {
+		confirmationAction = domain.ConfirmationTerminate
+	}
+	confirmation, err := handler.service.RequestConfirmation(ctx, appsession.ConfirmationRequest{
+		Actor: actor, SessionID: sessionID, GuildID: payload.GuildID, RequestID: payload.ID, Action: confirmationAction,
+	})
+	if err != nil {
+		return "", err
+	}
+	deadline := fmt.Sprintf("<t:%d:R>", confirmation.ExpiresAt.UTC().Unix())
+	if action == "archive" {
+		return fmt.Sprintf("**Archive confirmation required**\nNo destructive work has been queued. Archiving stops game services and removes EC2/EBS only after the portable backup is verified. A later restore creates billable replacement resources.\n\nRun `/rb confirm code:%s` by %s, or `/rb cancel-confirmation code:%s`.", confirmation.Code, deadline, confirmation.Code), nil
+	}
+	return fmt.Sprintf("**Termination confirmation required**\nNo destructive work has been queued. Termination permanently deletes tagged EC2/EBS resources and all stored session artifacts without creating a backup. This is irreversible.\n\nRun `/rb confirm code:%s` by %s, or `/rb cancel-confirmation code:%s`.", confirmation.Code, deadline, confirmation.Code), nil
+}
+
+func (handler *Handler) confirmAction(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, correlationID string) (string, error) {
+	code, err := stringOption(options, "code", true)
+	if err != nil {
+		return "", newUserError("Enter the confirmation code exactly as shown.")
+	}
+	confirmation, err := handler.service.Confirm(ctx, appsession.ConfirmCommand{
+		Actor: actor, GuildID: payload.GuildID, ChannelID: payload.ChannelID, Code: code,
+		CommandID: payload.ID, CorrelationID: correlationID, IdempotencyKey: "discord:" + payload.ID,
+	})
+	if err != nil {
+		return "", confirmationUserError(err)
+	}
+	action := "Archive"
+	if confirmation.Action == domain.ConfirmationTerminate {
+		action = "Termination"
+	}
+	return fmt.Sprintf("**%s request accepted**\nThe confirmation was consumed and cannot be replayed. Use `/rb status` to follow progress.", action), nil
+}
+
+func (handler *Handler) cancelConfirmation(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor) (string, error) {
+	code, err := stringOption(options, "code", true)
+	if err != nil {
+		return "", newUserError("Enter the confirmation code exactly as shown.")
+	}
+	confirmation, err := handler.service.CancelConfirmation(ctx, appsession.CancelConfirmationCommand{Actor: actor, GuildID: payload.GuildID, Code: code})
+	if err != nil {
+		return "", confirmationUserError(err)
+	}
+	return fmt.Sprintf("**%s confirmation cancelled**\nNo destructive work was queued. The code cannot be used again.", strings.ToUpper(string(confirmation.Action[:1]))+strings.ToLower(string(confirmation.Action[1:]))), nil
+}
+
+func confirmationUserError(err error) error {
+	switch {
+	case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrConfirmationMismatch):
+		return newUserError("That confirmation code was not found or is not valid for you in this server.")
+	case errors.Is(err, domain.ErrConfirmationExpired):
+		return newUserError("That confirmation expired. Run the archive or terminate command again to create a new ten-minute code.")
+	case errors.Is(err, domain.ErrConfirmationConsumed):
+		return newUserError("That confirmation was already used and cannot be replayed.")
+	case errors.Is(err, domain.ErrConfirmationCancelled):
+		return newUserError("That confirmation was cancelled and cannot be used.")
+	case errors.Is(err, domain.ErrConfirmationStateDrift):
+		return newUserError("The session changed after this confirmation was created. Run `/rb status`, then request a new confirmation if the action is still appropriate.")
+	case errors.Is(err, domain.ErrConfirmationDispatchUncertain):
+		return newUserError("The confirmation was consumed, but queue delivery could not be confirmed. No automatic retry is scheduled. Check `/rb status`; if no operation appears, run archive or terminate again for a new code. Resources may remain and incur cost.")
+	default:
+		return err
 	}
 }
 
@@ -907,6 +977,10 @@ func (handler *Handler) commandErrorMessage(err error, correlationID string) str
 	if errors.As(err, &userErr) {
 		return userErr.message
 	}
+	var active domain.OperationInProgressError
+	if errors.As(err, &active) {
+		return activeOperationMessage(active)
+	}
 
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
@@ -919,12 +993,35 @@ func (handler *Handler) commandErrorMessage(err error, correlationID string) str
 		return "Infrastructure provisioning is not enabled in this environment yet."
 	case errors.Is(err, domain.ErrQuotaExceeded):
 		return "The environment has reached its provisioned-session limit. Try again after another session is removed."
+	case errors.Is(err, domain.ErrConfirmationRequired):
+		return "Create a durable confirmation with `/rb archive` or `/rb terminate` before requesting that action."
 	default:
 		return fmt.Sprintf(
 			"The command failed. Reference: `%s`",
 			sanitizeInline(correlationID),
 		)
 	}
+}
+
+func activeOperationMessage(active domain.OperationInProgressError) string {
+	operation := map[string]string{
+		"ProvisionSession": "Starting server", domain.BootstrapWorkflowType: "Setting up game and content",
+		domain.SleepWorkflowType: "Putting server to sleep", domain.WakeWorkflowType: "Waking server",
+		domain.ArchiveWorkflowType: "Archiving server", domain.RestoreWorkflowType: "Restoring server",
+		domain.TerminationWorkflowType: "Terminating server",
+	}[active.WorkflowType]
+	if operation == "" {
+		operation = "Session operation"
+	}
+	progress := strings.ReplaceAll(strings.ToLower(string(active.Milestone)), "_", " ")
+	if progress == "" {
+		progress = "accepted"
+	}
+	message := fmt.Sprintf("**%s is already in progress**\nCurrent progress: %s.", operation, progress)
+	if !active.StartedAt.IsZero() {
+		message += fmt.Sprintf(" Started <t:%d:R>.", active.StartedAt.UTC().Unix())
+	}
+	return message + " No second operation was queued. Use `/rb status` for the latest details."
 }
 
 func validateContentType(value string) error {

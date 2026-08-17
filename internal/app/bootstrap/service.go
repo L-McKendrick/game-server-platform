@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
@@ -173,6 +174,7 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 	}
 	expectedVersion := session.Version
 	now := service.clock.Now().UTC()
+	session.ClearFailure()
 	if err := session.CompleteBootstrap(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}
@@ -204,6 +206,10 @@ func (service *Service) fail(ctx context.Context, request TaskRequest) (TaskResu
 	}
 	expectedVersion := session.Version
 	now := service.clock.Now().UTC()
+	if err := failurestate.Record(&session, workflow, request.ErrorCode, "ERR_BOOTSTRAP_FAILED", workflow.CurrentStage,
+		"Game and content setup stopped before health verification completed.", failurestate.Impact(session, false), now); err != nil {
+		return TaskResult{}, err
+	}
 	if err := session.FailBootstrap(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}

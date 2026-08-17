@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
@@ -176,6 +177,10 @@ func (service *Service) startExecution(ctx context.Context, session domain.Sessi
 func (service *Service) failStart(ctx context.Context, session domain.Session, workflow domain.Workflow, actor domain.Actor, startErr error) error {
 	now := service.clock.Now().UTC()
 	expectedVersion := session.Version
+	if err := failurestate.Record(&session, workflow, "ERR_WORKFLOW_START_FAILED", "ERR_WORKFLOW_START_FAILED", "Workflow start",
+		"The operation could not be handed to the workflow service.", failurestate.Impact(session, false), now); err != nil {
+		return err
+	}
 	var releaseErr error
 	if workflow.Type == "ProvisionSession" {
 		releaseErr = session.AbortProvisioningWorkflowStart(workflow.ID, now)

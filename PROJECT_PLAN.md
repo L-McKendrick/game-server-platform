@@ -102,13 +102,13 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.4.5** [x] Publish a separate stable channel message containing the sanitized Arma-compatible active modlist attachment and link it from the card; recreate it from S3 if deleted.
       - **12.4.6** [x] Add authorized `View details`, bounded `Refresh`, `Download modlist`, and `Help` controls with state/revision revalidation and concise Discord button labels.
       - **12.4.7** [x] Automatically repair missing cards and add an explicit admin repair action, with tests for deletion, duplicate delivery, stale controls, rate limits, and partial Discord outages.
-    - **12.5** [ ] Replace opaque failures and inline booleans with actionable errors and durable confirmations.
-      - **12.5.1** [ ] Persist a sanitized failure projection containing stable internal code, failed stage, retry disposition, resource/cost impact, bounded detail, timestamp, and support reference.
-      - **12.5.2** [ ] Maintain a user-facing error catalog that renders what happened, likely reason, platform action, exact user action, and billing implications without leaking raw AWS/SSM data or IDs.
-      - **12.5.3** [ ] Make workers populate retry truthfully and make duplicate in-progress requests return the existing operation and progress instead of a generic conflict.
-      - **12.5.4** [ ] Add owner-bound, guild-bound, action-bound, state-bound, single-use confirmation records with atomic consumption and a 10-minute expiry.
-      - **12.5.5** [ ] Replace archive/terminate `confirm:true` with `/rb confirm code:<code>` and `/rb cancel-confirmation`, revalidating authorization and lifecycle state before queueing work.
-      - **12.5.6** [ ] Test every known error category, safe unknown-error fallback, redaction, retry wording, cost warnings, confirmation expiry, replay, mismatch, cancellation, and state drift.
+    - **12.5** [x] Replace opaque failures and inline booleans with actionable errors and durable confirmations.
+      - **12.5.1** [x] Persist a sanitized failure projection containing stable internal code, failed stage, retry disposition, resource/cost impact, bounded detail, timestamp, and support reference.
+      - **12.5.2** [x] Maintain a user-facing error catalog that renders what happened, likely reason, platform action, exact user action, and billing implications without leaking raw AWS/SSM data or IDs.
+      - **12.5.3** [x] Make workers populate retry truthfully and make duplicate in-progress requests return the existing operation and progress instead of a generic conflict.
+      - **12.5.4** [x] Add owner-bound, guild-bound, action-bound, state-bound, single-use confirmation records with atomic consumption and a 10-minute expiry.
+      - **12.5.5** [x] Replace archive/terminate `confirm:true` with `/rb confirm code:<code>` and `/rb cancel-confirmation`, revalidating authorization and lifecycle state before queueing work.
+      - **12.5.6** [x] Test every known error category, safe unknown-error fallback, redaction, retry wording, cost warnings, confirmation expiry, replay, mismatch, cancellation, and state drift.
     - **12.6** [ ] Support safe post-creation modlist revisions.
       - **12.6.1** [ ] Replace the single preset pointer with backward-compatible active and pending preset revision metadata plus immutable change events.
       - **12.6.2** [ ] Implement `/rb mods` as a private preset-upload modal that validates and stages a revision without interrupting a running server.

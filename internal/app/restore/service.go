@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
 	"github.com/L-McKendrick/game-server-platform/internal/app/provisioning"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
@@ -262,6 +263,7 @@ func (service *Service) complete(ctx context.Context, session domain.Session, wo
 		return response, nil
 	}
 	expected, now := session.Version, service.clock.Now().UTC()
+	session.ClearFailure()
 	if err := session.CompleteRestore(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}
@@ -299,6 +301,10 @@ func (service *Service) fail(ctx context.Context, session domain.Session, workfl
 		if err := service.stages.ReleaseCapacitySlot(ctx, slotID, session.ID); err != nil {
 			return TaskResult{}, err
 		}
+	}
+	if err := failurestate.Record(&session, workflow, request.ErrorCode, "ERR_RESTORE_FAILED", workflow.CurrentStage,
+		"Restore processing stopped before the replacement server was verified healthy.", failurestate.Impact(session, false), now); err != nil {
+		return TaskResult{}, err
 	}
 	if err := session.FailRestore(workflow.ID, now); err != nil {
 		return TaskResult{}, err

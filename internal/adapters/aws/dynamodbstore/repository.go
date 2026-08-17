@@ -131,6 +131,13 @@ type sessionItem struct {
 	ProgressWorkflowType     string   `dynamodbav:"progress_workflow_type,omitempty"`
 	ProgressMilestone        string   `dynamodbav:"progress_milestone,omitempty"`
 	ProgressUpdatedAt        string   `dynamodbav:"progress_updated_at,omitempty"`
+	FailureCode              string   `dynamodbav:"failure_code,omitempty"`
+	FailureStage             string   `dynamodbav:"failure_stage,omitempty"`
+	FailureRetryDisposition  string   `dynamodbav:"failure_retry_disposition,omitempty"`
+	FailureResourceImpact    string   `dynamodbav:"failure_resource_impact,omitempty"`
+	FailureDetail            string   `dynamodbav:"failure_detail,omitempty"`
+	FailureAt                string   `dynamodbav:"failure_at,omitempty"`
+	FailureSupportReference  string   `dynamodbav:"failure_support_reference,omitempty"`
 
 	ActiveWorkflowID             string `dynamodbav:"active_workflow_id,omitempty"`
 	ActiveWorkflowType           string `dynamodbav:"active_workflow_type,omitempty"`
@@ -1024,6 +1031,13 @@ func toSessionItem(session domain.Session) sessionItem {
 		ProgressWorkflowType:         session.Progress.WorkflowType,
 		ProgressMilestone:            string(session.Progress.Milestone),
 		ProgressUpdatedAt:            optionalTimestamp(session.Progress.UpdatedAt),
+		FailureCode:                  session.Failure.Code,
+		FailureStage:                 session.Failure.Stage,
+		FailureRetryDisposition:      string(session.Failure.RetryDisposition),
+		FailureResourceImpact:        string(session.Failure.ResourceImpact),
+		FailureDetail:                session.Failure.Detail,
+		FailureAt:                    optionalTimestamp(session.Failure.FailedAt),
+		FailureSupportReference:      session.Failure.SupportReference,
 		ActiveWorkflowID:             session.ActiveWorkflowID,
 		ActiveWorkflowType:           session.ActiveWorkflowType,
 		ActiveWorkflowStartedAt:      fixedTimestamp(session.ActiveWorkflowStartedAt),
@@ -1095,6 +1109,10 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("parse progress updated_at: %w", err)
 	}
+	failureAt, err := parseOptionalTimestamp(item.FailureAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse failure_at: %w", err)
+	}
 	missionStatus := domain.ArtifactStatus(item.MissionArtifactStatus)
 	if missionStatus == "" && strings.TrimSpace(item.MissionObjectKey) != "" {
 		missionStatus = domain.ArtifactAccepted
@@ -1143,6 +1161,13 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		Progress: domain.SessionProgress{
 			WorkflowID: item.ProgressWorkflowID, WorkflowType: item.ProgressWorkflowType,
 			Milestone: domain.ProgressMilestone(item.ProgressMilestone), UpdatedAt: progressUpdatedAt,
+		},
+		Failure: domain.FailureRecord{
+			Code: item.FailureCode, Stage: item.FailureStage,
+			RetryDisposition: domain.RetryDisposition(item.FailureRetryDisposition),
+			ResourceImpact:   domain.ResourceCostImpact(item.FailureResourceImpact),
+			Detail:           item.FailureDetail, FailedAt: failureAt,
+			SupportReference: item.FailureSupportReference,
 		},
 		ActiveWorkflowID:             item.ActiveWorkflowID,
 		ActiveWorkflowType:           item.ActiveWorkflowType,

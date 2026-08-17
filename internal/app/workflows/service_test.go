@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,6 +124,10 @@ func TestStartFailureMarksWorkflowFailedAndReleasesLock(t *testing.T) {
 	}
 	if session.Progress.Milestone != domain.ProgressFailed || session.Progress.WorkflowID != workflow.ID {
 		t.Fatalf("progress = %#v", session.Progress)
+	}
+	if session.Failure.Code != "ERR_WORKFLOW_START_FAILED" || session.Failure.RetryDisposition != domain.RetryNotScheduled ||
+		strings.Contains(session.Failure.Detail, "Step Functions unavailable") {
+		t.Fatalf("sanitized start failure = %#v", session.Failure)
 	}
 	requests := notifications.Requests()
 	if len(requests) != 2 || requests[0].NotificationID != "card-progress-command-1-accepted" || requests[1].NotificationID != "card-progress-command-1-failed" {

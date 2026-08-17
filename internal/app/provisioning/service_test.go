@@ -3,6 +3,7 @@ package provisioning
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,6 +145,10 @@ func TestProvisioningFailureRetainsCapacityWhenAmbiguousLaunchIsDiscovered(t *te
 	}
 	if session.LifecycleState != domain.StateFailed || session.Infrastructure.InstanceID != "i-ambiguous" || session.Infrastructure.CapacitySlotID == "" {
 		t.Fatalf("failed session infrastructure = %#v", session)
+	}
+	if session.Failure.Code != "ERR_AMBIGUOUS_LAUNCH" || session.Failure.RetryDisposition != domain.RetryNotScheduled ||
+		session.Failure.ResourceImpact != domain.ResourceCostUnknown || strings.Contains(session.Failure.Detail, request.ErrorMessage) {
+		t.Fatalf("sanitized failure = %#v", session.Failure)
 	}
 }
 

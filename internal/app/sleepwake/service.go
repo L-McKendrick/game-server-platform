@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
@@ -158,6 +159,7 @@ func (s *Service) complete(ctx context.Context, session domain.Session, wf domai
 	}
 	expected := session.Version
 	now := s.clock.Now().UTC()
+	session.ClearFailure()
 	var err error
 	if wf.Type == domain.SleepWorkflowType {
 		err = session.CompleteSleep(wf.ID, now)
@@ -198,6 +200,10 @@ func (s *Service) fail(ctx context.Context, session domain.Session, wf domain.Wo
 	}
 	expected := session.Version
 	now := s.clock.Now().UTC()
+	if err := failurestate.Record(&session, wf, r.ErrorCode, "ERR_SLEEP_WAKE_FAILED", wf.CurrentStage,
+		"The sleep or wake operation stopped before its target state was verified.", failurestate.Impact(session, false), now); err != nil {
+		return TaskResult{}, err
+	}
 	if err := session.FailSleepWake(wf.ID, now); err != nil {
 		return TaskResult{}, err
 	}

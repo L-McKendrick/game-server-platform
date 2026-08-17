@@ -93,7 +93,7 @@ func TestProjectRepresentsGenericFailureAndOfflineEndpointsSafely(t *testing.T) 
 		CurrentStage: "Failed", ErrorCode: "ERR_SECRET", ErrorMessage: "raw operator detail",
 	}
 	projection := Project(session, Options{Now: now, Workflow: workflow})
-	if !projection.Failure.Present || !projection.Failure.ResourcesMayExist ||
+	if !projection.Failure.Present || !strings.Contains(projection.Failure.BillingImpact, "incur cost") ||
 		projection.Failure.Summary == "" || projection.Endpoints.Game.Available {
 		t.Fatalf("failed projection = %#v", projection)
 	}
@@ -111,6 +111,36 @@ func TestProjectRepresentsGenericFailureAndOfflineEndpointsSafely(t *testing.T) 
 	}
 	if !strings.Contains(RenderPublic(archived), "**Arma IP:** `203.0.113.20:2302` — Offline (retained address)") {
 		t.Fatalf("archived card = %q", RenderPublic(archived))
+	}
+}
+
+func TestUnknownPersistedFailureRendersSafeFallbackWithBillingAndReference(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 17, 0, 0, 0, time.UTC)
+	failure, err := domain.NewFailureRecord(domain.FailureRecordInput{
+		Code: "ERR_UNMAPPED_PROVIDER", Stage: "Provider call", RetryDisposition: domain.RetryNotScheduled,
+		ResourceImpact: domain.ResourceCostUnknown,
+		Detail:         "arn:aws:ssm:us-west-2:123456789012:parameter/secret token=hunter2 i-0123456789abcdef0",
+		FailedAt:       now, SupportReference: "ref_ABC123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := domain.Session{ID: "session-secret", DisplayName: "Failed", Slug: "failed", GameType: "arma3", LifecycleState: domain.StateFailed, HealthStatus: domain.HealthUnhealthy, Failure: failure, UpdatedAt: now}
+	players := &domain.PlayerStatus{PlayerCount: 100, MaxPlayers: 100, PlayerNames: make([]string, 100)}
+	for index := range players.PlayerNames {
+		players.PlayerNames[index] = strings.Repeat("LongPlayerName", 6)
+	}
+	content := RenderDetailed(Project(session, Options{Now: now, Players: players, PlayersObservedAt: now}))
+	for _, required := range []string{"unexpected error", "No retry is scheduled", "may remain and incur cost", "ref_ABC123"} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("content %q omitted %q", content, required)
+		}
+	}
+	for _, forbidden := range []string{"ERR_UNMAPPED_PROVIDER", "arn:aws", "hunter2", "i-0123456789abcdef0", "session-secret"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("content exposed %q: %q", forbidden, content)
+		}
 	}
 }
 

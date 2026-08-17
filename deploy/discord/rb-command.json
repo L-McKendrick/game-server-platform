@@ -105,8 +105,7 @@
       "name": "archive",
       "description": "Verify a portable backup, then remove EC2 and EBS",
       "options": [
-        {"type": 3, "name": "session", "description": "Choose a session or enter its exact slug", "required": true, "autocomplete": true},
-        {"type": 5, "name": "confirm", "description": "Confirm verified backup followed by EC2 and EBS removal", "required": true}
+        {"type": 3, "name": "session", "description": "Choose a session or enter its exact slug", "required": true, "autocomplete": true}
       ]
     },
     {
@@ -122,8 +121,23 @@
       "name": "terminate",
       "description": "Permanently delete a session and all associated resources",
       "options": [
-        {"type": 3, "name": "session", "description": "Choose a session or enter its exact slug", "required": true, "autocomplete": true},
-        {"type": 5, "name": "confirm", "description": "Confirm irreversible deletion without creating a backup", "required": true}
+        {"type": 3, "name": "session", "description": "Choose a session or enter its exact slug", "required": true, "autocomplete": true}
+      ]
+    },
+    {
+      "type": 1,
+      "name": "confirm",
+      "description": "Use a ten-minute code to confirm a destructive action",
+      "options": [
+        {"type": 3, "name": "code", "description": "Confirmation code shown by archive or terminate", "required": true, "min_length": 8, "max_length": 12}
+      ]
+    },
+    {
+      "type": 1,
+      "name": "cancel-confirmation",
+      "description": "Cancel a pending destructive-action confirmation",
+      "options": [
+        {"type": 3, "name": "code", "description": "Pending confirmation code to cancel", "required": true, "min_length": 8, "max_length": 12}
       ]
     }
   ]

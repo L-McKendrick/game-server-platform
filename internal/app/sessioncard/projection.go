@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/failurecatalog"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
 
@@ -76,10 +77,15 @@ type ModsProjection struct {
 }
 
 type FailureProjection struct {
-	Present           bool
-	Summary           string
-	Action            string
-	ResourcesMayExist bool
+	Present          bool
+	Summary          string
+	Reason           string
+	PlatformAction   string
+	UserAction       string
+	RetryDisposition string
+	BillingImpact    string
+	SupportReference string
+	OccurredAt       time.Time
 }
 
 type FreshnessProjection struct {
@@ -343,20 +349,39 @@ func operationLabel(value string) string {
 }
 
 func failureProjection(session domain.Session, workflow *domain.Workflow) FailureProjection {
-	resources := !session.Infrastructure.Empty()
 	if session.MissionArtifactStatus == domain.ArtifactRejected || session.PresetArtifactStatus == domain.ArtifactRejected {
 		return FailureProjection{
 			Present: true, Summary: "One or more setup files were rejected.",
-			Action: "Use `/rb setup` to replace the rejected file.", ResourcesMayExist: resources,
+			UserAction:       "Use `/rb setup` to replace the rejected file.",
+			RetryDisposition: "No retry is scheduled.", BillingImpact: "No billable game-server resources were created for this draft.",
+		}
+	}
+	if !session.Failure.Empty() {
+		presentation := failurecatalog.Lookup(session.Failure)
+		return FailureProjection{
+			Present: true, Summary: presentation.WhatHappened, Reason: presentation.LikelyReason,
+			PlatformAction: presentation.PlatformAction, UserAction: presentation.UserAction,
+			RetryDisposition: presentation.RetryDisposition, BillingImpact: presentation.BillingImpact,
+			SupportReference: presentation.SupportReference, OccurredAt: session.Failure.FailedAt,
 		}
 	}
 	if session.LifecycleState == domain.StateFailed || (workflow != nil && workflow.Status == domain.WorkflowFailed) {
 		return FailureProjection{
 			Present: true, Summary: "The current operation stopped before completion.",
-			Action: "Use `/rb status` for the latest safe details.", ResourcesMayExist: resources,
+			Reason:           "The persisted failure predates the actionable error catalog.",
+			PlatformAction:   "The platform preserved the last authoritative state.",
+			UserAction:       "Use `/rb status` and give its support reference to an operator before repeating the command.",
+			RetryDisposition: "No retry is scheduled.", BillingImpact: legacyBillingImpact(session),
 		}
 	}
 	return FailureProjection{}
+}
+
+func legacyBillingImpact(session domain.Session) string {
+	if session.Infrastructure.Empty() {
+		return "No billable game-server resources are recorded for this session."
+	}
+	return "Resources remain and may continue to incur cost."
 }
 
 func artifactView(status domain.ArtifactStatus, objectKey, issue string, notRequired bool) ArtifactView {

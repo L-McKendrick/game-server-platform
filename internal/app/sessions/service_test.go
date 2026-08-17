@@ -33,6 +33,12 @@ func (queue *recordingCommandQueue) Enqueue(_ context.Context, command domain.Co
 	return nil
 }
 
+type failingCommandQueue struct{ err error }
+
+func (queue failingCommandQueue) Enqueue(context.Context, domain.CommandEnvelope) error {
+	return queue.err
+}
+
 func TestRequestSessionCardPinsRenderedRevision(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 15, 1, 0, 0, 0, time.UTC)
@@ -529,6 +535,46 @@ func TestRequestLifecycle_AllowsGuildAdministratorForAnotherOwnersRunningSession
 	}
 }
 
+func TestRequestLifecycleReturnsExistingProgressWithoutQueueingDuplicate(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 13, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	queue := &recordingCommandQueue{}
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour, WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: "active-session", Slug: "active-session", DisplayName: "Active Session", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateRunning, domain.StateRunning, domain.StateRunning, domain.HealthHealthy
+	session.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c7i.large", InstanceID: "i-1", DataVolumeID: "vol-1", LastObservedAt: now}
+	if err := session.BeginSleep("workflow-active", time.Hour, now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	event := domain.NewSessionCreatedEvent("event-active", "correlation-active", testActor("owner-1"), session, now)
+	idempotency, _ := domain.NewCompletedIdempotencyRecord("create-active", "hash-active", session.ID, now, time.Hour)
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatal(err)
+	}
+
+	err = service.RequestLifecycle(context.Background(), LifecycleCommand{
+		Actor: testActor("owner-1"), SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
+		CommandID: "duplicate", CorrelationID: "correlation-duplicate", IdempotencyKey: "discord:duplicate", CommandType: domain.CommandSleepSession,
+	})
+	var active domain.OperationInProgressError
+	if !errors.As(err, &active) || active.WorkflowType != domain.SleepWorkflowType || active.Milestone != domain.ProgressAccepted {
+		t.Fatalf("RequestLifecycle() error = %#v; want active sleep progress", err)
+	}
+	if len(queue.commands) != 0 {
+		t.Fatalf("duplicate queued commands = %#v", queue.commands)
+	}
+}
+
 func TestRequestLifecycle_RejectsAnotherOwnerWithoutGuildPermission(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
@@ -573,6 +619,91 @@ func TestRequestLifecycle_ArchiveRemainsOwnerOnly(t *testing.T) {
 	}
 	if len(queue.commands) != 0 {
 		t.Fatalf("queued commands = %#v; want none", queue.commands)
+	}
+}
+
+func TestRequestLifecycleRequiresDurableConfirmationForDestructiveOwnerAction(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 16, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	queue := &recordingCommandQueue{}
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour, WithCommandQueue(queue), WithConfirmationRepository(repository))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRunningSession(t, repository, now)
+	err = service.RequestLifecycle(context.Background(), LifecycleCommand{
+		Actor: testActor("owner-1"), SessionID: "running-session", GuildID: "guild-1", ChannelID: "channel-1",
+		CommandID: "direct-archive", CorrelationID: "correlation-direct", IdempotencyKey: "direct:archive", CommandType: domain.CommandArchiveSession,
+	})
+	if !errors.Is(err, domain.ErrConfirmationRequired) || len(queue.commands) != 0 {
+		t.Fatalf("direct archive error = %v; commands = %#v", err, queue.commands)
+	}
+}
+
+func TestDestructiveConfirmationQueuesOnlyAfterAtomicConsumption(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 16, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	queue := &recordingCommandQueue{}
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour,
+		WithCommandQueue(queue), WithConfirmationRepository(repository))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRunningSession(t, repository, now)
+	actor := testActor("owner-1")
+	confirmation, err := service.RequestConfirmation(context.Background(), ConfirmationRequest{
+		Actor: actor, SessionID: "running-session", GuildID: "guild-1", RequestID: "interaction-archive", Action: domain.ConfirmationArchive,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.commands) != 0 || confirmation.Status != domain.ConfirmationPending {
+		t.Fatalf("premature commands = %#v; confirmation = %#v", queue.commands, confirmation)
+	}
+	consumed, err := service.Confirm(context.Background(), ConfirmCommand{
+		Actor: actor, GuildID: "guild-1", ChannelID: "channel-1", Code: confirmation.Code,
+		CommandID: "interaction-confirm", CorrelationID: "correlation-confirm", IdempotencyKey: "discord:interaction-confirm",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumed.Status != domain.ConfirmationConsumed || len(queue.commands) != 1 || queue.commands[0].CommandType != domain.CommandArchiveSession || queue.commands[0].SessionID != "running-session" {
+		t.Fatalf("consumed = %#v; commands = %#v", consumed, queue.commands)
+	}
+	if _, err := service.Confirm(context.Background(), ConfirmCommand{Actor: actor, GuildID: "guild-1", ChannelID: "channel-1", Code: confirmation.Code, CommandID: "replay", CorrelationID: "correlation-replay", IdempotencyKey: "discord:replay"}); !errors.Is(err, domain.ErrConfirmationConsumed) {
+		t.Fatalf("confirmation replay error = %v", err)
+	}
+	if len(queue.commands) != 1 {
+		t.Fatalf("replay queued commands = %#v", queue.commands)
+	}
+	if _, err := service.RequestConfirmation(context.Background(), ConfirmationRequest{Actor: actor, SessionID: "running-session", GuildID: "guild-1", RequestID: "interaction-archive", Action: domain.ConfirmationArchive}); !errors.Is(err, domain.ErrConfirmationConsumed) {
+		t.Fatalf("creation replay after consumption error = %v", err)
+	}
+}
+
+func TestConfirmedQueueFailureIsTruthfulAndNeverReusesCode(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 16, 30, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour,
+		WithCommandQueue(failingCommandQueue{err: errors.New("ambiguous queue failure")}), WithConfirmationRepository(repository))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedRunningSession(t, repository, now)
+	actor := testActor("owner-1")
+	confirmation, err := service.RequestConfirmation(context.Background(), ConfirmationRequest{Actor: actor, SessionID: "running-session", GuildID: "guild-1", RequestID: "interaction-terminate-fail", Action: domain.ConfirmationTerminate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Confirm(context.Background(), ConfirmCommand{Actor: actor, GuildID: "guild-1", ChannelID: "channel-1", Code: confirmation.Code, CommandID: "confirm-fail", CorrelationID: "correlation-fail", IdempotencyKey: "discord:confirm-fail"})
+	if !errors.Is(err, domain.ErrConfirmationDispatchUncertain) {
+		t.Fatalf("queue failure = %v", err)
+	}
+	if _, _, err := repository.ConsumeConfirmation(context.Background(), confirmation.Code, "owner-1", "guild-1", now); !errors.Is(err, domain.ErrConfirmationConsumed) {
+		t.Fatalf("queue-failed confirmation replay error = %v", err)
 	}
 }
 

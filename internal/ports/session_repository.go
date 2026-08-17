@@ -20,6 +20,15 @@ type NotificationQueue interface {
 	Enqueue(ctx context.Context, request domain.NotificationRequest) error
 }
 
+// ConfirmationRepository stores durable destructive-action confirmations.
+// Creation and consumption must atomically revalidate the bound session.
+type ConfirmationRepository interface {
+	CreateConfirmation(ctx context.Context, confirmation domain.Confirmation) error
+	GetConfirmation(ctx context.Context, code string) (domain.Confirmation, error)
+	ConsumeConfirmation(ctx context.Context, code, ownerDiscordUserID, guildID string, now time.Time) (domain.Confirmation, domain.Session, error)
+	CancelConfirmation(ctx context.Context, code, ownerDiscordUserID, guildID string, now time.Time) (domain.Confirmation, error)
+}
+
 // SessionCardRepository stores replaceable Discord delivery metadata without
 // coupling card delivery to lifecycle-version writes.
 type SessionCardRepository interface {

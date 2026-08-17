@@ -77,6 +77,7 @@ func render(card Projection, detailed bool) string {
 	if card.Mods.DownloadURL != "" {
 		fmt.Fprintf(&builder, "\n%s", modlistLinkLine(card.Mods.DownloadURL))
 	}
+	renderFailure(&builder, card.Failure, detailed)
 
 	if card.Players.Available {
 		if detailed {
@@ -86,13 +87,6 @@ func render(card Projection, detailed bool) string {
 		}
 	} else if detailed {
 		builder.WriteString("\n\nLive players (A2S): unavailable")
-	}
-
-	if card.Failure.Present {
-		fmt.Fprintf(&builder, "\n\n**Action required:** %s\n%s", safe(card.Failure.Summary), safePreservingCode(card.Failure.Action))
-		if card.Failure.ResourcesMayExist {
-			builder.WriteString("\nResources may still exist and incur cost.")
-		}
 	}
 
 	if !card.Freshness.SessionUpdatedAt.IsZero() {
@@ -109,6 +103,34 @@ func render(card Projection, detailed bool) string {
 		fmt.Fprintf(&builder, "\nPlayers observed %s.", timestamp(card.Freshness.PlayersObservedAt))
 	}
 	return bound(builder.String())
+}
+
+func renderFailure(builder *strings.Builder, failure FailureProjection, detailed bool) {
+	if !failure.Present {
+		return
+	}
+	fmt.Fprintf(builder, "\n\n**Action required:** %s", safe(failure.Summary))
+	if detailed && failure.Reason != "" {
+		fmt.Fprintf(builder, "\n**Likely reason:** %s", safe(failure.Reason))
+	}
+	if detailed && failure.PlatformAction != "" {
+		fmt.Fprintf(builder, "\n**Platform action:** %s", safe(failure.PlatformAction))
+	}
+	if failure.RetryDisposition != "" {
+		fmt.Fprintf(builder, "\n**Retry:** %s", safe(failure.RetryDisposition))
+	}
+	if failure.UserAction != "" {
+		fmt.Fprintf(builder, "\n**Your action:** %s", safePreservingCode(failure.UserAction))
+	}
+	if failure.BillingImpact != "" {
+		fmt.Fprintf(builder, "\n**Billing:** %s", safe(failure.BillingImpact))
+	}
+	if failure.SupportReference != "" {
+		fmt.Fprintf(builder, "\n**Support reference:** `%s`", safeCode(failure.SupportReference))
+	}
+	if detailed && !failure.OccurredAt.IsZero() {
+		fmt.Fprintf(builder, "\n**Failed:** %s", detailedTimestamp(failure.OccurredAt))
+	}
 }
 
 // RenderModlistMessage renders the stable companion message that owns the
