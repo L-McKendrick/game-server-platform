@@ -134,6 +134,12 @@ func sanitizeFailureDetail(value string) string {
 	return normalizeFailureText(value, MaximumFailureDetailRunes)
 }
 
+// SanitizeDiagnostic removes identifiers, credentials, addresses, control
+// characters, and excess length before a diagnostic enters audit metadata.
+func SanitizeDiagnostic(value string) string {
+	return sanitizeFailureDetail(value)
+}
+
 func normalizeFailureText(value string, limit int) string {
 	var builder strings.Builder
 	spacePending := false

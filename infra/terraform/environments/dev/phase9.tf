@@ -176,7 +176,7 @@ locals {
         Parameters     = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "check_managed", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
         ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.managed", Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "ManagedNodeReady"
       }
-      ManagedNodeReady         = { Type = "Choice", Choices = [{ Variable = "$.managed.result.managed", BooleanEquals = true, Next = "DispatchBootstrap" }], Default = "IncrementManagedAttempts" }
+      ManagedNodeReady         = { Type = "Choice", Choices = [{ Variable = "$.managed.result.managed", BooleanEquals = true, Next = "DispatchRestore" }], Default = "IncrementManagedAttempts" }
       IncrementManagedAttempts = { Type = "Pass", Parameters = { "value.$" = "States.MathAdd($.attempt, 1)" }, ResultPath = "$.counter", Next = "CopyManagedAttempts" }
       CopyManagedAttempts      = { Type = "Pass", InputPath = "$.counter.value", ResultPath = "$.attempt", Next = "ManagedAttemptsAvailable" }
       ManagedAttemptsAvailable = { Type = "Choice", Choices = [{ Variable = "$.attempt", NumericGreaterThanEquals = 40, Next = "ManagedTimeout" }], Default = "WaitForManagedNode" }
@@ -184,21 +184,21 @@ locals {
       DispatchBootstrap = {
         Type           = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters     = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "dispatch_bootstrap", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
-        ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.bootstrap", Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "InitializeBootstrapAttempts"
+        ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.bootstrap", Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }], Next = "InitializeBootstrapAttempts"
       }
       InitializeBootstrapAttempts = { Type = "Pass", Result = 0, ResultPath = "$.attempt", Next = "WaitForBootstrap" }
       WaitForBootstrap            = { Type = "Wait", Seconds = 30, Next = "ObserveBootstrap" }
       ObserveBootstrap = {
         Type           = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters     = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "observe_bootstrap", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id", "command_id.$" = "$.bootstrap.result.command_id" } }
-        ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.bootstrap", Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "BootstrapResult"
+        ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.bootstrap", Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }], Next = "BootstrapResult"
       }
-      BootstrapResult            = { Type = "Choice", Choices = [{ Variable = "$.bootstrap.result.succeeded", BooleanEquals = true, Next = "DispatchRestore" }, { Variable = "$.bootstrap.result.done", BooleanEquals = true, Next = "BootstrapFailed" }], Default = "IncrementBootstrapAttempts" }
+      BootstrapResult            = { Type = "Choice", Choices = [{ Variable = "$.bootstrap.result.succeeded", BooleanEquals = true, Next = "Complete" }, { Variable = "$.bootstrap.result.done", BooleanEquals = true, Next = "BootstrapFailed" }], Default = "IncrementBootstrapAttempts" }
       IncrementBootstrapAttempts = { Type = "Pass", Parameters = { "value.$" = "States.MathAdd($.attempt, 1)" }, ResultPath = "$.counter", Next = "CopyBootstrapAttempts" }
       CopyBootstrapAttempts      = { Type = "Pass", InputPath = "$.counter.value", ResultPath = "$.attempt", Next = "BootstrapAttemptsAvailable" }
       BootstrapAttemptsAvailable = { Type = "Choice", Choices = [{ Variable = "$.attempt", NumericGreaterThanEquals = 1440, Next = "BootstrapTimeout" }], Default = "WaitForBootstrap" }
-      BootstrapFailed            = { Type = "Pass", Parameters = { "Error.$" = "$.bootstrap.result.error_code", "Cause.$" = "$.bootstrap.result.error_message" }, ResultPath = "$.failure", Next = "Fail" }
-      BootstrapTimeout           = { Type = "Pass", Result = { Error = "ERR_BOOTSTRAP_TIMEOUT", Cause = "Bootstrap did not complete within the bounded wait." }, ResultPath = "$.failure", Next = "Fail" }
+      BootstrapFailed            = { Type = "Pass", Parameters = { "Error.$" = "$.bootstrap.result.error_code", "Cause.$" = "$.bootstrap.result.error_message" }, ResultPath = "$.failure", Next = "DispatchRollback" }
+      BootstrapTimeout           = { Type = "Pass", Result = { Error = "ERR_BOOTSTRAP_TIMEOUT", Cause = "Bootstrap did not complete within the bounded wait." }, ResultPath = "$.failure", Next = "DispatchRollback" }
       DispatchRestore = {
         Type           = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters     = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "dispatch_restore", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
@@ -211,7 +211,7 @@ locals {
         Parameters     = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "observe_restore", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id", "command_id.$" = "$.restore.result.command_id" } }
         ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.restore", Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "RestoreResult"
       }
-      RestoreResult            = { Type = "Choice", Choices = [{ Variable = "$.restore.result.succeeded", BooleanEquals = true, Next = "Complete" }, { Variable = "$.restore.result.done", BooleanEquals = true, Next = "RestoreFailed" }], Default = "IncrementRestoreAttempts" }
+      RestoreResult            = { Type = "Choice", Choices = [{ Variable = "$.restore.result.succeeded", BooleanEquals = true, Next = "DispatchBootstrap" }, { Variable = "$.restore.result.done", BooleanEquals = true, Next = "RestoreFailed" }], Default = "IncrementRestoreAttempts" }
       IncrementRestoreAttempts = { Type = "Pass", Parameters = { "value.$" = "States.MathAdd($.attempt, 1)" }, ResultPath = "$.counter", Next = "CopyRestoreAttempts" }
       CopyRestoreAttempts      = { Type = "Pass", InputPath = "$.counter.value", ResultPath = "$.attempt", Next = "RestoreAttemptsAvailable" }
       RestoreAttemptsAvailable = { Type = "Choice", Choices = [{ Variable = "$.attempt", NumericGreaterThanEquals = 480, Next = "RestoreTimeout" }], Default = "WaitForRestore" }
@@ -220,8 +220,25 @@ locals {
       Complete = {
         Type       = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "complete", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
-        Retry      = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 2, BackoffRate = 2, MaxAttempts = 3 }], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], End = true
+        Retry      = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 2, BackoffRate = 2, MaxAttempts = 3 }], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }], End = true
       }
+      DispatchRollback = {
+        Type           = "Task", Resource = "arn:aws:states:::lambda:invoke"
+        Parameters     = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "dispatch_rollback", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
+        ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.rollback", Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.rollback_failure", Next = "Fail" }], Next = "RollbackDispatched"
+      }
+      RollbackDispatched         = { Type = "Choice", Choices = [{ Variable = "$.rollback.result.succeeded", BooleanEquals = true, Next = "Fail" }], Default = "InitializeRollbackAttempts" }
+      InitializeRollbackAttempts = { Type = "Pass", Result = 0, ResultPath = "$.rollback_attempt", Next = "WaitForRollback" }
+      WaitForRollback            = { Type = "Wait", Seconds = 30, Next = "ObserveRollback" }
+      ObserveRollback = {
+        Type           = "Task", Resource = "arn:aws:states:::lambda:invoke"
+        Parameters     = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "observe_rollback", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id", "command_id.$" = "$.rollback.result.command_id" } }
+        ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.rollback", Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.rollback_failure", Next = "Fail" }], Next = "RollbackComplete"
+      }
+      RollbackComplete          = { Type = "Choice", Choices = [{ Variable = "$.rollback.result.done", BooleanEquals = true, Next = "Fail" }], Default = "IncrementRollbackAttempts" }
+      IncrementRollbackAttempts = { Type = "Pass", Parameters = { "value.$" = "States.MathAdd($.rollback_attempt, 1)" }, ResultPath = "$.rollback_counter", Next = "CopyRollbackAttempts" }
+      CopyRollbackAttempts      = { Type = "Pass", InputPath = "$.rollback_counter.value", ResultPath = "$.rollback_attempt", Next = "RollbackAttemptsAvailable" }
+      RollbackAttemptsAvailable = { Type = "Choice", Choices = [{ Variable = "$.rollback_attempt", NumericGreaterThanEquals = local.bootstrap_poll_limit, Next = "Fail" }], Default = "WaitForRollback" }
       Fail = {
         Type       = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "fail", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id", "error_code.$" = "$.failure.Error", "error_message.$" = "$.failure.Cause" } }

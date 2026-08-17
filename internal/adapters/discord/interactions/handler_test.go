@@ -250,6 +250,42 @@ func TestHandlerRecognizesModalSubmission(t *testing.T) {
 	}
 }
 
+func TestHandlerOpensAndSubmitsPrivateModsModalForRunningSession(t *testing.T) {
+	t.Parallel()
+	handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(t, []string{"correlation-mods-open", "correlation-mods-submit"}, nil)
+	seedHandlerPresetRevisionSession(t, repository)
+	openBody := marshalPayload(map[string]any{
+		"id": "mods-open", "application_id": "app-1", "type": interactionTypeApplicationCommand, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data":   map[string]any{"name": "rb", "options": []any{map[string]any{"type": applicationCommandOptionSubcommand, "name": "mods", "options": []any{map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "session-mods"}}}}},
+	})
+	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
+	var modal interactionResponse
+	decodeResponse(t, opened, &modal)
+	if modal.Type != interactionResponseModal || modal.Data == nil || modal.Data.CustomID != "rb:mods:v1:session-mods:1" || modal.Data.Components == nil || len(*modal.Data.Components) != 1 {
+		t.Fatalf("mods modal response = %#v body=%s", modal, opened.Body.String())
+	}
+	submitBody := marshalPayload(map[string]any{
+		"id": "mods-submit", "application_id": "app-1", "type": interactionTypeModalSubmit, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{
+			"custom_id":  modal.Data.CustomID,
+			"resolved":   map[string]any{"attachments": map[string]any{"attachment-mods": map[string]any{"id": "attachment-mods", "filename": "revision.html", "content_type": "text/html", "size": 2048, "url": "https://cdn.discordapp.com/attachments/1/2/revision.html"}}},
+			"components": []any{map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsPresetCustomID, "values": []string{"attachment-mods"}}}},
+		},
+	})
+	submitted := executeSignedRequest(t, handler, privateKey, submitBody, testNow)
+	var response interactionResponse
+	decodeResponse(t, submitted, &response)
+	if response.Data == nil || !strings.Contains(response.Data.Content, "queued for validation") || !strings.Contains(response.Data.Content, "not interrupted") {
+		t.Fatalf("mods submit response = %#v body=%s", response, submitted.Body.String())
+	}
+	requests := queue.Requests()
+	if len(requests) != 1 || requests[0].Purpose != domain.ArtifactPurposePresetRevision || requests[0].ExpectedActivePresetRevision != 1 || requests[0].SessionID != "session-mods" {
+		t.Fatalf("mods queue requests = %#v", requests)
+	}
+}
+
 func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testing.T) {
 	t.Parallel()
 
@@ -1498,6 +1534,27 @@ func seedHandlerSessionState(
 	}
 	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
 		t.Fatalf("seed state session: %v", err)
+	}
+}
+
+func seedHandlerPresetRevisionSession(t *testing.T, repository *memory.SessionRepository) {
+	t.Helper()
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-mods", Slug: "session-mods", DisplayName: "Session Mods", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState = domain.StateRunning, domain.StateRunning, domain.StateRunning
+	session.PresetObjectKey = "sessions/session-mods/input/presets/v1.html"
+	session.PresetArtifactStatus = domain.ArtifactAccepted
+	session.PresetRevisionSequence = 1
+	session.ActivePresetRevision = domain.PresetRevision{Number: 1, PresetObjectKey: session.PresetObjectKey, Status: domain.PresetRevisionActive, StagedAt: testNow, ActivatedAt: testNow}
+	event := domain.NewSessionCreatedEvent("event-session-mods", "correlation-session-mods", testActorForInteraction("owner-1"), session, testNow)
+	record, err := domain.NewCompletedIdempotencyRecord("seed:session-mods", "hash-session-mods", session.ID, testNow, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, record); err != nil {
+		t.Fatal(err)
 	}
 }
 

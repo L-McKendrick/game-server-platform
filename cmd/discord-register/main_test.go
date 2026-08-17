@@ -64,7 +64,7 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAndAdmin(t *testing.T)
 		t.Fatalf("registered commands = %#v; want rb and admin only", received)
 	}
 	targeting := map[string]bool{
-		"status": true, "setup": true,
+		"status": true, "setup": true, "mods": true,
 		"start": true, "sleep": true, "wake": true, "archive": true, "restore": true, "terminate": true,
 	}
 	for _, subcommand := range received[0].Options {

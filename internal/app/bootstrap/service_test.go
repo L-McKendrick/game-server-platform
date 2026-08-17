@@ -41,6 +41,10 @@ func (runner *testRunner) Start(context.Context, domain.Session) (string, error)
 	runner.starts++
 	return runner.commandID, nil
 }
+func (runner *testRunner) StartRollback(context.Context, domain.Session) (string, error) {
+	runner.starts++
+	return runner.commandID, nil
+}
 func (runner *testRunner) Observe(context.Context, string, string) (ports.BootstrapCommandStatus, error) {
 	return runner.status, nil
 }
@@ -73,6 +77,13 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 	if err != nil || dispatched.CommandID != "command-1" || runner.starts != 1 {
 		t.Fatalf("dispatch = %#v, err = %v", dispatched, err)
 	}
+	prePromotion, err := repository.Get(context.Background(), workflow.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prePromotion.PresetObjectKey != "sessions/session-1/input/preset.html" || prePromotion.PendingPresetRevision.Status != domain.PresetRevisionApplying {
+		t.Fatalf("pending revision promoted before health success: %#v", prePromotion)
+	}
 	request.Action, request.CommandID = ActionObserve, dispatched.CommandID
 	observed, err := service.Handle(context.Background(), request)
 	if err != nil || !observed.Done || !observed.Succeeded {
@@ -87,10 +98,10 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session.LifecycleState != domain.StateRunning || session.HealthStatus != domain.HealthHealthy || session.ActiveWorkflowID != "" {
+	if session.LifecycleState != domain.StateRunning || session.HealthStatus != domain.HealthHealthy || session.ActiveWorkflowID != "" || session.ActivePresetRevision.Number != 2 || !session.PendingPresetRevision.Empty() || session.PresetObjectKey != "sessions/session-1/input/preset-v2.html" {
 		t.Fatalf("session = %#v", session)
 	}
-	if len(notifications.requests) != 3 {
+	if len(notifications.requests) != 4 {
 		t.Fatalf("notifications = %#v", notifications.requests)
 	}
 	wantMilestones := []domain.ProgressMilestone{domain.ProgressGameContentSetup, domain.ProgressHealthVerification, domain.ProgressCompleted}
@@ -99,6 +110,10 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 		if request.Kind != domain.NotificationSessionCard || request.NotificationID != "card-progress-"+workflow.ID+"-"+progressIDPart(milestone) {
 			t.Fatalf("notification %d = %#v", index, request)
 		}
+	}
+	modlist := notifications.requests[3]
+	if modlist.Kind != domain.NotificationSessionModlist || modlist.Attachment == nil || modlist.Attachment.ObjectKey != session.ActivePresetRevision.Modlist.ObjectKey || modlist.Attachment.Revision != session.Version {
+		t.Fatalf("promoted modlist notification = %#v", modlist)
 	}
 	if session.Progress.Milestone != domain.ProgressCompleted || session.Progress.WorkflowID != workflow.ID {
 		t.Fatalf("progress = %#v", session.Progress)
@@ -142,6 +157,46 @@ func TestObserveSanitizesFailedCommand(t *testing.T) {
 	}
 }
 
+func TestBootstrapFailureRollsBackAndRetainsFailedPendingRevision(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
+	repository, workflow := seedBootstrap(t, now)
+	runner := &testRunner{commandID: "rollback-command-1", status: ports.BootstrapCommandStatus{Status: "Success"}}
+	service, err := NewService(repository, repository, repository, runner, nil, &testIDs{values: []string{"rollback-event", "failure-event"}}, testClock{now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := TaskRequest{SessionID: workflow.SessionID, WorkflowID: workflow.ID, CorrelationID: workflow.CorrelationID}
+	request.Action = ActionRollbackDispatch
+	dispatched, err := service.Handle(context.Background(), request)
+	if err != nil || dispatched.CommandID != "rollback-command-1" || runner.starts != 1 {
+		t.Fatalf("rollback dispatch = %#v starts=%d err=%v", dispatched, runner.starts, err)
+	}
+	request.Action, request.CommandID = ActionRollbackObserve, dispatched.CommandID
+	observed, err := service.Handle(context.Background(), request)
+	if err != nil || !observed.Done || !observed.Succeeded {
+		t.Fatalf("rollback observe = %#v err=%v", observed, err)
+	}
+	request.Action, request.ErrorCode, request.ErrorMessage = ActionFail, "ERR_MOD_INSTALL", strings.Repeat("installer diagnosis ", 100)
+	if _, err := service.Handle(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	session, err := repository.Get(context.Background(), workflow.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.ActivePresetRevision.Number != 1 || session.PresetObjectKey != "sessions/session-1/input/preset.html" {
+		t.Fatalf("active revision changed during failure: %#v", session.ActivePresetRevision)
+	}
+	pending := session.PendingPresetRevision
+	if pending.Number != 2 || pending.Status != domain.PresetRevisionFailed || pending.RollbackDisposition != domain.PresetRollbackSucceeded || pending.FailureDetail == "" || len([]rune(pending.FailureDetail)) > domain.MaximumPresetRevisionFailureRunes {
+		t.Fatalf("retained pending revision = %#v", pending)
+	}
+	if session.ActiveWorkflowID != "" || session.LifecycleState != domain.StateFailed {
+		t.Fatalf("failed lifecycle state = %#v", session)
+	}
+}
+
 func seedBootstrap(t *testing.T, now time.Time) (*memory.SessionRepository, domain.Workflow) {
 	t.Helper()
 	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "arma", DisplayName: "Arma", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
@@ -167,6 +222,9 @@ func seedBootstrap(t *testing.T, now time.Time) (*memory.SessionRepository, doma
 		t.Fatal(err)
 	}
 	if err := session.CompleteInfrastructureProvisioning("provision", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.StagePresetRevision(1, "sessions/session-1/input/preset-v2.html", domain.PresetModlistMetadata{ObjectKey: "sessions/session-1/input/modlists/v2/arma-modlist.html", Filename: "arma-modlist.html", SHA256: strings.Repeat("b", 64), SizeBytes: 1200, WorkshopCount: 2}, now); err != nil {
 		t.Fatal(err)
 	}
 	repository := memory.NewSessionRepository()

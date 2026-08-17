@@ -98,12 +98,11 @@ func (runner *Runner) command(session domain.Session) string {
 		"actual_sha=$(openssl dgst -sha256 -binary \"$archive_file\" | openssl base64 -A)\n[ \"$actual_sha\" = \"$expected_sha\" ]\n" +
 		"export GSP_ARCHIVE_FILE=\"$archive_file\" GSP_TEAMSPEAK_ENABLED=" + voice + "\n" +
 		"python3 - <<'PY'\nimport os, pathlib, tarfile\narchive=os.environ['GSP_ARCHIVE_FILE']\nvoice=os.environ['GSP_TEAMSPEAK_ENABLED']=='true'\nallowed=[('config',),('state',),('logs',),('arma3','mpmissions'),('home','.local','share')]\nif voice: allowed.append(('teamspeak',))\ntotal=count=0\nwith tarfile.open(archive, 'r:gz') as bundle:\n    for member in bundle.getmembers():\n        path=pathlib.PurePosixPath(member.name)\n        parts=path.parts\n        if path.is_absolute() or not parts or '..' in parts or member.issym() or member.islnk() or member.isdev() or member.isfifo(): raise SystemExit('unsafe archive member')\n        if not any(parts[:len(root)] == root for root in allowed): raise SystemExit('unexpected archive root')\n        total += member.size; count += 1\n        if total > 21474836480 or count > 200000: raise SystemExit('archive expansion limit exceeded')\nPY\n" +
-		"systemctl stop arma3-server.service\nif " + voice + "; then systemctl stop teamspeak3-server.service; fi\n" +
+		"systemctl stop arma3-server.service 2>/dev/null || true\nif " + voice + "; then systemctl stop teamspeak3-server.service 2>/dev/null || true; fi\n" +
 		"rm -rf -- /srv/game-server/config /srv/game-server/state /srv/game-server/logs /srv/game-server/arma3/mpmissions /srv/game-server/home/.local/share\n" +
 		"if " + voice + "; then rm -rf -- /srv/game-server/teamspeak; fi\n" +
 		"tar --no-same-owner --no-same-permissions --xattrs --acls -xzf \"$archive_file\" -C /srv/game-server\n" +
+		"rm -f -- /srv/game-server/state/install_steamcmd.complete /srv/game-server/state/install_arma.complete /srv/game-server/state/install_workshop*.complete /srv/game-server/state/deploy_content.complete /srv/game-server/state/install_teamspeak.complete\n" +
 		"chown -R steam:steam /srv/game-server/config /srv/game-server/state /srv/game-server/logs /srv/game-server/arma3/mpmissions /srv/game-server/home\n" +
-		"if " + voice + "; then chown -R teamspeak:teamspeak /srv/game-server/teamspeak; fi\n" +
-		"systemctl start arma3-server.service\nif " + voice + "; then systemctl start teamspeak3-server.service; fi\n" +
-		"ready=false\nfor _ in $(seq 1 60); do arma_ready=false; voice_ready=true; systemctl is-active --quiet arma3-server.service && ss -H -lun | awk '{print $4}' | grep -Eq '(^|:)2302$' && arma_ready=true; if " + voice + "; then voice_ready=false; systemctl is-active --quiet teamspeak3-server.service && ss -H -lun | awk '{print $4}' | grep -Eq '(^|:)9987$' && voice_ready=true; fi; if $arma_ready && $voice_ready; then ready=true; break; fi; sleep 10; done\n$ready\n"
+		"if " + voice + "; then chown -R teamspeak:teamspeak /srv/game-server/teamspeak; fi\n"
 }

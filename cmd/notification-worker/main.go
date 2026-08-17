@@ -123,10 +123,12 @@ func (handler *handler) deliverCard(ctx context.Context, request domain.Notifica
 		return fmt.Errorf("persisted session card belongs to another channel")
 	}
 	if modlist, modlistErr := handler.cards.GetModlistReference(ctx, session.ID); modlistErr == nil {
-		messageURL := sessioncard.DiscordMessageURL(session.GuildID, modlist.ChannelID, modlist.MessageID)
-		request.Content = sessioncard.WithModlistLink(request.Content, messageURL)
-		if err := request.Validate(); err != nil {
-			return fmt.Errorf("validate enriched session card notification: %w", err)
+		if sessioncard.IsActiveModlistReference(session, modlist) {
+			messageURL := sessioncard.DiscordMessageURL(session.GuildID, modlist.ChannelID, modlist.MessageID)
+			request.Content = sessioncard.WithModlistLink(request.Content, messageURL)
+			if err := request.Validate(); err != nil {
+				return fmt.Errorf("validate enriched session card notification: %w", err)
+			}
 		}
 	} else if !errors.Is(modlistErr, domain.ErrNotFound) {
 		return fmt.Errorf("get persisted session modlist: %w", modlistErr)
@@ -184,6 +186,12 @@ func (handler *handler) deliverModlist(ctx context.Context, request domain.Notif
 		return fmt.Errorf("persisted session modlist belongs to another channel")
 	}
 	attachment := request.Attachment
+	if !sessioncard.IsActiveModlistAttachment(session, *attachment) {
+		if attachment.Revision < session.Version {
+			return nil
+		}
+		return fmt.Errorf("%w: queued modlist is not the active preset revision", domain.ErrIdempotencyConflict)
+	}
 	if reference.DeliveredRevision > attachment.Revision {
 		return nil
 	}

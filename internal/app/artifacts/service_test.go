@@ -2,6 +2,7 @@ package artifacts
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -185,6 +186,97 @@ func TestProcessAcceptsPresetWithRepeatedWorkshopReferences(t *testing.T) {
 		len(notifications.requests) != 2 || notifications.requests[0].NotificationID != notifications.requests[1].NotificationID {
 		t.Fatalf("replay objects=%#v notifications=%#v; want durable modlist repair with deterministic delivery", objects.objects, notifications.requests)
 	}
+}
+
+func TestProcessStagesRunningPresetRevisionWithoutPromotingModlist(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 22, 0, 0, 0, time.UTC)
+	repository := seededPresetRevisionRepository(t, now)
+	body := []byte(`<html><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=450814997">Mod</a></html>`)
+	downloader := &testDownloader{body: body}
+	objects, notifications := &testObjectStore{}, &testNotifications{}
+	service, err := NewService(repository, downloader, objects, notifications, &testIDs{ids: []string{"revision-event-2"}}, testClock{now.Add(time.Minute)}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := missionRequest(now, int64(len(body)))
+	request.Kind, request.Filename, request.AttachmentID = domain.ArtifactPreset, "revision.html", "revision-attachment"
+	request.Purpose, request.ExpectedActivePresetRevision = domain.ArtifactPurposePresetRevision, 1
+	request.ChannelID = "channel-other"
+	if err := service.Process(context.Background(), request); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("cross-channel worker error = %v; want forbidden", err)
+	}
+	request.ChannelID = "channel-1"
+	if err := service.Process(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repository.Get(context.Background(), request.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.LifecycleState != domain.StateRunning || stored.PresetObjectKey != stored.ActivePresetRevision.PresetObjectKey || stored.PendingPresetRevision.Number != 2 || stored.PendingPresetRevision.Status != domain.PresetRevisionPending {
+		t.Fatalf("staged session = %#v", stored)
+	}
+	if len(notifications.requests) != 1 || notifications.requests[0].Kind != domain.NotificationSessionCard {
+		t.Fatalf("pending revision notifications = %#v; active modlist must not be promoted", notifications.requests)
+	}
+	events := repository.Events(request.SessionID)
+	if events[len(events)-1].Type != domain.EventPresetRevisionStaged {
+		t.Fatalf("last event = %#v", events[len(events)-1])
+	}
+}
+
+func TestProcessRejectsInvalidRunningPresetRevisionWithoutChangingActive(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 22, 0, 0, 0, time.UTC)
+	repository := seededPresetRevisionRepository(t, now)
+	body := []byte("not html")
+	downloader := &testDownloader{body: body}
+	objects, notifications := &testObjectStore{}, &testNotifications{}
+	service, err := NewService(repository, downloader, objects, notifications, &testIDs{ids: []string{"revision-rejected"}}, testClock{now.Add(time.Minute)}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := missionRequest(now, int64(len(body)))
+	request.Kind, request.Filename, request.AttachmentID = domain.ArtifactPreset, "revision.html", "revision-invalid"
+	request.Purpose, request.ExpectedActivePresetRevision = domain.ArtifactPurposePresetRevision, 1
+	if err := service.Process(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repository.Get(context.Background(), request.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.LifecycleState != domain.StateRunning || stored.ActivePresetRevision.Number != 1 || !stored.PendingPresetRevision.Empty() || stored.PresetArtifactStatus != domain.ArtifactAccepted {
+		t.Fatalf("invalid revision changed active session = %#v", stored)
+	}
+	if len(objects.objects) != 0 {
+		t.Fatalf("invalid revision wrote objects: %#v", objects.objects)
+	}
+}
+
+func seededPresetRevisionRepository(t *testing.T, now time.Time) *memory.SessionRepository {
+	t.Helper()
+	repository := memory.NewSessionRepository()
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "saturday-arma", DisplayName: "Saturday Arma", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState = domain.StateRunning, domain.StateRunning, domain.StateRunning
+	session.PresetObjectKey = "sessions/session-1/input/presets/v1.html"
+	session.PresetArtifactStatus = domain.ArtifactAccepted
+	session.PresetRevisionSequence = 1
+	session.ActivePresetRevision = domain.PresetRevision{Number: 1, PresetObjectKey: session.PresetObjectKey, Status: domain.PresetRevisionActive, StagedAt: now, ActivatedAt: now}
+	actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}
+	event := domain.NewSessionCreatedEvent("create-event", "correlation-create", actor, session, now)
+	record, err := domain.NewCompletedIdempotencyRecord("seed:revision", "seed-hash", session.ID, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, record); err != nil {
+		t.Fatal(err)
+	}
+	return repository
 }
 
 func TestProcessVanillaPresetDoesNotPublishActiveModlist(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -303,7 +304,7 @@ func (service *Service) GetActiveModlist(ctx context.Context, query ActiveModlis
 	if err := reference.Validate(); err != nil {
 		return ActiveModlist{}, fmt.Errorf("validate active modlist reference: %w", err)
 	}
-	if reference.SessionID != session.ID || reference.ChannelID != session.ChannelID || reference.DeliveredRevision > session.Version {
+	if !sessioncard.IsActiveModlistReference(session, reference) {
 		return ActiveModlist{}, fmt.Errorf("active modlist reference does not match session")
 	}
 	return ActiveModlist{ChannelID: reference.ChannelID, MessageID: reference.MessageID, Filename: reference.Filename}, nil
@@ -758,7 +759,14 @@ func (service *Service) RequestArtifactIngest(ctx context.Context, actor domain.
 	if session.GuildID != request.GuildID {
 		return fmt.Errorf("session belongs to another guild: %w", domain.ErrForbidden)
 	}
-	if session.LifecycleState != domain.StateDraft {
+	if session.ChannelID != request.ChannelID {
+		return fmt.Errorf("artifact destination does not match session channel: %w", domain.ErrForbidden)
+	}
+	if request.IsPresetRevision() {
+		if err := session.ValidatePresetRevisionStaging(request.ExpectedActivePresetRevision); err != nil {
+			return err
+		}
+	} else if session.LifecycleState != domain.StateDraft {
 		return fmt.Errorf("attachments are only accepted while a session is DRAFT: %w", domain.ErrInvalidTransition)
 	}
 	if err := service.artifactQueue.Enqueue(ctx, request); err != nil {

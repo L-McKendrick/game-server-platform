@@ -343,7 +343,7 @@ func (handler *Handler) ServeHTTP(
 		writeAutocompleteChoices(writer, choices)
 		return
 	}
-	if payload.Type == interactionTypeModalSubmit && (payload.Data == nil || (payload.Data.CustomID != createModalCustomID && !isSetupModalCustomID(payload.Data.CustomID))) {
+	if payload.Type == interactionTypeModalSubmit && (payload.Data == nil || (payload.Data.CustomID != createModalCustomID && !isSetupModalCustomID(payload.Data.CustomID) && !isModsModalCustomID(payload.Data.CustomID))) {
 		writeInteractionMessage(writer, "This modal is not supported or has expired.")
 		return
 	}
@@ -371,6 +371,22 @@ func (handler *Handler) ServeHTTP(
 		}
 		return
 	}
+	if payload.isRBModsCommand() {
+		if message := payload.channelCapabilities().setupBlockedMessage(true); message != "" {
+			writeInteractionMessage(writer, message)
+			return
+		}
+		correlationID, err := handler.ids.New(handler.clock.Now().UTC())
+		if err != nil {
+			writeInteractionMessage(writer, "The command could not be processed. Please try again.")
+			return
+		}
+		err = handler.openModsModal(request.Context(), writer, payload, domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID})
+		if err != nil {
+			writeInteractionMessage(writer, handler.commandErrorMessage(err, correlationID))
+		}
+		return
+	}
 
 	correlationID, err := handler.ids.New(handler.clock.Now().UTC())
 	if err != nil {
@@ -379,7 +395,7 @@ func (handler *Handler) ServeHTTP(
 		return
 	}
 	if payload.Type == interactionTypeModalSubmit {
-		edit := isSetupModalCustomID(payload.Data.CustomID)
+		edit := isSetupModalCustomID(payload.Data.CustomID) || isModsModalCustomID(payload.Data.CustomID)
 		if message := payload.channelCapabilities().setupBlockedMessage(edit); message != "" {
 			writeInteractionMessage(writer, message)
 			return
@@ -389,7 +405,9 @@ func (handler *Handler) ServeHTTP(
 			ID:   actorID,
 		}
 		var content string
-		if isSetupModalCustomID(payload.Data.CustomID) {
+		if isModsModalCustomID(payload.Data.CustomID) {
+			content, err = handler.submitModsModal(request.Context(), payload, actor, correlationID)
+		} else if isSetupModalCustomID(payload.Data.CustomID) {
 			content, err = handler.submitSetupModal(request.Context(), payload, actor, correlationID)
 		} else {
 			content, err = handler.submitCreateModal(request.Context(), payload, actor, correlationID)

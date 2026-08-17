@@ -2,6 +2,7 @@ package sessioncard
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,42 @@ func TestEnqueueProgressUsesMilestoneIdempotencyAndCardRevision(t *testing.T) {
 	request := requests[0]
 	if request.NotificationID != "card-progress-workflow-1-infrastructure-ready" || request.Kind != domain.NotificationSessionCard || request.CardRevision != session.Version {
 		t.Fatalf("request = %#v", request)
+	}
+}
+
+func TestEnqueueActivatedModlistRequiresMatchingCompletedActivation(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 18, 1, 0, 0, 0, time.UTC)
+	session := domain.Session{
+		ID: "session-1", Version: 8, DisplayName: "Saturday Arma", GuildID: "guild-1", ChannelID: "channel-1",
+		PresetObjectKey: "sessions/session-1/input/presets/v2.html", PresetRevisionSequence: 2,
+		ActivePresetRevision: domain.PresetRevision{
+			Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/presets/v2.html", Status: domain.PresetRevisionActive,
+			StagedAt: now.Add(-time.Hour), ActivatedAt: now,
+			Modlist: domain.PresetModlistMetadata{ObjectKey: "sessions/session-1/input/modlists/v2/saturday-arma-modlist.html", Filename: "saturday-arma-modlist.html", SHA256: strings.Repeat("a", 64), SizeBytes: 512, WorkshopCount: 3},
+		},
+	}
+	workflow := domain.Workflow{ID: "wake-1", SessionID: session.ID, Type: domain.WakeWorkflowType, Status: domain.WorkflowSucceeded, CorrelationID: "correlation-1", CompletedAt: now}
+	queue := memory.NewNotificationQueue()
+	if err := EnqueueActivatedModlist(context.Background(), queue, session, workflow, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnqueueActivatedModlist(context.Background(), queue, session, workflow, now.Add(time.Minute)); err != nil {
+		t.Fatalf("idempotent replay error = %v", err)
+	}
+	requests := queue.Requests()
+	if len(requests) != 1 || requests[0].Kind != domain.NotificationSessionModlist || requests[0].Attachment == nil || requests[0].Attachment.ObjectKey != session.ActivePresetRevision.Modlist.ObjectKey || requests[0].Attachment.Revision != session.Version {
+		t.Fatalf("active modlist requests = %#v", requests)
+	}
+
+	queue = memory.NewNotificationQueue()
+	workflow.CompletedAt = now.Add(time.Second)
+	if err := EnqueueActivatedModlist(context.Background(), queue, session, workflow, now); err != nil || len(queue.Requests()) != 0 {
+		t.Fatalf("non-activating workflow published attachment: requests=%#v err=%v", queue.Requests(), err)
+	}
+	session.PendingPresetRevision = domain.PresetRevision{Number: 3, BaseRevision: 2, Status: domain.PresetRevisionPending, PresetObjectKey: "sessions/session-1/input/presets/v3.html", StagedAt: now}
+	if err := EnqueueActivatedModlist(context.Background(), queue, session, workflow, now); err != nil || len(queue.Requests()) != 0 {
+		t.Fatalf("pending revision published attachment: requests=%#v err=%v", queue.Requests(), err)
 	}
 }
 

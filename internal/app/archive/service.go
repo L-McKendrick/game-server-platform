@@ -158,8 +158,11 @@ func (service *Service) verify(ctx context.Context, session domain.Session, work
 		ContentRoots: archiveRoots(session), GameProfileID: session.GameProfileID,
 		ConfigurationRevision: session.ConfigurationRevision, MissionObjectKey: session.MissionObjectKey,
 		PresetObjectKey: session.PresetObjectKey, SourceInstanceID: session.Infrastructure.InstanceID,
-		Vanilla:            session.Vanilla,
-		SourceDataVolumeID: session.Infrastructure.DataVolumeID,
+		PresetRevisionSequence: session.EffectivePresetRevisionSequence(),
+		ActivePresetRevision:   domain.ArchivePresetRevisionSnapshot(session.EffectiveActivePresetRevision()),
+		PendingPresetRevision:  domain.ArchivePresetRevisionSnapshot(session.PendingPresetRevision),
+		Vanilla:                session.Vanilla,
+		SourceDataVolumeID:     session.Infrastructure.DataVolumeID,
 	}
 	if err := manifest.Validate(); err != nil {
 		return TaskResult{}, err

@@ -52,6 +52,7 @@ func (session *Session) BeginWake(workflowID string, lease time.Duration, now ti
 		return err
 	}
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateRunning, StateWaking, StateWaking, HealthStarting
+	session.beginPresetRevisionApplication(workflowID, now)
 	return session.Validate()
 }
 
@@ -60,6 +61,9 @@ func (session *Session) CompleteWake(workflowID string, publicIPv4 string, now t
 		return ErrConflict
 	}
 	if err := session.setProgressWithoutVersion(workflowID, ProgressCompleted, now); err != nil {
+		return err
+	}
+	if _, _, err := session.promotePresetRevision(workflowID, now); err != nil {
 		return err
 	}
 	session.Infrastructure.PublicIPv4, session.Infrastructure.LastObservedAt = strings.TrimSpace(publicIPv4), now.UTC()

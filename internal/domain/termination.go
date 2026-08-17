@@ -39,6 +39,9 @@ func (session *Session) CompleteTermination(workflowID string, now time.Time) er
 	session.Archive = ArchiveMetadata{}
 	session.MissionObjectKey = ""
 	session.PresetObjectKey = ""
+	session.PresetRevisionSequence = 0
+	session.ActivePresetRevision = PresetRevision{}
+	session.PendingPresetRevision = PresetRevision{}
 	session.MonitoringCommandID = ""
 	session.MonitoringStartedAt = time.Time{}
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateDeleted, StateDeleted, StateDeleted

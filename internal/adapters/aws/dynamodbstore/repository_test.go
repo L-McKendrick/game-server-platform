@@ -389,6 +389,58 @@ func TestSessionItemRoundTripPreservesVanillaMode(t *testing.T) {
 	}
 }
 
+func TestSessionItemRoundTripPreservesPresetRevisions(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 20, 0, 0, 0, time.UTC)
+	session := testSession(t, now)
+	session.PresetObjectKey = "sessions/session-1/input/presets/v1.html"
+	session.PresetRevisionSequence = 2
+	session.ActivePresetRevision = domain.PresetRevision{
+		Number: 1, PresetObjectKey: session.PresetObjectKey, Status: domain.PresetRevisionActive,
+		StagedAt: now, ActivatedAt: now,
+		Modlist: domain.PresetModlistMetadata{ObjectKey: "sessions/session-1/input/modlists/v1/modlist.html", Filename: "session-1-modlist.html", SHA256: strings.Repeat("a", 64), SizeBytes: 1200, WorkshopCount: 3},
+	}
+	session.PendingPresetRevision = domain.PresetRevision{
+		Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/presets/v2.html", Status: domain.PresetRevisionFailed,
+		StagedAt: now.Add(time.Minute), FailedAt: now.Add(2 * time.Minute), FailureDetail: "health verification failed",
+		RollbackDisposition: domain.PresetRollbackSucceeded, RollbackAt: now.Add(2 * time.Minute), RollbackDetail: "Previous active mod configuration restored and health-checked.",
+		Modlist: domain.PresetModlistMetadata{ObjectKey: "sessions/session-1/input/modlists/v2/modlist.html", Filename: "session-1-modlist.html", SHA256: strings.Repeat("b", 64), SizeBytes: 1300, WorkshopCount: 4},
+	}
+	session.UpdatedAt = now.Add(2 * time.Minute)
+
+	stored, err := fromSessionItem(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PresetRevisionSequence != session.PresetRevisionSequence || stored.ActivePresetRevision != session.ActivePresetRevision || stored.PendingPresetRevision != session.PendingPresetRevision || stored.PresetObjectKey != session.PresetObjectKey {
+		t.Fatalf("stored preset revisions = %#v / %#v", stored.ActivePresetRevision, stored.PendingPresetRevision)
+	}
+}
+
+func TestSessionItemReadMigratesLegacyPresetPointer(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 20, 0, 0, 0, time.UTC)
+	item := toSessionItem(testSession(t, now))
+	item.PresetObjectKey = "sessions/session-1/input/presets/legacy.html"
+	item.PresetRevisionSequence = 0
+	item.ActivePresetRevision = 0
+	item.ActivePresetObjectKey = ""
+	item.ActivePresetStagedAt = ""
+	item.ActivePresetActivatedAt = ""
+
+	stored, err := fromSessionItem(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PresetRevisionSequence != 1 || stored.ActivePresetRevision.Number != 1 || stored.ActivePresetRevision.PresetObjectKey != item.PresetObjectKey {
+		t.Fatalf("migrated legacy revision = %#v sequence=%d", stored.ActivePresetRevision, stored.PresetRevisionSequence)
+	}
+	written := toSessionItem(stored)
+	if written.ActivePresetRevision != 1 || written.ActivePresetObjectKey != item.PresetObjectKey {
+		t.Fatalf("migration-on-write item = %#v", written)
+	}
+}
+
 func TestSessionItemReadInfersAcceptedLegacyArtifactObjectKeys(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 14, 23, 0, 0, 0, time.UTC)

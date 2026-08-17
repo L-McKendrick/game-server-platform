@@ -109,13 +109,13 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.5.4** [x] Add owner-bound, guild-bound, action-bound, state-bound, single-use confirmation records with atomic consumption and a 10-minute expiry.
       - **12.5.5** [x] Replace archive/terminate `confirm:true` with `/rb confirm code:<code>` and `/rb cancel-confirmation`, revalidating authorization and lifecycle state before queueing work.
       - **12.5.6** [x] Test every known error category, safe unknown-error fallback, redaction, retry wording, cost warnings, confirmation expiry, replay, mismatch, cancellation, and state drift.
-    - **12.6** [ ] Support safe post-creation modlist revisions.
-      - **12.6.1** [ ] Replace the single preset pointer with backward-compatible active and pending preset revision metadata plus immutable change events.
-      - **12.6.2** [ ] Implement `/rb mods` as a private preset-upload modal that validates and stages a revision without interrupting a running server.
-      - **12.6.3** [ ] Apply a pending revision on the next start, wake, or restore and keep the previous revision authoritative until installation and health verification succeed.
-      - **12.6.4** [ ] On application failure, retain the failed pending revision for diagnosis and attempt to return the service to the prior known-good mod configuration.
-      - **12.6.5** [ ] Show active/pending revisions and application timing on the card, and promote the downloadable attachment only after the revision becomes active.
-      - **12.6.6** [ ] Preserve active/pending intent through archive manifests, restore validation, termination cleanup, audit history, and focused regression tests.
+    - **12.6** [x] Support safe post-creation modlist revisions.
+      - **12.6.1** [x] Replace the single preset pointer with backward-compatible active and pending preset revision metadata plus immutable change events.
+      - **12.6.2** [x] Implement `/rb mods` as a private preset-upload modal that validates and stages a revision without interrupting a running server.
+      - **12.6.3** [x] Apply a pending revision on the next start, wake, or restore and keep the previous revision authoritative until installation and health verification succeed.
+      - **12.6.4** [x] On application failure, retain the failed pending revision for diagnosis and attempt to return the service to the prior known-good mod configuration.
+      - **12.6.5** [x] Show active/pending revisions and application timing on the card, and promote the downloadable attachment only after the revision becomes active.
+      - **12.6.6** [x] Preserve active/pending intent through archive manifests, restore validation, termination cleanup, audit history, and focused regression tests.
     - **12.7** [ ] Add trustworthy progress measurement and ETA presentation.
       - **12.7.1** [ ] Define a stable cross-workflow stage taxonomy and persist stage start/completion timestamps without raw command output.
       - **12.7.2** [ ] Expose meaningful internal bootstrap stages instead of treating the entire managed-node command as one opaque interval.

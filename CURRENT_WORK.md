@@ -7,49 +7,81 @@ proceeding before them by explicit user-approved roadmap reorder because
 current limitations prevent completing those prerequisites; this does not
 mark either prerequisite phase complete.
 
-Work is on `codex/phase-12-discord-experience`. Steps 12.1 through 12.5 are
-complete. The scoped Step 12.5 commit is the latest phase-branch handoff.
+Work is on `codex/phase-12-discord-experience`. Steps 12.1 through 12.6 are
+complete. Step 12.6 is recorded by the scoped commit
+`feat(discord): add safe modlist revisions` and is pushed to the phase branch.
 
-## Step 12.5 Verified Outcome
+## Current Step 12.6 Outcome
 
-- Sessions persist a backward-compatible sanitized active failure projection
-  with stable code, stage, retry disposition, resource/cost impact, bounded
-  detail, timestamp, and opaque support reference. Raw provider and command
-  diagnostics remain outside Discord presentation.
-- One application catalog renders known and unknown failures with what
-  happened, likely reason, platform action, exact user action, retry status,
-  billing impact, and support reference. Failure content remains visible ahead
-  of bounded player detail.
-- Every current lifecycle worker records `NOT_SCHEDULED`; Phase 10 retry
-  automation remains deferred and no retry is promised. Successful recovery
-  clears only the active projection, preserving workflow/event audit history.
-- Repeated requests during an unexpired operation return its safe operation,
-  milestone, and start time without queueing a duplicate.
-- Archive and termination now require a durable 12-character code bound to the
-  owner, guild, session, action, lifecycle state, and exact version for ten
-  minutes. Memory locking and DynamoDB transactions enforce atomic single-use
-  consumption and state-drift rejection.
-- `/rb archive` and `/rb terminate` only create the ephemeral confirmation.
-  `/rb confirm code:<code>` consumes and revalidates it before queueing the
-  exact action; `/rb cancel-confirmation code:<code>` permanently closes it.
-  Direct application-layer destructive requests and inline booleans fail
-  closed.
-- The step review closed stale creation replays, authorization bypasses,
-  ambiguous queue-delivery wording, response-limit ordering, and additional
-  identifier, credential, address, and URL redaction gaps.
+- Sessions now carry strict active and pending preset revision metadata plus a
+  monotonic session-local revision sequence. `preset_object_key` remains a
+  write-through compatibility projection of the active revision.
+- Legacy rows that contain only `preset_object_key` synthesize active revision
+  1 on read and persist additive revision fields on the next write; no table
+  replacement or eager migration is required.
+- New preset uploads during draft creation establish active revision 1.
+  Revision validation binds a pending revision to its active base and rejects
+  status, timing, sequence, or compatibility-pointer drift.
+- Dedicated staged, applying, activated, failed, and rolled-back event types
+  provide immutable revision-change audit contracts.
+- `/rb mods` opens an owner-authorized private one-file modal bound to the
+  active revision. A valid submission queues asynchronous preset validation;
+  it does not claim acceptance or interrupt a running service.
+- Accepted uploads create the next pending revision with sanitized modlist
+  metadata and an immutable staged event. Invalid uploads retain active
+  authority and audit rejection; pending files are never published as active.
+- Bootstrap/start, wake, and restore bind a pending revision to the owning
+  workflow as `APPLYING`. Managed-node commands select that pending key while
+  the active revision and compatibility pointer remain authoritative.
+- Bootstrap uses revision-specific Workshop markers and revision-addressed
+  config files. Wake runs a bounded mod-application stage before health.
+  Restore extracts the verified archive before bootstrap so archived config
+  cannot overwrite pending intent.
+- Only the health-success lifecycle completion promotes pending to active,
+  clears pending, and updates the compatibility pointer in the same durable
+  session mutation.
+- Bootstrap, wake, and restore application failures now run a bounded managed
+  rollback against the prior active revision. The rollback outcome and bounded
+  diagnosis remain on the failed pending revision; active authority never
+  moves on failure or rollback-command replay.
+- Canonical cards derive active and pending revision numbers, state, and timing
+  from the session aggregate. A promoted sanitized modlist is published only
+  for the lifecycle transaction that activated it; stale companion-message
+  references are hidden and stale queued attachments cannot replace active
+  download authority.
+- Additive schema-v1 archive manifests snapshot redacted active/pending intent
+  and restore validation rejects revision drift while accepting legacy
+  manifests and the restore-owned pending-to-applying transition. Permanent
+  termination clears all revision authority after versioned session objects
+  are deleted, while immutable archive/termination audit events retain revision
+  numbers and status without free-form diagnostic text.
 
 ## Validation
 
-- Focused Step 12.5 tests pass across domain, failure catalog/state, lifecycle
-  workers, session-card rendering, session application service, memory and
-  DynamoDB persistence, raw Discord interactions, and command registration.
-- `go test ./...`, `go test -cover ./...`, `go vet ./...`, and
-  `go build ./cmd/...` pass.
-- `./scripts/package-discord-lambda.ps1` packages all Discord and worker
-  Lambdas successfully.
-- All 11 tracked Terraform `.tf` files pass `terraform fmt -check`, and
-  `terraform -chdir=infra/terraform/environments/dev validate` passes.
-- `git diff --check` passes.
+- Focused 12.6.1 domain and DynamoDB persistence tests pass, including new
+  revision creation, legacy read/write migration, invariant rejection,
+  immutable event facts, and active/pending round trips.
+- Focused 12.6.2 domain, session application, artifact worker, raw Discord
+  interaction, command-registration, and SQS artifact-queue tests pass.
+- Focused 12.6.3 lifecycle, bootstrap/wake/restore worker, SSM command,
+  bootstrap-shell syntax, restore ordering, and Terraform validation pass.
+- Focused 12.6.4 domain, DynamoDB, managed rollback command, lifecycle worker,
+  bootstrap-shell syntax, workflow-state-machine, and Terraform validation
+  tests pass.
+- Focused 12.6.5 card projection/rendering, lifecycle notification, artifact,
+  notification-worker, SQS, session-read authorization, and Discord delivery
+  tests pass.
+- Focused 12.6.6 archive-manifest, restore-transition, termination-cleanup,
+  audit-redaction, DynamoDB round-trip, application-service, worker, and legacy
+  compatibility tests pass.
+- The complete-step review covered authorization, revision consistency,
+  idempotency, rollback safety, archive/restore fidelity, auditability, billing
+  warnings, and accidental promotion. It fixed cross-channel artifact ingest,
+  diagnostic redaction, and truthful `UNVERIFIED` rollback disposition.
+- Full `go test ./...`, `go test -cover ./...`, `go vet ./...`, and
+  `go build ./cmd/...` pass. Lambda packaging, Discord command JSON parsing,
+  bootstrap Bash syntax, tracked Terraform formatting, Terraform validation,
+  and `git diff --check` pass.
 - Race validation remains unavailable on this Windows host because
   `CGO_ENABLED=0` and no C compiler is installed. The pre-existing populated
   local `infra/terraform/environments/dev/tfplan` remains untracked and was not
@@ -58,10 +90,10 @@ complete. The scoped Step 12.5 commit is the latest phase-branch handoff.
 
 ## Operator Attention
 
-The updated Discord handler, lifecycle workers, and `/rb` command definition
-are not deployed. Live-guild use requires repackaging/deploying the affected
-Lambdas and bulk guild command registration. Do not run Terraform apply without
-the separately required plan, budget-recipient, and deployment approvals.
+Step 12.6 is complete. Do not run Terraform apply without the separately
+required plan, budget-recipient, and deployment approvals. No automatic retry
+is scheduled for failed revision application or an unverified rollback;
+operators must use the persisted card/status and support reference.
 
 The current `/rb create` flow is intentionally Arma 3-specific. Phase 13.5 must
 add a game field with autocomplete and route the selected supported game into
@@ -76,7 +108,7 @@ repeated starts return the active operation's progress.
 
 ## Exact Next Step
 
-Stop before Step 12.6. The exact next task, when explicitly requested, is
-12.6.1: replace the single preset pointer with backward-compatible active and
-pending preset revision metadata plus immutable change events. Do not treat
-deferred Phases 10-11 as complete.
+Begin task 12.7.1 by defining the stable cross-workflow stage taxonomy and
+persisting stage start/completion timestamps without raw command output. Start
+that work only in a new development prompt; do not treat deferred Phases 10-11
+as complete.

@@ -251,7 +251,7 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
         }
         ResultPath = "$.preparation"
         Retry      = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 2, BackoffRate = 2, MaxAttempts = 3 }]
-        Catch      = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "MarkFailed" }]
+        Catch      = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }]
         Next       = "Dispatch"
       }
       Dispatch = {
@@ -268,7 +268,7 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
         }
         ResultSelector = { "result.$" = "$.Payload" }
         ResultPath     = "$.command"
-        Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "MarkFailed" }]
+        Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }]
         Next           = "WaitForCommand"
       }
       WaitForCommand = {
@@ -292,7 +292,7 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
         ResultSelector = { "result.$" = "$.Payload" }
         ResultPath     = "$.observation"
         Retry          = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 5, BackoffRate = 2, MaxAttempts = 3 }]
-        Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "MarkFailed" }]
+        Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }]
         Next           = "CommandComplete"
       }
       CommandComplete = {
@@ -320,7 +320,7 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
         Type       = "Pass"
         Result     = { Error = "ERR_BOOTSTRAP_TIMEOUT", Cause = "Managed bootstrap command exceeded its bounded runtime." }
         ResultPath = "$.failure"
-        Next       = "MarkFailed"
+        Next       = "DispatchRollback"
       }
       CaptureCommandFailure = {
         Type = "Pass"
@@ -329,7 +329,7 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
           "Cause.$" = "$.observation.result.error_message"
         }
         ResultPath = "$.failure"
-        Next       = "MarkFailed"
+        Next       = "DispatchRollback"
       }
       Complete = {
         Type     = "Task"
@@ -345,8 +345,84 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
         }
         ResultPath = "$.completion"
         Retry      = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 2, BackoffRate = 2, MaxAttempts = 3 }]
-        Catch      = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "MarkFailed" }]
+        Catch      = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }]
         End        = true
+      }
+      DispatchRollback = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.bootstrap_worker.function_name
+          Payload = {
+            action             = "dispatch_rollback"
+            "session_id.$"     = "$.session_id"
+            "workflow_id.$"    = "$.workflow_id"
+            "correlation_id.$" = "$.correlation_id"
+          }
+        }
+        ResultSelector = { "result.$" = "$.Payload" }
+        ResultPath     = "$.rollback"
+        Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.rollback_failure", Next = "MarkFailed" }]
+        Next           = "RollbackDispatched"
+      }
+      RollbackDispatched = {
+        Type    = "Choice"
+        Choices = [{ Variable = "$.rollback.result.succeeded", BooleanEquals = true, Next = "MarkFailed" }]
+        Default = "InitializeRollbackAttempts"
+      }
+      InitializeRollbackAttempts = {
+        Type       = "Pass"
+        Result     = 0
+        ResultPath = "$.rollback_attempt"
+        Next       = "WaitForRollback"
+      }
+      WaitForRollback = {
+        Type    = "Wait"
+        Seconds = 30
+        Next    = "ObserveRollback"
+      }
+      ObserveRollback = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.bootstrap_worker.function_name
+          Payload = {
+            action             = "observe_rollback"
+            "session_id.$"     = "$.session_id"
+            "workflow_id.$"    = "$.workflow_id"
+            "correlation_id.$" = "$.correlation_id"
+            "command_id.$"     = "$.rollback.result.command_id"
+          }
+        }
+        ResultSelector = { "result.$" = "$.Payload" }
+        ResultPath     = "$.rollback"
+        Retry          = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 5, BackoffRate = 2, MaxAttempts = 3 }]
+        Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.rollback_failure", Next = "MarkFailed" }]
+        Next           = "RollbackComplete"
+      }
+      RollbackComplete = {
+        Type    = "Choice"
+        Choices = [{ Variable = "$.rollback.result.done", BooleanEquals = true, Next = "MarkFailed" }]
+        Default = "IncrementRollbackAttempts"
+      }
+      IncrementRollbackAttempts = {
+        Type = "Pass"
+        Parameters = {
+          "value.$" = "States.MathAdd($.rollback_attempt, 1)"
+        }
+        ResultPath = "$.rollback_counter"
+        Next       = "CopyRollbackAttempts"
+      }
+      CopyRollbackAttempts = {
+        Type       = "Pass"
+        InputPath  = "$.rollback_counter.value"
+        ResultPath = "$.rollback_attempt"
+        Next       = "RollbackAttemptsAvailable"
+      }
+      RollbackAttemptsAvailable = {
+        Type    = "Choice"
+        Choices = [{ Variable = "$.rollback_attempt", NumericGreaterThanEquals = local.bootstrap_poll_limit, Next = "MarkFailed" }]
+        Default = "WaitForRollback"
       }
       MarkFailed = {
         Type     = "Task"

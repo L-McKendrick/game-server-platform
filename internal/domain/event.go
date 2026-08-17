@@ -44,6 +44,11 @@ const (
 	EventSessionTerminated         EventType = "SessionTerminated"
 	EventTerminationFailed         EventType = "SessionTerminationFailed"
 	EventProgressMilestone         EventType = "SessionProgressMilestone"
+	EventPresetRevisionStaged      EventType = "PresetRevisionStaged"
+	EventPresetRevisionApplying    EventType = "PresetRevisionApplying"
+	EventPresetRevisionActivated   EventType = "PresetRevisionActivated"
+	EventPresetRevisionFailed      EventType = "PresetRevisionFailed"
+	EventPresetRevisionRolledBack  EventType = "PresetRevisionRolledBack"
 )
 
 func NewTerminationEvent(eventID string, eventType EventType, stage string, workflow Workflow, session Session, objectsDeleted int, now time.Time) SessionEvent {
@@ -53,6 +58,8 @@ func NewTerminationEvent(eventID string, eventType EventType, stage string, work
 		"display_name":    session.DisplayName, "slug": session.Slug, "description": session.Description,
 	}
 	addProgressEventData(data, session, workflow)
+	addPresetApplicationEventData(data, session, now)
+	addPresetIntentEventData(data, session)
 	return SessionEvent{
 		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
 		ActorType: string(ActorTypeSystem), ActorID: TerminationWorkflowType, CorrelationID: workflow.CorrelationID,
@@ -69,6 +76,8 @@ func NewArchiveEvent(eventID string, eventType EventType, stage string, workflow
 		"archive_manifest_size_bytes": fmt.Sprintf("%d", archive.ManifestSizeBytes),
 	}
 	addProgressEventData(data, session, workflow)
+	addPresetApplicationEventData(data, session, now)
+	addPresetIntentEventData(data, session)
 	return SessionEvent{
 		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
 		ActorType: string(ActorTypeSystem), ActorID: ArchiveWorkflowType, CorrelationID: workflow.CorrelationID,
@@ -85,6 +94,7 @@ func NewProvisioningEvent(eventID string, eventType EventType, stage string, wor
 		"volume_id": session.Infrastructure.DataVolumeID,
 	}
 	addProgressEventData(data, session, workflow)
+	addPresetApplicationEventData(data, session, now)
 	return SessionEvent{
 		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
 		ActorType: string(ActorTypeSystem), ActorID: "ProvisionSession", CorrelationID: workflow.CorrelationID,
@@ -113,6 +123,7 @@ func NewBootstrapEvent(eventID string, eventType EventType, stage string, workfl
 		"state": string(session.LifecycleState), "instance_id": session.Infrastructure.InstanceID,
 	}
 	addProgressEventData(data, session, workflow)
+	addPresetApplicationEventData(data, session, now)
 	return SessionEvent{
 		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
 		ActorType: string(ActorTypeSystem), ActorID: BootstrapWorkflowType, CorrelationID: workflow.CorrelationID,
@@ -142,7 +153,7 @@ func NewArtifactEvent(
 	objectKey string,
 	now time.Time,
 ) SessionEvent {
-	return SessionEvent{
+	event := SessionEvent{
 		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
 		ActorType: string(actor.Type), ActorID: actor.ID, CorrelationID: correlationID,
 		Data: map[string]string{
@@ -151,6 +162,39 @@ func NewArtifactEvent(
 			"state":         string(session.LifecycleState),
 		},
 	}
+	if kind == ArtifactPreset {
+		revision := session.EffectiveActivePresetRevision()
+		if !revision.Empty() {
+			event.Data["preset_revision"] = fmt.Sprintf("%d", revision.Number)
+			event.Data["preset_revision_status"] = string(revision.Status)
+		}
+	}
+	return event
+}
+
+// NewPresetRevisionEvent records every accepted preset revision transition as
+// immutable audit history without exposing Discord attachment URLs.
+func NewPresetRevisionEvent(eventID string, eventType EventType, correlationID string, actor Actor, session Session, revision PresetRevision, now time.Time) SessionEvent {
+	data := map[string]string{
+		"preset_revision":        fmt.Sprintf("%d", revision.Number),
+		"base_preset_revision":   fmt.Sprintf("%d", revision.BaseRevision),
+		"preset_revision_status": string(revision.Status),
+		"preset_object_key":      revision.PresetObjectKey,
+	}
+	if revision.Modlist.SHA256 != "" {
+		data["modlist_sha256"] = revision.Modlist.SHA256
+	}
+	if revision.ApplyWorkflowID != "" {
+		data["workflow_id"] = revision.ApplyWorkflowID
+	}
+	if revision.FailureDetail != "" {
+		data["failure_detail"] = revision.FailureDetail
+	}
+	if revision.RollbackDisposition != "" {
+		data["rollback_disposition"] = string(revision.RollbackDisposition)
+		data["rollback_detail"] = revision.RollbackDetail
+	}
+	return SessionEvent{ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(), ActorType: string(actor.Type), ActorID: actor.ID, CorrelationID: correlationID, Data: data}
 }
 
 func NewWorkflowEvent(
@@ -168,6 +212,7 @@ func NewWorkflowEvent(
 		"workflow_status": string(workflow.Status),
 	}
 	addProgressEventData(data, session, workflow)
+	addPresetApplicationEventData(data, session, now)
 	return SessionEvent{
 		ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now.UTC(),
 		ActorType: string(actor.Type), ActorID: actor.ID, CorrelationID: correlationID,
@@ -194,6 +239,35 @@ func addProgressEventData(data map[string]string, session Session, workflow Work
 	}
 	data["progress_milestone"] = string(session.Progress.Milestone)
 	data["progress_updated_at"] = session.Progress.UpdatedAt.UTC().Format(time.RFC3339Nano)
+}
+
+func addPresetApplicationEventData(data map[string]string, session Session, now time.Time) {
+	if pending := session.PendingPresetRevision; pending.Status == PresetRevisionApplying && pending.ApplyStartedAt.Equal(now.UTC()) {
+		data["revision_event_type"] = string(EventPresetRevisionApplying)
+		data["preset_revision"] = fmt.Sprintf("%d", pending.Number)
+		data["base_preset_revision"] = fmt.Sprintf("%d", pending.BaseRevision)
+	}
+	if active := session.ActivePresetRevision; !active.Empty() && active.ActivatedAt.Equal(now.UTC()) {
+		data["revision_event_type"] = string(EventPresetRevisionActivated)
+		data["preset_revision"] = fmt.Sprintf("%d", active.Number)
+		data["base_preset_revision"] = fmt.Sprintf("%d", active.BaseRevision)
+	}
+	if pending := session.PendingPresetRevision; pending.Status == PresetRevisionFailed && pending.FailedAt.Equal(now.UTC()) {
+		data["revision_event_type"] = string(EventPresetRevisionFailed)
+		data["preset_revision"] = fmt.Sprintf("%d", pending.Number)
+		data["base_preset_revision"] = fmt.Sprintf("%d", pending.BaseRevision)
+		data["rollback_disposition"] = string(pending.RollbackDisposition)
+	}
+}
+
+func addPresetIntentEventData(data map[string]string, session Session) {
+	if active := session.EffectiveActivePresetRevision(); !active.Empty() {
+		data["active_preset_revision"] = fmt.Sprintf("%d", active.Number)
+	}
+	if pending := session.PendingPresetRevision; !pending.Empty() {
+		data["pending_preset_revision"] = fmt.Sprintf("%d", pending.Number)
+		data["pending_preset_revision_status"] = string(pending.Status)
+	}
 }
 
 // NewSessionConfiguredEvent records an immutable configuration revision.

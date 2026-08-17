@@ -71,8 +71,11 @@ type EndpointProjection struct {
 type ModsProjection struct {
 	Required        bool
 	Status          string
-	ActiveRevision  string
-	PendingRevision string
+	ActiveRevision  int64
+	ActiveSince     time.Time
+	PendingRevision int64
+	PendingStatus   string
+	PendingSince    time.Time
 	DownloadURL     string
 }
 
@@ -107,15 +110,13 @@ type ArtifactView struct {
 // Options carries point-in-time projection inputs that are not part of the
 // session aggregate without introducing a second card model.
 type Options struct {
-	Now                time.Time
-	Workflow           *domain.Workflow
-	Players            *domain.PlayerStatus
-	PlayersObservedAt  time.Time
-	GameDNS            string
-	TeamSpeakDNS       string
-	ActiveModRevision  string
-	PendingModRevision string
-	ModlistURL         string
+	Now               time.Time
+	Workflow          *domain.Workflow
+	Players           *domain.PlayerStatus
+	PlayersObservedAt time.Time
+	GameDNS           string
+	TeamSpeakDNS      string
+	ModlistURL        string
 }
 
 // Project builds one safe presentation model from authoritative state.
@@ -134,12 +135,7 @@ func Project(session domain.Session, options Options) Projection {
 		Mode: modeLabel(session.Vanilla), TeamSpeak: session.TeamSpeakEnabled,
 		Lifecycle: LifecycleLabel(session.LifecycleState), Health: HealthLabel(session.HealthStatus),
 		CurrentOperation: operationLabel(session.ActiveWorkflowType), Stage: stageLabel(session),
-		Mods: ModsProjection{
-			Required: !session.Vanilla, Status: modStatus(session),
-			ActiveRevision:  strings.TrimSpace(options.ActiveModRevision),
-			PendingRevision: strings.TrimSpace(options.PendingModRevision),
-			DownloadURL:     normalizeModlistURL(options.ModlistURL),
-		},
+		Mods: modProjection(session, options.ModlistURL),
 		Artifacts: ArtifactProjection{
 			Mission: artifactView(session.MissionArtifactStatus, session.MissionObjectKey, session.MissionArtifactIssue, false),
 			Preset:  artifactView(session.PresetArtifactStatus, session.PresetObjectKey, session.PresetArtifactIssue, session.Vanilla),
@@ -239,6 +235,29 @@ func normalizeModlistURL(value string) string {
 		}
 	}
 	return parsed.String()
+}
+
+// IsActiveModlistReference prevents a persisted companion-message link from
+// being shown after revision promotion but before the replacement attachment
+// has been delivered. Legacy sessions without modlist metadata remain valid.
+func IsActiveModlistReference(session domain.Session, reference domain.SessionModlistReference) bool {
+	active := session.EffectiveActivePresetRevision()
+	if active.Modlist.Empty() {
+		return strings.TrimSpace(session.PresetObjectKey) != ""
+	}
+	return reference.SessionID == session.ID && reference.ChannelID == session.ChannelID &&
+		reference.ObjectKey == active.Modlist.ObjectKey && reference.Filename == active.Modlist.Filename &&
+		reference.ContentSHA256 == active.Modlist.SHA256 && reference.DeliveredRevision <= session.Version
+}
+
+// IsActiveModlistAttachment binds queued bytes to current active authority.
+func IsActiveModlistAttachment(session domain.Session, attachment domain.NotificationAttachment) bool {
+	active := session.EffectiveActivePresetRevision()
+	if active.Modlist.Empty() {
+		return strings.TrimSpace(session.PresetObjectKey) != ""
+	}
+	return attachment.ObjectKey == active.Modlist.ObjectKey && attachment.Filename == active.Modlist.Filename &&
+		attachment.SHA256 == active.Modlist.SHA256 && attachment.SizeBytes == active.Modlist.SizeBytes
 }
 
 func progressLabel(milestone domain.ProgressMilestone) string {
@@ -408,6 +427,38 @@ func modStatus(session domain.Session) string {
 		return "Not required for vanilla"
 	}
 	return artifactView(session.PresetArtifactStatus, session.PresetObjectKey, session.PresetArtifactIssue, false).Status
+}
+
+func modProjection(session domain.Session, modlistURL string) ModsProjection {
+	projection := ModsProjection{Required: !session.Vanilla, Status: modStatus(session), DownloadURL: normalizeModlistURL(modlistURL)}
+	if session.Vanilla {
+		return projection
+	}
+	active := session.EffectiveActivePresetRevision()
+	if !active.Empty() {
+		projection.ActiveRevision = active.Number
+		projection.ActiveSince = active.ActivatedAt.UTC()
+	}
+	pending := session.PendingPresetRevision
+	if pending.Empty() {
+		return projection
+	}
+	projection.PendingRevision = pending.Number
+	switch pending.Status {
+	case domain.PresetRevisionPending:
+		projection.Status = "Revision staged for next start"
+		projection.PendingStatus = "Staged"
+		projection.PendingSince = pending.StagedAt.UTC()
+	case domain.PresetRevisionApplying:
+		projection.Status = "Applying pending revision"
+		projection.PendingStatus = "Applying"
+		projection.PendingSince = pending.ApplyStartedAt.UTC()
+	case domain.PresetRevisionFailed:
+		projection.Status = "Pending revision failed; active revision retained"
+		projection.PendingStatus = "Failed"
+		projection.PendingSince = pending.FailedAt.UTC()
+	}
+	return projection
 }
 
 func endpointVisibility(state domain.LifecycleState) (visible bool, offline bool) {

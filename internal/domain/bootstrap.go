@@ -31,6 +31,7 @@ func (session *Session) AcquireBootstrapWorkflowLock(workflowID string, lease ti
 	session.ObservedState = StateBootstrapping
 	session.LifecycleState = StateBootstrapping
 	session.HealthStatus = HealthStarting
+	session.beginPresetRevisionApplication(workflowID, now)
 	return session.Validate()
 }
 
@@ -64,6 +65,9 @@ func (session *Session) CompleteBootstrap(workflowID string, now time.Time) erro
 		return fmt.Errorf("%w: bootstrap completion requires INSTALLING", ErrInvalidTransition)
 	}
 	if err := session.setProgressWithoutVersion(workflowID, ProgressCompleted, now); err != nil {
+		return err
+	}
+	if _, _, err := session.promotePresetRevision(workflowID, now); err != nil {
 		return err
 	}
 	session.DesiredState = StateRunning

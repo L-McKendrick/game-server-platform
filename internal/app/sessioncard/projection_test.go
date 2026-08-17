@@ -23,7 +23,17 @@ func TestProjectMapsEveryAuthoritativeCardSectionWithoutInternalIDs(t *testing.T
 		ActiveWorkflowID: "internal-workflow-id", ActiveWorkflowType: domain.BootstrapWorkflowType,
 		ActiveWorkflowStartedAt: started,
 		Infrastructure:          domain.Infrastructure{PublicIPv4: "203.0.113.10", LastObservedAt: infrastructureObserved},
-		UpdatedAt:               started.Add(15 * time.Minute),
+		PresetObjectKey:         "sessions/internal-session-id/input/presets/v2.html",
+		PresetRevisionSequence:  3,
+		ActivePresetRevision: domain.PresetRevision{
+			Number: 2, PresetObjectKey: "sessions/internal-session-id/input/presets/v2.html", Status: domain.PresetRevisionActive,
+			StagedAt: started.Add(-2 * time.Hour), ActivatedAt: started.Add(-time.Hour),
+		},
+		PendingPresetRevision: domain.PresetRevision{
+			Number: 3, BaseRevision: 2, PresetObjectKey: "sessions/internal-session-id/input/presets/v3.html", Status: domain.PresetRevisionApplying,
+			StagedAt: started.Add(-10 * time.Minute), ApplyWorkflowID: "internal-workflow-id", ApplyStartedAt: started,
+		},
+		UpdatedAt: started.Add(15 * time.Minute),
 	}
 	workflow := &domain.Workflow{
 		ID: "internal-workflow-id", SessionID: session.ID, Type: domain.BootstrapWorkflowType,
@@ -34,7 +44,7 @@ func TestProjectMapsEveryAuthoritativeCardSectionWithoutInternalIDs(t *testing.T
 	projection := Project(session, Options{
 		Now: now, Workflow: workflow, Players: players, PlayersObservedAt: playersObserved,
 		GameDNS: "arma.example.test", TeamSpeakDNS: "voice.example.test",
-		ActiveModRevision: "mods-v2", PendingModRevision: "mods-v3", ModlistURL: "https://discord.com/channels/guild-1/channel-1/modlist-message",
+		ModlistURL: "https://discord.com/channels/guild-1/channel-1/modlist-message",
 	})
 
 	if projection.Revision != 12 || projection.Name != "Saturday Arma" || projection.Slug != "saturday-arma" ||
@@ -57,8 +67,9 @@ func TestProjectMapsEveryAuthoritativeCardSectionWithoutInternalIDs(t *testing.T
 	if projection.Endpoints.Game.Available || projection.Endpoints.TeamSpeak.Available {
 		t.Fatalf("pre-health endpoints must not be advertised: %#v", projection.Endpoints)
 	}
-	if !projection.Mods.Required || projection.Mods.Status != "Accepted" || projection.Mods.ActiveRevision != "mods-v2" ||
-		projection.Mods.PendingRevision != "mods-v3" || projection.Mods.DownloadURL == "" {
+	if !projection.Mods.Required || projection.Mods.Status != "Applying pending revision" || projection.Mods.ActiveRevision != 2 ||
+		projection.Mods.ActiveSince != started.Add(-time.Hour) || projection.Mods.PendingRevision != 3 || projection.Mods.PendingStatus != "Applying" ||
+		projection.Mods.PendingSince != started || projection.Mods.DownloadURL == "" {
 		t.Fatalf("mods projection = %#v", projection.Mods)
 	}
 	if projection.Failure.Present || projection.Freshness.SessionUpdatedAt != session.UpdatedAt ||
@@ -74,7 +85,8 @@ func TestProjectMapsEveryAuthoritativeCardSectionWithoutInternalIDs(t *testing.T
 		}
 	}
 	if strings.Contains(public, "Alice") || !strings.Contains(detailed, "Player names: Alice, Bob") ||
-		!strings.Contains(public, "Elapsed:** 17m 12s") || !strings.Contains(detailed, "Players observed <t:") {
+		!strings.Contains(public, "Elapsed:** 17m 12s") || !strings.Contains(public, "Active mod revision:** `2` — active <t:") ||
+		!strings.Contains(public, "Pending mod revision:** `3` — Applying <t:") || !strings.Contains(detailed, "Players observed <t:") {
 		t.Fatalf("public=%q detailed=%q", public, detailed)
 	}
 }
@@ -111,6 +123,33 @@ func TestProjectRepresentsGenericFailureAndOfflineEndpointsSafely(t *testing.T) 
 	}
 	if !strings.Contains(RenderPublic(archived), "**Arma IP:** `203.0.113.20:2302` — Offline (retained address)") {
 		t.Fatalf("archived card = %q", RenderPublic(archived))
+	}
+}
+
+func TestActiveModlistDeliveryMustMatchActiveRevision(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 18, 1, 0, 0, 0, time.UTC)
+	activeModlist := domain.PresetModlistMetadata{
+		ObjectKey: "sessions/session-1/input/modlists/v2/session-1-modlist.html", Filename: "session-1-modlist.html",
+		SHA256: strings.Repeat("b", 64), SizeBytes: 512, WorkshopCount: 3,
+	}
+	session := domain.Session{
+		ID: "session-1", GuildID: "guild-1", ChannelID: "channel-1", Version: 8,
+		PresetObjectKey:      "sessions/session-1/input/presets/v2.html",
+		ActivePresetRevision: domain.PresetRevision{Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/presets/v2.html", Modlist: activeModlist, Status: domain.PresetRevisionActive, StagedAt: now.Add(-time.Hour), ActivatedAt: now},
+	}
+	reference := domain.SessionModlistReference{
+		SessionID: session.ID, ChannelID: session.ChannelID, MessageID: "message-1", ObjectKey: activeModlist.ObjectKey,
+		Filename: activeModlist.Filename, DeliveredRevision: session.Version, DeliveredNotificationID: "modlist-v2", ContentSHA256: activeModlist.SHA256,
+	}
+	attachment := domain.NotificationAttachment{ObjectKey: activeModlist.ObjectKey, Filename: activeModlist.Filename, SHA256: activeModlist.SHA256, SizeBytes: activeModlist.SizeBytes, Revision: session.Version}
+	if !IsActiveModlistReference(session, reference) || !IsActiveModlistAttachment(session, attachment) {
+		t.Fatal("current active modlist was rejected")
+	}
+	reference.ObjectKey = "sessions/session-1/input/modlists/v1/session-1-modlist.html"
+	attachment.ObjectKey = reference.ObjectKey
+	if IsActiveModlistReference(session, reference) || IsActiveModlistAttachment(session, attachment) {
+		t.Fatal("stale modlist remained downloadable after promotion")
 	}
 }
 

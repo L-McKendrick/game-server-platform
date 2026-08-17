@@ -345,6 +345,9 @@ func seedCardSession(t *testing.T, now time.Time, sessionID string) *memory.Sess
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := session.AttachArtifact(domain.ArtifactPreset, "sessions/"+sessionID+"/input/presets/source.html", now); err != nil {
+		t.Fatal(err)
+	}
 	event := domain.NewSessionCreatedEvent("event-"+sessionID, "correlation-"+sessionID, domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}, session, now)
 	record, err := domain.NewCompletedIdempotencyRecord("create-"+sessionID, "hash-"+sessionID, session.ID, now, time.Hour)
 	if err != nil {

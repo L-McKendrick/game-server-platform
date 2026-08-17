@@ -159,6 +159,13 @@ type BootstrapRunner interface {
 	Observe(ctx context.Context, instanceID string, commandID string) (BootstrapCommandStatus, error)
 }
 
+// PresetRevisionRunner can reinstall the previous active preset after a
+// candidate fails, while retaining the same observe contract.
+type PresetRevisionRunner interface {
+	BootstrapRunner
+	StartRollback(ctx context.Context, session domain.Session) (string, error)
+}
+
 type RestoreRunner interface {
 	Start(ctx context.Context, session domain.Session) (string, error)
 	Observe(ctx context.Context, instanceID string, commandID string) (BootstrapCommandStatus, error)

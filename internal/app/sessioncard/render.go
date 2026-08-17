@@ -68,11 +68,17 @@ func render(card Projection, detailed bool) string {
 		"\n\n**Mission:** %s\n**Preset:** %s\n**Mods:** %s",
 		artifactLine(card.Artifacts.Mission), artifactLine(card.Artifacts.Preset), safe(card.Mods.Status),
 	)
-	if card.Mods.ActiveRevision != "" {
-		fmt.Fprintf(&builder, "\n**Active mod revision:** `%s`", safeCode(card.Mods.ActiveRevision))
+	if card.Mods.ActiveRevision > 0 {
+		fmt.Fprintf(&builder, "\n**Active mod revision:** `%d`", card.Mods.ActiveRevision)
+		if !card.Mods.ActiveSince.IsZero() {
+			fmt.Fprintf(&builder, " — active %s", timestamp(card.Mods.ActiveSince))
+		}
 	}
-	if card.Mods.PendingRevision != "" {
-		fmt.Fprintf(&builder, "\n**Pending mod revision:** `%s`", safeCode(card.Mods.PendingRevision))
+	if card.Mods.PendingRevision > 0 {
+		fmt.Fprintf(&builder, "\n**Pending mod revision:** `%d` — %s", card.Mods.PendingRevision, safe(card.Mods.PendingStatus))
+		if !card.Mods.PendingSince.IsZero() {
+			fmt.Fprintf(&builder, " %s", timestamp(card.Mods.PendingSince))
+		}
 	}
 	if card.Mods.DownloadURL != "" {
 		fmt.Fprintf(&builder, "\n%s", modlistLinkLine(card.Mods.DownloadURL))

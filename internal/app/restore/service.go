@@ -26,6 +26,8 @@ const (
 	ActionObserveRestore    = "observe_restore"
 	ActionComplete          = "complete"
 	ActionFail              = "fail"
+	ActionRollbackDispatch  = "dispatch_rollback"
+	ActionRollbackObserve   = "observe_rollback"
 )
 
 type Clock interface{ Now() time.Time }
@@ -63,7 +65,7 @@ type Service struct {
 	stages        ports.ProvisioningRepository
 	workflows     ports.WorkflowRepository
 	compute       ports.ComputeProvisioner
-	bootstrap     ports.BootstrapRunner
+	bootstrap     ports.PresetRevisionRunner
 	restore       ports.RestoreRunner
 	store         ports.ArchiveStore
 	notifications ports.NotificationQueue
@@ -72,7 +74,7 @@ type Service struct {
 	config        Config
 }
 
-func NewService(sessions ports.SessionRepository, stages ports.ProvisioningRepository, workflows ports.WorkflowRepository, compute ports.ComputeProvisioner, bootstrap ports.BootstrapRunner, restore ports.RestoreRunner, store ports.ArchiveStore, notifications ports.NotificationQueue, ids IDGenerator, clock Clock, config Config) (*Service, error) {
+func NewService(sessions ports.SessionRepository, stages ports.ProvisioningRepository, workflows ports.WorkflowRepository, compute ports.ComputeProvisioner, bootstrap ports.PresetRevisionRunner, restore ports.RestoreRunner, store ports.ArchiveStore, notifications ports.NotificationQueue, ids IDGenerator, clock Clock, config Config) (*Service, error) {
 	if sessions == nil || stages == nil || workflows == nil || compute == nil || bootstrap == nil || restore == nil || store == nil || ids == nil || clock == nil {
 		return nil, fmt.Errorf("restore service dependencies are required")
 	}
@@ -118,9 +120,64 @@ func (service *Service) Handle(ctx context.Context, request TaskRequest) (TaskRe
 		return service.complete(ctx, session, workflow)
 	case ActionFail:
 		return service.fail(ctx, session, workflow, request)
+	case ActionRollbackDispatch:
+		return service.dispatchRollback(ctx, session, workflow)
+	case ActionRollbackObserve:
+		return service.observeRollback(ctx, session, workflow, request.CommandID)
 	default:
 		return TaskResult{}, fmt.Errorf("unsupported restore action %q", request.Action)
 	}
+}
+
+func (service *Service) dispatchRollback(ctx context.Context, session domain.Session, workflow domain.Workflow) (TaskResult, error) {
+	response := result(session, workflow)
+	if !session.HasApplyingPresetRevision(workflow.ID) {
+		response.Done, response.Succeeded = true, true
+		return response, nil
+	}
+	commandID, err := service.bootstrap.StartRollback(ctx, session)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("start preset rollback: %w", err)
+	}
+	response.CommandID = commandID
+	return response, nil
+}
+
+func (service *Service) observeRollback(ctx context.Context, session domain.Session, workflow domain.Workflow, commandID string) (TaskResult, error) {
+	response := result(session, workflow)
+	if !session.HasApplyingPresetRevision(workflow.ID) {
+		response.Done, response.Succeeded = true, true
+		return response, nil
+	}
+	status, err := service.bootstrap.Observe(ctx, session.Infrastructure.InstanceID, strings.TrimSpace(commandID))
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("observe preset rollback: %w", err)
+	}
+	response.CommandID = strings.TrimSpace(commandID)
+	response.Done = terminal(status.Status)
+	response.Succeeded = status.Status == "Success"
+	if !response.Done {
+		return response, nil
+	}
+	expected, now := session.Version, service.clock.Now().UTC()
+	changed, err := session.RecordPresetRevisionRollback(workflow.ID, response.Succeeded, status.ErrorMessage, now)
+	if err != nil {
+		return TaskResult{}, err
+	}
+	if changed {
+		id, err := service.ids.New(now)
+		if err != nil {
+			return TaskResult{}, err
+		}
+		event := domain.NewPresetRevisionEvent(id, domain.EventPresetRevisionRolledBack, workflow.CorrelationID, domain.Actor{Type: domain.ActorTypeSystem, ID: domain.RestoreWorkflowType}, session, session.PendingPresetRevision, now)
+		if err := service.stages.SaveProvisioningStage(ctx, session, expected, event); err != nil {
+			return TaskResult{}, err
+		}
+	}
+	if !response.Succeeded {
+		response.ErrorCode, response.ErrorMessage = "ERR_MOD_ROLLBACK_"+strings.ToUpper(status.Status), bounded(status.ErrorMessage, "known-good mod rollback failed")
+	}
+	return response, nil
 }
 
 type commandRunner interface {
@@ -142,7 +199,7 @@ func (service *Service) verifyArchive(ctx context.Context, session domain.Sessio
 	if err := manifest.Validate(); err != nil {
 		return TaskResult{}, err
 	}
-	if manifest.SessionID != session.ID || manifest.ArchiveID != archive.ID || manifest.ObjectKey != archive.ObjectKey || manifest.SHA256 != archive.SHA256 || manifest.SizeBytes != archive.SizeBytes || manifest.GameProfileID != session.GameProfileID || manifest.ConfigurationRevision != session.ConfigurationRevision || manifest.MissionObjectKey != session.MissionObjectKey || manifest.PresetObjectKey != session.PresetObjectKey || manifest.Vanilla != session.Vanilla || !manifestReadableIdentityMatches(manifest, session) {
+	if manifest.SessionID != session.ID || manifest.ArchiveID != archive.ID || manifest.ObjectKey != archive.ObjectKey || manifest.SHA256 != archive.SHA256 || manifest.SizeBytes != archive.SizeBytes || manifest.GameProfileID != session.GameProfileID || manifest.ConfigurationRevision != session.ConfigurationRevision || manifest.MissionObjectKey != session.MissionObjectKey || manifest.PresetObjectKey != session.PresetObjectKey || manifest.Vanilla != session.Vanilla || !manifestReadableIdentityMatches(manifest, session) || !manifest.PresetRevisionIntentMatches(session) {
 		return TaskResult{}, fmt.Errorf("archive manifest does not match authoritative session metadata")
 	}
 	if err := service.store.Verify(ctx, ports.ArchiveObject{Key: archive.ObjectKey, SHA256: archive.SHA256, SizeBytes: archive.SizeBytes, ContentType: "application/gzip"}); err != nil {
@@ -260,6 +317,7 @@ func (service *Service) complete(ctx context.Context, session domain.Session, wo
 	if workflow.Status == domain.WorkflowSucceeded {
 		response := result(session, workflow)
 		response.Succeeded = true
+		response.Warning = notificationWarning(sessioncard.EnqueueActivatedModlist(ctx, service.notifications, session, workflow, service.clock.Now().UTC()))
 		return response, nil
 	}
 	expected, now := session.Version, service.clock.Now().UTC()
@@ -279,6 +337,12 @@ func (service *Service) complete(ctx context.Context, session domain.Session, wo
 	response := result(session, workflow)
 	response.Succeeded = true
 	response.Warning = notificationWarning(sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now))
+	if err := sessioncard.EnqueueActivatedModlist(ctx, service.notifications, session, workflow, now); err != nil {
+		if response.Warning != "" {
+			response.Warning += "; "
+		}
+		response.Warning += err.Error()
+	}
 	return response, nil
 }
 
@@ -297,6 +361,9 @@ func (service *Service) fail(ctx context.Context, session domain.Session, workfl
 		}
 	}
 	expected, now := session.Version, service.clock.Now().UTC()
+	if err := session.FailPresetRevisionApplication(workflow.ID, request.ErrorMessage, now); err != nil {
+		return TaskResult{}, err
+	}
 	if release {
 		if err := service.stages.ReleaseCapacitySlot(ctx, slotID, session.ID); err != nil {
 			return TaskResult{}, err

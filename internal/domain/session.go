@@ -33,16 +33,21 @@ type Session struct {
 	Vanilla               bool
 	ConfigurationRevision int64
 	MissionObjectKey      string
-	PresetObjectKey       string
-	MissionArtifactStatus ArtifactStatus
-	PresetArtifactStatus  ArtifactStatus
-	MissionArtifactIssue  string
-	PresetArtifactIssue   string
-	Infrastructure        Infrastructure
-	Archive               ArchiveMetadata
-	ArchiveSourceState    LifecycleState
-	Progress              SessionProgress
-	Failure               FailureRecord
+	// PresetObjectKey remains a write-through compatibility projection of the
+	// active preset revision for older workers and persisted rows.
+	PresetObjectKey        string
+	PresetRevisionSequence int64
+	ActivePresetRevision   PresetRevision
+	PendingPresetRevision  PresetRevision
+	MissionArtifactStatus  ArtifactStatus
+	PresetArtifactStatus   ArtifactStatus
+	MissionArtifactIssue   string
+	PresetArtifactIssue    string
+	Infrastructure         Infrastructure
+	Archive                ArchiveMetadata
+	ArchiveSourceState     LifecycleState
+	Progress               SessionProgress
+	Failure                FailureRecord
 
 	ActiveWorkflowID             string
 	ActiveWorkflowType           string
@@ -77,6 +82,14 @@ func (session *Session) AttachArtifact(kind ArtifactKind, objectKey string, now 
 		session.MissionArtifactStatus = ArtifactAccepted
 		session.MissionArtifactIssue = ""
 	case ArtifactPreset:
+		if session.ActivePresetRevision.Empty() {
+			number := session.EffectivePresetRevisionSequence() + 1
+			session.ActivePresetRevision = PresetRevision{
+				Number: number, PresetObjectKey: objectKey, Status: PresetRevisionActive,
+				StagedAt: now.UTC(), ActivatedAt: now.UTC(),
+			}
+			session.PresetRevisionSequence = number
+		}
 		session.PresetObjectKey = objectKey
 		session.PresetArtifactStatus = ArtifactAccepted
 		session.PresetArtifactIssue = ""
@@ -96,7 +109,7 @@ func (session *Session) RejectArtifact(kind ArtifactKind, issue string, now time
 	if session.LifecycleState != StateDraft {
 		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
 	}
-	issue = normalizeSessionDescription(issue)
+	issue = sanitizeFailureDetail(issue)
 	if utf8.RuneCountInString(issue) > 160 {
 		issue = string([]rune(issue)[:160])
 	}
@@ -317,6 +330,12 @@ func (session Session) Validate() error {
 	if err := session.Failure.Validate(); err != nil {
 		return err
 	}
+	if err := session.ActivePresetRevision.Validate(); err != nil {
+		return fmt.Errorf("active preset revision: %w", err)
+	}
+	if err := session.PendingPresetRevision.Validate(); err != nil {
+		return fmt.Errorf("pending preset revision: %w", err)
+	}
 	switch {
 	case session.ID == "":
 		return fmt.Errorf("session ID is required")
@@ -357,6 +376,22 @@ func (session Session) Validate() error {
 		return fmt.Errorf("archive policy must be at least 86400 seconds")
 	case session.ConfigurationRevision < 0:
 		return fmt.Errorf("configuration revision cannot be negative")
+	case session.PresetRevisionSequence < 0:
+		return fmt.Errorf("preset revision sequence cannot be negative")
+	case !session.ActivePresetRevision.Empty() && session.ActivePresetRevision.Status != PresetRevisionActive:
+		return fmt.Errorf("active preset revision must have ACTIVE status")
+	case !session.ActivePresetRevision.Empty() && session.PresetObjectKey != session.ActivePresetRevision.PresetObjectKey:
+		return fmt.Errorf("legacy preset object key must mirror the active preset revision")
+	case !session.ActivePresetRevision.Empty() && session.ActivePresetRevision.Number > session.PresetRevisionSequence:
+		return fmt.Errorf("active preset revision exceeds the session revision sequence")
+	case !session.PendingPresetRevision.Empty() && session.PendingPresetRevision.Status == PresetRevisionActive:
+		return fmt.Errorf("pending preset revision cannot have ACTIVE status")
+	case !session.PendingPresetRevision.Empty() && session.PendingPresetRevision.Number > session.PresetRevisionSequence:
+		return fmt.Errorf("pending preset revision exceeds the session revision sequence")
+	case !session.PendingPresetRevision.Empty() && session.PendingPresetRevision.BaseRevision != session.ActivePresetRevision.Number:
+		return fmt.Errorf("pending preset revision must bind to the active revision")
+	case !session.PendingPresetRevision.Empty() && session.PendingPresetRevision.Number <= session.ActivePresetRevision.Number:
+		return fmt.Errorf("pending preset revision must follow the active revision")
 	case session.ActiveWorkflowID == "" && (session.ActiveWorkflowType != "" || !session.ActiveWorkflowStartedAt.IsZero() || !session.ActiveWorkflowLeaseExpiresAt.IsZero()):
 		return fmt.Errorf("workflow lock fields require an active workflow ID")
 	case session.ActiveWorkflowID != "" && session.ActiveWorkflowType == "":

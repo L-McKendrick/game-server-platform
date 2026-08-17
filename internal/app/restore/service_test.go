@@ -30,6 +30,9 @@ func (fake fakeCompute) StartInstance(context.Context, string) error     { retur
 type fakeRunner struct{}
 
 func (fakeRunner) Start(context.Context, domain.Session) (string, error) { return "command-1", nil }
+func (fakeRunner) StartRollback(context.Context, domain.Session) (string, error) {
+	return "rollback-1", nil
+}
 func (fakeRunner) Observe(context.Context, string, string) (ports.BootstrapCommandStatus, error) {
 	return ports.BootstrapCommandStatus{Status: "Success"}, nil
 }
@@ -100,7 +103,7 @@ func TestService_RecreatesBootstrapsAndRestoresVerifiedArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, action := range []string{ActionVerifyArchive, ActionPrepare, ActionEnsure, ActionObserveInstance, ActionCheckManaged, ActionDispatchBootstrap, ActionObserveBootstrap, ActionDispatchRestore, ActionObserveRestore, ActionComplete} {
+	for _, action := range []string{ActionVerifyArchive, ActionPrepare, ActionEnsure, ActionObserveInstance, ActionCheckManaged, ActionDispatchRestore, ActionObserveRestore, ActionDispatchBootstrap, ActionObserveBootstrap, ActionComplete} {
 		request := TaskRequest{Action: action, SessionID: session.ID, WorkflowID: workflow.ID, CommandID: "command-1"}
 		if _, err := service.Handle(ctx, request); err != nil {
 			t.Fatalf("%s: %v", action, err)

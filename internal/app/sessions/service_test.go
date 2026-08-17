@@ -39,6 +39,60 @@ func (queue failingCommandQueue) Enqueue(context.Context, domain.CommandEnvelope
 	return queue.err
 }
 
+func TestRequestArtifactIngestAllowsOwnerToQueueRunningPresetRevision(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 21, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	queue := memory.NewArtifactQueue()
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now}, time.Hour, WithArtifactQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := seedPresetRevisionSession(t, repository, now, "owner-1")
+	request := domain.ArtifactIngestRequest{SchemaVersion: 1, SessionID: session.ID, Kind: domain.ArtifactPreset, AttachmentID: "attachment-2", Filename: "revision.html", ContentType: "text/html", SizeBytes: 100, SourceURL: "https://cdn.discordapp.com/attachments/1/2/revision.html", ActorID: "owner-1", GuildID: session.GuildID, ChannelID: session.ChannelID, CorrelationID: "correlation-mods", IdempotencyKey: "discord:mods", RequestedAt: now, Purpose: domain.ArtifactPurposePresetRevision, ExpectedActivePresetRevision: 1}
+	if err := service.RequestArtifactIngest(context.Background(), testActor("owner-1"), request); err != nil {
+		t.Fatal(err)
+	}
+	if requests := queue.Requests(); len(requests) != 1 || !requests[0].IsPresetRevision() {
+		t.Fatalf("queued requests = %#v", requests)
+	}
+	request.ActorID = "owner-2"
+	if err := service.RequestArtifactIngest(context.Background(), testActor("owner-2"), request); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("non-owner error = %v; want forbidden", err)
+	}
+	request.ActorID = "owner-1"
+	request.ChannelID = "channel-other"
+	if err := service.RequestArtifactIngest(context.Background(), testActor("owner-1"), request); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("cross-channel error = %v; want forbidden", err)
+	}
+	request.ChannelID = session.ChannelID
+	request.ExpectedActivePresetRevision = 2
+	if err := service.RequestArtifactIngest(context.Background(), testActor("owner-1"), request); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("stale base error = %v; want conflict", err)
+	}
+}
+
+func seedPresetRevisionSession(t *testing.T, repository *memory.SessionRepository, now time.Time, owner string) domain.Session {
+	t.Helper()
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-mods", Slug: "session-mods", DisplayName: "Session Mods", GameType: "arma3", OwnerDiscordUserID: owner, GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState = domain.StateRunning, domain.StateRunning, domain.StateRunning
+	session.PresetObjectKey = "sessions/session-mods/input/presets/v1.html"
+	session.PresetRevisionSequence = 1
+	session.ActivePresetRevision = domain.PresetRevision{Number: 1, PresetObjectKey: session.PresetObjectKey, Status: domain.PresetRevisionActive, StagedAt: now, ActivatedAt: now}
+	event := domain.NewSessionCreatedEvent("event-mods", "correlation-create-mods", testActor(owner), session, now)
+	record, err := domain.NewCompletedIdempotencyRecord("seed:mods", "hash-mods", session.ID, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, record); err != nil {
+		t.Fatal(err)
+	}
+	return session
+}
+
 func TestRequestSessionCardPinsRenderedRevision(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 15, 1, 0, 0, 0, time.UTC)
