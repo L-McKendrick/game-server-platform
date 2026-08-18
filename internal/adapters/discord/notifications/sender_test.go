@@ -103,6 +103,8 @@ func TestSenderCreatesCardWithEnforcedNonceAndEditsKnownMessage(t *testing.T) {
 	request := domain.NotificationRequest{
 		SchemaVersion: 1, NotificationID: "card-create-1", Kind: domain.NotificationSessionCard,
 		SessionID: "session-1", GuildID: "guild-1", ChannelID: "channel-1", Content: "card",
+		Embed: &domain.NotificationEmbed{Title: "ARMA 3 | Session", Description: "**ONLINE · HEALTHY**", Color: 0x23A55A,
+			Fields: []domain.NotificationEmbedField{{Name: "CURRENT MISSION", Value: "Liberation RX on Altis"}}},
 		CardRevision:  3,
 		CorrelationID: "correlation-1", RequestedAt: time.Now().UTC(),
 	}
@@ -127,6 +129,13 @@ func TestSenderCreatesCardWithEnforcedNonceAndEditsKnownMessage(t *testing.T) {
 	if _, exists := payloads[2]["nonce"]; exists {
 		t.Fatalf("edit payload contains nonce: %#v", payloads[2])
 	}
+	if payloads[0]["content"] != "" {
+		t.Fatalf("embed card retained duplicate plain content: %#v", payloads[0])
+	}
+	embeds, ok := payloads[0]["embeds"].([]any)
+	if !ok || len(embeds) != 1 || embeds[0].(map[string]any)["title"] != "ARMA 3 | Session" {
+		t.Fatalf("embed payload = %#v", payloads[0]["embeds"])
+	}
 	rows, ok := payloads[0]["components"].([]any)
 	if !ok || len(rows) != 1 {
 		t.Fatalf("components = %#v; want one action row", payloads[0]["components"])
@@ -136,10 +145,10 @@ func TestSenderCreatesCardWithEnforcedNonceAndEditsKnownMessage(t *testing.T) {
 		t.Fatalf("action row = %#v", rows[0])
 	}
 	buttons, ok := row["components"].([]any)
-	if !ok || len(buttons) != 4 {
-		t.Fatalf("buttons = %#v; want four concise controls", row["components"])
+	if !ok || len(buttons) != 2 {
+		t.Fatalf("buttons = %#v; want Show players and Refresh", row["components"])
 	}
-	wantActions := []string{componentid.ActionViewDetails, componentid.ActionRefresh, componentid.ActionDownload, componentid.ActionHelp}
+	wantActions := []string{componentid.ActionShowPlayers, componentid.ActionRefresh}
 	primary := 0
 	for index, raw := range buttons {
 		button, ok := raw.(map[string]any)
@@ -239,6 +248,44 @@ func TestSenderDoesNotCreateDuplicateCardForRateLimitOrPartialOutage(t *testing.
 				t.Fatalf("calls = %d; want no fallback create for status %d", calls, status)
 			}
 		})
+	}
+}
+
+func TestSenderFallsBackToPlainTextWhenDiscordRejectsEmbedPermission(t *testing.T) {
+	t.Parallel()
+	var payloads []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode payload: %v", err)
+		}
+		payloads = append(payloads, payload)
+		if len(payloads) == 1 {
+			writer.WriteHeader(http.StatusForbidden)
+			_, _ = writer.Write([]byte(`{"code":50013,"message":"Missing Permissions"}`))
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"id":"plain-card"}`))
+	}))
+	defer server.Close()
+	sender := New(&fakeSecrets{}, "secret")
+	sender.apiBase = server.URL
+	request := domain.NotificationRequest{
+		SchemaVersion: 1, NotificationID: "card-fallback", Kind: domain.NotificationSessionCard,
+		SessionID: "session-1", GuildID: "guild-1", ChannelID: "channel-1", Content: "plain fallback",
+		Embed:        &domain.NotificationEmbed{Title: "ARMA 3 | Session", Description: "ONLINE", Color: 0x23A55A},
+		CardRevision: 1, CorrelationID: "correlation-fallback", RequestedAt: time.Now().UTC(),
+	}
+	messageID, err := sender.SendCard(context.Background(), request, "")
+	if err != nil || messageID != "plain-card" {
+		t.Fatalf("fallback send = %q, %v", messageID, err)
+	}
+	if len(payloads) != 2 || payloads[0]["content"] != "" || payloads[1]["content"] != "plain fallback" {
+		t.Fatalf("fallback payloads = %#v", payloads)
+	}
+	if embeds, ok := payloads[1]["embeds"].([]any); !ok || len(embeds) != 0 {
+		t.Fatalf("fallback embeds = %#v", payloads[1]["embeds"])
 	}
 }
 

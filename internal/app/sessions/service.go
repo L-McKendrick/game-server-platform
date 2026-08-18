@@ -156,6 +156,7 @@ type CancelConfirmationCommand struct {
 type SessionCardCommand struct {
 	Actor                                                                 domain.Actor
 	SessionID, GuildID, ChannelID, CorrelationID, NotificationID, Content string
+	Embed                                                                 *domain.NotificationEmbed
 	CardRevision                                                          int64
 	AllowGuildMember, RequireCurrentRevision                              bool
 }
@@ -273,7 +274,7 @@ func (service *Service) RequestSessionCard(ctx context.Context, command SessionC
 	return service.notificationQueue.Enqueue(ctx, domain.NotificationRequest{
 		SchemaVersion: 1, NotificationID: strings.TrimSpace(command.NotificationID),
 		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
-		Content: command.Content, Kind: domain.NotificationSessionCard, CardRevision: command.CardRevision,
+		Content: command.Content, Embed: command.Embed, Kind: domain.NotificationSessionCard, CardRevision: command.CardRevision,
 		CorrelationID: strings.TrimSpace(command.CorrelationID), RequestedAt: service.clock.Now().UTC(),
 	})
 }

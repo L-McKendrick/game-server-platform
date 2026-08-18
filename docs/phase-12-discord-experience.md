@@ -79,14 +79,16 @@ operation is active returns the existing operation and progress.
 The card projection is authoritative and derived from persisted state. Show
 fields only when they are meaningful:
 
-- name, slug, and description;
-- game, vanilla/modded mode, and TeamSpeak selection;
+- game and name in the card title, plus the description;
+- text-labelled lifecycle/health status with a matching status-colored embed
+  sidebar;
 - lifecycle, health, current operation, visual milestone bar, current stage,
-  elapsed time, and last-update timestamp;
-- player count;
+  and Discord-native relative elapsed time when applicable;
+- live mission, map, and player count from the bounded game-server query path;
 - copy-friendly Arma DNS/IP and game port;
 - copy-friendly TeamSpeak DNS/IP and voice port when enabled;
-- active and pending mod revisions plus a link to the active modlist;
+- the active preset name linked to its downloadable modlist below the game
+  address, or `None` for vanilla;
 - actionable failure summary and resource/cost impact.
 
 Prefer DNS to public IPv4 and fall back to IPv4 when DNS is unavailable. Never
@@ -100,10 +102,11 @@ and text labels in addition to color or icons. Use the shared vocabulary:
 `Setting up`, `Ready`, `Starting`, `Running`, `Sleeping`, `Archived`,
 `Action required`, and `Terminated`.
 
-The card may expose `View details`, `Refresh`, `Download modlist`, and `Help`.
-Use concise outcome-oriented labels, at most one primary action per group, and
-reauthorize and revalidate session/card revision on every click. Lifecycle and
-destructive controls remain slash commands in this phase.
+The card exposes `Show players` and `Refresh`. `Show players` returns the
+bounded live roster ephemerally; the modlist link is part of the card, and help
+remains available through `/rb help`. Reauthorize and revalidate session/card
+revision on every click. Lifecycle and destructive controls remain slash
+commands in this phase.
 
 ### Status, list, and help
 

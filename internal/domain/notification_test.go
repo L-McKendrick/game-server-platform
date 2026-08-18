@@ -17,6 +17,10 @@ func TestNotificationRequestCardRevisionValidation(t *testing.T) {
 	card := base
 	card.Kind = NotificationSessionCard
 	card.CardRevision = 3
+	card.Embed = &NotificationEmbed{
+		Title: "ARMA 3 | Session", Description: "ONLINE · HEALTHY", Color: 0x23A55A,
+		Fields: []NotificationEmbedField{{Name: "CURRENT MISSION", Value: "Liberation RX on Altis"}},
+	}
 	if err := card.Validate(); err != nil {
 		t.Fatalf("valid card notification error = %v", err)
 	}
@@ -31,6 +35,16 @@ func TestNotificationRequestCardRevisionValidation(t *testing.T) {
 	nonCard.CardRevision = 1
 	if err := nonCard.Validate(); err == nil || !strings.Contains(err.Error(), "only valid") {
 		t.Fatalf("non-card revision error = %v", err)
+	}
+	nonCard = base
+	nonCard.Embed = card.Embed
+	if err := nonCard.Validate(); err == nil || !strings.Contains(err.Error(), "only valid") {
+		t.Fatalf("non-card embed error = %v", err)
+	}
+	invalidEmbed := card
+	invalidEmbed.Embed = &NotificationEmbed{Title: "", Color: 0x1000000}
+	if err := invalidEmbed.Validate(); err == nil || !strings.Contains(err.Error(), "embed") {
+		t.Fatalf("invalid embed error = %v", err)
 	}
 
 	card.CardRevision = -1

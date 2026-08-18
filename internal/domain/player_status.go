@@ -7,4 +7,6 @@ type PlayerStatus struct {
 	PlayerCount int
 	MaxPlayers  int
 	PlayerNames []string
+	MissionName string
+	MapName     string
 }

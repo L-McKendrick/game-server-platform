@@ -643,6 +643,10 @@ func TestHandlerExecutesAuthorizedRevisionBoundCardControls(t *testing.T) {
 	if !strings.Contains(details.Data.Content, "Slug: `card-controls`") || strings.Contains(details.Data.Content, session.ID) {
 		t.Fatalf("details = %q", details.Data.Content)
 	}
+	players := click(componentid.ActionShowPlayers, uint64(session.Version))
+	if !strings.Contains(players.Data.Content, "Players: Card Controls") || !strings.Contains(players.Data.Content, "unavailable") || strings.Contains(players.Data.Content, "Slug:") {
+		t.Fatalf("players = %q", players.Data.Content)
+	}
 	help := click(componentid.ActionHelp, uint64(session.Version))
 	if !strings.Contains(help.Data.Content, "Card controls are read-only") || !strings.Contains(help.Data.Content, "/rb setup") {
 		t.Fatalf("help = %q", help.Data.Content)

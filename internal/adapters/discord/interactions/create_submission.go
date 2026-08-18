@@ -71,10 +71,11 @@ func (handler *Handler) submitCreateModal(
 	if err != nil {
 		return "", fmt.Errorf("prepare creation artifacts: %w", err)
 	}
+	cardProjection := sessioncard.Project(session, sessioncard.Options{Now: handler.clock.Now().UTC()})
 	if err := handler.service.RequestSessionCard(ctx, appsession.SessionCardCommand{
 		Actor: actor, SessionID: session.ID, GuildID: payload.GuildID, ChannelID: payload.ChannelID,
 		CorrelationID: correlationID, NotificationID: keyPrefix + ":card",
-		Content: sessioncard.RenderPublic(sessioncard.Project(session, sessioncard.Options{Now: handler.clock.Now().UTC()})), CardRevision: session.Version,
+		Content: sessioncard.RenderPublic(cardProjection), Embed: sessioncard.RenderPublicEmbed(cardProjection), CardRevision: session.Version,
 	}); err != nil {
 		return "", fmt.Errorf("publish creation session card: %w", err)
 	}

@@ -91,7 +91,7 @@ func TestDeliverModlistPersistsStableMessageAndLinksCard(t *testing.T) {
 		t.Fatalf("modlist reference = %#v", reference)
 	}
 	if sender.calls != 1 || len(sender.cardRequests) != 1 ||
-		!strings.Contains(sender.cardRequests[0].Content, "https://discord.com/channels/guild-1/channel-1/modlist-message-1") {
+		!strings.Contains(sender.cardRequests[0].Content, "https://discord.com/channels/guild-1/channel-1/modlist-message-1") || sender.cardRequests[0].Embed == nil {
 		t.Fatalf("card deliveries = %#v; want one linked card", sender.cardRequests)
 	}
 

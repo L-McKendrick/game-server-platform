@@ -102,6 +102,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.4.5** [x] Publish a separate stable channel message containing the sanitized Arma-compatible active modlist attachment and link it from the card; recreate it from S3 if deleted.
       - **12.4.6** [x] Add authorized `View details`, bounded `Refresh`, `Download modlist`, and `Help` controls with state/revision revalidation and concise Discord button labels.
       - **12.4.7** [x] Automatically repair missing cards and add an explicit admin repair action, with tests for deletion, duplicate delivery, stale controls, rate limits, and partial Discord outages.
+      - **12.4.8** [x] Replace the public card's plain message with the approved status-colored embed, expose live mission/map and players through the bounded A2S path, group the linked active modlist with connection details, replace `View details` with `Show players`, and remove card-only help/download controls while retaining plain-text degradation and `/rb help`.
     - **12.5** [x] Replace opaque failures and inline booleans with actionable errors and durable confirmations.
       - **12.5.1** [x] Persist a sanitized failure projection containing stable internal code, failed stage, retry disposition, resource/cost impact, bounded detail, timestamp, and support reference.
       - **12.5.2** [x] Maintain a user-facing error catalog that renders what happened, likely reason, platform action, exact user action, and billing implications without leaking raw AWS/SSM data or IDs.

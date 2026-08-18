@@ -126,6 +126,7 @@ func (handler *handler) deliverCard(ctx context.Context, request domain.Notifica
 		if sessioncard.IsActiveModlistReference(session, modlist) {
 			messageURL := sessioncard.DiscordMessageURL(session.GuildID, modlist.ChannelID, modlist.MessageID)
 			request.Content = sessioncard.WithModlistLink(request.Content, messageURL)
+			request.Embed = sessioncard.WithModlistLinkEmbed(request.Embed, session.DisplayName, messageURL)
 			if err := request.Validate(); err != nil {
 				return fmt.Errorf("validate enriched session card notification: %w", err)
 			}
@@ -225,11 +226,12 @@ func (handler *handler) deliverModlist(ctx context.Context, request domain.Notif
 		}
 	}
 	messageURL := sessioncard.DiscordMessageURL(session.GuildID, request.ChannelID, messageID)
+	projection := sessioncard.Project(session, sessioncard.Options{Now: request.RequestedAt, ModlistURL: messageURL})
 	card := domain.NotificationRequest{
 		SchemaVersion: 1, NotificationID: "card-modlist-" + attachment.SHA256[:12] + "-" + messageID,
 		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
-		Content: sessioncard.RenderPublic(sessioncard.Project(session, sessioncard.Options{Now: request.RequestedAt, ModlistURL: messageURL})),
-		Kind:    domain.NotificationSessionCard, CardRevision: session.Version,
+		Content: sessioncard.RenderPublic(projection), Embed: sessioncard.RenderPublicEmbed(projection),
+		Kind: domain.NotificationSessionCard, CardRevision: session.Version,
 		CorrelationID: request.CorrelationID, RequestedAt: request.RequestedAt,
 	}
 	return handler.deliverCard(ctx, card)

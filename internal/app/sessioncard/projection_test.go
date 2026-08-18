@@ -48,7 +48,7 @@ func TestProjectMapsEveryAuthoritativeCardSectionWithoutInternalIDs(t *testing.T
 		ID: "internal-workflow-id", SessionID: session.ID, Type: domain.BootstrapWorkflowType,
 		Status: domain.WorkflowRunning, CurrentStage: "HealthVerification", StartedAt: started,
 	}
-	players := &domain.PlayerStatus{PlayerCount: 2, MaxPlayers: 32, PlayerNames: []string{"Alice", "Bob"}}
+	players := &domain.PlayerStatus{PlayerCount: 2, MaxPlayers: 32, PlayerNames: []string{"Alice", "Bob"}, MissionName: "Liberation RX", MapName: "Altis"}
 
 	projection := Project(session, Options{
 		Now: now, Workflow: workflow, Players: players, PlayersObservedAt: playersObserved,
@@ -69,7 +69,7 @@ func TestProjectMapsEveryAuthoritativeCardSectionWithoutInternalIDs(t *testing.T
 		t.Fatalf("progress projection = %#v", projection.Progress)
 	}
 	if !projection.Players.Available || projection.Players.Count != 2 || projection.Players.Capacity != 32 ||
-		len(projection.Players.Names) != 2 || projection.Players.ObservedAt != playersObserved {
+		len(projection.Players.Names) != 2 || projection.Players.Mission != "Liberation RX" || projection.Players.Map != "Altis" || projection.Players.ObservedAt != playersObserved {
 		t.Fatalf("players projection = %#v", projection.Players)
 	}
 	players.PlayerNames[0] = "mutated"
@@ -98,7 +98,7 @@ func TestProjectMapsEveryAuthoritativeCardSectionWithoutInternalIDs(t *testing.T
 	}
 	if strings.Contains(public, "Alice") || !strings.Contains(detailed, "Player names: Alice, Bob") ||
 		!strings.Contains(public, "**Progress:** `■■■■■■□□` — Step 7/8") || !strings.Contains(public, "**Current stage:** Verifying health") ||
-		!strings.Contains(public, "Elapsed:** 17m 12s") || !strings.Contains(public, "Active mod revision:** `2` — active <t:") ||
+		!strings.Contains(public, "Started:** <t:") || strings.Contains(public, "**Guidance:**") || !strings.Contains(public, "Active mod revision:** `2` — active <t:") ||
 		!strings.Contains(public, "Pending mod revision:** `3` — Applying <t:") || !strings.Contains(detailed, "Players observed <t:") {
 		t.Fatalf("public=%q detailed=%q", public, detailed)
 	}
@@ -169,9 +169,10 @@ func TestProgressConditionAndGuidanceCoverOperationalStates(t *testing.T) {
 			if projection.Progress.Condition != test.want || projection.Progress.Guidance == "" {
 				t.Fatalf("condition = %#v; want %q with guidance", projection.Progress, test.want)
 			}
-			content := RenderPublic(projection)
-			if !strings.Contains(content, "**Progress state:** "+test.want) || !strings.Contains(content, "**Guidance:**") {
-				t.Fatalf("content = %q", content)
+			public := RenderPublic(projection)
+			detailed := RenderDetailed(projection)
+			if !strings.Contains(public, "**Progress state:** "+test.want) || strings.Contains(public, "**Guidance:**") || !strings.Contains(detailed, "**Guidance:**") {
+				t.Fatalf("public = %q detailed = %q", public, detailed)
 			}
 		})
 	}
@@ -194,7 +195,7 @@ func TestTerminalProgressElapsedTimeDoesNotKeepGrowing(t *testing.T) {
 		},
 	}
 	projection := Project(session, Options{Now: finished.Add(24 * time.Hour)})
-	if projection.Elapsed != 12*time.Minute || !strings.Contains(RenderPublic(projection), "**Elapsed:** 12m 0s") {
+	if projection.Elapsed != 12*time.Minute || !strings.Contains(RenderPublic(projection), "**Started:** <t:") {
 		t.Fatalf("terminal elapsed = %s content=%q", projection.Elapsed, RenderPublic(projection))
 	}
 }

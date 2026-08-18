@@ -37,6 +37,7 @@ type Projection struct {
 	CurrentOperation   string
 	Stage              string
 	OperationStartedAt time.Time
+	StatusSince        time.Time
 	Elapsed            time.Duration
 	Progress           ProgressProjection
 
@@ -63,6 +64,8 @@ type PlayerProjection struct {
 	Count      int
 	Capacity   int
 	Names      []string
+	Mission    string
+	Map        string
 	ObservedAt time.Time
 }
 
@@ -161,6 +164,11 @@ func Project(session domain.Session, options Options) Projection {
 		projection.Stage = label
 	}
 	projection.Progress = progressProjection(session, options.Workflow, now)
+	if session.LifecycleState == domain.StateRunning || session.LifecycleState == domain.StateIdle {
+		if session.Progress.State == domain.ProgressCompletedState && !session.Progress.LastProgressAt.IsZero() {
+			projection.StatusSince = session.Progress.LastProgressAt.UTC()
+		}
+	}
 
 	if projection.Progress.Visible && !session.Progress.StartedAt.IsZero() {
 		projection.OperationStartedAt = session.Progress.StartedAt.UTC()
@@ -202,6 +210,8 @@ func Project(session domain.Session, options Options) Projection {
 			Count:      max(0, options.Players.PlayerCount),
 			Capacity:   max(0, options.Players.MaxPlayers),
 			Names:      append([]string(nil), options.Players.PlayerNames...),
+			Mission:    options.Players.MissionName,
+			Map:        options.Players.MapName,
 			ObservedAt: options.PlayersObservedAt.UTC(),
 		}
 	}

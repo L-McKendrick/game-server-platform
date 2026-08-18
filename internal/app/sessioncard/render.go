@@ -24,6 +24,26 @@ func RenderDetailed(card Projection) string {
 	return render(card, true)
 }
 
+// RenderPlayers renders the bounded ephemeral response behind Show players.
+func RenderPlayers(card Projection) string {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "## Players: %s", safe(card.Name))
+	if !card.Players.Available {
+		builder.WriteString("\nLive player information is unavailable while the server is offline or not responding.")
+		return bound(builder.String())
+	}
+	if card.Players.Capacity > 0 {
+		fmt.Fprintf(&builder, "\n`%d/%d` online", card.Players.Count, card.Players.Capacity)
+	} else {
+		fmt.Fprintf(&builder, "\n`%d` online", card.Players.Count)
+	}
+	fmt.Fprintf(&builder, "\n%s", boundedNames(card.Players.Names))
+	if !card.Players.ObservedAt.IsZero() {
+		fmt.Fprintf(&builder, "\nObserved %s.", timestamp(card.Players.ObservedAt))
+	}
+	return bound(builder.String())
+}
+
 // RenderSetup remains as a compatibility wrapper for in-flight Step 12.3
 // callers. New callers should explicitly Project and RenderPublic.
 func RenderSetup(session domain.Session, now time.Time) string {
@@ -55,7 +75,7 @@ func render(card Projection, detailed bool) string {
 		if card.Progress.Condition != "" {
 			fmt.Fprintf(&builder, "\n**Progress state:** %s", safe(card.Progress.Condition))
 		}
-		if card.Progress.Guidance != "" {
+		if detailed && card.Progress.Guidance != "" {
 			fmt.Fprintf(&builder, "\n**Guidance:** %s", safe(card.Progress.Guidance))
 		}
 	} else {
@@ -65,7 +85,11 @@ func render(card Projection, detailed bool) string {
 		fmt.Fprintf(&builder, "\n**Current operation:** %s", safe(card.CurrentOperation))
 	}
 	if card.Progress.Visible || card.Elapsed > 0 {
-		fmt.Fprintf(&builder, "\n**Elapsed:** %s", formatDuration(card.Elapsed))
+		if detailed || card.OperationStartedAt.IsZero() {
+			fmt.Fprintf(&builder, "\n**Elapsed:** %s", formatDuration(card.Elapsed))
+		} else {
+			fmt.Fprintf(&builder, "\n**Started:** %s", timestamp(card.OperationStartedAt))
+		}
 	}
 	if card.Endpoints.Game.Available {
 		fmt.Fprintf(&builder, "\n\n%s", connectionLine("Arma", card.Endpoints.Game))
@@ -106,12 +130,8 @@ func render(card Projection, detailed bool) string {
 		builder.WriteString("\n\nLive players (A2S): unavailable")
 	}
 
-	if !card.Freshness.SessionUpdatedAt.IsZero() {
-		if detailed {
-			fmt.Fprintf(&builder, "\n\nUpdated: %s", detailedTimestamp(card.Freshness.SessionUpdatedAt))
-		} else {
-			fmt.Fprintf(&builder, "\n\nLast updated %s.", timestamp(card.Freshness.SessionUpdatedAt))
-		}
+	if detailed && !card.Freshness.SessionUpdatedAt.IsZero() {
+		fmt.Fprintf(&builder, "\n\nUpdated: %s", detailedTimestamp(card.Freshness.SessionUpdatedAt))
 	}
 	if detailed && !card.Freshness.InfrastructureObservedAt.IsZero() {
 		fmt.Fprintf(&builder, "\nInfrastructure observed %s.", timestamp(card.Freshness.InfrastructureObservedAt))

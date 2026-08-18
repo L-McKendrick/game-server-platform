@@ -36,10 +36,11 @@ func EnqueueProgress(ctx context.Context, queue ports.NotificationQueue, session
 	if renderedAt.IsZero() {
 		renderedAt = now
 	}
+	projection := Project(session, Options{Now: renderedAt, Workflow: &workflow})
 	request := domain.NotificationRequest{
 		SchemaVersion: 1, NotificationID: notificationID, Kind: domain.NotificationSessionCard,
 		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
-		Content: RenderPublic(Project(session, Options{Now: renderedAt, Workflow: &workflow})), CardRevision: session.Version,
+		Content: RenderPublic(projection), Embed: RenderPublicEmbed(projection), CardRevision: session.Version,
 		CorrelationID: workflow.CorrelationID, RequestedAt: now.UTC(),
 	}
 	return queue.Enqueue(ctx, request)

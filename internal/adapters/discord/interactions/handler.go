@@ -731,11 +731,11 @@ func (handler *Handler) repairSessionCard(
 	if err != nil {
 		return "", err
 	}
-	content := sessioncard.RenderPublic(sessioncard.Project(session, sessioncard.Options{Now: session.UpdatedAt.UTC()}))
+	cardProjection := sessioncard.Project(session, sessioncard.Options{Now: session.UpdatedAt.UTC()})
 	if err := handler.service.RequestSessionCard(ctx, appsession.SessionCardCommand{
 		Actor: actor, SessionID: session.ID, GuildID: payload.GuildID, ChannelID: session.ChannelID,
 		CorrelationID: correlationID, NotificationID: "card-admin-repair-" + strings.TrimSpace(payload.ID),
-		Content: content, CardRevision: session.Version, AllowGuildMember: true, RequireCurrentRevision: true,
+		Content: sessioncard.RenderPublic(cardProjection), Embed: sessioncard.RenderPublicEmbed(cardProjection), CardRevision: session.Version, AllowGuildMember: true, RequireCurrentRevision: true,
 	}); err != nil {
 		return "", fmt.Errorf("request session card repair: %w", err)
 	}

@@ -47,6 +47,8 @@ func (handler *Handler) handleSessionCardControl(ctx context.Context, payload in
 	}
 
 	switch reference.Action {
+	case componentid.ActionShowPlayers:
+		return handler.renderSessionPlayers(ctx, session), nil
 	case componentid.ActionViewDetails:
 		return handler.renderDetailedSession(ctx, session), nil
 	case componentid.ActionRefresh:
@@ -62,7 +64,7 @@ func (handler *Handler) handleSessionCardControl(ctx context.Context, payload in
 
 func supportedCardControl(action string) bool {
 	switch action {
-	case componentid.ActionViewDetails, componentid.ActionRefresh, componentid.ActionDownload, componentid.ActionHelp:
+	case componentid.ActionShowPlayers, componentid.ActionViewDetails, componentid.ActionRefresh, componentid.ActionDownload, componentid.ActionHelp:
 		return true
 	default:
 		return false
@@ -81,10 +83,11 @@ func (handler *Handler) refreshSessionCard(ctx context.Context, payload interact
 		return "", fmt.Errorf("generate card refresh correlation ID: %w", err)
 	}
 	notificationID := fmt.Sprintf("card-refresh-%s-%d-%d", session.ID, session.Version, window.Unix())
+	projection := sessioncard.Project(session, options)
 	err = handler.service.RequestSessionCard(ctx, appsession.SessionCardCommand{
 		Actor: actor, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
 		CorrelationID: correlationID, NotificationID: notificationID,
-		Content: sessioncard.RenderPublic(sessioncard.Project(session, options)), CardRevision: session.Version,
+		Content: sessioncard.RenderPublic(projection), Embed: sessioncard.RenderPublicEmbed(projection), CardRevision: session.Version,
 		AllowGuildMember: true, RequireCurrentRevision: true,
 	})
 	if err != nil && !errors.Is(err, domain.ErrIdempotencyConflict) {
@@ -118,6 +121,14 @@ func (handler *Handler) activeModlistLink(ctx context.Context, actor domain.Acto
 
 func (handler *Handler) renderDetailedSession(ctx context.Context, session domain.Session) string {
 	return renderSessionStatusAt(session, handler.querySessionPlayers(ctx, session, detailedPlayerQueryTimeout), handler.clock.Now().UTC())
+}
+
+func (handler *Handler) renderSessionPlayers(ctx context.Context, session domain.Session) string {
+	now := handler.clock.Now().UTC()
+	players := handler.querySessionPlayers(ctx, session, detailedPlayerQueryTimeout)
+	return sessioncard.RenderPlayers(sessioncard.Project(session, sessioncard.Options{
+		Now: now, Players: players, PlayersObservedAt: now,
+	}))
 }
 
 func (handler *Handler) querySessionPlayers(ctx context.Context, session domain.Session, timeout time.Duration) *domain.PlayerStatus {

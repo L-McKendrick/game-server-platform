@@ -95,9 +95,12 @@ func (sender *Sender) SendCard(ctx context.Context, request domain.NotificationR
 	if err != nil {
 		return "", err
 	}
-	payload := map[string]any{
-		"content":          request.Content,
-		"allowed_mentions": map[string]any{"parse": []string{}},
+	payload := map[string]any{"allowed_mentions": map[string]any{"parse": []string{}}}
+	if request.Embed != nil {
+		payload["content"] = ""
+		payload["embeds"] = []domain.NotificationEmbed{*request.Embed}
+	} else {
+		payload["content"] = request.Content
 	}
 	components, err := sessionCardControls(request)
 	if err != nil {
@@ -108,7 +111,7 @@ func (sender *Sender) SendCard(ctx context.Context, request domain.NotificationR
 	}
 	messageID = strings.TrimSpace(messageID)
 	if messageID != "" {
-		result, status, sendErr := sender.sendCardRequest(ctx, token, request, payload, http.MethodPatch, messageID)
+		result, status, sendErr := sender.sendCardAttempt(ctx, token, request, payload, http.MethodPatch, messageID)
 		if sendErr == nil {
 			return result, nil
 		}
@@ -116,8 +119,29 @@ func (sender *Sender) SendCard(ctx context.Context, request domain.NotificationR
 			return "", sendErr
 		}
 	}
-	result, _, err := sender.sendCardRequest(ctx, token, request, payload, http.MethodPost, "")
+	result, _, err := sender.sendCardAttempt(ctx, token, request, payload, http.MethodPost, "")
 	return result, err
+}
+
+func (sender *Sender) sendCardAttempt(
+	ctx context.Context,
+	token string,
+	request domain.NotificationRequest,
+	payload map[string]any,
+	method string,
+	messageID string,
+) (string, int, error) {
+	result, status, err := sender.sendCardRequest(ctx, token, request, payload, method, messageID)
+	if err == nil || request.Embed == nil || status != http.StatusForbidden {
+		return result, status, err
+	}
+	fallback := make(map[string]any, len(payload)+1)
+	for key, value := range payload {
+		fallback[key] = value
+	}
+	fallback["content"] = request.Content
+	fallback["embeds"] = []domain.NotificationEmbed{}
+	return sender.sendCardRequest(ctx, token, request, fallback, method, messageID)
 }
 
 func (sender *Sender) sendCardRequest(
@@ -188,10 +212,8 @@ func sessionCardControls(request domain.NotificationRequest) ([]map[string]any, 
 		style  int
 	}
 	controls := []control{
-		{componentid.ActionViewDetails, "View details", 2},
-		{componentid.ActionRefresh, "Refresh", 1},
-		{componentid.ActionDownload, "Download modlist", 2},
-		{componentid.ActionHelp, "Help", 2},
+		{componentid.ActionShowPlayers, "Show players", 1},
+		{componentid.ActionRefresh, "Refresh", 2},
 	}
 	buttons := make([]map[string]any, 0, len(controls))
 	for _, control := range controls {

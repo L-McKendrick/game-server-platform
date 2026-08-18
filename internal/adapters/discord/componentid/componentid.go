@@ -14,6 +14,7 @@ const (
 	MaximumCustomIDLength = 100
 
 	ActionViewDetails = "view-details"
+	ActionShowPlayers = "show-players"
 	ActionRefresh     = "refresh"
 	ActionDownload    = "download-modlist"
 	ActionHelp        = "help"

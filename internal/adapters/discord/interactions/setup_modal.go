@@ -85,10 +85,11 @@ func (handler *Handler) submitSetupModal(ctx context.Context, payload interactio
 		}
 		return "", fmt.Errorf("update setup draft: %w", err)
 	}
+	cardProjection := sessioncard.Project(session, sessioncard.Options{Now: handler.clock.Now().UTC()})
 	if err := handler.service.RequestSessionCard(ctx, appsession.SessionCardCommand{
 		Actor: actor, SessionID: session.ID, GuildID: payload.GuildID, ChannelID: session.ChannelID,
 		CorrelationID: correlationID, NotificationID: keyPrefix + ":card",
-		Content: sessioncard.RenderPublic(sessioncard.Project(session, sessioncard.Options{Now: handler.clock.Now().UTC()})), CardRevision: session.Version,
+		Content: sessioncard.RenderPublic(cardProjection), Embed: sessioncard.RenderPublicEmbed(cardProjection), CardRevision: session.Version,
 	}); err != nil {
 		return "", fmt.Errorf("refresh setup session card: %w", err)
 	}

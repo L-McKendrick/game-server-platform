@@ -16,13 +16,16 @@ func TestRenderSetupShowsDurableArtifactOutcomesWithoutMentions(t *testing.T) {
 		PresetArtifactStatus:  domain.ArtifactRejected, PresetArtifactIssue: "local mod path",
 	}
 	content := RenderSetup(session, time.Unix(1_800_000_000, 0))
-	for _, expected := range []string{"Setting up", "Mission:** Accepted", "Preset:** Rejected", "Replacement is required", "<t:1800000000:R>"} {
+	for _, expected := range []string{"Setting up", "Mission:** Accepted", "Preset:** Rejected", "Replacement is required"} {
 		if !strings.Contains(content, expected) {
 			t.Fatalf("content = %q; missing %q", content, expected)
 		}
 	}
 	if strings.Contains(content, "@everyone") {
 		t.Fatalf("content contains an active mention: %q", content)
+	}
+	if strings.Contains(content, "Last updated") || strings.Contains(content, "**Guidance:**") {
+		t.Fatalf("public fallback contains removed card metadata: %q", content)
 	}
 }
 

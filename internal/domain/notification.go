@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type NotificationKind string
@@ -89,6 +90,51 @@ type NotificationAttachment struct {
 	Revision    int64  `json:"revision"`
 }
 
+// NotificationEmbed is the bounded transport-neutral rich-card projection used
+// by adapters that support embeds. Content remains the mandatory plain-text
+// fallback for destinations without rich-card capability.
+type NotificationEmbed struct {
+	Title       string                   `json:"title"`
+	Description string                   `json:"description"`
+	Color       int                      `json:"color"`
+	Fields      []NotificationEmbedField `json:"fields,omitempty"`
+}
+
+type NotificationEmbedField struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Inline bool   `json:"inline,omitempty"`
+}
+
+func (embed NotificationEmbed) Validate() error {
+	if utf8.RuneCountInString(embed.Title) < 1 || utf8.RuneCountInString(embed.Title) > 256 {
+		return fmt.Errorf("notification embed title must contain 1 to 256 characters")
+	}
+	if utf8.RuneCountInString(embed.Description) > 4096 {
+		return fmt.Errorf("notification embed description exceeds 4096 characters")
+	}
+	if embed.Color < 0 || embed.Color > 0xFFFFFF {
+		return fmt.Errorf("notification embed color is invalid")
+	}
+	if len(embed.Fields) > 25 {
+		return fmt.Errorf("notification embed exceeds 25 fields")
+	}
+	total := utf8.RuneCountInString(embed.Title) + utf8.RuneCountInString(embed.Description)
+	for _, field := range embed.Fields {
+		if utf8.RuneCountInString(field.Name) < 1 || utf8.RuneCountInString(field.Name) > 256 {
+			return fmt.Errorf("notification embed field name must contain 1 to 256 characters")
+		}
+		if utf8.RuneCountInString(field.Value) < 1 || utf8.RuneCountInString(field.Value) > 1024 {
+			return fmt.Errorf("notification embed field value must contain 1 to 1024 characters")
+		}
+		total += utf8.RuneCountInString(field.Name) + utf8.RuneCountInString(field.Value)
+	}
+	if total > 6000 {
+		return fmt.Errorf("notification embed exceeds 6000 characters")
+	}
+	return nil
+}
+
 func (attachment NotificationAttachment) Validate() error {
 	switch {
 	case !validManagedObjectKey(attachment.ObjectKey):
@@ -117,6 +163,7 @@ type NotificationRequest struct {
 	Content        string                  `json:"content"`
 	Kind           NotificationKind        `json:"kind,omitempty"`
 	CardRevision   int64                   `json:"card_revision,omitempty"`
+	Embed          *NotificationEmbed      `json:"embed,omitempty"`
 	Attachment     *NotificationAttachment `json:"attachment,omitempty"`
 	CorrelationID  string                  `json:"correlation_id"`
 	RequestedAt    time.Time               `json:"requested_at"`
@@ -142,6 +189,8 @@ func (request NotificationRequest) Validate() error {
 		return fmt.Errorf("card revision cannot be negative")
 	case request.Kind != NotificationSessionCard && request.CardRevision != 0:
 		return fmt.Errorf("card revision is only valid for session-card notifications")
+	case request.Kind != NotificationSessionCard && request.Embed != nil:
+		return fmt.Errorf("notification embed is only valid for session-card notifications")
 	case request.Kind == NotificationSessionModlist && request.Attachment == nil:
 		return fmt.Errorf("session-modlist notification attachment is required")
 	case request.Kind != NotificationSessionModlist && request.Attachment != nil:
@@ -151,6 +200,11 @@ func (request NotificationRequest) Validate() error {
 	case request.RequestedAt.IsZero():
 		return fmt.Errorf("notification request timestamp is required")
 	default:
+		if request.Embed != nil {
+			if err := request.Embed.Validate(); err != nil {
+				return err
+			}
+		}
 		if request.Attachment != nil {
 			return request.Attachment.Validate()
 		}

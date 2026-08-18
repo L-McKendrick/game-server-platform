@@ -318,10 +318,11 @@ func (service *Service) notify(ctx context.Context, session domain.Session, requ
 		})
 	}
 	notificationID := "card-artifact-" + strings.ToLower(string(request.Kind)) + "-" + request.AttachmentID
+	projection := sessioncard.Project(session, sessioncard.Options{Now: now})
 	return service.notifications.Enqueue(ctx, domain.NotificationRequest{
 		SchemaVersion: 1, NotificationID: notificationID, SessionID: request.SessionID,
 		GuildID: request.GuildID, ChannelID: request.ChannelID,
-		Content: sessioncard.RenderPublic(sessioncard.Project(session, sessioncard.Options{Now: now})), Kind: domain.NotificationSessionCard,
+		Content: sessioncard.RenderPublic(projection), Embed: sessioncard.RenderPublicEmbed(projection), Kind: domain.NotificationSessionCard,
 		CardRevision:  session.Version,
 		CorrelationID: request.CorrelationID, RequestedAt: now,
 	})
