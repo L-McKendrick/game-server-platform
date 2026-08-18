@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
+	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
 type managedCompute struct {
@@ -64,5 +66,46 @@ func TestServiceCheckManaged(t *testing.T) {
 				t.Fatalf("unexpected task identity: %+v", result)
 			}
 		})
+	}
+}
+
+type presetRunner struct {
+	starts int
+	status ports.BootstrapCommandStatus
+}
+
+func (runner *presetRunner) Start(context.Context, domain.Session) (string, error) {
+	runner.starts++
+	return "mods-command-1", nil
+}
+
+func (runner *presetRunner) StartRollback(context.Context, domain.Session) (string, error) {
+	runner.starts++
+	return "rollback-command-1", nil
+}
+
+func (runner *presetRunner) Observe(context.Context, string, string) (ports.BootstrapCommandStatus, error) {
+	return runner.status, nil
+}
+
+func TestWakeDispatchesApplyingPresetBeforeHealth(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 17, 23, 0, 0, 0, time.UTC)
+	runner := &presetRunner{status: ports.BootstrapCommandStatus{Status: "Success"}}
+	service := &Service{presetRunner: runner}
+	session := domain.Session{ID: "session-1", ActiveWorkflowID: "wake-1", LifecycleState: domain.StateWaking, Infrastructure: domain.Infrastructure{InstanceID: "i-1"}, PendingPresetRevision: domain.PresetRevision{Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/v2.html", Status: domain.PresetRevisionApplying, StagedAt: now, ApplyWorkflowID: "wake-1", ApplyStartedAt: now}}
+	workflow := domain.Workflow{ID: "wake-1", Type: domain.WakeWorkflowType}
+	dispatched, err := service.dispatchMods(context.Background(), session, workflow)
+	if err != nil || dispatched.CommandID != "mods-command-1" || runner.starts != 1 || dispatched.Done || dispatched.Succeeded {
+		t.Fatalf("dispatch = %#v starts=%d err=%v", dispatched, runner.starts, err)
+	}
+	observed, err := service.observeMods(context.Background(), session, workflow, dispatched.CommandID)
+	if err != nil || !observed.Done || !observed.Succeeded {
+		t.Fatalf("observe = %#v err=%v", observed, err)
+	}
+	session.PendingPresetRevision = domain.PresetRevision{}
+	skipped, err := service.dispatchMods(context.Background(), session, workflow)
+	if err != nil || !skipped.Done || !skipped.Succeeded || runner.starts != 1 {
+		t.Fatalf("no-pending dispatch = %#v starts=%d err=%v", skipped, runner.starts, err)
 	}
 }

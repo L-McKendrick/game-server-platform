@@ -5,15 +5,23 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+
+const (
+	MaximumSessionDescriptionRunes = 64
+	MaximumGeneratedSlugLength     = 64
+)
 
 // Session represents the persistent platform identity of a game server.
 type Session struct {
 	ID                    string
 	Slug                  string
 	DisplayName           string
+	Description           string
 	GameType              string
 	OwnerDiscordUserID    string
 	GuildID               string
@@ -25,10 +33,21 @@ type Session struct {
 	Vanilla               bool
 	ConfigurationRevision int64
 	MissionObjectKey      string
-	PresetObjectKey       string
-	Infrastructure        Infrastructure
-	Archive               ArchiveMetadata
-	ArchiveSourceState    LifecycleState
+	// PresetObjectKey remains a write-through compatibility projection of the
+	// active preset revision for older workers and persisted rows.
+	PresetObjectKey        string
+	PresetRevisionSequence int64
+	ActivePresetRevision   PresetRevision
+	PendingPresetRevision  PresetRevision
+	MissionArtifactStatus  ArtifactStatus
+	PresetArtifactStatus   ArtifactStatus
+	MissionArtifactIssue   string
+	PresetArtifactIssue    string
+	Infrastructure         Infrastructure
+	Archive                ArchiveMetadata
+	ArchiveSourceState     LifecycleState
+	Progress               SessionProgress
+	Failure                FailureRecord
 
 	ActiveWorkflowID             string
 	ActiveWorkflowType           string
@@ -60,8 +79,20 @@ func (session *Session) AttachArtifact(kind ArtifactKind, objectKey string, now 
 	switch kind {
 	case ArtifactMission:
 		session.MissionObjectKey = objectKey
+		session.MissionArtifactStatus = ArtifactAccepted
+		session.MissionArtifactIssue = ""
 	case ArtifactPreset:
+		if session.ActivePresetRevision.Empty() {
+			number := session.EffectivePresetRevisionSequence() + 1
+			session.ActivePresetRevision = PresetRevision{
+				Number: number, PresetObjectKey: objectKey, Status: PresetRevisionActive,
+				StagedAt: now.UTC(), ActivatedAt: now.UTC(),
+			}
+			session.PresetRevisionSequence = number
+		}
 		session.PresetObjectKey = objectKey
+		session.PresetArtifactStatus = ArtifactAccepted
+		session.PresetArtifactIssue = ""
 	default:
 		return fmt.Errorf("unsupported artifact kind %q", kind)
 	}
@@ -70,6 +101,73 @@ func (session *Session) AttachArtifact(kind ArtifactKind, objectKey string, now 
 	session.UpdatedAt = now.UTC()
 	session.markReadyWhenComplete()
 	return session.Validate()
+}
+
+// RejectArtifact records the latest validation outcome while leaving the
+// draft editable and any independently accepted artifact intact.
+func (session *Session) RejectArtifact(kind ArtifactKind, issue string, now time.Time) error {
+	if session.LifecycleState != StateDraft {
+		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
+	}
+	issue = sanitizeFailureDetail(issue)
+	if utf8.RuneCountInString(issue) > 160 {
+		issue = string([]rune(issue)[:160])
+	}
+	if issue == "" {
+		issue = "The uploaded file did not pass validation."
+	}
+	switch kind {
+	case ArtifactMission:
+		session.MissionArtifactStatus, session.MissionArtifactIssue = ArtifactRejected, issue
+	case ArtifactPreset:
+		session.PresetArtifactStatus, session.PresetArtifactIssue = ArtifactRejected, issue
+	default:
+		return fmt.Errorf("unsupported artifact kind %q", kind)
+	}
+	if err := session.RecordMutation(now); err != nil {
+		return err
+	}
+	session.markReadyWhenComplete()
+	return session.Validate()
+}
+
+// PrepareCreationArtifacts records which uploads must finish before readiness.
+func (session *Session) PrepareCreationArtifacts(hasPreset bool, now time.Time) error {
+	if session.LifecycleState != StateDraft {
+		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
+	}
+	session.MissionArtifactStatus, session.MissionArtifactIssue = ArtifactPending, ""
+	if hasPreset {
+		session.PresetArtifactStatus, session.PresetArtifactIssue = ArtifactPending, ""
+	} else {
+		session.PresetArtifactStatus, session.PresetArtifactIssue = "", ""
+	}
+	return session.RecordMutation(now)
+}
+
+// PrepareReplacementArtifacts marks only absent or rejected draft inputs as
+// pending. Accepted and already-pending artifacts cannot be replaced through
+// the setup recovery flow.
+func (session *Session) PrepareReplacementArtifacts(mission, preset bool, now time.Time) error {
+	if session.LifecycleState != StateDraft {
+		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
+	}
+	if !mission && !preset {
+		return fmt.Errorf("at least one replacement artifact is required")
+	}
+	if mission {
+		if session.MissionObjectKey != "" || (session.MissionArtifactStatus != "" && session.MissionArtifactStatus != ArtifactRejected) {
+			return fmt.Errorf("%w: mission is not missing or rejected", ErrConflict)
+		}
+		session.MissionArtifactStatus, session.MissionArtifactIssue = ArtifactPending, ""
+	}
+	if preset {
+		if session.PresetObjectKey != "" || (session.PresetArtifactStatus != "" && session.PresetArtifactStatus != ArtifactRejected) {
+			return fmt.Errorf("%w: preset is not missing or rejected", ErrConflict)
+		}
+		session.PresetArtifactStatus, session.PresetArtifactIssue = ArtifactPending, ""
+	}
+	return session.RecordMutation(now)
 }
 
 // AcquireWorkflowLock applies an in-memory workflow lease. Durable adapters
@@ -91,6 +189,9 @@ func (session *Session) AcquireWorkflowLock(workflowID string, workflowType stri
 	session.ActiveWorkflowType = workflowType
 	session.ActiveWorkflowStartedAt = now
 	session.ActiveWorkflowLeaseExpiresAt = now.Add(lease)
+	if err := session.beginProgress(workflowID, workflowType, now); err != nil {
+		return err
+	}
 	session.Version++
 	session.UpdatedAt = now
 	return session.Validate()
@@ -100,6 +201,9 @@ func (session *Session) AcquireWorkflowLock(workflowID string, workflowType stri
 func (session *Session) ReleaseWorkflowLock(workflowID string, now time.Time) error {
 	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) {
 		return fmt.Errorf("%w: workflow %s does not hold the session lock", ErrConflict, workflowID)
+	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
+		return err
 	}
 	session.ActiveWorkflowID = ""
 	session.ActiveWorkflowType = ""
@@ -132,6 +236,7 @@ type NewSessionInput struct {
 	ID                 string
 	Slug               string
 	DisplayName        string
+	Description        string
 	GameType           string
 	OwnerDiscordUserID string
 	GuildID            string
@@ -141,11 +246,16 @@ type NewSessionInput struct {
 // NewSession creates a valid draft session.
 func NewSession(input NewSessionInput, now time.Time) (Session, error) {
 	now = now.UTC()
+	description, err := NormalizeSessionDescription(input.Description)
+	if err != nil {
+		return Session{}, err
+	}
 
 	session := Session{
 		ID:                    strings.TrimSpace(input.ID),
 		Slug:                  strings.TrimSpace(input.Slug),
 		DisplayName:           strings.TrimSpace(input.DisplayName),
+		Description:           description,
 		GameType:              strings.ToLower(strings.TrimSpace(input.GameType)),
 		OwnerDiscordUserID:    strings.TrimSpace(input.OwnerDiscordUserID),
 		GuildID:               strings.TrimSpace(input.GuildID),
@@ -172,6 +282,38 @@ func NewSession(input NewSessionInput, now time.Time) (Session, error) {
 	return session, nil
 }
 
+// GenerateSessionSlug derives a stable, URL-style lowercase slug from a
+// display name. Existing explicit slugs continue to pass through NewSession
+// unchanged; this helper is only for new creation flows that omit one.
+func GenerateSessionSlug(displayName string) string {
+	var builder strings.Builder
+	separatorPending := false
+	for _, character := range strings.ToLower(displayName) {
+		isASCIIAlpha := character >= 'a' && character <= 'z'
+		isASCIIDigit := character >= '0' && character <= '9'
+		if isASCIIAlpha || isASCIIDigit {
+			if separatorPending && builder.Len() > 0 {
+				builder.WriteByte('-')
+			}
+			separatorPending = false
+			builder.WriteRune(character)
+			continue
+		}
+		if builder.Len() > 0 {
+			separatorPending = true
+		}
+	}
+
+	slug := strings.Trim(builder.String(), "-")
+	if slug == "" {
+		return "session"
+	}
+	if len(slug) > MaximumGeneratedSlugLength {
+		slug = strings.TrimRight(slug[:MaximumGeneratedSlugLength], "-")
+	}
+	return slug
+}
+
 // Validate verifies the session's domain invariants.
 func (session Session) Validate() error {
 	if err := session.Infrastructure.Validate(); err != nil {
@@ -181,6 +323,18 @@ func (session Session) Validate() error {
 		if err := session.Archive.Validate(); err != nil {
 			return err
 		}
+	}
+	if err := session.Progress.Validate(); err != nil {
+		return err
+	}
+	if err := session.Failure.Validate(); err != nil {
+		return err
+	}
+	if err := session.ActivePresetRevision.Validate(); err != nil {
+		return fmt.Errorf("active preset revision: %w", err)
+	}
+	if err := session.PendingPresetRevision.Validate(); err != nil {
+		return fmt.Errorf("pending preset revision: %w", err)
 	}
 	switch {
 	case session.ID == "":
@@ -194,6 +348,10 @@ func (session Session) Validate() error {
 		)
 	case session.DisplayName == "":
 		return fmt.Errorf("session display name is required")
+	case utf8.RuneCountInString(session.Description) > MaximumSessionDescriptionRunes:
+		return fmt.Errorf("session description must contain at most %d characters", MaximumSessionDescriptionRunes)
+	case session.Description != normalizeSessionDescription(session.Description):
+		return fmt.Errorf("session description must be normalized")
 	case session.GameType == "":
 		return fmt.Errorf("game type is required")
 	case session.OwnerDiscordUserID == "":
@@ -202,6 +360,14 @@ func (session Session) Validate() error {
 		return fmt.Errorf("Discord guild ID is required")
 	case session.ChannelID == "":
 		return fmt.Errorf("Discord channel ID is required")
+	case !session.MissionArtifactStatus.Valid():
+		return fmt.Errorf("invalid mission artifact status %q", session.MissionArtifactStatus)
+	case !session.PresetArtifactStatus.Valid():
+		return fmt.Errorf("invalid preset artifact status %q", session.PresetArtifactStatus)
+	case session.MissionArtifactStatus != ArtifactRejected && session.MissionArtifactIssue != "":
+		return fmt.Errorf("mission artifact issue requires rejected status")
+	case session.PresetArtifactStatus != ArtifactRejected && session.PresetArtifactIssue != "":
+		return fmt.Errorf("preset artifact issue requires rejected status")
 	case strings.TrimSpace(session.GameProfileID) == "":
 		return fmt.Errorf("game profile ID is required")
 	case session.SleepAfterSeconds < 600:
@@ -210,6 +376,22 @@ func (session Session) Validate() error {
 		return fmt.Errorf("archive policy must be at least 86400 seconds")
 	case session.ConfigurationRevision < 0:
 		return fmt.Errorf("configuration revision cannot be negative")
+	case session.PresetRevisionSequence < 0:
+		return fmt.Errorf("preset revision sequence cannot be negative")
+	case !session.ActivePresetRevision.Empty() && session.ActivePresetRevision.Status != PresetRevisionActive:
+		return fmt.Errorf("active preset revision must have ACTIVE status")
+	case !session.ActivePresetRevision.Empty() && session.PresetObjectKey != session.ActivePresetRevision.PresetObjectKey:
+		return fmt.Errorf("legacy preset object key must mirror the active preset revision")
+	case !session.ActivePresetRevision.Empty() && session.ActivePresetRevision.Number > session.PresetRevisionSequence:
+		return fmt.Errorf("active preset revision exceeds the session revision sequence")
+	case !session.PendingPresetRevision.Empty() && session.PendingPresetRevision.Status == PresetRevisionActive:
+		return fmt.Errorf("pending preset revision cannot have ACTIVE status")
+	case !session.PendingPresetRevision.Empty() && session.PendingPresetRevision.Number > session.PresetRevisionSequence:
+		return fmt.Errorf("pending preset revision exceeds the session revision sequence")
+	case !session.PendingPresetRevision.Empty() && session.PendingPresetRevision.BaseRevision != session.ActivePresetRevision.Number:
+		return fmt.Errorf("pending preset revision must bind to the active revision")
+	case !session.PendingPresetRevision.Empty() && session.PendingPresetRevision.Number <= session.ActivePresetRevision.Number:
+		return fmt.Errorf("pending preset revision must follow the active revision")
 	case session.ActiveWorkflowID == "" && (session.ActiveWorkflowType != "" || !session.ActiveWorkflowStartedAt.IsZero() || !session.ActiveWorkflowLeaseExpiresAt.IsZero()):
 		return fmt.Errorf("workflow lock fields require an active workflow ID")
 	case session.ActiveWorkflowID != "" && session.ActiveWorkflowType == "":
@@ -218,6 +400,12 @@ func (session Session) Validate() error {
 		return fmt.Errorf("active workflow start timestamp is required")
 	case session.ActiveWorkflowID != "" && !session.ActiveWorkflowLeaseExpiresAt.After(session.ActiveWorkflowStartedAt):
 		return fmt.Errorf("active workflow lease must expire after it starts")
+	case session.ActiveWorkflowID != "" && !session.Progress.Empty() && session.Progress.WorkflowID != session.ActiveWorkflowID:
+		return fmt.Errorf("active workflow and progress workflow IDs must match")
+	case session.ActiveWorkflowID != "" && !session.Progress.Empty() && session.Progress.WorkflowType != session.ActiveWorkflowType:
+		return fmt.Errorf("active workflow and progress workflow types must match")
+	case session.ActiveWorkflowID != "" && !session.Progress.Empty() && !session.Progress.StartedAt.Equal(session.ActiveWorkflowStartedAt):
+		return fmt.Errorf("active workflow and progress start timestamps must match")
 	case session.ArchiveSourceState != "" && (session.ActiveWorkflowType != ArchiveWorkflowType || session.LifecycleState != StateArchiving):
 		return fmt.Errorf("archive source state requires an active archive workflow")
 	case !session.DesiredState.Valid():
@@ -240,9 +428,89 @@ func (session Session) Validate() error {
 		return fmt.Errorf("updated timestamp is required")
 	case session.UpdatedAt.Before(session.CreatedAt):
 		return fmt.Errorf("updated timestamp cannot precede created timestamp")
+	case !session.Progress.Empty() && session.Progress.StartedAt.Before(session.CreatedAt):
+		return fmt.Errorf("progress start timestamp cannot precede session creation")
+	case !session.Progress.Empty() && session.Progress.LastProgressAt.Before(session.CreatedAt):
+		return fmt.Errorf("progress timestamp cannot precede session creation")
+	case !session.Progress.Empty() && session.Progress.LastProgressAt.After(session.UpdatedAt):
+		return fmt.Errorf("progress timestamp cannot follow session update")
+	case !session.Failure.Empty() && session.Failure.FailedAt.After(session.UpdatedAt):
+		return fmt.Errorf("failure timestamp cannot follow session update")
 	default:
 		return nil
 	}
+}
+
+// SetFailure replaces the currently visible sanitized failure without
+// advancing session version metadata. Workflow lifecycle methods own the
+// surrounding atomic mutation and event.
+func (session *Session) SetFailure(failure FailureRecord) error {
+	if failure.Empty() {
+		return fmt.Errorf("failure record is required")
+	}
+	if err := failure.Validate(); err != nil {
+		return err
+	}
+	session.Failure = failure
+	return nil
+}
+
+// ClearFailure removes only the active presentation projection. Immutable
+// workflow and session events retain prior failure audit history.
+func (session *Session) ClearFailure() {
+	session.Failure = FailureRecord{}
+}
+
+// NormalizeSessionDescription makes an optional user description safe for
+// durable single-line storage while preserving ordinary Unicode text.
+func NormalizeSessionDescription(value string) (string, error) {
+	normalized := normalizeSessionDescription(value)
+	if utf8.RuneCountInString(normalized) > MaximumSessionDescriptionRunes {
+		return "", fmt.Errorf("session description must contain at most %d characters", MaximumSessionDescriptionRunes)
+	}
+	return normalized, nil
+}
+
+func normalizeSessionDescription(value string) string {
+	var builder strings.Builder
+	spacePending := false
+	for _, character := range value {
+		switch {
+		case unicode.IsSpace(character):
+			if builder.Len() > 0 {
+				spacePending = true
+			}
+		case unicode.IsControl(character), unicode.Is(unicode.Cf, character):
+			continue
+		default:
+			if spacePending {
+				builder.WriteByte(' ')
+				spacePending = false
+			}
+			builder.WriteRune(character)
+		}
+	}
+	return builder.String()
+}
+
+// SetDescription replaces the optional normalized description and records a
+// metadata mutation. Deleted session tombstones are immutable.
+func (session *Session) SetDescription(description string, now time.Time) (string, error) {
+	if session.LifecycleState == StateDeleted {
+		return "", fmt.Errorf("%w: a deleted session description cannot be changed", ErrInvalidTransition)
+	}
+	normalized, err := NormalizeSessionDescription(description)
+	if err != nil {
+		return "", err
+	}
+	previous := session.Description
+	updated := *session
+	updated.Description = normalized
+	if err := updated.RecordMutation(now); err != nil {
+		return "", err
+	}
+	*session = updated
+	return previous, nil
 }
 
 // BeginMonitoring records a short, read-only Systems Manager probe. Monitoring
@@ -285,6 +553,58 @@ func (session *Session) Configure(configuration SessionConfiguration, now time.T
 			ErrInvalidTransition,
 		)
 	}
+	if err := session.applyConfiguration(configuration); err != nil {
+		return err
+	}
+	session.Version++
+	session.UpdatedAt = now.UTC()
+	session.markReadyWhenComplete()
+
+	return session.Validate()
+}
+
+// ConfigureDraftSetup atomically changes draft identity and configuration so
+// persistence adapters observe one optimistic-concurrency version increment.
+func (session *Session) ConfigureDraftSetup(displayName, description string, configuration SessionConfiguration, replaceMission, replacePreset bool, now time.Time) error {
+	if session.LifecycleState != StateDraft {
+		return fmt.Errorf("%w: setup is only editable while a session is DRAFT", ErrInvalidTransition)
+	}
+	displayName = normalizeSessionDescription(displayName)
+	if count := utf8.RuneCountInString(displayName); count < 1 || count > 100 {
+		return fmt.Errorf("display name must contain 1 to 100 characters")
+	}
+	normalizedDescription, err := NormalizeSessionDescription(description)
+	if err != nil {
+		return err
+	}
+	if replaceMission {
+		if session.MissionObjectKey != "" || (session.MissionArtifactStatus != "" && session.MissionArtifactStatus != ArtifactRejected) {
+			return fmt.Errorf("%w: mission is not missing or rejected", ErrConflict)
+		}
+	}
+	if replacePreset {
+		if session.PresetObjectKey != "" || (session.PresetArtifactStatus != "" && session.PresetArtifactStatus != ArtifactRejected) {
+			return fmt.Errorf("%w: preset is not missing or rejected", ErrConflict)
+		}
+	}
+	if err := session.applyConfiguration(configuration); err != nil {
+		return err
+	}
+	if replaceMission {
+		session.MissionArtifactStatus, session.MissionArtifactIssue = ArtifactPending, ""
+	}
+	if replacePreset {
+		session.PresetArtifactStatus, session.PresetArtifactIssue = ArtifactPending, ""
+	}
+	session.DisplayName = displayName
+	session.Description = normalizedDescription
+	session.Version++
+	session.UpdatedAt = now.UTC()
+	session.markReadyWhenComplete()
+	return session.Validate()
+}
+
+func (session *Session) applyConfiguration(configuration SessionConfiguration) error {
 
 	configuration.GameProfileID = strings.ToLower(strings.TrimSpace(configuration.GameProfileID))
 	if configuration.GameProfileID != "arma3-default" {
@@ -303,20 +623,22 @@ func (session *Session) Configure(configuration SessionConfiguration, now time.T
 	session.TeamSpeakEnabled = configuration.TeamSpeakEnabled
 	session.Vanilla = configuration.Vanilla
 	session.ConfigurationRevision++
-	session.Version++
-	session.UpdatedAt = now.UTC()
-	session.markReadyWhenComplete()
-
-	return session.Validate()
+	return nil
 }
 
 func (session *Session) markReadyWhenComplete() {
 	if session.LifecycleState == StateDraft && session.ConfigurationRevision > 0 &&
-		session.MissionObjectKey != "" && (session.Vanilla || session.PresetObjectKey != "") {
+		artifactAccepted(session.MissionArtifactStatus, session.MissionObjectKey) &&
+		((session.Vanilla && session.PresetArtifactStatus != ArtifactPending) ||
+			artifactAccepted(session.PresetArtifactStatus, session.PresetObjectKey)) {
 		session.DesiredState = StateNew
 		session.ObservedState = StateNew
 		session.LifecycleState = StateNew
 	}
+}
+
+func artifactAccepted(status ArtifactStatus, objectKey string) bool {
+	return status == ArtifactAccepted || (status == "" && strings.TrimSpace(objectKey) != "")
 }
 
 // Transition performs a synchronous lifecycle transition.

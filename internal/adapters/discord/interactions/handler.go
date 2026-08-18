@@ -10,22 +10,19 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
-var discordSlugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
-
 const (
 	defaultMaxRequestBytes = int64(64 * 1024)
 	defaultSignatureMaxAge = 5 * time.Minute
-	maximumResponseLength  = 1900
 )
 
 // SessionService is the application boundary used by Discord commands.
@@ -45,6 +42,17 @@ type SessionService interface {
 		query appsession.ListQuery,
 	) ([]domain.Session, error)
 
+	Select(
+		ctx context.Context,
+		query appsession.SelectQuery,
+	) ([]appsession.Selection, error)
+
+	Resolve(
+		ctx context.Context,
+		query appsession.ResolveQuery,
+	) (appsession.Selection, error)
+	ResolveCardControl(ctx context.Context, query appsession.CardControlQuery) (domain.Session, error)
+
 	Configure(
 		ctx context.Context,
 		command appsession.ConfigureCommand,
@@ -55,9 +63,16 @@ type SessionService interface {
 		actor domain.Actor,
 		request domain.ArtifactIngestRequest,
 	) error
+	RequestSessionCard(ctx context.Context, command appsession.SessionCardCommand) error
+	GetActiveModlist(ctx context.Context, query appsession.ActiveModlistQuery) (appsession.ActiveModlist, error)
+	PrepareCreationArtifacts(ctx context.Context, command appsession.PrepareCreationArtifactsCommand) (domain.Session, error)
+	UpdateDraftSetup(ctx context.Context, command appsession.UpdateDraftSetupCommand) (domain.Session, error)
 
 	RequestStart(ctx context.Context, command appsession.StartCommand) error
 	RequestLifecycle(ctx context.Context, command appsession.LifecycleCommand) error
+	RequestConfirmation(ctx context.Context, command appsession.ConfirmationRequest) (domain.Confirmation, error)
+	Confirm(ctx context.Context, command appsession.ConfirmCommand) (domain.Confirmation, error)
+	CancelConfirmation(ctx context.Context, command appsession.CancelConfirmationCommand) (domain.Confirmation, error)
 }
 
 type AccessService interface {
@@ -228,7 +243,10 @@ func (handler *Handler) ServeHTTP(
 		return
 	}
 
-	if payload.Type != interactionTypeApplicationCommand && payload.Type != interactionTypeMessageComponent {
+	if payload.Type != interactionTypeApplicationCommand &&
+		payload.Type != interactionTypeMessageComponent &&
+		payload.Type != interactionTypeApplicationCommandAutocomplete &&
+		payload.Type != interactionTypeModalSubmit {
 		writeInteractionMessage(writer, "This interaction type is not supported yet.")
 		return
 	}
@@ -244,7 +262,11 @@ func (handler *Handler) ServeHTTP(
 			"rejected Discord interaction from unapproved guild",
 			slog.String("guild_id", payload.GuildID),
 		)
-		writeInteractionMessage(writer, "This app is not enabled in this Discord server.")
+		if payload.Type == interactionTypeApplicationCommandAutocomplete {
+			writeAutocompleteChoices(writer, nil)
+		} else {
+			writeInteractionMessage(writer, "This app is not enabled in this Discord server.")
+		}
 		return
 	}
 	actorID := payload.actorID()
@@ -252,10 +274,24 @@ func (handler *Handler) ServeHTTP(
 	if payload.Member != nil {
 		roles = payload.Member.Roles
 	}
-	if payload.isAdminAccessCommand() || payload.isAdminRoleSelection() {
+	if payload.isAdminCommand() || payload.isAdminRoleSelection() {
 		if !payload.memberCanManageGuild() {
-			handler.logger.Warn("rejected Discord access configuration without Manage Server permission", slog.String("guild_id", payload.GuildID))
-			writeInteractionMessage(writer, "Only members with Administrator or Manage Server permission can configure bot access.")
+			handler.logger.Warn("rejected Discord administration without Manage Server permission", slog.String("guild_id", payload.GuildID))
+			if payload.Type == interactionTypeApplicationCommandAutocomplete {
+				writeAutocompleteChoices(writer, nil)
+			} else {
+				writeInteractionMessage(writer, "Only members with Administrator or Manage Server permission can use `/admin` actions.")
+			}
+			return
+		}
+		if payload.Type == interactionTypeApplicationCommandAutocomplete {
+			choices, err := handler.sessionAutocompleteChoices(request.Context(), payload, domain.Actor{
+				Type: domain.ActorTypeDiscordUser, ID: actorID,
+			})
+			if err != nil {
+				handler.logger.Warn("Discord admin autocomplete failed", slog.String("guild_id", payload.GuildID), slog.Any("error", err))
+			}
+			writeAutocompleteChoices(writer, choices)
 			return
 		}
 		correlationID, err := handler.ids.New(handler.clock.Now().UTC())
@@ -264,21 +300,91 @@ func (handler *Handler) ServeHTTP(
 			writeInteractionMessage(writer, "The command could not be processed. Please try again.")
 			return
 		}
-		if err := handler.handleAdminAccess(request.Context(), writer, payload, actorID); err != nil {
-			handler.logger.Error("Discord access configuration failed", slog.String("correlation_id", correlationID), slog.Any("error", err))
+		if err := handler.handleAdmin(request.Context(), writer, payload, actorID, correlationID); err != nil {
+			handler.logger.Error("Discord administration failed", slog.String("correlation_id", correlationID), slog.Any("error", err))
 			writeInteractionMessage(writer, handler.commandErrorMessage(err, correlationID))
 			return
 		}
-		handler.logger.Info("Discord access configuration completed", slog.String("correlation_id", correlationID), slog.String("guild_id", payload.GuildID))
-		return
-	}
-	if payload.Type == interactionTypeMessageComponent {
-		writeInteractionMessage(writer, "This component is not supported or has expired.")
+		handler.logger.Info("Discord administration completed", slog.String("correlation_id", correlationID), slog.String("guild_id", payload.GuildID))
 		return
 	}
 	if err := handler.access.Authorize(request.Context(), payload.GuildID, payload.ChannelID, actorID, roles); err != nil && !payload.memberCanManageGuild() {
 		handler.logger.Warn("rejected unauthorized Discord interaction", slog.String("guild_id", payload.GuildID), slog.String("channel_id", payload.ChannelID))
-		writeInteractionMessage(writer, "You are not authorized to use this app in this channel.")
+		if payload.Type == interactionTypeApplicationCommandAutocomplete {
+			writeAutocompleteChoices(writer, nil)
+		} else {
+			writeInteractionMessage(writer, "You are not authorized to use this app in this channel.")
+		}
+		return
+	}
+	if payload.Type == interactionTypeMessageComponent {
+		content, err := handler.handleSessionCardControl(request.Context(), payload, domain.Actor{
+			Type: domain.ActorTypeDiscordUser, ID: actorID,
+		})
+		if err != nil {
+			handler.logger.Warn("Discord session card control failed", slog.String("guild_id", payload.GuildID), slog.Any("error", err))
+			content = componentErrorMessage(err)
+		}
+		writeInteractionMessage(writer, content)
+		return
+	}
+	if payload.Type == interactionTypeApplicationCommandAutocomplete {
+		choices, err := handler.sessionAutocompleteChoices(request.Context(), payload, domain.Actor{
+			Type: domain.ActorTypeDiscordUser,
+			ID:   actorID,
+		})
+		if err != nil {
+			handler.logger.Warn(
+				"Discord session autocomplete failed",
+				slog.String("guild_id", payload.GuildID),
+				slog.Any("error", err),
+			)
+		}
+		writeAutocompleteChoices(writer, choices)
+		return
+	}
+	if payload.Type == interactionTypeModalSubmit && (payload.Data == nil || (payload.Data.CustomID != createModalCustomID && !isSetupModalCustomID(payload.Data.CustomID) && !isModsModalCustomID(payload.Data.CustomID))) {
+		writeInteractionMessage(writer, "This modal is not supported or has expired.")
+		return
+	}
+	if payload.isRBCreateCommand() {
+		if message := payload.channelCapabilities().setupBlockedMessage(false); message != "" {
+			writeInteractionMessage(writer, message)
+			return
+		}
+		writeCreateModal(writer)
+		return
+	}
+	if payload.isRBSetupCommand() {
+		if message := payload.channelCapabilities().setupBlockedMessage(true); message != "" {
+			writeInteractionMessage(writer, message)
+			return
+		}
+		correlationID, err := handler.ids.New(handler.clock.Now().UTC())
+		if err != nil {
+			writeInteractionMessage(writer, "The command could not be processed. Please try again.")
+			return
+		}
+		err = handler.openSetupModal(request.Context(), writer, payload, domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID})
+		if err != nil {
+			writeInteractionMessage(writer, handler.commandErrorMessage(err, correlationID))
+		}
+		return
+	}
+	if payload.isRBModsCommand() {
+		if message := payload.channelCapabilities().setupBlockedMessage(true); message != "" {
+			writeInteractionMessage(writer, message)
+			return
+		}
+		correlationID, err := handler.ids.New(handler.clock.Now().UTC())
+		if err != nil {
+			writeInteractionMessage(writer, "The command could not be processed. Please try again.")
+			return
+		}
+		err = handler.openModsModal(request.Context(), writer, payload, domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID})
+		if err != nil {
+			writeInteractionMessage(writer, handler.commandErrorMessage(err, correlationID))
+		}
 		return
 	}
 
@@ -286,6 +392,40 @@ func (handler *Handler) ServeHTTP(
 	if err != nil {
 		handler.logger.Error("failed to generate Discord correlation ID", slog.Any("error", err))
 		writeInteractionMessage(writer, "The command could not be processed. Please try again.")
+		return
+	}
+	if payload.Type == interactionTypeModalSubmit {
+		edit := isSetupModalCustomID(payload.Data.CustomID) || isModsModalCustomID(payload.Data.CustomID)
+		if message := payload.channelCapabilities().setupBlockedMessage(edit); message != "" {
+			writeInteractionMessage(writer, message)
+			return
+		}
+		actor := domain.Actor{
+			Type: domain.ActorTypeDiscordUser,
+			ID:   actorID,
+		}
+		var content string
+		if isModsModalCustomID(payload.Data.CustomID) {
+			content, err = handler.submitModsModal(request.Context(), payload, actor, correlationID)
+		} else if isSetupModalCustomID(payload.Data.CustomID) {
+			content, err = handler.submitSetupModal(request.Context(), payload, actor, correlationID)
+		} else {
+			content, err = handler.submitCreateModal(request.Context(), payload, actor, correlationID)
+		}
+		if err != nil {
+			content = handler.commandErrorMessage(err, correlationID)
+			handler.logger.Error(
+				"Discord creation modal failed",
+				slog.String("correlation_id", correlationID),
+				slog.Any("error", err),
+			)
+		} else {
+			handler.logger.Info(
+				"Discord creation modal completed",
+				slog.String("correlation_id", correlationID),
+			)
+		}
+		writeInteractionMessage(writer, content)
 		return
 	}
 
@@ -320,11 +460,11 @@ func (handler *Handler) routeCommand(
 ) (string, string, error) {
 	actorID := payload.actorID()
 	if actorID == "" {
-		return "", "session", newUserError("Discord user information is missing from the command.")
+		return "", "rb", newUserError("Discord user information is missing from the command.")
 	}
 
 	if strings.TrimSpace(payload.ChannelID) == "" {
-		return "", "session", newUserError("Discord channel information is missing from the command.")
+		return "", "rb", newUserError("Discord channel information is missing from the command.")
 	}
 
 	actor := domain.Actor{
@@ -333,22 +473,13 @@ func (handler *Handler) routeCommand(
 	}
 	subcommand, err := payload.subcommand()
 	if err != nil {
-		return "", "session", newUserError("Use one of the supported `/session` subcommands.")
+		return "", "rb", newUserError("Use one of the supported `/rb` subcommands.")
 	}
 
-	commandName := "session " + subcommand.Name
+	commandName := "rb " + subcommand.Name
 	switch subcommand.Name {
-	case "create":
-		content, err := handler.createSession(
-			ctx,
-			payload,
-			subcommand.Options,
-			actor,
-			correlationID,
-		)
-		return content, commandName, err
 	case "list":
-		content, err := handler.listSessions(ctx, actor, payload.GuildID)
+		content, err := handler.listSessions(ctx, subcommand.Options, actor, payload.GuildID)
 		return content, commandName, err
 	case "status":
 		content, err := handler.sessionStatus(
@@ -373,31 +504,102 @@ func (handler *Handler) routeCommand(
 	case "sleep", "wake", "restore":
 		content, err := handler.requestLifecycle(ctx, payload, subcommand.Options, actor, correlationID, subcommand.Name)
 		return content, commandName, err
-	case "archive":
-		confirmed, err := booleanOption(subcommand.Options, "confirm", false)
-		if err != nil || !confirmed {
-			return "", commandName, newUserError("Archiving stops the game services and removes the current EC2 instance and EBS volumes after the portable backup is verified. A later restore creates billable replacement resources. Set `confirm` to true to continue.")
-		}
-		content, err := handler.requestLifecycle(ctx, payload, subcommand.Options, actor, correlationID, subcommand.Name)
+	case "archive", "terminate":
+		content, err := handler.createConfirmation(ctx, payload, subcommand.Options, actor, subcommand.Name)
 		return content, commandName, err
-	case "terminate":
-		confirmed, err := booleanOption(subcommand.Options, "confirm", false)
-		if err != nil || !confirmed {
-			return "", commandName, newUserError("Termination is immediate and irreversible. It permanently deletes the session's tagged EC2/EBS infrastructure and every stored artifact/archive version without creating a backup. Set `confirm` to true to continue.")
-		}
-		content, err := handler.requestLifecycle(ctx, payload, subcommand.Options, actor, correlationID, subcommand.Name)
+	case "confirm":
+		content, err := handler.confirmAction(ctx, payload, subcommand.Options, actor, correlationID)
+		return content, commandName, err
+	case "cancel-confirmation":
+		content, err := handler.cancelConfirmation(ctx, payload, subcommand.Options, actor)
 		return content, commandName, err
 	default:
 		return "", commandName, newUserError(
-			"That `/session` subcommand is not supported yet.",
+			"That `/rb` subcommand is not supported yet.",
 		)
 	}
 }
 
-func (handler *Handler) requestLifecycle(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, correlationID, action string) (string, error) {
-	sessionID, err := stringOption(options, "session-id", true)
+func (handler *Handler) createConfirmation(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, action string) (string, error) {
+	sessionID, err := handler.resolveSessionID(ctx, options, actor, payload.GuildID, false, false)
 	if err != nil {
-		return "", newUserError("A session ID is required.")
+		return "", err
+	}
+	confirmationAction := domain.ConfirmationArchive
+	if action == "terminate" {
+		confirmationAction = domain.ConfirmationTerminate
+	}
+	confirmation, err := handler.service.RequestConfirmation(ctx, appsession.ConfirmationRequest{
+		Actor: actor, SessionID: sessionID, GuildID: payload.GuildID, RequestID: payload.ID, Action: confirmationAction,
+	})
+	if err != nil {
+		return "", err
+	}
+	deadline := fmt.Sprintf("<t:%d:R>", confirmation.ExpiresAt.UTC().Unix())
+	if action == "archive" {
+		return fmt.Sprintf("**Archive confirmation required**\nNo destructive work has been queued. Archiving stops game services and removes EC2/EBS only after the portable backup is verified. A later restore creates billable replacement resources.\n\nRun `/rb confirm code:%s` by %s, or `/rb cancel-confirmation code:%s`.", confirmation.Code, deadline, confirmation.Code), nil
+	}
+	return fmt.Sprintf("**Termination confirmation required**\nNo destructive work has been queued. Termination permanently deletes tagged EC2/EBS resources and all stored session artifacts without creating a backup. This is irreversible.\n\nRun `/rb confirm code:%s` by %s, or `/rb cancel-confirmation code:%s`.", confirmation.Code, deadline, confirmation.Code), nil
+}
+
+func (handler *Handler) confirmAction(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, correlationID string) (string, error) {
+	code, err := stringOption(options, "code", true)
+	if err != nil {
+		return "", newUserError("Enter the confirmation code exactly as shown.")
+	}
+	confirmation, err := handler.service.Confirm(ctx, appsession.ConfirmCommand{
+		Actor: actor, GuildID: payload.GuildID, ChannelID: payload.ChannelID, Code: code,
+		CommandID: payload.ID, CorrelationID: correlationID, IdempotencyKey: "discord:" + payload.ID,
+	})
+	if err != nil {
+		return "", confirmationUserError(err)
+	}
+	action := "Archive"
+	if confirmation.Action == domain.ConfirmationTerminate {
+		action = "Termination"
+	}
+	return fmt.Sprintf("**%s request accepted**\nThe confirmation was consumed and cannot be replayed. Use `/rb status` to follow progress.", action), nil
+}
+
+func (handler *Handler) cancelConfirmation(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor) (string, error) {
+	code, err := stringOption(options, "code", true)
+	if err != nil {
+		return "", newUserError("Enter the confirmation code exactly as shown.")
+	}
+	confirmation, err := handler.service.CancelConfirmation(ctx, appsession.CancelConfirmationCommand{Actor: actor, GuildID: payload.GuildID, Code: code})
+	if err != nil {
+		return "", confirmationUserError(err)
+	}
+	return fmt.Sprintf("**%s confirmation cancelled**\nNo destructive work was queued. The code cannot be used again.", strings.ToUpper(string(confirmation.Action[:1]))+strings.ToLower(string(confirmation.Action[1:]))), nil
+}
+
+func confirmationUserError(err error) error {
+	switch {
+	case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrConfirmationMismatch):
+		return newUserError("That confirmation code was not found or is not valid for you in this server.")
+	case errors.Is(err, domain.ErrConfirmationExpired):
+		return newUserError("That confirmation expired. Run the archive or terminate command again to create a new ten-minute code.")
+	case errors.Is(err, domain.ErrConfirmationConsumed):
+		return newUserError("That confirmation was already used and cannot be replayed.")
+	case errors.Is(err, domain.ErrConfirmationCancelled):
+		return newUserError("That confirmation was cancelled and cannot be used.")
+	case errors.Is(err, domain.ErrConfirmationStateDrift):
+		return newUserError("The session changed after this confirmation was created. Run `/rb status`, then request a new confirmation if the action is still appropriate.")
+	case errors.Is(err, domain.ErrConfirmationDispatchUncertain):
+		return newUserError("The confirmation was consumed, but queue delivery could not be confirmed. No automatic retry is scheduled. Check `/rb status`; if no operation appears, run archive or terminate again for a new code. Resources may remain and incur cost.")
+	default:
+		return err
+	}
+}
+
+func (handler *Handler) requestLifecycle(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, correlationID, action string) (string, error) {
+	sessionID, err := handler.resolveSessionID(
+		ctx, options, actor, payload.GuildID,
+		payload.memberCanManageGuild() && (action == "sleep" || action == "wake"),
+		false,
+	)
+	if err != nil {
+		return "", err
 	}
 	roles := []string{}
 	if payload.Member != nil {
@@ -416,7 +618,7 @@ func (handler *Handler) requestLifecycle(ctx context.Context, payload interactio
 	if err := handler.service.RequestLifecycle(ctx, appsession.LifecycleCommand{Actor: actor, Roles: roles, SessionID: sessionID, GuildID: payload.GuildID, ChannelID: payload.ChannelID, CommandID: payload.ID, CorrelationID: correlationID, IdempotencyKey: "discord:" + payload.ID, CommandType: typeName, CanManageGuild: payload.memberCanManageGuild()}); err != nil {
 		return "", err
 	}
-	message := fmt.Sprintf("**%s request accepted**\nSession: `%s`\nUse `/session status` to follow progress.", strings.ToUpper(action[:1])+action[1:], sanitizeInline(sessionID))
+	message := fmt.Sprintf("**%s request accepted**\nUse `/rb status` to follow progress.", strings.ToUpper(action[:1])+action[1:])
 	if action == "archive" {
 		message += "\nThe game services will stop while the archive is captured. EC2 and EBS are removed only after the archive and manifest checksums are durably verified."
 	} else if action == "restore" {
@@ -434,9 +636,9 @@ func (handler *Handler) startSession(
 	actor domain.Actor,
 	correlationID string,
 ) (string, error) {
-	sessionID, err := stringOption(options, "session-id", true)
+	sessionID, err := handler.resolveSessionID(ctx, options, actor, payload.GuildID, false, false)
 	if err != nil {
-		return "", newUserError("A session ID is required.")
+		return "", err
 	}
 	roles := []string{}
 	if payload.Member != nil {
@@ -450,14 +652,25 @@ func (handler *Handler) startSession(
 	}); err != nil {
 		return "", fmt.Errorf("request session start: %w", err)
 	}
-	return fmt.Sprintf("**Start request accepted**\nSession: `%s`\nUse `/session status` to follow provisioning or bootstrap progress.", sanitizeInline(sessionID)), nil
+	return "**Start request accepted**\nUse `/rb status` to follow provisioning or bootstrap progress.", nil
 }
 
-func (handler *Handler) handleAdminAccess(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actorID string) error {
-	if payload.isAdminAccessCommand() {
+func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actorID, correlationID string) error {
+	if payload.isAdminCommand() {
 		subcommand, err := payload.namedSubcommand("admin")
-		if err != nil || subcommand.Name != "access" {
-			return newUserError("Use `/admin access` to configure bot access.")
+		if err != nil {
+			return newUserError("Use a supported `/admin` action.")
+		}
+		if subcommand.Name == "repair-card" {
+			content, repairErr := handler.repairSessionCard(ctx, payload, subcommand.Options, actorID, correlationID)
+			if repairErr != nil {
+				return repairErr
+			}
+			writeInteractionMessage(writer, content)
+			return nil
+		}
+		if subcommand.Name != "access" {
+			return newUserError("Use `/admin access` or `/admin repair-card`.")
 		}
 		minimum, maximum := 1, 25
 		components := []interactionComponent{{
@@ -469,12 +682,11 @@ func (handler *Handler) handleAdminAccess(ctx context.Context, writer http.Respo
 		}}
 		writeJSON(writer, http.StatusOK, interactionResponse{
 			Type: interactionResponseChannelMessageWithSource,
-			Data: &interactionResponseData{
-				Content:         "Choose the Discord roles that may use game-server platform commands.",
-				Flags:           messageFlagEphemeral,
-				AllowedMentions: interactionAllowedMentions{Parse: []string{}},
-				Components:      &components,
-			},
+			Data: renderer.messageData(
+				"Choose the Discord roles that may use game-server platform commands.",
+				messageFlagEphemeral,
+				&components,
+			),
 		})
 		return nil
 	}
@@ -492,17 +704,47 @@ func (handler *Handler) handleAdminAccess(ctx context.Context, writer http.Respo
 	emptyComponents := []interactionComponent{}
 	writeJSON(writer, http.StatusOK, interactionResponse{
 		Type: interactionResponseUpdateMessage,
-		Data: &interactionResponseData{
-			Content:         fmt.Sprintf("**Access settings updated**\nRevision: `%d`\nAllowed roles: %s", policy.Version, strings.Join(mentions, ", ")),
-			AllowedMentions: interactionAllowedMentions{Parse: []string{}},
-			Components:      &emptyComponents,
-		},
+		Data: renderer.messageData(
+			fmt.Sprintf("**Access settings updated**\nRevision: `%d`\nAllowed roles: %s", policy.Version, strings.Join(mentions, ", ")),
+			0,
+			&emptyComponents,
+		),
 	})
 	return nil
 }
 
-func (payload interactionPayload) isAdminAccessCommand() bool {
-	return payload.Type == interactionTypeApplicationCommand && payload.Data != nil && strings.TrimSpace(payload.Data.Name) == "admin"
+func (handler *Handler) repairSessionCard(
+	ctx context.Context,
+	payload interactionPayload,
+	options []applicationCommandOption,
+	actorID string,
+	correlationID string,
+) (string, error) {
+	actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID}
+	sessionID, err := handler.resolveSessionID(ctx, options, actor, payload.GuildID, true, true)
+	if err != nil {
+		return "", err
+	}
+	session, err := handler.service.Get(ctx, appsession.GetQuery{
+		Actor: actor, SessionID: sessionID, GuildID: payload.GuildID, AllowGuildMember: true,
+	})
+	if err != nil {
+		return "", err
+	}
+	cardProjection := sessioncard.Project(session, sessioncard.Options{Now: session.UpdatedAt.UTC()})
+	if err := handler.service.RequestSessionCard(ctx, appsession.SessionCardCommand{
+		Actor: actor, SessionID: session.ID, GuildID: payload.GuildID, ChannelID: session.ChannelID,
+		CorrelationID: correlationID, NotificationID: "card-admin-repair-" + strings.TrimSpace(payload.ID),
+		Content: sessioncard.RenderPublic(cardProjection), Embed: sessioncard.RenderPublicEmbed(cardProjection), CardRevision: session.Version, AllowGuildMember: true, RequireCurrentRevision: true,
+	}); err != nil {
+		return "", fmt.Errorf("request session card repair: %w", err)
+	}
+	return "**Session card repair queued**\nThe bot will refresh the current card or recreate it in its original channel if it was deleted.", nil
+}
+
+func (payload interactionPayload) isAdminCommand() bool {
+	return (payload.Type == interactionTypeApplicationCommand || payload.Type == interactionTypeApplicationCommandAutocomplete) &&
+		payload.Data != nil && strings.TrimSpace(payload.Data.Name) == "admin"
 }
 
 func (payload interactionPayload) isAdminRoleSelection() bool {
@@ -528,9 +770,9 @@ func (handler *Handler) configureSession(
 	actor domain.Actor,
 	correlationID string,
 ) (string, error) {
-	sessionID, err := stringOption(options, "session-id", true)
+	sessionID, err := handler.resolveSessionID(ctx, options, actor, payload.GuildID, false, false)
 	if err != nil {
-		return "", newUserError("A session ID is required.")
+		return "", err
 	}
 	profile, err := stringOption(options, "profile", false)
 	if err != nil {
@@ -539,11 +781,11 @@ func (handler *Handler) configureSession(
 	if profile == "" {
 		profile = "arma3-default"
 	}
-	sleepMinutes, err := integerOption(options, "sleep-minutes", 30)
+	sleepMinutes, err := integerOption(options, "sleep-minutes", defaultSleepMinutes)
 	if err != nil || sleepMinutes < 10 || sleepMinutes > 1440 {
 		return "", newUserError("Sleep time must be between 10 and 1440 minutes.")
 	}
-	archiveDays, err := integerOption(options, "archive-days", 7)
+	archiveDays, err := integerOption(options, "archive-days", defaultArchiveDays)
 	if err != nil || archiveDays < 1 || archiveDays > 90 {
 		return "", newUserError("Archive time must be between 1 and 90 days.")
 	}
@@ -582,9 +824,9 @@ func (handler *Handler) requestArtifactIngest(
 	correlationID string,
 	kind domain.ArtifactKind,
 ) (string, error) {
-	sessionID, err := stringOption(options, "session-id", true)
+	sessionID, err := handler.resolveSessionID(ctx, options, actor, payload.GuildID, false, false)
 	if err != nil {
-		return "", newUserError("A session ID is required.")
+		return "", err
 	}
 	attachment, err := attachmentOption(payload.Data, options, "file")
 	if err != nil {
@@ -612,86 +854,84 @@ func (handler *Handler) requestArtifactIngest(
 	if err := handler.service.RequestArtifactIngest(ctx, actor, request); err != nil {
 		return "", fmt.Errorf("request artifact ingestion: %w", err)
 	}
-	return formatArtifactAccepted(kind, attachment.Filename, sessionID), nil
-}
-
-func (handler *Handler) createSession(
-	ctx context.Context,
-	payload interactionPayload,
-	options []applicationCommandOption,
-	actor domain.Actor,
-	correlationID string,
-) (string, error) {
-	slug, err := stringOption(options, "slug", true)
-	if err != nil || len(slug) > 64 || !discordSlugPattern.MatchString(slug) {
-		return "", newUserError(
-			"The slug must use lowercase letters, numbers, and single hyphens.",
-		)
-	}
-
-	displayName, err := stringOption(options, "name", true)
-	if err != nil || len(displayName) > 100 {
-		return "", newUserError("The session name must contain 1 to 100 characters.")
-	}
-
-	gameType, err := stringOption(options, "game", false)
-	if err != nil {
-		return "", newUserError("The game option must be text.")
-	}
-	if gameType == "" {
-		gameType = "arma3"
-	}
-	if strings.ToLower(gameType) != "arma3" {
-		return "", newUserError("Only Arma 3 is supported in the current release.")
-	}
-
-	session, err := handler.service.Create(
-		ctx,
-		appsession.CreateCommand{
-			Actor:          actor,
-			CorrelationID:  correlationID,
-			IdempotencyKey: "discord:" + strings.TrimSpace(payload.ID),
-			Slug:           slug,
-			DisplayName:    displayName,
-			GameType:       gameType,
-			GuildID:        strings.TrimSpace(payload.GuildID),
-			ChannelID:      strings.TrimSpace(payload.ChannelID),
-		},
-	)
-	if err != nil {
-		return "", fmt.Errorf("create session: %w", err)
-	}
-
-	return formatCreatedSession(session), nil
+	return formatArtifactAccepted(kind, attachment.Filename), nil
 }
 
 func (handler *Handler) listSessions(
 	ctx context.Context,
+	options []applicationCommandOption,
 	actor domain.Actor,
 	guildID string,
 ) (string, error) {
+	filter, err := stringOption(options, "state", false)
+	if err != nil {
+		return "", newUserError("The lifecycle filter is invalid.")
+	}
+	states, filterLabel, err := sessionListStates(filter)
+	if err != nil {
+		return "", err
+	}
+	page, err := integerOption(options, "page", 1)
+	if err != nil || page < 1 || page > 20 {
+		return "", newUserError("Page must be between 1 and 20.")
+	}
 	sessions, err := handler.service.List(
 		ctx,
-		appsession.ListQuery{Actor: actor, Limit: 100},
+		appsession.ListQuery{Actor: actor, Limit: 100, States: states},
 	)
 	if err != nil {
 		return "", fmt.Errorf("list sessions: %w", err)
 	}
 
 	guildID = strings.TrimSpace(guildID)
-	visible := make([]domain.Session, 0, 10)
+	visible := make([]domain.Session, 0, len(sessions))
 	for _, session := range sessions {
 		if session.GuildID != guildID {
 			continue
 		}
-
 		visible = append(visible, session)
-		if len(visible) == 10 {
-			break
-		}
 	}
+	const pageSize = 5
+	totalPages := (len(visible) + pageSize - 1) / pageSize
+	if totalPages == 0 {
+		totalPages = 1
+	}
+	if int(page) > totalPages {
+		return "", newUserError(fmt.Sprintf("Page %d is not available. This list has %d page(s).", page, totalPages))
+	}
+	start := (int(page) - 1) * pageSize
+	end := start + pageSize
+	if end > len(visible) {
+		end = len(visible)
+	}
+	return formatSessionListPage(visible[start:end], int(page), totalPages, filterLabel), nil
+}
 
-	return formatSessionList(visible), nil
+func sessionListStates(filter string) ([]domain.LifecycleState, string, error) {
+	switch strings.ToLower(strings.TrimSpace(filter)) {
+	case "":
+		return nil, "Active sessions", nil
+	case "setting-up":
+		return []domain.LifecycleState{domain.StateDraft, domain.StateNew, domain.StateValidating, domain.StateProvisioning, domain.StateBootstrapping, domain.StateInstalling}, "Setting up", nil
+	case "ready":
+		return []domain.LifecycleState{domain.StateReady}, "Ready", nil
+	case "starting":
+		return []domain.LifecycleState{domain.StateWaking, domain.StateRestoring}, "Starting", nil
+	case "running":
+		return []domain.LifecycleState{domain.StateRunning, domain.StateIdle}, "Running", nil
+	case "sleeping":
+		return []domain.LifecycleState{domain.StateStopping, domain.StateSleeping, domain.StateWarning1, domain.StateWarning2, domain.StateArchiving, domain.StateDestroying}, "Sleeping", nil
+	case "archived":
+		return []domain.LifecycleState{domain.StateArchived}, "Archived", nil
+	case "action-required":
+		return []domain.LifecycleState{domain.StateFailed}, "Action required", nil
+	case "terminated":
+		return []domain.LifecycleState{domain.StateDeleting, domain.StateDeleted}, "Terminated", nil
+	case "deleted":
+		return []domain.LifecycleState{domain.StateDeleted}, "Terminated records", nil
+	default:
+		return nil, "", newUserError("Choose a supported lifecycle filter.")
+	}
 }
 
 func (handler *Handler) sessionStatus(
@@ -700,14 +940,14 @@ func (handler *Handler) sessionStatus(
 	actor domain.Actor,
 	guildID string,
 ) (string, error) {
-	sessionID, err := stringOption(options, "session-id", true)
+	sessionID, err := handler.resolveSessionID(ctx, options, actor, guildID, false, true)
 	if err != nil {
-		return "", newUserError("A session ID is required.")
+		return "", err
 	}
 
 	session, err := handler.service.Get(
 		ctx,
-		appsession.GetQuery{Actor: actor, SessionID: sessionID},
+		appsession.GetQuery{Actor: actor, SessionID: sessionID, GuildID: guildID, AllowGuildMember: true},
 	)
 	if err != nil {
 		return "", fmt.Errorf("get session status: %w", err)
@@ -720,21 +960,34 @@ func (handler *Handler) sessionStatus(
 		)
 	}
 
-	if session.LifecycleState != domain.StateRunning && session.LifecycleState != domain.StateIdle {
-		return formatSessionStatus(session, nil), nil
-	}
-	if strings.TrimSpace(session.Infrastructure.PublicIPv4) == "" || handler.playerQuery == nil {
-		return formatSessionStatus(session, nil), nil
-	}
+	return handler.renderDetailedSession(ctx, session), nil
+}
 
-	queryContext, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
-	defer cancel()
-	players, err := handler.playerQuery.Query(queryContext, session.Infrastructure.PublicIPv4)
+func (handler *Handler) resolveSessionID(
+	ctx context.Context,
+	options []applicationCommandOption,
+	actor domain.Actor,
+	guildID string,
+	canManageGuild bool,
+	allowGuildMember bool,
+) (string, error) {
+	reference, err := stringOption(options, "session", true)
 	if err != nil {
-		handler.logger.Warn("live player query unavailable", slog.String("session_id", session.ID), slog.String("reason", "A2S query failed"))
-		return formatSessionStatus(session, nil), nil
+		// Accept the previous option name only for in-flight payloads while the
+		// registered command definition is replaced.
+		reference, err = stringOption(options, "session-id", true)
 	}
-	return formatSessionStatus(session, &players), nil
+	if err != nil {
+		return "", newUserError("Select a session or enter its exact slug.")
+	}
+	selection, err := handler.service.Resolve(ctx, appsession.ResolveQuery{
+		Actor: actor, GuildID: guildID, Reference: reference,
+		CanManageGuild: canManageGuild, AllowGuildMember: allowGuildMember,
+	})
+	if err != nil {
+		return "", err
+	}
+	return selection.ID, nil
 }
 
 func (handler *Handler) commandErrorMessage(err error, correlationID string) string {
@@ -742,10 +995,14 @@ func (handler *Handler) commandErrorMessage(err error, correlationID string) str
 	if errors.As(err, &userErr) {
 		return userErr.message
 	}
+	var active domain.OperationInProgressError
+	if errors.As(err, &active) {
+		return activeOperationMessage(active)
+	}
 
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
-		return "Session not found. Use `/session list` to see your sessions."
+		return "Session not found. Use `/rb list` to see your sessions."
 	case errors.Is(err, domain.ErrForbidden):
 		return "You do not have access to that session."
 	case errors.Is(err, domain.ErrIdempotencyConflict):
@@ -754,12 +1011,38 @@ func (handler *Handler) commandErrorMessage(err error, correlationID string) str
 		return "Infrastructure provisioning is not enabled in this environment yet."
 	case errors.Is(err, domain.ErrQuotaExceeded):
 		return "The environment has reached its provisioned-session limit. Try again after another session is removed."
+	case errors.Is(err, domain.ErrConfirmationRequired):
+		return "Create a durable confirmation with `/rb archive` or `/rb terminate` before requesting that action."
 	default:
 		return fmt.Sprintf(
 			"The command failed. Reference: `%s`",
 			sanitizeInline(correlationID),
 		)
 	}
+}
+
+func activeOperationMessage(active domain.OperationInProgressError) string {
+	operation := map[string]string{
+		"ProvisionSession": "Starting server", domain.BootstrapWorkflowType: "Setting up game and content",
+		domain.SleepWorkflowType: "Putting server to sleep", domain.WakeWorkflowType: "Waking server",
+		domain.ArchiveWorkflowType: "Archiving server", domain.RestoreWorkflowType: "Restoring server",
+		domain.TerminationWorkflowType: "Terminating server",
+	}[active.WorkflowType]
+	if operation == "" {
+		operation = "Session operation"
+	}
+	progress := sessioncard.ProgressStageLabel(active.Milestone)
+	if progress == "" {
+		progress = "Request accepted"
+	}
+	message := fmt.Sprintf("**%s is already in progress**\nCurrent stage: %s.", operation, progress)
+	if step, total, ok := sessioncard.ProgressStep(active.WorkflowType, active.Milestone); ok {
+		message = fmt.Sprintf("**%s is already in progress**\nStep %d/%d — %s.", operation, step, total, progress)
+	}
+	if !active.StartedAt.IsZero() {
+		message += fmt.Sprintf(" Started <t:%d:R>.", active.StartedAt.UTC().Unix())
+	}
+	return message + " No second operation was queued. Use `/rb status` for the latest details."
 }
 
 func validateContentType(value string) error {
@@ -801,13 +1084,21 @@ func writeInteractionMessage(writer http.ResponseWriter, content string) {
 		http.StatusOK,
 		interactionResponse{
 			Type: interactionResponseChannelMessageWithSource,
-			Data: &interactionResponseData{
-				Content: content,
-				Flags:   messageFlagEphemeral,
-				AllowedMentions: interactionAllowedMentions{
-					Parse: []string{},
-				},
-			},
+			Data: renderer.messageData(content, messageFlagEphemeral, nil),
+		},
+	)
+}
+
+func writeAutocompleteChoices(writer http.ResponseWriter, choices []applicationCommandChoice) {
+	if choices == nil {
+		choices = []applicationCommandChoice{}
+	}
+	writeJSON(
+		writer,
+		http.StatusOK,
+		interactionResponse{
+			Type: interactionResponseAutocompleteResult,
+			Data: &interactionResponseData{Choices: &choices},
 		},
 	)
 }

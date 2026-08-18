@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,7 +51,8 @@ func TestStartAcquiresLockStartsExecutionAndReplaysSameWorkflow(t *testing.T) {
 	now := time.Date(2026, 8, 8, 22, 0, 0, 0, time.UTC)
 	repository := seedWorkflowRepository(t, now)
 	starter := &workflowStarter{arn: "arn:aws:states:us-west-2:123456789012:execution:ProvisionSession:command-1"}
-	service, err := NewService(repository, repository, starter, allowAuthorizer{}, &workflowIDs{ids: []string{"workflow-start-event"}}, workflowClock{now}, 2*time.Hour)
+	notifications := memory.NewNotificationQueue()
+	service, err := NewService(repository, repository, starter, allowAuthorizer{}, &workflowIDs{ids: []string{"workflow-start-event"}}, workflowClock{now}, 2*time.Hour, WithNotificationQueue(notifications))
 	if err != nil {
 		t.Fatalf("NewService() returned error: %v", err)
 	}
@@ -78,6 +80,10 @@ func TestStartAcquiresLockStartsExecutionAndReplaysSameWorkflow(t *testing.T) {
 	if replayed.ID != workflow.ID || starter.calls != 1 {
 		t.Fatalf("replay = %#v, starter calls = %d; want same workflow and one call", replayed, starter.calls)
 	}
+	requests := notifications.Requests()
+	if len(requests) != 1 || requests[0].NotificationID != "card-progress-command-1-accepted" || requests[0].Kind != domain.NotificationSessionCard {
+		t.Fatalf("notifications = %#v", requests)
+	}
 }
 
 func TestStartFailureMarksWorkflowFailedAndReleasesLock(t *testing.T) {
@@ -86,10 +92,11 @@ func TestStartFailureMarksWorkflowFailedAndReleasesLock(t *testing.T) {
 	now := time.Date(2026, 8, 8, 22, 0, 0, 0, time.UTC)
 	repository := seedWorkflowRepository(t, now)
 	starter := &workflowStarter{err: errors.New("Step Functions unavailable")}
+	notifications := memory.NewNotificationQueue()
 	service, err := NewService(
 		repository, repository, starter, allowAuthorizer{},
 		&workflowIDs{ids: []string{"workflow-start-event", "workflow-failed-event"}},
-		workflowClock{now}, 2*time.Hour,
+		workflowClock{now}, 2*time.Hour, WithNotificationQueue(notifications),
 	)
 	if err != nil {
 		t.Fatalf("NewService() returned error: %v", err)
@@ -114,6 +121,17 @@ func TestStartFailureMarksWorkflowFailedAndReleasesLock(t *testing.T) {
 	}
 	if workflow.Status != domain.WorkflowFailed || workflow.ErrorCode != "ERR_WORKFLOW_START_FAILED" {
 		t.Fatalf("failed workflow = %#v", workflow)
+	}
+	if session.Progress.Milestone != domain.ProgressAccepted || session.Progress.State != domain.ProgressActionRequired || session.Progress.WorkflowID != workflow.ID {
+		t.Fatalf("progress = %#v", session.Progress)
+	}
+	if session.Failure.Code != "ERR_WORKFLOW_START_FAILED" || session.Failure.RetryDisposition != domain.RetryNotScheduled ||
+		strings.Contains(session.Failure.Detail, "Step Functions unavailable") {
+		t.Fatalf("sanitized start failure = %#v", session.Failure)
+	}
+	requests := notifications.Requests()
+	if len(requests) != 2 || requests[0].NotificationID != "card-progress-command-1-accepted" || requests[1].NotificationID != "card-progress-command-1-accepted-action-required" {
+		t.Fatalf("notifications = %#v", requests)
 	}
 }
 

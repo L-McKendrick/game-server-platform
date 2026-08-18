@@ -95,9 +95,42 @@ func TestEnsureInstanceRequiresIMDSv2AndPreservesDataVolume(t *testing.T) {
 	}
 }
 
+func TestEnsureInstanceTagsInstanceAndVolumesWithReadableAndImmutableIdentity(t *testing.T) {
+	t.Parallel()
+	client := &fakeEC2{
+		describeOutput: &ec2.DescribeInstancesOutput{},
+		runOutput:      &ec2.RunInstancesOutput{Instances: []ec2types.Instance{{InstanceId: aws.String("i-new")}}},
+	}
+	if _, err := New(client, fakeSSM{}).EnsureInstance(context.Background(), launchRequest(), ""); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"Name": "Saturday Arma", "SessionName": "Saturday Arma", "SessionSlug": "saturday-arma",
+		"Project": "game-server-platform", "Environment": "dev", "SessionId": "session-1",
+	}
+	if len(client.runInput.TagSpecifications) != 2 {
+		t.Fatalf("tag specifications = %d; want instance and volume", len(client.runInput.TagSpecifications))
+	}
+	for _, specification := range client.runInput.TagSpecifications {
+		if specification.ResourceType != ec2types.ResourceTypeInstance && specification.ResourceType != ec2types.ResourceTypeVolume {
+			t.Fatalf("resource type = %q; want instance or volume", specification.ResourceType)
+		}
+		got := make(map[string]string, len(specification.Tags))
+		for _, tag := range specification.Tags {
+			got[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
+		}
+		for key, value := range want {
+			if got[key] != value {
+				t.Errorf("%s tag %q = %q; want %q", specification.ResourceType, key, got[key], value)
+			}
+		}
+	}
+}
+
 func launchRequest() domain.ComputeLaunchRequest {
 	return domain.ComputeLaunchRequest{
-		SessionID: "session-1", GameType: "arma3", Environment: "dev", Project: "game-server-platform",
+		SessionID: "session-1", SessionName: "Saturday Arma", SessionSlug: "saturday-arma",
+		GameType: "arma3", Environment: "dev", Project: "game-server-platform",
 		AMIID: "ami-1", InstanceType: "c7i.large", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"},
 		InstanceProfile: "profile-1", RootVolumeGiB: 30, DataVolumeGiB: 100,
 	}

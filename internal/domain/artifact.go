@@ -11,27 +11,45 @@ import (
 // ArtifactKind identifies an input artifact accepted from Discord.
 type ArtifactKind string
 
+// ArtifactStatus is the durable user-facing validation projection. An empty
+// value is backward-compatible and means validation has not produced a result.
+type ArtifactStatus string
+
+// ArtifactIngestPurpose distinguishes legacy draft setup from a safe
+// post-creation preset revision. Empty remains the legacy setup value.
+type ArtifactIngestPurpose string
+
 const (
-	ArtifactMission ArtifactKind = "MISSION"
-	ArtifactPreset  ArtifactKind = "PRESET"
+	ArtifactMission               ArtifactKind          = "MISSION"
+	ArtifactPreset                ArtifactKind          = "PRESET"
+	ArtifactPending               ArtifactStatus        = "PENDING"
+	ArtifactAccepted              ArtifactStatus        = "ACCEPTED"
+	ArtifactRejected              ArtifactStatus        = "REJECTED"
+	ArtifactPurposePresetRevision ArtifactIngestPurpose = "PRESET_REVISION"
 )
+
+func (status ArtifactStatus) Valid() bool {
+	return status == "" || status == ArtifactPending || status == ArtifactAccepted || status == ArtifactRejected
+}
 
 // ArtifactIngestRequest is the durable contract between Discord and the ingest worker.
 type ArtifactIngestRequest struct {
-	SchemaVersion  int          `json:"schema_version"`
-	SessionID      string       `json:"session_id"`
-	Kind           ArtifactKind `json:"kind"`
-	AttachmentID   string       `json:"attachment_id"`
-	Filename       string       `json:"filename"`
-	ContentType    string       `json:"content_type"`
-	SizeBytes      int64        `json:"size_bytes"`
-	SourceURL      string       `json:"source_url"`
-	ActorID        string       `json:"actor_id"`
-	GuildID        string       `json:"guild_id"`
-	ChannelID      string       `json:"channel_id"`
-	CorrelationID  string       `json:"correlation_id"`
-	IdempotencyKey string       `json:"idempotency_key"`
-	RequestedAt    time.Time    `json:"requested_at"`
+	SchemaVersion                int                   `json:"schema_version"`
+	SessionID                    string                `json:"session_id"`
+	Kind                         ArtifactKind          `json:"kind"`
+	AttachmentID                 string                `json:"attachment_id"`
+	Filename                     string                `json:"filename"`
+	ContentType                  string                `json:"content_type"`
+	SizeBytes                    int64                 `json:"size_bytes"`
+	SourceURL                    string                `json:"source_url"`
+	ActorID                      string                `json:"actor_id"`
+	GuildID                      string                `json:"guild_id"`
+	ChannelID                    string                `json:"channel_id"`
+	CorrelationID                string                `json:"correlation_id"`
+	IdempotencyKey               string                `json:"idempotency_key"`
+	RequestedAt                  time.Time             `json:"requested_at"`
+	Purpose                      ArtifactIngestPurpose `json:"purpose,omitempty"`
+	ExpectedActivePresetRevision int64                 `json:"expected_active_preset_revision,omitempty"`
 }
 
 // Validate verifies that a queued ingest request is bounded and Discord-hosted.
@@ -82,7 +100,19 @@ func (request ArtifactIngestRequest) Validate() error {
 		return fmt.Errorf("idempotency key is required")
 	case request.RequestedAt.IsZero():
 		return fmt.Errorf("requested timestamp is required")
+	case request.Purpose != "" && request.Purpose != ArtifactPurposePresetRevision:
+		return fmt.Errorf("unsupported artifact ingest purpose %q", request.Purpose)
+	case request.Purpose == ArtifactPurposePresetRevision && request.Kind != ArtifactPreset:
+		return fmt.Errorf("preset revision ingestion requires a preset artifact")
+	case request.Purpose == ArtifactPurposePresetRevision && request.ExpectedActivePresetRevision < 1:
+		return fmt.Errorf("preset revision ingestion requires the expected active revision")
+	case request.Purpose == "" && request.ExpectedActivePresetRevision != 0:
+		return fmt.Errorf("expected active preset revision requires revision ingestion")
 	default:
 		return nil
 	}
+}
+
+func (request ArtifactIngestRequest) IsPresetRevision() bool {
+	return request.Purpose == ArtifactPurposePresetRevision
 }

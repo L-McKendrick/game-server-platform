@@ -20,8 +20,31 @@ type NotificationQueue interface {
 	Enqueue(ctx context.Context, request domain.NotificationRequest) error
 }
 
+// ConfirmationRepository stores durable destructive-action confirmations.
+// Creation and consumption must atomically revalidate the bound session.
+type ConfirmationRepository interface {
+	CreateConfirmation(ctx context.Context, confirmation domain.Confirmation) error
+	GetConfirmation(ctx context.Context, code string) (domain.Confirmation, error)
+	ConsumeConfirmation(ctx context.Context, code, ownerDiscordUserID, guildID string, now time.Time) (domain.Confirmation, domain.Session, error)
+	CancelConfirmation(ctx context.Context, code, ownerDiscordUserID, guildID string, now time.Time) (domain.Confirmation, error)
+}
+
+// SessionCardRepository stores replaceable Discord delivery metadata without
+// coupling card delivery to lifecycle-version writes.
+type SessionCardRepository interface {
+	Get(ctx context.Context, sessionID string) (domain.Session, error)
+	GetCardReference(ctx context.Context, sessionID string) (domain.SessionCardReference, error)
+	SaveCardReference(ctx context.Context, reference domain.SessionCardReference) error
+	GetModlistReference(ctx context.Context, sessionID string) (domain.SessionModlistReference, error)
+	SaveModlistReference(ctx context.Context, reference domain.SessionModlistReference) error
+}
+
 type ObjectStore interface {
 	Put(ctx context.Context, key string, contentType string, body []byte, sha256Base64 string) error
+}
+
+type ObjectReader interface {
+	Get(ctx context.Context, key string) ([]byte, error)
 }
 
 type ArchiveCommandStatus struct {
@@ -127,6 +150,9 @@ type MonitoringRunner interface {
 type BootstrapCommandStatus struct {
 	Status       string
 	ErrorMessage string
+	// Checkpoints contains only allowlisted progress facts parsed from the
+	// managed command's output. Raw output never crosses this port.
+	Checkpoints []domain.ProgressMilestone
 }
 
 // BootstrapRunner starts and observes one idempotent Systems Manager command.
@@ -134,6 +160,13 @@ type BootstrapCommandStatus struct {
 type BootstrapRunner interface {
 	Start(ctx context.Context, session domain.Session) (string, error)
 	Observe(ctx context.Context, instanceID string, commandID string) (BootstrapCommandStatus, error)
+}
+
+// PresetRevisionRunner can reinstall the previous active preset after a
+// candidate fails, while retaining the same observe contract.
+type PresetRevisionRunner interface {
+	BootstrapRunner
+	StartRollback(ctx context.Context, session domain.Session) (string, error)
 }
 
 type RestoreRunner interface {
@@ -180,6 +213,12 @@ type SessionRepository interface {
 	ListByOwner(
 		ctx context.Context,
 		ownerDiscordUserID string,
+		limit int32,
+	) ([]domain.Session, error)
+
+	ListByGuild(
+		ctx context.Context,
+		guildID string,
 		limit int32,
 	) ([]domain.Session, error)
 }

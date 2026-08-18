@@ -30,6 +30,9 @@ func (fake fakeCompute) StartInstance(context.Context, string) error     { retur
 type fakeRunner struct{}
 
 func (fakeRunner) Start(context.Context, domain.Session) (string, error) { return "command-1", nil }
+func (fakeRunner) StartRollback(context.Context, domain.Session) (string, error) {
+	return "rollback-1", nil
+}
 func (fakeRunner) Observe(context.Context, string, string) (ports.BootstrapCommandStatus, error) {
 	return ports.BootstrapCommandStatus{Status: "Success"}, nil
 }
@@ -53,15 +56,27 @@ func (ids *sequenceIDs) New(time.Time) (string, error) {
 	return "event-" + time.Duration(ids.next).String(), nil
 }
 
+func TestLaunchRequestIncludesReadableSessionIdentity(t *testing.T) {
+	t.Parallel()
+	service := Service{config: Config{Project: "game-server-platform", Environment: "dev", GameSecurityGroupID: "sg-game"}}
+	request := service.launchRequest(
+		domain.Session{ID: "session-1", DisplayName: "Saturday Arma", Slug: "saturday-arma", GameType: "arma3"},
+		domain.Workflow{ID: "restore-1"},
+	)
+	if request.SessionID != "session-1" || request.SessionName != "Saturday Arma" || request.SessionSlug != "saturday-arma" {
+		t.Fatalf("restore launch identity = %#v", request)
+	}
+}
+
 func TestService_RecreatesBootstrapsAndRestoresVerifiedArchive(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
-	manifest := domain.ArchiveManifest{SchemaVersion: 1, ArchiveID: "archive-1", SessionID: "session-1", CreatedAt: now.Format(time.RFC3339Nano), Format: "tar+gzip", ObjectKey: "sessions/session-1/archives/archive-1/session.tar.gz", SHA256: base64.StdEncoding.EncodeToString(make([]byte, 32)), SizeBytes: 42, ContentRoots: []string{"/srv/game-server/config"}, GameProfileID: "arma3-default", MissionObjectKey: "sessions/session-1/input/mission.pbo", Vanilla: true, SourceInstanceID: "i-old", SourceDataVolumeID: "vol-old"}
+	manifest := domain.ArchiveManifest{SchemaVersion: 1, ArchiveID: "archive-1", SessionID: "session-1", SessionName: "Saturday Arma", SessionSlug: "saturday-arma", Description: "Weekly co-op night", CreatedAt: now.Format(time.RFC3339Nano), Format: "tar+gzip", ObjectKey: "sessions/session-1/archives/archive-1/session.tar.gz", SHA256: base64.StdEncoding.EncodeToString(make([]byte, 32)), SizeBytes: 42, ContentRoots: []string{"/srv/game-server/config"}, GameProfileID: "arma3-default", MissionObjectKey: "sessions/session-1/input/mission.pbo", Vanilla: true, SourceInstanceID: "i-old", SourceDataVolumeID: "vol-old"}
 	body, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "saturday-arma", DisplayName: "Saturday Arma", Description: "Weekly co-op night", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +103,7 @@ func TestService_RecreatesBootstrapsAndRestoresVerifiedArchive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, action := range []string{ActionVerifyArchive, ActionPrepare, ActionEnsure, ActionObserveInstance, ActionCheckManaged, ActionDispatchBootstrap, ActionObserveBootstrap, ActionDispatchRestore, ActionObserveRestore, ActionComplete} {
+	for _, action := range []string{ActionVerifyArchive, ActionPrepare, ActionEnsure, ActionObserveInstance, ActionCheckManaged, ActionDispatchRestore, ActionObserveRestore, ActionDispatchBootstrap, ActionObserveBootstrap, ActionComplete} {
 		request := TaskRequest{Action: action, SessionID: session.ID, WorkflowID: workflow.ID, CommandID: "command-1"}
 		if _, err := service.Handle(ctx, request); err != nil {
 			t.Fatalf("%s: %v", action, err)
@@ -100,5 +115,24 @@ func TestService_RecreatesBootstrapsAndRestoresVerifiedArchive(t *testing.T) {
 	}
 	if stored.LifecycleState != domain.StateRunning || stored.HealthStatus != domain.HealthHealthy || stored.Infrastructure.InstanceID != "i-new" || stored.Infrastructure.DataVolumeID != "vol-new" || stored.Archive.ID != "archive-1" {
 		t.Fatalf("restored session = %#v", stored)
+	}
+	if stored.DisplayName != manifest.SessionName || stored.Slug != manifest.SessionSlug || stored.Description != manifest.Description {
+		t.Fatalf("restored readable identity = %#v", stored)
+	}
+}
+
+func TestManifestReadableIdentityMatchingSupportsLegacyAndRejectsDrift(t *testing.T) {
+	t.Parallel()
+	session := domain.Session{DisplayName: "Saturday Arma", Slug: "saturday-arma", Description: "Weekly co-op night"}
+	if !manifestReadableIdentityMatches(domain.ArchiveManifest{}, session) {
+		t.Fatal("legacy manifest without readable identity was rejected")
+	}
+	manifest := domain.ArchiveManifest{SessionName: session.DisplayName, SessionSlug: session.Slug, Description: session.Description}
+	if !manifestReadableIdentityMatches(manifest, session) {
+		t.Fatal("matching readable identity was rejected")
+	}
+	manifest.Description = "Different description"
+	if manifestReadableIdentityMatches(manifest, session) {
+		t.Fatal("drifted readable identity was accepted")
 	}
 }

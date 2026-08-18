@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -39,6 +41,8 @@ type Service struct {
 	repository           ports.SessionRepository
 	artifactQueue        ports.ArtifactQueue
 	commandQueue         ports.CommandQueue
+	confirmations        ports.ConfirmationRepository
+	notificationQueue    ports.NotificationQueue
 	ids                  IDGenerator
 	clock                Clock
 	idempotencyRetention time.Duration
@@ -55,6 +59,16 @@ func WithArtifactQueue(queue ports.ArtifactQueue) Option {
 // WithCommandQueue enables asynchronous lifecycle command dispatch.
 func WithCommandQueue(queue ports.CommandQueue) Option {
 	return func(service *Service) { service.commandQueue = queue }
+}
+
+// WithConfirmationRepository enables durable destructive-action confirmation.
+func WithConfirmationRepository(repository ports.ConfirmationRepository) Option {
+	return func(service *Service) { service.confirmations = repository }
+}
+
+// WithNotificationQueue enables durable public session-card delivery.
+func WithNotificationQueue(queue ports.NotificationQueue) Option {
+	return func(service *Service) { service.notificationQueue = queue }
 }
 
 // NewService creates a session application service.
@@ -103,14 +117,308 @@ type StartCommand struct {
 	IdempotencyKey string
 }
 
-// LifecycleCommand requests an explicit sleep, wake, archive, restore, or termination.
-// Archive and restore remain owner-only; sleep and wake also allow guild managers.
+// LifecycleCommand requests sleep, wake, or restore. Archive and termination
+// must enter through the durable confirmation service.
 type LifecycleCommand struct {
 	Actor                                                                   domain.Actor
 	Roles                                                                   []string
 	SessionID, GuildID, ChannelID, CommandID, CorrelationID, IdempotencyKey string
 	CommandType                                                             string
 	CanManageGuild                                                          bool
+}
+
+type ConfirmationRequest struct {
+	Actor     domain.Actor
+	SessionID string
+	GuildID   string
+	RequestID string
+	Action    domain.ConfirmationAction
+}
+
+type ConfirmCommand struct {
+	Actor          domain.Actor
+	GuildID        string
+	ChannelID      string
+	Code           string
+	CommandID      string
+	CorrelationID  string
+	IdempotencyKey string
+}
+
+type CancelConfirmationCommand struct {
+	Actor   domain.Actor
+	GuildID string
+	Code    string
+}
+
+// SessionCardCommand requests an idempotent create-or-edit of the one public
+// card associated with a session.
+type SessionCardCommand struct {
+	Actor                                                                 domain.Actor
+	SessionID, GuildID, ChannelID, CorrelationID, NotificationID, Content string
+	Embed                                                                 *domain.NotificationEmbed
+	CardRevision                                                          int64
+	AllowGuildMember, RequireCurrentRevision                              bool
+}
+
+// ActiveModlistQuery authorizes a read of safe delivery metadata at a specific
+// card revision.
+type ActiveModlistQuery struct {
+	Actor            domain.Actor
+	SessionID        string
+	GuildID          string
+	ExpectedRevision int64
+}
+
+type ActiveModlist struct {
+	ChannelID string
+	MessageID string
+	Filename  string
+}
+
+type PrepareCreationArtifactsCommand struct {
+	Actor                                             domain.Actor
+	SessionID, GuildID, CorrelationID, IdempotencyKey string
+	HasPreset                                         bool
+}
+
+// PrepareCreationArtifacts durably records queued inputs before asynchronous
+// workers can advance session readiness.
+func (service *Service) PrepareCreationArtifacts(ctx context.Context, command PrepareCreationArtifactsCommand) (domain.Session, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Session{}, fmt.Errorf("validate actor: %w", err)
+	}
+	key := strings.TrimSpace(command.IdempotencyKey)
+	if key == "" {
+		return domain.Session{}, fmt.Errorf("idempotency key is required")
+	}
+	hash, err := hashRequest(struct {
+		CommandType string `json:"command_type"`
+		ActorID     string `json:"actor_id"`
+		SessionID   string `json:"session_id"`
+		HasPreset   bool   `json:"has_preset"`
+	}{"PrepareCreationArtifacts", command.Actor.ID, strings.TrimSpace(command.SessionID), command.HasPreset})
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("hash artifact preparation: %w", err)
+	}
+	if replayed, found, err := service.replaySession(ctx, key, hash, command.Actor); err != nil || found {
+		return replayed, err
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("get session: %w", err)
+	}
+	if err := authorizeOwner(command.Actor, session); err != nil {
+		return domain.Session{}, err
+	}
+	if session.GuildID != strings.TrimSpace(command.GuildID) {
+		return domain.Session{}, domain.ErrForbidden
+	}
+	now, expectedVersion := service.clock.Now().UTC(), session.Version
+	if err := session.PrepareCreationArtifacts(command.HasPreset, now); err != nil {
+		return domain.Session{}, err
+	}
+	eventID, err := service.newID(now, "artifact preparation event")
+	if err != nil {
+		return domain.Session{}, err
+	}
+	correlationID, err := service.resolveCorrelationID(command.CorrelationID, now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.SessionEvent{
+		ID: eventID, SessionID: session.ID, Type: domain.EventArtifactRequested, OccurredAt: now,
+		ActorType: string(command.Actor.Type), ActorID: command.Actor.ID, CorrelationID: correlationID,
+		Data: map[string]string{"mission": "pending", "preset": strconv.FormatBool(command.HasPreset)},
+	}
+	record, err := domain.NewCompletedIdempotencyRecord(key, hash, session.ID, now, service.idempotencyRetention)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, record); err != nil {
+		if replayed, found, replayErr := service.replaySession(ctx, key, hash, command.Actor); replayErr != nil || found {
+			return replayed, replayErr
+		}
+		return domain.Session{}, fmt.Errorf("persist artifact preparation: %w", err)
+	}
+	return session, nil
+}
+
+func (service *Service) RequestSessionCard(ctx context.Context, command SessionCardCommand) error {
+	if err := command.Actor.Validate(); err != nil {
+		return fmt.Errorf("validate actor: %w", err)
+	}
+	if service.notificationQueue == nil {
+		return fmt.Errorf("session card delivery is not configured")
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+	if command.AllowGuildMember {
+		if session.GuildID != strings.TrimSpace(command.GuildID) {
+			return domain.ErrNotFound
+		}
+	} else if err := authorizeOwner(command.Actor, session); err != nil {
+		return err
+	}
+	if session.GuildID != strings.TrimSpace(command.GuildID) || session.ChannelID != strings.TrimSpace(command.ChannelID) {
+		return fmt.Errorf("session card destination does not match session: %w", domain.ErrForbidden)
+	}
+	if command.CardRevision < 1 || command.CardRevision > session.Version {
+		return fmt.Errorf("session card revision must reference a persisted session version")
+	}
+	if command.RequireCurrentRevision && command.CardRevision != session.Version {
+		return fmt.Errorf("session card revision is stale: %w", domain.ErrConflict)
+	}
+	return service.notificationQueue.Enqueue(ctx, domain.NotificationRequest{
+		SchemaVersion: 1, NotificationID: strings.TrimSpace(command.NotificationID),
+		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
+		Content: command.Content, Embed: command.Embed, Kind: domain.NotificationSessionCard, CardRevision: command.CardRevision,
+		CorrelationID: strings.TrimSpace(command.CorrelationID), RequestedAt: service.clock.Now().UTC(),
+	})
+}
+
+// GetActiveModlist returns only the safe Discord delivery reference after
+// guild-read authorization and an exact persisted revision check.
+func (service *Service) GetActiveModlist(ctx context.Context, query ActiveModlistQuery) (ActiveModlist, error) {
+	session, err := service.Get(ctx, GetQuery{
+		Actor: query.Actor, SessionID: query.SessionID, GuildID: query.GuildID, AllowGuildMember: true,
+	})
+	if err != nil {
+		return ActiveModlist{}, err
+	}
+	if query.ExpectedRevision < 1 || query.ExpectedRevision != session.Version {
+		return ActiveModlist{}, fmt.Errorf("session card revision is stale: %w", domain.ErrConflict)
+	}
+	if session.Vanilla || session.PresetArtifactStatus != domain.ArtifactAccepted {
+		return ActiveModlist{}, domain.ErrNotFound
+	}
+	repository, ok := service.repository.(ports.SessionCardRepository)
+	if !ok {
+		return ActiveModlist{}, fmt.Errorf("session modlist delivery metadata is not configured")
+	}
+	reference, err := repository.GetModlistReference(ctx, session.ID)
+	if err != nil {
+		return ActiveModlist{}, err
+	}
+	if err := reference.Validate(); err != nil {
+		return ActiveModlist{}, fmt.Errorf("validate active modlist reference: %w", err)
+	}
+	if !sessioncard.IsActiveModlistReference(session, reference) {
+		return ActiveModlist{}, fmt.Errorf("active modlist reference does not match session")
+	}
+	return ActiveModlist{ChannelID: reference.ChannelID, MessageID: reference.MessageID, Filename: reference.Filename}, nil
+}
+
+func (service *Service) RequestConfirmation(ctx context.Context, command ConfirmationRequest) (domain.Confirmation, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Confirmation{}, fmt.Errorf("validate actor: %w", err)
+	}
+	if service.confirmations == nil || service.commandQueue == nil {
+		return domain.Confirmation{}, fmt.Errorf("%w: destructive confirmations", domain.ErrFeatureDisabled)
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return domain.Confirmation{}, err
+	}
+	if err := authorizeOwner(command.Actor, session); err != nil {
+		return domain.Confirmation{}, err
+	}
+	if session.GuildID != strings.TrimSpace(command.GuildID) {
+		return domain.Confirmation{}, domain.ErrForbidden
+	}
+	if operation := activeOperation(session, service.clock.Now().UTC()); operation != nil {
+		return domain.Confirmation{}, *operation
+	}
+	switch command.Action {
+	case domain.ConfirmationArchive:
+		if !session.CanArchive() {
+			return domain.Confirmation{}, fmt.Errorf("session cannot archive now: %w", domain.ErrInvalidTransition)
+		}
+	case domain.ConfirmationTerminate:
+		if !session.CanTerminate() {
+			return domain.Confirmation{}, fmt.Errorf("session cannot terminate now: %w", domain.ErrInvalidTransition)
+		}
+	default:
+		return domain.Confirmation{}, fmt.Errorf("unsupported confirmation action")
+	}
+	requestID := strings.TrimSpace(command.RequestID)
+	if requestID == "" {
+		return domain.Confirmation{}, fmt.Errorf("confirmation request ID is required")
+	}
+	confirmation, err := domain.NewConfirmation(requestID, domain.ConfirmationCode(requestID), session, command.Action, service.clock.Now().UTC())
+	if err != nil {
+		return domain.Confirmation{}, err
+	}
+	if err := service.confirmations.CreateConfirmation(ctx, confirmation); err != nil {
+		if !errors.Is(err, domain.ErrAlreadyExists) {
+			return domain.Confirmation{}, err
+		}
+		existing, getErr := service.confirmations.GetConfirmation(ctx, confirmation.Code)
+		if getErr != nil {
+			return domain.Confirmation{}, getErr
+		}
+		if existing.ID != confirmation.ID || existing.SessionID != confirmation.SessionID || existing.Action != confirmation.Action || existing.OwnerDiscordUserID != confirmation.OwnerDiscordUserID || existing.GuildID != confirmation.GuildID {
+			return domain.Confirmation{}, domain.ErrIdempotencyConflict
+		}
+		if existing.BoundState != session.LifecycleState || existing.BoundVersion != session.Version {
+			return domain.Confirmation{}, domain.ErrConfirmationStateDrift
+		}
+		if err := existing.CheckPending(service.clock.Now().UTC()); err != nil {
+			return domain.Confirmation{}, err
+		}
+		return existing, nil
+	}
+	return confirmation, nil
+}
+
+func (service *Service) Confirm(ctx context.Context, command ConfirmCommand) (domain.Confirmation, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Confirmation{}, fmt.Errorf("validate actor: %w", err)
+	}
+	if service.confirmations == nil || service.commandQueue == nil {
+		return domain.Confirmation{}, fmt.Errorf("%w: destructive confirmations", domain.ErrFeatureDisabled)
+	}
+	now := service.clock.Now().UTC()
+	confirmation, session, err := service.confirmations.ConsumeConfirmation(ctx, command.Code, command.Actor.ID, command.GuildID, now)
+	if err != nil {
+		return domain.Confirmation{}, err
+	}
+	commandType := ""
+	switch confirmation.Action {
+	case domain.ConfirmationArchive:
+		if !session.CanArchive() {
+			return domain.Confirmation{}, domain.ErrConfirmationStateDrift
+		}
+		commandType = domain.CommandArchiveSession
+	case domain.ConfirmationTerminate:
+		if !session.CanTerminate() {
+			return domain.Confirmation{}, domain.ErrConfirmationStateDrift
+		}
+		commandType = domain.CommandDestroySession
+	default:
+		return domain.Confirmation{}, domain.ErrConfirmationMismatch
+	}
+	envelope := domain.CommandEnvelope{
+		SchemaVersion: 1, CommandID: strings.TrimSpace(command.CommandID), CommandType: commandType,
+		RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID)},
+		SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: map[string]string{},
+	}
+	if err := service.commandQueue.Enqueue(ctx, envelope); err != nil {
+		return domain.Confirmation{}, fmt.Errorf("%w: %v", domain.ErrConfirmationDispatchUncertain, err)
+	}
+	return confirmation, nil
+}
+
+func (service *Service) CancelConfirmation(ctx context.Context, command CancelConfirmationCommand) (domain.Confirmation, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Confirmation{}, fmt.Errorf("validate actor: %w", err)
+	}
+	if service.confirmations == nil {
+		return domain.Confirmation{}, fmt.Errorf("%w: destructive confirmations", domain.ErrFeatureDisabled)
+	}
+	return service.confirmations.CancelConfirmation(ctx, command.Code, command.Actor.ID, command.GuildID, service.clock.Now().UTC())
 }
 
 func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleCommand) error {
@@ -131,22 +439,22 @@ func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleC
 	if session.GuildID != strings.TrimSpace(command.GuildID) {
 		return domain.ErrForbidden
 	}
+	if operation := activeOperation(session, service.clock.Now().UTC()); operation != nil {
+		return *operation
+	}
+	if command.CommandType == domain.CommandArchiveSession || command.CommandType == domain.CommandDestroySession {
+		return domain.ErrConfirmationRequired
+	}
 	if command.CommandType == domain.CommandSleepSession && !session.CanSleep() {
 		return fmt.Errorf("session cannot sleep now: %w", domain.ErrInvalidTransition)
 	}
 	if command.CommandType == domain.CommandWakeSession && !session.CanWake() {
 		return fmt.Errorf("session cannot wake now: %w", domain.ErrInvalidTransition)
 	}
-	if command.CommandType == domain.CommandArchiveSession && !session.CanArchive() {
-		return fmt.Errorf("session cannot archive now: %w", domain.ErrInvalidTransition)
-	}
 	if command.CommandType == domain.CommandRestoreSession && !session.CanRestore() {
 		return fmt.Errorf("session cannot restore now: %w", domain.ErrInvalidTransition)
 	}
-	if command.CommandType == domain.CommandDestroySession && !session.CanTerminate() {
-		return fmt.Errorf("session cannot terminate now: %w", domain.ErrInvalidTransition)
-	}
-	if command.CommandType != domain.CommandSleepSession && command.CommandType != domain.CommandWakeSession && command.CommandType != domain.CommandArchiveSession && command.CommandType != domain.CommandRestoreSession && command.CommandType != domain.CommandDestroySession {
+	if command.CommandType != domain.CommandSleepSession && command.CommandType != domain.CommandWakeSession && command.CommandType != domain.CommandRestoreSession {
 		return fmt.Errorf("unsupported lifecycle command")
 	}
 	return service.commandQueue.Enqueue(ctx, domain.CommandEnvelope{SchemaVersion: 1, CommandID: strings.TrimSpace(command.CommandID), CommandType: command.CommandType, RequestedAt: service.clock.Now().UTC(), Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID), Roles: append([]string(nil), command.Roles...), CanManageGuild: command.CanManageGuild}, SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: map[string]string{}})
@@ -171,6 +479,9 @@ func (service *Service) RequestStart(ctx context.Context, command StartCommand) 
 	}
 	if session.GuildID != strings.TrimSpace(command.GuildID) {
 		return fmt.Errorf("session belongs to another guild: %w", domain.ErrForbidden)
+	}
+	if operation := activeOperation(session, service.clock.Now().UTC()); operation != nil {
+		return *operation
 	}
 	commandType := domain.CommandStartSession
 	switch {
@@ -197,6 +508,16 @@ func (service *Service) RequestStart(ctx context.Context, command StartCommand) 
 	return nil
 }
 
+func activeOperation(session domain.Session, now time.Time) *domain.OperationInProgressError {
+	if session.ActiveWorkflowID == "" || !session.ActiveWorkflowLeaseExpiresAt.After(now.UTC()) {
+		return nil
+	}
+	return &domain.OperationInProgressError{
+		WorkflowType: session.ActiveWorkflowType, Milestone: session.Progress.Milestone,
+		StartedAt: session.ActiveWorkflowStartedAt, UpdatedAt: session.Progress.LastProgressAt,
+	}
+}
+
 // ConfigureCommand replaces the editable configuration of a draft session.
 type ConfigureCommand struct {
 	Actor               domain.Actor
@@ -209,6 +530,151 @@ type ConfigureCommand struct {
 	ArchiveAfterSeconds int64
 	TeamSpeakEnabled    bool
 	Vanilla             bool
+}
+
+type UpdateDraftSetupCommand struct {
+	Actor                                             domain.Actor
+	SessionID, GuildID, CorrelationID, IdempotencyKey string
+	DisplayName, Description                          string
+	GameProfileID                                     string
+	SleepAfterSeconds, ArchiveAfterSeconds            int64
+	TeamSpeakEnabled, Vanilla                         bool
+	ReplaceMission, ReplacePreset                     bool
+}
+
+// UpdateDraftSetup atomically edits the draft fields and marks only selected
+// missing or rejected artifacts pending.
+func (service *Service) UpdateDraftSetup(ctx context.Context, command UpdateDraftSetupCommand) (domain.Session, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Session{}, fmt.Errorf("validate actor: %w", err)
+	}
+	key := strings.TrimSpace(command.IdempotencyKey)
+	if key == "" {
+		return domain.Session{}, fmt.Errorf("idempotency key is required")
+	}
+	hash, err := hashRequest(struct {
+		CommandType                                                          string `json:"command_type"`
+		ActorID, SessionID, GuildID, DisplayName, Description, GameProfileID string
+		SleepAfterSeconds, ArchiveAfterSeconds                               int64
+		TeamSpeakEnabled, Vanilla, ReplaceMission, ReplacePreset             bool
+	}{
+		CommandType: "UpdateDraftSetup", ActorID: command.Actor.ID,
+		SessionID: strings.TrimSpace(command.SessionID), GuildID: strings.TrimSpace(command.GuildID),
+		DisplayName: strings.TrimSpace(command.DisplayName), Description: strings.TrimSpace(command.Description),
+		GameProfileID: strings.TrimSpace(command.GameProfileID), SleepAfterSeconds: command.SleepAfterSeconds,
+		ArchiveAfterSeconds: command.ArchiveAfterSeconds, TeamSpeakEnabled: command.TeamSpeakEnabled,
+		Vanilla: command.Vanilla, ReplaceMission: command.ReplaceMission, ReplacePreset: command.ReplacePreset,
+	})
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("hash draft setup: %w", err)
+	}
+	if replayed, found, err := service.replaySession(ctx, key, hash, command.Actor); err != nil || found {
+		return replayed, err
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("get session: %w", err)
+	}
+	if err := authorizeOwner(command.Actor, session); err != nil {
+		return domain.Session{}, err
+	}
+	if session.GuildID != strings.TrimSpace(command.GuildID) {
+		return domain.Session{}, domain.ErrForbidden
+	}
+	now, expectedVersion := service.clock.Now().UTC(), session.Version
+	if err := session.ConfigureDraftSetup(command.DisplayName, command.Description, domain.SessionConfiguration{
+		GameProfileID: command.GameProfileID, SleepAfterSeconds: command.SleepAfterSeconds,
+		ArchiveAfterSeconds: command.ArchiveAfterSeconds, TeamSpeakEnabled: command.TeamSpeakEnabled, Vanilla: command.Vanilla,
+	}, command.ReplaceMission, command.ReplacePreset, now); err != nil {
+		return domain.Session{}, err
+	}
+	eventID, err := service.newID(now, "draft setup event")
+	if err != nil {
+		return domain.Session{}, err
+	}
+	correlationID, err := service.resolveCorrelationID(command.CorrelationID, now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.NewSessionConfiguredEvent(eventID, correlationID, command.Actor, session, now)
+	event.Data["replacement_mission"] = strconv.FormatBool(command.ReplaceMission)
+	event.Data["replacement_preset"] = strconv.FormatBool(command.ReplacePreset)
+	record, err := domain.NewCompletedIdempotencyRecord(key, hash, session.ID, now, service.idempotencyRetention)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, record); err != nil {
+		if replayed, found, replayErr := service.replaySession(ctx, key, hash, command.Actor); replayErr != nil || found {
+			return replayed, replayErr
+		}
+		return domain.Session{}, fmt.Errorf("persist draft setup: %w", err)
+	}
+	return session, nil
+}
+
+// UpdateDescriptionCommand replaces a session's optional description.
+type UpdateDescriptionCommand struct {
+	Actor          domain.Actor
+	SessionID      string
+	GuildID        string
+	CorrelationID  string
+	IdempotencyKey string
+	Description    string
+}
+
+// UpdateDescription normalizes and atomically persists a description change
+// with its immutable audit event.
+func (service *Service) UpdateDescription(ctx context.Context, command UpdateDescriptionCommand) (domain.Session, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Session{}, fmt.Errorf("validate actor: %w", err)
+	}
+
+	idempotencyKey, requestHash, err := updateDescriptionRequestIdentity(command)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if replayed, found, err := service.replaySession(ctx, idempotencyKey, requestHash, command.Actor); err != nil || found {
+		return replayed, err
+	}
+
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("get session: %w", err)
+	}
+	if err := authorizeOwner(command.Actor, session); err != nil {
+		return domain.Session{}, err
+	}
+	if session.GuildID != strings.TrimSpace(command.GuildID) {
+		return domain.Session{}, fmt.Errorf("session belongs to another guild: %w", domain.ErrForbidden)
+	}
+
+	now := service.clock.Now().UTC()
+	expectedVersion := session.Version
+	previous, err := session.SetDescription(command.Description, now)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("update session description: %w", err)
+	}
+
+	eventID, err := service.newID(now, "description event")
+	if err != nil {
+		return domain.Session{}, err
+	}
+	correlationID, err := service.resolveCorrelationID(command.CorrelationID, now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.NewSessionDescriptionChangedEvent(eventID, correlationID, command.Actor, session, previous, now)
+	idempotency, err := domain.NewCompletedIdempotencyRecord(idempotencyKey, requestHash, session.ID, now, service.idempotencyRetention)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("construct idempotency record: %w", err)
+	}
+	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, idempotency); err != nil {
+		if replayed, found, replayErr := service.replaySession(ctx, idempotencyKey, requestHash, command.Actor); replayErr != nil || found {
+			return replayed, replayErr
+		}
+		return domain.Session{}, fmt.Errorf("persist session description: %w", err)
+	}
+	return session, nil
 }
 
 // Configure validates and persists a new immutable configuration revision.
@@ -294,7 +760,14 @@ func (service *Service) RequestArtifactIngest(ctx context.Context, actor domain.
 	if session.GuildID != request.GuildID {
 		return fmt.Errorf("session belongs to another guild: %w", domain.ErrForbidden)
 	}
-	if session.LifecycleState != domain.StateDraft {
+	if session.ChannelID != request.ChannelID {
+		return fmt.Errorf("artifact destination does not match session channel: %w", domain.ErrForbidden)
+	}
+	if request.IsPresetRevision() {
+		if err := session.ValidatePresetRevisionStaging(request.ExpectedActivePresetRevision); err != nil {
+			return err
+		}
+	} else if session.LifecycleState != domain.StateDraft {
 		return fmt.Errorf("attachments are only accepted while a session is DRAFT: %w", domain.ErrInvalidTransition)
 	}
 	if err := service.artifactQueue.Enqueue(ctx, request); err != nil {
@@ -311,10 +784,13 @@ type CreateCommand struct {
 
 	Slug        string
 	DisplayName string
+	Description string
 	GameType    string
 	GuildID     string
 	ChannelID   string
 }
+
+const maximumSlugCollisionAttempts = 1000
 
 // Create creates a draft session and its initial event.
 func (service *Service) Create(
@@ -359,11 +835,19 @@ func (service *Service) Create(
 		return domain.Session{}, err
 	}
 
+	explicitSlug := strings.TrimSpace(command.Slug)
+	generatedSlug := explicitSlug == ""
+	baseSlug := explicitSlug
+	if generatedSlug {
+		baseSlug = domain.GenerateSessionSlug(command.DisplayName)
+	}
+
 	session, err := domain.NewSession(
 		domain.NewSessionInput{
 			ID:                 sessionID,
-			Slug:               command.Slug,
+			Slug:               baseSlug,
 			DisplayName:        command.DisplayName,
+			Description:        command.Description,
 			GameType:           command.GameType,
 			OwnerDiscordUserID: command.Actor.ID,
 			GuildID:            command.GuildID,
@@ -374,21 +858,6 @@ func (service *Service) Create(
 	if err != nil {
 		return domain.Session{}, fmt.Errorf(
 			"construct session: %w",
-			err,
-		)
-	}
-
-	event := domain.NewSessionCreatedEvent(
-		eventID,
-		correlationID,
-		command.Actor,
-		session,
-		now,
-	)
-
-	if err := event.Validate(); err != nil {
-		return domain.Session{}, fmt.Errorf(
-			"construct creation event: %w",
 			err,
 		)
 	}
@@ -407,12 +876,17 @@ func (service *Service) Create(
 		)
 	}
 
-	if err := service.repository.Create(
-		ctx,
-		session,
-		event,
-		idempotency,
-	); err != nil {
+	for attempt := 1; attempt <= maximumSlugCollisionAttempts; attempt++ {
+		session.Slug = slugCollisionCandidate(baseSlug, attempt)
+		event := domain.NewSessionCreatedEvent(eventID, correlationID, command.Actor, session, now)
+		if err := event.Validate(); err != nil {
+			return domain.Session{}, fmt.Errorf("construct creation event: %w", err)
+		}
+
+		err := service.repository.Create(ctx, session, event, idempotency)
+		if err == nil {
+			return session, nil
+		}
 		if replayed, found, replayErr := service.replaySession(
 			ctx,
 			idempotencyKey,
@@ -421,23 +895,39 @@ func (service *Service) Create(
 		); replayErr != nil || found {
 			return replayed, replayErr
 		}
-
-		return domain.Session{}, fmt.Errorf(
-			"persist session: %w",
-			err,
-		)
+		if !generatedSlug || !errors.Is(err, domain.ErrSlugConflict) {
+			return domain.Session{}, fmt.Errorf("persist session: %w", err)
+		}
 	}
 
-	return session, nil
+	return domain.Session{}, fmt.Errorf("persist session: no readable slug available after %d attempts: %w", maximumSlugCollisionAttempts, domain.ErrSlugConflict)
+}
+
+func slugCollisionCandidate(base string, attempt int) string {
+	if attempt <= 1 {
+		return base
+	}
+	suffix := "-" + strconv.Itoa(attempt)
+	maximumBaseLength := domain.MaximumGeneratedSlugLength - len(suffix)
+	if maximumBaseLength < 1 {
+		return "session" + suffix
+	}
+	if len(base) > maximumBaseLength {
+		base = strings.TrimRight(base[:maximumBaseLength], "-")
+	}
+	return base + suffix
 }
 
 // GetQuery identifies a session read operation.
 type GetQuery struct {
-	Actor     domain.Actor
-	SessionID string
+	Actor            domain.Actor
+	SessionID        string
+	GuildID          string
+	AllowGuildMember bool
 }
 
-// Get returns a session when the requesting actor owns it.
+// Get returns a session when the actor owns it or an authorized caller has
+// explicitly enabled guild-member read access for the requested guild.
 func (service *Service) Get(
 	ctx context.Context,
 	query GetQuery,
@@ -454,7 +944,11 @@ func (service *Service) Get(
 		return domain.Session{}, fmt.Errorf("get session: %w", err)
 	}
 
-	if err := authorizeOwner(query.Actor, session); err != nil {
+	if query.AllowGuildMember {
+		if session.GuildID != strings.TrimSpace(query.GuildID) {
+			return domain.Session{}, domain.ErrNotFound
+		}
+	} else if err := authorizeOwner(query.Actor, session); err != nil {
 		return domain.Session{}, err
 	}
 
@@ -463,8 +957,9 @@ func (service *Service) Get(
 
 // ListQuery identifies an owner-session query.
 type ListQuery struct {
-	Actor domain.Actor
-	Limit int32
+	Actor  domain.Actor
+	Limit  int32
+	States []domain.LifecycleState
 }
 
 // List returns sessions owned by the requesting actor.
@@ -474,6 +969,13 @@ func (service *Service) List(
 ) ([]domain.Session, error) {
 	if err := query.Actor.Validate(); err != nil {
 		return nil, fmt.Errorf("validate actor: %w", err)
+	}
+	allowed := make(map[domain.LifecycleState]struct{}, len(query.States))
+	for _, state := range query.States {
+		if !state.Valid() {
+			return nil, fmt.Errorf("invalid lifecycle filter %q", state)
+		}
+		allowed[state] = struct{}{}
 	}
 
 	sessions, err := service.repository.ListByOwner(
@@ -485,7 +987,18 @@ func (service *Service) List(
 		return nil, fmt.Errorf("list owner sessions: %w", err)
 	}
 
-	return sessions, nil
+	filtered := make([]domain.Session, 0, len(sessions))
+	for _, session := range sessions {
+		if len(allowed) == 0 {
+			if session.LifecycleState == domain.StateDeleted {
+				continue
+			}
+		} else if _, ok := allowed[session.LifecycleState]; !ok {
+			continue
+		}
+		filtered = append(filtered, session)
+	}
+	return filtered, nil
 }
 
 // TransitionCommand identifies a requested lifecycle transition.
@@ -618,6 +1131,10 @@ func createRequestIdentity(
 	if key == "" {
 		return "", "", fmt.Errorf("idempotency key is required")
 	}
+	description, err := domain.NormalizeSessionDescription(command.Description)
+	if err != nil {
+		return "", "", err
+	}
 
 	hash, err := hashRequest(struct {
 		CommandType string `json:"command_type"`
@@ -625,6 +1142,7 @@ func createRequestIdentity(
 		ActorID     string `json:"actor_id"`
 		Slug        string `json:"slug"`
 		DisplayName string `json:"display_name"`
+		Description string `json:"description,omitempty"`
 		GameType    string `json:"game_type"`
 		GuildID     string `json:"guild_id"`
 		ChannelID   string `json:"channel_id"`
@@ -634,6 +1152,7 @@ func createRequestIdentity(
 		ActorID:     strings.TrimSpace(command.Actor.ID),
 		Slug:        strings.TrimSpace(command.Slug),
 		DisplayName: strings.TrimSpace(command.DisplayName),
+		Description: description,
 		GameType:    strings.ToLower(strings.TrimSpace(command.GameType)),
 		GuildID:     strings.TrimSpace(command.GuildID),
 		ChannelID:   strings.TrimSpace(command.ChannelID),
@@ -642,6 +1161,34 @@ func createRequestIdentity(
 		return "", "", fmt.Errorf("hash create-session request: %w", err)
 	}
 
+	return key, hash, nil
+}
+
+func updateDescriptionRequestIdentity(command UpdateDescriptionCommand) (string, string, error) {
+	key := strings.TrimSpace(command.IdempotencyKey)
+	if key == "" {
+		return "", "", fmt.Errorf("idempotency key is required")
+	}
+	description, err := domain.NormalizeSessionDescription(command.Description)
+	if err != nil {
+		return "", "", err
+	}
+	hash, err := hashRequest(struct {
+		CommandType string `json:"command_type"`
+		ActorID     string `json:"actor_id"`
+		SessionID   string `json:"session_id"`
+		GuildID     string `json:"guild_id"`
+		Description string `json:"description"`
+	}{
+		CommandType: "UpdateSessionDescription",
+		ActorID:     strings.TrimSpace(command.Actor.ID),
+		SessionID:   strings.TrimSpace(command.SessionID),
+		GuildID:     strings.TrimSpace(command.GuildID),
+		Description: description,
+	})
+	if err != nil {
+		return "", "", fmt.Errorf("hash update-description request: %w", err)
+	}
 	return key, hash, nil
 }
 

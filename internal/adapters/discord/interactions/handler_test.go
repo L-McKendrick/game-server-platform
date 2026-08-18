@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,9 +16,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/discord/componentid"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
 	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
@@ -26,6 +30,19 @@ var testNow = time.Date(2026, 8, 3, 20, 0, 0, 0, time.UTC)
 
 type fixedClock struct {
 	now time.Time
+}
+
+type sequencePlayerQuery struct {
+	statuses []domain.PlayerStatus
+	index    int
+}
+
+func (query *sequencePlayerQuery) Query(context.Context, string) (domain.PlayerStatus, error) {
+	status := query.statuses[query.index]
+	if query.index < len(query.statuses)-1 {
+		query.index++
+	}
+	return status, nil
 }
 
 type discardCommandQueue struct{}
@@ -73,6 +90,419 @@ func TestHandlerAcknowledgesValidPing(t *testing.T) {
 	}
 }
 
+func TestHandlerAcknowledgesAutocompleteWithExplicitEmptyChoices(t *testing.T) {
+	t.Parallel()
+
+	handler, _, privateKey := newTestHandler(t, nil, nil)
+	body := marshalPayload(map[string]any{
+		"id": "autocomplete-1", "application_id": "app-1",
+		"type":     interactionTypeApplicationCommandAutocomplete,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{
+			"name": "rb",
+			"options": []any{map[string]any{
+				"type": applicationCommandOptionSubcommand, "name": "status",
+				"options": []any{map[string]any{
+					"type": applicationCommandOptionString, "name": "session", "value": "sat", "focused": true,
+				}},
+			}},
+		},
+	})
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if response.Code != http.StatusOK || decoded.Type != interactionResponseAutocompleteResult ||
+		decoded.Data == nil || decoded.Data.Choices == nil || len(*decoded.Data.Choices) != 0 {
+		t.Fatalf("autocomplete response = %#v; body = %s", decoded, response.Body.String())
+	}
+}
+
+func TestHandlerReturnsGuildVisibleStatusAutocompleteChoices(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(t, nil, nil)
+	seedAutocompleteSession(t, repository, "session-visible", "Saturday Arma", "saturday-arma", "owner-1", "guild-1")
+	seedAutocompleteSession(t, repository, "session-other-owner", "Saturday Private", "saturday-private", "owner-2", "guild-1")
+	seedAutocompleteSession(t, repository, "session-other-guild", "Saturday Elsewhere", "saturday-elsewhere", "owner-1", "guild-2")
+	seedHandlerSessionState(t, repository, "session-terminated", "Saturday Terminated", "saturday-terminated", "owner-1", "guild-1", domain.StateDeleted)
+	body := marshalPayload(map[string]any{
+		"id": "autocomplete-visible", "application_id": "app-1",
+		"type": interactionTypeApplicationCommandAutocomplete, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
+			"type": applicationCommandOptionSubcommand, "name": "status", "options": []any{map[string]any{
+				"type": applicationCommandOptionString, "name": "session", "value": "SAT", "focused": true,
+			}},
+		}}},
+	})
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if response.Code != http.StatusOK || decoded.Type != interactionResponseAutocompleteResult ||
+		decoded.Data == nil || decoded.Data.Choices == nil || len(*decoded.Data.Choices) != 2 {
+		t.Fatalf("autocomplete response = %#v; body = %s", decoded, response.Body.String())
+	}
+	values := map[any]bool{}
+	for _, choice := range *decoded.Data.Choices {
+		values[choice.Value] = true
+		if strings.Contains(choice.Name, "session-visible") || strings.Contains(choice.Name, "session-other-owner") {
+			t.Fatalf("choice label exposes immutable ID: %q", choice.Name)
+		}
+	}
+	if !values["session-visible"] || !values["session-other-owner"] || values["session-other-guild"] || values["session-terminated"] {
+		t.Fatalf("choice values = %#v; want active guild sessions only", values)
+	}
+}
+
+func TestHandlerAutocompleteDoesNotDiscloseSessionsBeforeAccessAuthorization(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(t, nil, nil)
+	seedAutocompleteSession(t, repository, "session-secret", "Secret Session", "secret-session", "owner-1", "guild-1")
+	body := marshalPayload(map[string]any{
+		"id": "autocomplete-unauthorized", "application_id": "app-1",
+		"type": interactionTypeApplicationCommandAutocomplete, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{}},
+		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
+			"type": applicationCommandOptionSubcommand, "name": "status", "options": []any{map[string]any{
+				"type": applicationCommandOptionString, "name": "session", "value": "secret", "focused": true,
+			}},
+		}}},
+	})
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if response.Code != http.StatusOK || decoded.Type != interactionResponseAutocompleteResult ||
+		decoded.Data == nil || decoded.Data.Choices == nil || len(*decoded.Data.Choices) != 0 {
+		t.Fatalf("unauthorized autocomplete response = %#v", decoded)
+	}
+	if strings.Contains(response.Body.String(), "session-secret") || strings.Contains(response.Body.String(), "Secret Session") {
+		t.Fatalf("unauthorized autocomplete leaked session data: %s", response.Body.String())
+	}
+}
+
+func TestHandlerAutocompleteHonorsDiscordChoiceLimits(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(t, nil, nil)
+	for index := 0; index < 30; index++ {
+		suffix := fmt.Sprintf("%02d", index)
+		seedAutocompleteSession(
+			t, repository, "session-"+suffix, "Session "+suffix, "session-"+suffix, "owner-1", "guild-1",
+		)
+	}
+	body := marshalPayload(map[string]any{
+		"id": "autocomplete-limit", "application_id": "app-1",
+		"type": interactionTypeApplicationCommandAutocomplete, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
+			"type": applicationCommandOptionSubcommand, "name": "status", "options": []any{map[string]any{
+				"type": applicationCommandOptionString, "name": "session", "value": "", "focused": true,
+			}},
+		}}},
+	})
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || decoded.Data.Choices == nil || len(*decoded.Data.Choices) != maximumAutocompleteChoices {
+		t.Fatalf("choice count response = %#v", decoded)
+	}
+	for _, choice := range *decoded.Data.Choices {
+		if utf8.RuneCountInString(choice.Name) > maximumAutocompleteLabelRunes {
+			t.Fatalf("choice label has %d runes: %q", utf8.RuneCountInString(choice.Name), choice.Name)
+		}
+	}
+}
+
+func TestHandlerRecognizesModalSubmission(t *testing.T) {
+	t.Parallel()
+
+	handler, _, privateKey := newTestHandler(t, nil, nil)
+	body := marshalPayload(map[string]any{
+		"id": "modal-1", "application_id": "app-1",
+		"type":     interactionTypeModalSubmit,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{
+			"custom_id": "rb:v1:create:1:Abcdef12",
+			"components": []any{map[string]any{
+				"type": componentTypeLabel,
+				"component": map[string]any{
+					"type": componentTypeTextInput, "custom_id": "name", "value": "Saturday Arma",
+				},
+			}},
+		},
+	})
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if response.Code != http.StatusOK || decoded.Type != interactionResponseChannelMessageWithSource ||
+		decoded.Data == nil || !strings.Contains(decoded.Data.Content, "modal is not supported or has expired") {
+		t.Fatalf("modal response = %#v; body = %s", decoded, response.Body.String())
+	}
+}
+
+func TestHandlerOpensAndSubmitsPrivateModsModalForRunningSession(t *testing.T) {
+	t.Parallel()
+	handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(t, []string{"correlation-mods-open", "correlation-mods-submit"}, nil)
+	seedHandlerPresetRevisionSession(t, repository)
+	openBody := marshalPayload(map[string]any{
+		"id": "mods-open", "application_id": "app-1", "type": interactionTypeApplicationCommand, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data":   map[string]any{"name": "rb", "options": []any{map[string]any{"type": applicationCommandOptionSubcommand, "name": "mods", "options": []any{map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "session-mods"}}}}},
+	})
+	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
+	var modal interactionResponse
+	decodeResponse(t, opened, &modal)
+	if modal.Type != interactionResponseModal || modal.Data == nil || modal.Data.CustomID != "rb:mods:v1:session-mods:1" || modal.Data.Components == nil || len(*modal.Data.Components) != 1 {
+		t.Fatalf("mods modal response = %#v body=%s", modal, opened.Body.String())
+	}
+	submitBody := marshalPayload(map[string]any{
+		"id": "mods-submit", "application_id": "app-1", "type": interactionTypeModalSubmit, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{
+			"custom_id":  modal.Data.CustomID,
+			"resolved":   map[string]any{"attachments": map[string]any{"attachment-mods": map[string]any{"id": "attachment-mods", "filename": "revision.html", "content_type": "text/html", "size": 2048, "url": "https://cdn.discordapp.com/attachments/1/2/revision.html"}}},
+			"components": []any{map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsPresetCustomID, "values": []string{"attachment-mods"}}}},
+		},
+	})
+	submitted := executeSignedRequest(t, handler, privateKey, submitBody, testNow)
+	var response interactionResponse
+	decodeResponse(t, submitted, &response)
+	if response.Data == nil || !strings.Contains(response.Data.Content, "queued for validation") || !strings.Contains(response.Data.Content, "not interrupted") {
+		t.Fatalf("mods submit response = %#v body=%s", response, submitted.Body.String())
+	}
+	requests := queue.Requests()
+	if len(requests) != 1 || requests[0].Purpose != domain.ArtifactPurposePresetRevision || requests[0].ExpectedActivePresetRevision != 1 || requests[0].SessionID != "session-mods" {
+		t.Fatalf("mods queue requests = %#v", requests)
+	}
+}
+
+func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, queue, cards, privateKey := newTestHandlerWithQueues(
+		t,
+		[]string{"correlation-modal-1", "correlation-modal-2"},
+		[]string{"session-modal", "event-created", "event-configured", "event-artifacts"},
+	)
+	body := createModalSubmissionBody(
+		"interaction-modal", "Saturday Arma", []string{createFeatureModded, createFeatureTeamSpeak}, true, "mission.pbo",
+	)
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		if response.Code != http.StatusOK || decoded.Data == nil ||
+			!strings.Contains(decoded.Data.Content, "Draft session created") ||
+			!strings.Contains(decoded.Data.Content, "Mission queued for validation") ||
+			!strings.Contains(decoded.Data.Content, "Preset queued for validation") ||
+			!strings.Contains(decoded.Data.Content, "have not been validated yet") {
+			t.Fatalf("attempt %d response = %#v", attempt, decoded)
+		}
+	}
+
+	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %#v; want one idempotent draft", sessions)
+	}
+	session := sessions[0]
+	if session.ID != "session-modal" || session.Description != "Weekly co-op" ||
+		session.ConfigurationRevision != 1 || session.Vanilla || !session.TeamSpeakEnabled ||
+		session.SleepAfterSeconds != defaultSleepMinutes*60 || session.ArchiveAfterSeconds != defaultArchiveDays*86400 {
+		t.Fatalf("configured draft = %#v", session)
+	}
+	if events := repository.Events(session.ID); len(events) != 3 || events[2].Type != domain.EventArtifactRequested {
+		t.Fatalf("events = %#v; want creation, configuration, and artifact preparation", events)
+	}
+	requests := queue.Requests()
+	if len(requests) != 2 || requests[0].Kind != domain.ArtifactMission || requests[1].Kind != domain.ArtifactPreset ||
+		requests[0].SessionID != session.ID || requests[1].SessionID != session.ID ||
+		requests[0].IdempotencyKey == requests[1].IdempotencyKey {
+		t.Fatalf("queued requests = %#v", requests)
+	}
+	cardRequests := cards.Requests()
+	if len(cardRequests) != 1 || cardRequests[0].Kind != domain.NotificationSessionCard ||
+		cardRequests[0].SessionID != session.ID || cardRequests[0].CardRevision != session.Version ||
+		!strings.Contains(cardRequests[0].Content, "Setting up: Saturday Arma") {
+		t.Fatalf("card requests = %#v; want one replay-safe public card", cardRequests)
+	}
+}
+
+func TestHandlerAcceptsVanillaCreationWithoutPreset(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(
+		t,
+		[]string{"correlation-vanilla"},
+		[]string{"session-vanilla", "event-created", "event-configured", "event-artifacts"},
+	)
+	response := executeSignedRequest(t, handler, privateKey, createModalSubmissionBody(
+		"interaction-vanilla", "Vanilla Night", nil, false, "mission.pbo",
+	), testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Mode: Vanilla") ||
+		strings.Contains(decoded.Data.Content, "add one before") {
+		t.Fatalf("vanilla response = %#v", decoded.Data)
+	}
+	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+	if err != nil || len(sessions) != 1 || !sessions[0].Vanilla || len(queue.Requests()) != 1 {
+		t.Fatalf("vanilla draft sessions=%#v requests=%#v err=%v", sessions, queue.Requests(), err)
+	}
+}
+
+func TestHandlerKeepsModdedCreationWithoutPresetRecoverable(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(
+		t,
+		[]string{"correlation-modded-missing"},
+		[]string{"session-modded-missing", "event-created", "event-configured", "event-artifacts"},
+	)
+	response := executeSignedRequest(t, handler, privateKey, createModalSubmissionBody(
+		"interaction-modded-missing", "Modded Missing Preset", []string{createFeatureModded}, false, "mission.pbo",
+	), testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Mode: Modded") ||
+		!strings.Contains(decoded.Data.Content, "add one before this modded session can become ready") {
+		t.Fatalf("modded response = %#v", decoded.Data)
+	}
+	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("modded draft sessions=%#v err=%v", sessions, err)
+	}
+	if sessions[0].Vanilla || sessions[0].LifecycleState != domain.StateDraft ||
+		sessions[0].MissionArtifactStatus != domain.ArtifactPending || sessions[0].PresetArtifactStatus != "" {
+		t.Fatalf("modded draft = %#v; want mission pending and missing preset", sessions[0])
+	}
+	if requests := queue.Requests(); len(requests) != 1 || requests[0].Kind != domain.ArtifactMission {
+		t.Fatalf("modded queued requests = %#v; want mission only", requests)
+	}
+}
+
+func TestParseCreateModalSubmissionEnforcesServerSideLimits(t *testing.T) {
+	t.Parallel()
+
+	decode := func(t *testing.T) interactionPayload {
+		t.Helper()
+		var payload interactionPayload
+		if err := json.Unmarshal(createModalSubmissionBody(
+			"interaction-limits", "Saturday Arma", []string{createFeatureModded}, true, "mission.pbo",
+		), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload
+	}
+	attachment := func(payload *interactionPayload, id string) interactionAttachment {
+		t.Helper()
+		return payload.Data.Resolved.Attachments[id]
+	}
+	setAttachment := func(payload *interactionPayload, id string, value interactionAttachment) {
+		payload.Data.Resolved.Attachments[id] = value
+	}
+
+	maximum := decode(t)
+	maximum.Data.Components[0].Component.Value = strings.Repeat("界", 100)
+	maximum.Data.Components[1].Component.Value = strings.Repeat("界", 64)
+	mission := attachment(&maximum, "attachment-mission")
+	mission.Size = 100 * 1024 * 1024
+	setAttachment(&maximum, "attachment-mission", mission)
+	preset := attachment(&maximum, "attachment-preset")
+	preset.Size = 10 * 1024 * 1024
+	setAttachment(&maximum, "attachment-preset", preset)
+	if _, err := parseCreateModalSubmission(maximum, testActorForInteraction("owner-1"), "correlation-limits", "discord:limits", testNow); err != nil {
+		t.Fatalf("maximum permitted modal values returned error: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*interactionPayload)
+		want   string
+	}{
+		{name: "name over 100 characters", want: "1 to 100 characters", mutate: func(payload *interactionPayload) {
+			payload.Data.Components[0].Component.Value = strings.Repeat("界", 101)
+		}},
+		{name: "description over 64 characters", want: "at most 64 characters", mutate: func(payload *interactionPayload) {
+			payload.Data.Components[1].Component.Value = strings.Repeat("界", 65)
+		}},
+		{name: "mission over 100 MiB", want: "no larger than 100 MiB", mutate: func(payload *interactionPayload) {
+			value := attachment(payload, "attachment-mission")
+			value.Size = 100*1024*1024 + 1
+			setAttachment(payload, "attachment-mission", value)
+		}},
+		{name: "preset over 10 MiB", want: "no larger than 10 MiB", mutate: func(payload *interactionPayload) {
+			value := attachment(payload, "attachment-preset")
+			value.Size = 10*1024*1024 + 1
+			setAttachment(payload, "attachment-preset", value)
+		}},
+		{name: "missing required mission", want: "single mission .pbo", mutate: func(payload *interactionPayload) {
+			payload.Data.Components[3].Component.Values = nil
+		}},
+		{name: "more than one preset", want: "at most one Arma Launcher", mutate: func(payload *interactionPayload) {
+			payload.Data.Components[4].Component.Values = []string{"attachment-preset", "attachment-preset-2"}
+		}},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			payload := decode(t)
+			test.mutate(&payload)
+			_, err := parseCreateModalSubmission(payload, testActorForInteraction("owner-1"), "correlation-limits", "discord:limits", testNow)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("parse error = %v; want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestHandlerRejectsInvalidCreationModalBeforePersisting(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		displayName     string
+		missionFilename string
+		want            string
+	}{
+		{name: "empty name", displayName: "   ", missionFilename: "mission.pbo", want: "1 to 100 characters"},
+		{name: "invalid mission", displayName: "Saturday Arma", missionFilename: "mission.txt", want: ".pbo file"},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(
+				t, []string{"correlation-invalid"}, nil,
+			)
+			response := executeSignedRequest(t, handler, privateKey, createModalSubmissionBody(
+				"interaction-invalid", test.displayName, []string{createFeatureModded}, false, test.missionFilename,
+			), testNow)
+			var decoded interactionResponse
+			decodeResponse(t, response, &decoded)
+			if decoded.Data == nil || !strings.Contains(decoded.Data.Content, test.want) {
+				t.Fatalf("response = %#v; want %q", decoded.Data, test.want)
+			}
+			sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+			if err != nil || len(sessions) != 0 || len(queue.Requests()) != 0 {
+				t.Fatalf("invalid submission persisted sessions=%#v requests=%#v err=%v", sessions, queue.Requests(), err)
+			}
+		})
+	}
+}
+
 func TestHandlerRejectsInvalidSignature(t *testing.T) {
 	t.Parallel()
 
@@ -110,43 +540,441 @@ func TestHandlerRejectsStaleTimestamp(t *testing.T) {
 	}
 }
 
-func TestHandlerCreatesAndReplaysSession(t *testing.T) {
+func TestHandlerRejectsMalformedAndOversizedSignedPayloads(t *testing.T) {
 	t.Parallel()
 
-	handler, repository, privateKey := newTestHandler(
-		t,
-		[]string{"correlation-1", "correlation-2"},
-		[]string{"session-1", "event-1"},
-	)
-	body := createCommandBody("interaction-create-1", "owner-1", "guild-1", "channel-1")
-
-	first := executeSignedRequest(t, handler, privateKey, body, testNow)
-	second := executeSignedRequest(t, handler, privateKey, body, testNow)
-
-	for index, response := range []*httptest.ResponseRecorder{first, second} {
-		if response.Code != http.StatusOK {
-			t.Fatalf("response %d status = %d; body = %s", index+1, response.Code, response.Body.String())
+	t.Run("malformed JSON", func(t *testing.T) {
+		handler, _, privateKey := newTestHandler(t, nil, nil)
+		response := executeSignedRequest(t, handler, privateKey, []byte(`{"application_id":"app-1"`), testNow)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid interaction payload") {
+			t.Fatalf("response = %d %q; want invalid-payload rejection", response.Code, response.Body.String())
 		}
+	})
 
+	t.Run("oversized body", func(t *testing.T) {
+		handler, _, privateKey := newTestHandler(t, nil, nil)
+		handler.maxRequestBytes = 32
+		body := []byte(`{"id":"ping-1","application_id":"app-1","type":1}`)
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		if response.Code != http.StatusRequestEntityTooLarge || !strings.Contains(response.Body.String(), "request body is too large") {
+			t.Fatalf("response = %d %q; want body-limit rejection", response.Code, response.Body.String())
+		}
+	})
+}
+
+func TestHandlerRejectsStaleOrMalformedComponentsWithoutEchoingState(t *testing.T) {
+	t.Parallel()
+
+	for _, customID := range []string{
+		"rb:v1:refresh:1:StaleTok",
+		"rb:v1:refresh:01:MalformedTok",
+	} {
+		t.Run(customID, func(t *testing.T) {
+			handler, _, privateKey := newTestHandler(t, nil, nil)
+			body := marshalPayload(map[string]any{
+				"id": "component-1", "application_id": "app-1", "type": interactionTypeMessageComponent,
+				"guild_id": "guild-1", "channel_id": "channel-1",
+				"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+				"data":   map[string]any{"custom_id": customID, "component_type": componentTypeButton},
+			})
+
+			response := executeSignedRequest(t, handler, privateKey, body, testNow)
+			var decoded interactionResponse
+			decodeResponse(t, response, &decoded)
+			if response.Code != http.StatusOK || decoded.Data == nil ||
+				!strings.Contains(decoded.Data.Content, "not supported or has expired") ||
+				strings.Contains(decoded.Data.Content, customID) {
+				t.Fatalf("component response = %#v", decoded)
+			}
+			if decoded.Data.Flags != messageFlagEphemeral || decoded.Data.AllowedMentions == nil ||
+				len(decoded.Data.AllowedMentions.Parse) != 0 {
+				t.Fatalf("component response safety = %#v", decoded.Data)
+			}
+		})
+	}
+}
+
+func TestHandlerAuthorizesComponentBeforeReturningStaleResponse(t *testing.T) {
+	t.Parallel()
+
+	handler, _, privateKey := newTestHandler(t, nil, nil)
+	customID := "rb:v1:refresh:1:SecretTk"
+	body := marshalPayload(map[string]any{
+		"id": "component-unauthorized", "application_id": "app-1", "type": interactionTypeMessageComponent,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{}},
+		"data":   map[string]any{"custom_id": customID, "component_type": componentTypeButton},
+	})
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "not authorized") ||
+		strings.Contains(decoded.Data.Content, customID) || strings.Contains(decoded.Data.Content, "expired") {
+		t.Fatalf("unauthorized component response = %#v", decoded)
+	}
+}
+
+func TestHandlerExecutesAuthorizedRevisionBoundCardControls(t *testing.T) {
+	t.Parallel()
+	handler, repository, _, notifications, privateKey := newTestHandlerWithQueues(
+		t, []string{"correlation-refresh-1", "correlation-refresh-2"}, nil,
+	)
+	session := seedCardControlSession(t, repository)
+	token := sessioncard.ControlToken(session.ID)
+	click := func(action string, revision uint64) interactionResponse {
+		t.Helper()
+		customID, err := componentid.New(action, revision, token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := executeSignedRequest(t, handler, privateKey, cardControlBody(action, customID), testNow)
 		var decoded interactionResponse
 		decodeResponse(t, response, &decoded)
-		if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "session-1") {
-			t.Fatalf("response %d content = %#v; want session ID", index+1, decoded.Data)
+		if response.Code != http.StatusOK || decoded.Type != interactionResponseChannelMessageWithSource ||
+			decoded.Data == nil || decoded.Data.Flags != messageFlagEphemeral || decoded.Data.AllowedMentions == nil ||
+			len(decoded.Data.AllowedMentions.Parse) != 0 {
+			t.Fatalf("%s response = %#v", action, decoded)
 		}
-		if decoded.Data.Flags != messageFlagEphemeral {
-			t.Errorf("response %d flags = %d; want %d", index+1, decoded.Data.Flags, messageFlagEphemeral)
+		return decoded
+	}
+
+	details := click(componentid.ActionViewDetails, uint64(session.Version))
+	if !strings.Contains(details.Data.Content, "Slug: `card-controls`") || strings.Contains(details.Data.Content, session.ID) {
+		t.Fatalf("details = %q", details.Data.Content)
+	}
+	players := click(componentid.ActionShowPlayers, uint64(session.Version))
+	if !strings.Contains(players.Data.Content, "Players: Card Controls") || !strings.Contains(players.Data.Content, "unavailable") || strings.Contains(players.Data.Content, "Slug:") {
+		t.Fatalf("players = %q", players.Data.Content)
+	}
+	help := click(componentid.ActionHelp, uint64(session.Version))
+	if !strings.Contains(help.Data.Content, "Card controls are read-only") || !strings.Contains(help.Data.Content, "/rb setup") {
+		t.Fatalf("help = %q", help.Data.Content)
+	}
+	download := click(componentid.ActionDownload, uint64(session.Version))
+	if !strings.Contains(download.Data.Content, "https://discord.com/channels/guild-1/channel-1/modlist-message-1") ||
+		!strings.Contains(download.Data.Content, "card-controls-modlist.html") {
+		t.Fatalf("download = %q", download.Data.Content)
+	}
+	refresh := click(componentid.ActionRefresh, uint64(session.Version-1))
+	if !strings.Contains(refresh.Data.Content, "latest persisted revision was queued") {
+		t.Fatalf("refresh = %q", refresh.Data.Content)
+	}
+	requests := notifications.Requests()
+	if len(requests) != 1 || requests[0].Kind != domain.NotificationSessionCard ||
+		requests[0].CardRevision != session.Version || !strings.HasPrefix(requests[0].NotificationID, "card-refresh-") {
+		t.Fatalf("refresh notifications = %#v", requests)
+	}
+	currentRefresh := click(componentid.ActionRefresh, uint64(session.Version))
+	if !strings.Contains(currentRefresh.Data.Content, "bounded live-player check") || len(notifications.Requests()) != 1 {
+		t.Fatalf("bounded refresh = %q notifications=%#v", currentRefresh.Data.Content, notifications.Requests())
+	}
+
+	stale := click(componentid.ActionHelp, uint64(session.Version-1))
+	if !strings.Contains(stale.Data.Content, "card changed") || len(notifications.Requests()) != 1 {
+		t.Fatalf("stale help = %q notifications=%#v", stale.Data.Content, notifications.Requests())
+	}
+}
+
+func TestHandlerRateLimitsChangedLiveRefreshWithinWindow(t *testing.T) {
+	t.Parallel()
+	handler, repository, _, notifications, privateKey := newTestHandlerWithQueues(
+		t, []string{"correlation-live-refresh-1", "correlation-live-refresh-2"}, nil,
+	)
+	seedRunningHandlerSession(t, repository)
+	session, err := repository.Get(context.Background(), "running-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.playerQuery = &sequencePlayerQuery{statuses: []domain.PlayerStatus{
+		{PlayerCount: 1, MaxPlayers: 32}, {PlayerCount: 2, MaxPlayers: 32},
+	}}
+	customID, err := componentid.New(componentid.ActionRefresh, uint64(session.Version), sessioncard.ControlToken(session.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := cardControlBody(componentid.ActionRefresh, customID)
+	first := executeSignedRequest(t, handler, privateKey, body, testNow)
+	second := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var firstResponse, secondResponse interactionResponse
+	decodeResponse(t, first, &firstResponse)
+	decodeResponse(t, second, &secondResponse)
+	if firstResponse.Data == nil || !strings.Contains(firstResponse.Data.Content, "refresh queued") ||
+		secondResponse.Data == nil || !strings.Contains(secondResponse.Data.Content, "already queued") {
+		t.Fatalf("refresh responses first=%#v second=%#v", firstResponse, secondResponse)
+	}
+	requests := notifications.Requests()
+	if len(requests) != 1 || !strings.Contains(requests[0].Content, "**Players:** `1/32`") {
+		t.Fatalf("rate-limited refresh requests = %#v", requests)
+	}
+}
+
+func TestHandlerRejectsCardControlFromWrongChannel(t *testing.T) {
+	t.Parallel()
+	handler, repository, privateKey := newTestHandler(t, nil, nil)
+	session := seedCardControlSession(t, repository)
+	token := sessioncard.ControlToken(session.ID)
+	customID, err := componentid.New(componentid.ActionViewDetails, uint64(session.Version), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := cardControlBody(componentid.ActionViewDetails, customID)
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	payload["channel_id"] = "channel-other"
+	response := executeSignedRequest(t, handler, privateKey, marshalPayload(payload), testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "not authorized") {
+		t.Fatalf("wrong-channel response = %#v", decoded)
+	}
+}
+
+func TestHandlerOpensCreateModalWithoutPersistingSession(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(t, nil, nil)
+	body := createCommandBody("interaction-create-1", "owner-1", "guild-1", "channel-1")
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	if response.Code != http.StatusOK {
+		t.Fatalf("response status = %d; body = %s", response.Code, response.Body.String())
+	}
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Type != interactionResponseModal || decoded.Data == nil || decoded.Data.CustomID != createModalCustomID ||
+		decoded.Data.Title != "Create Arma 3 session" || decoded.Data.Components == nil || len(*decoded.Data.Components) != 5 {
+		t.Fatalf("create modal response = %#v", decoded)
+	}
+	components := *decoded.Data.Components
+	wantTypes := []int{componentTypeTextInput, componentTypeTextInput, componentTypeCheckboxGroup, componentTypeFileUpload, componentTypeFileUpload}
+	for index, component := range components {
+		if component.Type != componentTypeLabel || component.Component == nil || component.Component.Type != wantTypes[index] {
+			t.Fatalf("modal component %d = %#v; want label wrapping type %d", index, component, wantTypes[index])
 		}
+	}
+	name, description := components[0].Component, components[1].Component
+	if name.CustomID != createNameCustomID || name.Required == nil || !*name.Required ||
+		name.MinLength == nil || *name.MinLength != 1 || name.MaxLength == nil || *name.MaxLength != 100 {
+		t.Fatalf("name input = %#v", name)
+	}
+	if description.CustomID != createDescriptionCustomID || description.Required == nil || *description.Required ||
+		description.MaxLength == nil || *description.MaxLength != 64 {
+		t.Fatalf("description input = %#v", description)
+	}
+	features := components[2].Component
+	if features.CustomID != createFeaturesCustomID || features.MinValues == nil || *features.MinValues != 0 ||
+		features.MaxValues == nil || *features.MaxValues != 2 || len(features.Options) != 2 ||
+		features.Options[0].Value != createFeatureModded || !features.Options[0].Default ||
+		features.Options[1].Value != createFeatureTeamSpeak || features.Options[1].Default {
+		t.Fatalf("feature defaults = %#v; want modded on and TeamSpeak off", features.Options)
+	}
+	mission, preset := components[3].Component, components[4].Component
+	if mission.CustomID != createMissionCustomID || mission.Required == nil || !*mission.Required ||
+		mission.MinValues == nil || *mission.MinValues != 1 || mission.MaxValues == nil || *mission.MaxValues != 1 ||
+		preset.CustomID != createPresetCustomID || preset.Required == nil || *preset.Required ||
+		preset.MinValues == nil || *preset.MinValues != 0 || preset.MaxValues == nil || *preset.MaxValues != 1 {
+		t.Fatalf("file requirements mission=%#v preset=%#v", mission.Required, preset.Required)
 	}
 
 	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
 	if err != nil {
 		t.Fatalf("ListByOwner() returned error: %v", err)
 	}
-	if len(sessions) != 1 {
-		t.Fatalf("session count = %d; want 1", len(sessions))
+	if len(sessions) != 0 {
+		t.Fatalf("session count = %d; want 0", len(sessions))
 	}
-	if eventCount := len(repository.Events("session-1")); eventCount != 1 {
-		t.Errorf("event count = %d; want 1", eventCount)
+}
+
+func TestSetupModalProtectsLegacyObjectBackedArtifacts(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"mission", "preset"} {
+		description := setupArtifactDescription(kind, "", "sessions/legacy/input/artifact", false)
+		if !strings.Contains(description, "cannot be replaced") {
+			t.Fatalf("%s legacy artifact description = %q", kind, description)
+		}
+	}
+}
+
+func TestHandlerPreflightsCardPermissionsAndUsesPlainTextFallback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing send blocks create before persistence", func(t *testing.T) {
+		handler, repository, privateKey := newTestHandler(t, nil, nil)
+		body := withAppPermissions(createCommandBody("interaction-no-send", "owner-1", "guild-1", "channel-1"), viewChannelPermission)
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		if decoded.Type != interactionResponseChannelMessageWithSource || decoded.Data == nil ||
+			!strings.Contains(decoded.Data.Content, "Send Messages") || !strings.Contains(decoded.Data.Content, "/rb create") {
+			t.Fatalf("permission response = %#v", decoded)
+		}
+		sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+		if err != nil || len(sessions) != 0 {
+			t.Fatalf("preflight persisted sessions=%#v err=%v", sessions, err)
+		}
+	})
+
+	t.Run("permission loss blocks modal submission before persistence", func(t *testing.T) {
+		handler, repository, _, _, privateKey := newTestHandlerWithQueues(t, []string{"correlation-drift"}, nil)
+		body := withAppPermissions(createModalSubmissionBody(
+			"interaction-drift", "Permission Drift", nil, false, "mission.pbo",
+		), viewChannelPermission)
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Send Messages") {
+			t.Fatalf("permission drift response = %#v", decoded)
+		}
+		sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+		if err != nil || len(sessions) != 0 {
+			t.Fatalf("permission drift persisted sessions=%#v err=%v", sessions, err)
+		}
+	})
+
+	t.Run("missing edit blocks setup before opening modal", func(t *testing.T) {
+		handler, repository, _, _, privateKey := newTestHandlerWithQueues(t, nil, nil)
+		seedSetupDraft(t, repository, domain.ArtifactAccepted, domain.ArtifactRejected)
+		body := withAppPermissions(setupCommandBody("interaction-no-edit", "session-setup"), 0)
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "View Channel") || !strings.Contains(decoded.Data.Content, "/rb setup") {
+			t.Fatalf("edit preflight response = %#v", decoded)
+		}
+	})
+
+	t.Run("missing rich capabilities keeps content card", func(t *testing.T) {
+		handler, _, _, cards, privateKey := newTestHandlerWithQueues(
+			t, []string{"correlation-plain"}, []string{"session-plain", "event-created", "event-configured", "event-artifacts"},
+		)
+		body := withAppPermissions(createModalSubmissionBody(
+			"interaction-plain", "Plain Card", nil, false, "mission.pbo",
+		), viewChannelPermission|sendMessagesPermission)
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "plain-text form") {
+			t.Fatalf("fallback response = %#v", decoded)
+		}
+		requests := cards.Requests()
+		if len(requests) != 1 || requests[0].Content == "" || requests[0].Kind != domain.NotificationSessionCard {
+			t.Fatalf("fallback card requests = %#v", requests)
+		}
+	})
+}
+
+func TestHandlerSetupModalPrefillsDraftAndQueuesOnlyRejectedReplacement(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, queue, cards, privateKey := newTestHandlerWithQueues(
+		t, []string{"correlation-setup-open", "correlation-setup-submit", "correlation-setup-replay"},
+		[]string{"event-setup-configured", "event-setup-replacement"},
+	)
+	seedSetupDraft(t, repository, domain.ArtifactAccepted, domain.ArtifactRejected)
+
+	openResponse := executeSignedRequest(t, handler, privateKey, setupCommandBody("interaction-setup-open", "session-setup"), testNow)
+	var modal interactionResponse
+	decodeResponse(t, openResponse, &modal)
+	if modal.Type != interactionResponseModal || modal.Data == nil || modal.Data.CustomID != setupModalCustomIDPrefix+"session-setup" ||
+		modal.Data.Components == nil || len(*modal.Data.Components) != 5 {
+		t.Fatalf("setup modal = %#v", modal)
+	}
+	components := *modal.Data.Components
+	if components[0].Component == nil || components[0].Component.Value != "Original Setup" ||
+		components[1].Component == nil || components[1].Component.Value != "Original description" ||
+		components[3].Component == nil || components[3].Component.Required == nil || *components[3].Component.Required {
+		t.Fatalf("prefilled setup components = %#v", components)
+	}
+
+	submitResponse := executeSignedRequest(t, handler, privateKey, setupModalSubmissionBody(
+		"interaction-setup-submit", "session-setup", "Renamed Setup", []string{createFeatureModded, createFeatureTeamSpeak}, false, true,
+	), testNow)
+	var submitted interactionResponse
+	decodeResponse(t, submitResponse, &submitted)
+	if submitted.Data == nil || !strings.Contains(submitted.Data.Content, "Draft setup updated") ||
+		!strings.Contains(submitted.Data.Content, "Replacement preset queued") ||
+		!strings.Contains(submitted.Data.Content, "have not been accepted yet") {
+		t.Fatalf("setup submission = %#v body=%s", submitted, submitResponse.Body.String())
+	}
+	replayResponse := executeSignedRequest(t, handler, privateKey, setupModalSubmissionBody(
+		"interaction-setup-submit", "session-setup", "Renamed Setup", []string{createFeatureModded, createFeatureTeamSpeak}, false, true,
+	), testNow)
+	var replayed interactionResponse
+	decodeResponse(t, replayResponse, &replayed)
+	if replayed.Data == nil || !strings.Contains(replayed.Data.Content, "Draft setup updated") {
+		t.Fatalf("setup replay = %#v body=%s", replayed, replayResponse.Body.String())
+	}
+	stored, err := repository.Get(context.Background(), "session-setup")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DisplayName != "Renamed Setup" || stored.Description != "Updated description" || stored.Slug != "original-setup" ||
+		!stored.TeamSpeakEnabled || stored.Vanilla || stored.MissionArtifactStatus != domain.ArtifactAccepted ||
+		stored.PresetArtifactStatus != domain.ArtifactPending {
+		t.Fatalf("updated setup = %#v", stored)
+	}
+	requests := queue.Requests()
+	if len(requests) != 1 || requests[0].Kind != domain.ArtifactPreset {
+		t.Fatalf("replacement requests = %#v; want preset only", requests)
+	}
+	if cardRequests := cards.Requests(); len(cardRequests) != 1 || cardRequests[0].SessionID != stored.ID ||
+		cardRequests[0].CardRevision != stored.Version || !strings.Contains(cardRequests[0].Content, "Renamed Setup") {
+		t.Fatalf("setup card refreshes = %#v", cardRequests)
+	}
+}
+
+func TestHandlerSetupRejectsReplacementOfAcceptedArtifactBeforeMutation(t *testing.T) {
+	t.Parallel()
+	handler, repository, queue, _, privateKey := newTestHandlerWithQueues(t, []string{"correlation-setup"}, nil)
+	seedSetupDraft(t, repository, domain.ArtifactAccepted, domain.ArtifactRejected)
+	response := executeSignedRequest(t, handler, privateKey, setupModalSubmissionBody(
+		"interaction-setup", "session-setup", "Changed Name", []string{createFeatureModded}, true, false,
+	), testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "mission is already accepted or validating") {
+		t.Fatalf("accepted replacement response = %#v body=%s", decoded, response.Body.String())
+	}
+	stored, err := repository.Get(context.Background(), "session-setup")
+	if err != nil || stored.DisplayName != "Original Setup" || len(queue.Requests()) != 0 {
+		t.Fatalf("rejected setup mutated session=%#v requests=%#v err=%v", stored, queue.Requests(), err)
+	}
+}
+
+func TestHandlerRejectsLegacySessionCommand(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(
+		t,
+		[]string{"correlation-legacy"},
+		[]string{"unused-session", "unused-event"},
+	)
+	body := bytes.Replace(
+		createCommandBody("interaction-legacy", "owner-1", "guild-1", "channel-1"),
+		[]byte(`"name":"rb"`),
+		[]byte(`"name":"session"`),
+		1,
+	)
+
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d; want %d; body = %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "supported `/rb` subcommands") {
+		t.Fatalf("response content = %#v; want /rb guidance", decoded.Data)
+	}
+	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+	if err != nil {
+		t.Fatalf("ListByOwner() returned error: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("session count = %d; want 0", len(sessions))
 	}
 }
 
@@ -155,8 +983,8 @@ func TestHandlerGuildManagerConfiguresRolesWithSelectMenu(t *testing.T) {
 
 	handler, _, privateKey := newTestHandler(
 		t,
-		[]string{"correlation-admin-command", "correlation-admin-select", "correlation-create"},
-		[]string{"session-1", "event-1"},
+		[]string{"correlation-admin-command", "correlation-admin-select"},
+		nil,
 	)
 	menuResponse := executeSignedRequest(
 		t,
@@ -198,7 +1026,7 @@ func TestHandlerGuildManagerConfiguresRolesWithSelectMenu(t *testing.T) {
 	)
 	var created interactionResponse
 	decodeResponse(t, createResponse, &created)
-	if created.Data == nil || !strings.Contains(created.Data.Content, "session-1") {
+	if created.Type != interactionResponseModal || created.Data == nil || created.Data.CustomID != createModalCustomID {
 		t.Fatalf("command after role configuration = %#v", created)
 	}
 }
@@ -219,25 +1047,75 @@ func TestHandlerRejectsAccessConfigurationWithoutGuildManagementPermission(t *te
 	}
 }
 
+func TestHandlerAdminRepairCardAutocompleteIsGuildScopedAndManagerOnly(t *testing.T) {
+	t.Parallel()
+	handler, repository, _, notifications, privateKey := newTestHandlerWithQueues(t, nil, nil)
+	seedAutocompleteSession(t, repository, "session-owned", "Owned Session", "owned-session", "owner-1", "guild-1")
+	seedAutocompleteSession(t, repository, "session-other-owner", "Other Session", "other-session", "owner-2", "guild-1")
+	seedAutocompleteSession(t, repository, "session-other-guild", "Elsewhere", "elsewhere", "owner-2", "guild-2")
+	seedHandlerSessionState(t, repository, "session-terminated", "Terminated", "terminated", "owner-2", "guild-1", domain.StateDeleted)
+
+	response := executeSignedRequest(t, handler, privateKey, adminRepairAutocompleteBody("autocomplete-repair", "manager-1", "32"), testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Type != interactionResponseAutocompleteResult || decoded.Data == nil || decoded.Data.Choices == nil {
+		t.Fatalf("admin autocomplete response = %#v", decoded)
+	}
+	values := map[any]bool{}
+	for _, choice := range *decoded.Data.Choices {
+		values[choice.Value] = true
+	}
+	if !values["session-owned"] || !values["session-other-owner"] || values["session-other-guild"] || values["session-terminated"] {
+		t.Fatalf("admin autocomplete values = %#v", values)
+	}
+
+	unauthorized := executeSignedRequest(t, handler, privateKey, adminRepairAutocompleteBody("autocomplete-repair-denied", "member-1", "0"), testNow)
+	var denied interactionResponse
+	decodeResponse(t, unauthorized, &denied)
+	if denied.Type != interactionResponseAutocompleteResult || denied.Data == nil || denied.Data.Choices == nil || len(*denied.Data.Choices) != 0 {
+		t.Fatalf("unauthorized admin autocomplete = %#v", denied)
+	}
+	if len(notifications.Requests()) != 0 {
+		t.Fatalf("autocomplete queued notifications = %#v", notifications.Requests())
+	}
+}
+
+func TestHandlerGuildManagerQueuesIdempotentCurrentCardRepair(t *testing.T) {
+	t.Parallel()
+	handler, repository, _, notifications, privateKey := newTestHandlerWithQueues(
+		t, []string{"correlation-repair-1", "correlation-repair-2"}, nil,
+	)
+	seedAutocompleteSession(t, repository, "session-repair", "Repair Me", "repair-me", "owner-2", "guild-1")
+	body := adminRepairCommandBody("interaction-repair", "manager-1", "32", "session-repair")
+	for attempt := 1; attempt <= 2; attempt++ {
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "repair queued") ||
+			!strings.Contains(decoded.Data.Content, "original channel") {
+			t.Fatalf("repair attempt %d response = %#v", attempt, decoded)
+		}
+	}
+	requests := notifications.Requests()
+	if len(requests) != 1 || requests[0].NotificationID != "card-admin-repair-interaction-repair" ||
+		requests[0].SessionID != "session-repair" || requests[0].ChannelID != "channel-1" ||
+		requests[0].CardRevision != 1 || strings.Contains(requests[0].Content, "session-repair") {
+		t.Fatalf("repair notifications = %#v", requests)
+	}
+
+	denied := executeSignedRequest(t, handler, privateKey, adminRepairCommandBody("interaction-repair-denied", "member-1", "0", "session-repair"), testNow)
+	var deniedResponse interactionResponse
+	decodeResponse(t, denied, &deniedResponse)
+	if deniedResponse.Data == nil || !strings.Contains(deniedResponse.Data.Content, "Manage Server") || len(notifications.Requests()) != 1 {
+		t.Fatalf("denied repair response = %#v notifications=%#v", deniedResponse, notifications.Requests())
+	}
+}
+
 func TestHandlerListsAndShowsSessionStatus(t *testing.T) {
 	t.Parallel()
 
-	handler, _, privateKey := newTestHandler(
-		t,
-		[]string{"correlation-create", "correlation-list", "correlation-status"},
-		[]string{"session-1", "event-1"},
-	)
-
-	createResponse := executeSignedRequest(
-		t,
-		handler,
-		privateKey,
-		createCommandBody("interaction-create", "owner-1", "guild-1", "channel-1"),
-		testNow,
-	)
-	if createResponse.Code != http.StatusOK {
-		t.Fatalf("create status = %d; body = %s", createResponse.Code, createResponse.Body.String())
-	}
+	handler, repository, privateKey := newTestHandler(t, []string{"correlation-list", "correlation-status"}, nil)
+	seedAutocompleteSession(t, repository, "session-1", "Saturday Arma", "saturday-arma", "owner-1", "guild-1")
 
 	listResponse := executeSignedRequest(
 		t,
@@ -256,13 +1134,46 @@ func TestHandlerListsAndShowsSessionStatus(t *testing.T) {
 		t,
 		handler,
 		privateKey,
-		statusCommandBody("interaction-status", "owner-1", "guild-1", "channel-1", "session-1"),
+		statusCommandBody("interaction-status", "owner-1", "guild-1", "channel-1", "saturday-arma"),
 		testNow,
 	)
 	var statusDecoded interactionResponse
 	decodeResponse(t, statusResponse, &statusDecoded)
-	if statusDecoded.Data == nil || !strings.Contains(statusDecoded.Data.Content, "Lifecycle: `DRAFT`") {
-		t.Fatalf("status content = %#v; want DRAFT lifecycle", statusDecoded.Data)
+	if statusDecoded.Data == nil || !strings.Contains(statusDecoded.Data.Content, "Status: Setting up") || strings.Contains(statusDecoded.Data.Content, "session-1") {
+		t.Fatalf("status content = %#v; want readable status without immutable ID", statusDecoded.Data)
+	}
+}
+
+func TestHandlerListsActiveSessionsWithLifecycleFilterAndPagination(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(t, []string{"correlation-page-2", "correlation-deleted"}, nil)
+	for index := 1; index <= 7; index++ {
+		suffix := strconv.Itoa(index)
+		seedAutocompleteSession(t, repository, "session-"+suffix, "Session "+suffix, "session-"+suffix, "owner-1", "guild-1")
+	}
+	seedHandlerSessionState(t, repository, "session-deleted", "Deleted Session", "deleted-session", "owner-1", "guild-1", domain.StateDeleted)
+
+	pageResponse := executeSignedRequest(t, handler, privateKey, commandBody(
+		"interaction-page-2", "owner-1", "guild-1", "channel-1", "list",
+		[]any{map[string]any{"type": applicationCommandOptionInteger, "name": "page", "value": 2}},
+	), testNow)
+	var pageDecoded interactionResponse
+	decodeResponse(t, pageResponse, &pageDecoded)
+	if pageDecoded.Data == nil || !strings.Contains(pageDecoded.Data.Content, "Page 2 of 2") ||
+		strings.Count(pageDecoded.Data.Content, "Slug:") != 2 || strings.Contains(pageDecoded.Data.Content, "deleted-session") {
+		t.Fatalf("page response = %#v", pageDecoded.Data)
+	}
+
+	deletedResponse := executeSignedRequest(t, handler, privateKey, commandBody(
+		"interaction-deleted", "owner-1", "guild-1", "channel-1", "list",
+		[]any{map[string]any{"type": applicationCommandOptionString, "name": "state", "value": "deleted"}},
+	), testNow)
+	var deletedDecoded interactionResponse
+	decodeResponse(t, deletedResponse, &deletedDecoded)
+	if deletedDecoded.Data == nil || !strings.Contains(deletedDecoded.Data.Content, "Terminated records") ||
+		!strings.Contains(deletedDecoded.Data.Content, "deleted-session") || strings.Contains(deletedDecoded.Data.Content, "session-1`") {
+		t.Fatalf("deleted response = %#v", deletedDecoded.Data)
 	}
 }
 
@@ -274,9 +1185,9 @@ func TestHandlerAllowsGuildAdministratorToRequestAnotherOwnersSleep(t *testing.T
 		"id": "interaction-sleep", "application_id": "app-1", "type": interactionTypeApplicationCommand,
 		"guild_id": "guild-1", "channel_id": "channel-1",
 		"member": map[string]any{"user": map[string]any{"id": "admin-1"}, "permissions": "8"},
-		"data": map[string]any{"name": "session", "options": []any{map[string]any{
+		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
 			"type": applicationCommandOptionSubcommand, "name": "sleep",
-			"options": []any{map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"}},
+			"options": []any{map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "running-session"}},
 		}}},
 	})
 	response := executeSignedRequest(t, handler, privateKey, body, testNow)
@@ -287,78 +1198,78 @@ func TestHandlerAllowsGuildAdministratorToRequestAnotherOwnersSleep(t *testing.T
 	}
 }
 
-func TestHandlerArchiveRequiresExplicitConfirmation(t *testing.T) {
+func TestHandlerArchiveCreatesThenConsumesDurableConfirmation(t *testing.T) {
 	t.Parallel()
-	handler, repository, privateKey := newTestHandler(t, []string{"correlation-archive"}, nil)
+	handler, repository, privateKey := newTestHandler(t, []string{"correlation-archive", "correlation-confirm"}, nil)
 	seedRunningHandlerSession(t, repository)
 	body := marshalPayload(map[string]any{
 		"id": "interaction-archive", "application_id": "app-1", "type": interactionTypeApplicationCommand,
 		"guild_id": "guild-1", "channel_id": "channel-1",
 		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
-		"data": map[string]any{"name": "session", "options": []any{map[string]any{
+		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
 			"type": applicationCommandOptionSubcommand, "name": "archive",
 			"options": []any{
-				map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"},
-				map[string]any{"type": applicationCommandOptionBoolean, "name": "confirm", "value": false},
+				map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "running-session"},
 			},
 		}}},
 	})
 	response := executeSignedRequest(t, handler, privateKey, body, testNow)
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "removes the current EC2 instance and EBS volumes") {
+	code := domain.ConfirmationCode("interaction-archive")
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "No destructive work has been queued") || !strings.Contains(decoded.Data.Content, code) {
 		t.Fatalf("response = %#v", decoded.Data)
+	}
+	confirmation, err := repository.GetConfirmation(context.Background(), code)
+	if err != nil || confirmation.Status != domain.ConfirmationPending {
+		t.Fatalf("confirmation = %#v, err %v", confirmation, err)
+	}
+
+	confirmBody := commandBody("interaction-confirm", "owner-1", "guild-1", "channel-1", "confirm", []any{
+		map[string]any{"type": applicationCommandOptionString, "name": "code", "value": code},
+	})
+	response = executeSignedRequest(t, handler, privateKey, confirmBody, testNow)
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Archive request accepted") || !strings.Contains(decoded.Data.Content, "cannot be replayed") {
+		t.Fatalf("response = %#v", decoded.Data)
+	}
+	confirmation, err = repository.GetConfirmation(context.Background(), code)
+	if err != nil || confirmation.Status != domain.ConfirmationConsumed {
+		t.Fatalf("consumed confirmation = %#v, err %v", confirmation, err)
 	}
 }
 
-func TestHandlerArchiveAcceptsOwnerConfirmationAndWarnsAboutInterruption(t *testing.T) {
+func TestHandlerTerminateConfirmationCanBeCancelled(t *testing.T) {
 	t.Parallel()
-	handler, repository, privateKey := newTestHandler(t, []string{"correlation-archive"}, nil)
+	handler, repository, privateKey := newTestHandler(t, []string{"correlation-terminate", "correlation-cancel"}, nil)
 	seedRunningHandlerSession(t, repository)
-	body := marshalPayload(map[string]any{
-		"id": "interaction-archive", "application_id": "app-1", "type": interactionTypeApplicationCommand,
-		"guild_id": "guild-1", "channel_id": "channel-1",
-		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
-		"data": map[string]any{"name": "session", "options": []any{map[string]any{
-			"type": applicationCommandOptionSubcommand, "name": "archive",
-			"options": []any{
-				map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"},
-				map[string]any{"type": applicationCommandOptionBoolean, "name": "confirm", "value": true},
-			},
-		}}},
+	body := commandBody("interaction-terminate", "owner-1", "guild-1", "channel-1", "terminate", []any{
+		map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "running-session"},
 	})
 	response := executeSignedRequest(t, handler, privateKey, body, testNow)
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Archive request accepted") || !strings.Contains(decoded.Data.Content, "removed only after") {
+	code := domain.ConfirmationCode("interaction-terminate")
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "irreversible") || !strings.Contains(decoded.Data.Content, code) {
+		t.Fatalf("response = %#v", decoded.Data)
+	}
+	cancelBody := commandBody("interaction-cancel", "owner-1", "guild-1", "channel-1", "cancel-confirmation", []any{
+		map[string]any{"type": applicationCommandOptionString, "name": "code", "value": code},
+	})
+	response = executeSignedRequest(t, handler, privateKey, cancelBody, testNow)
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "confirmation cancelled") || !strings.Contains(decoded.Data.Content, "No destructive work was queued") {
 		t.Fatalf("response = %#v", decoded.Data)
 	}
 }
 
-func TestHandlerTerminateRequiresOwnerConfirmationAndWarnsIrreversible(t *testing.T) {
+func TestConfirmationQueueUncertaintyNeverPromisesRetry(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name, interactionID string
-		confirmed           bool
-		want                string
-	}{
-		{name: "confirmation required", interactionID: "interaction-terminate-no", confirmed: false, want: "immediate and irreversible"},
-		{name: "confirmed request", interactionID: "interaction-terminate-yes", confirmed: true, want: "Terminate request accepted"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			handler, repository, privateKey := newTestHandler(t, []string{"correlation-terminate"}, nil)
-			seedRunningHandlerSession(t, repository)
-			body := commandBody(test.interactionID, "owner-1", "guild-1", "channel-1", "terminate", []any{
-				map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": "running-session"},
-				map[string]any{"type": applicationCommandOptionBoolean, "name": "confirm", "value": test.confirmed},
-			})
-			response := executeSignedRequest(t, handler, privateKey, body, testNow)
-			var decoded interactionResponse
-			decodeResponse(t, response, &decoded)
-			if decoded.Data == nil || !strings.Contains(decoded.Data.Content, test.want) {
-				t.Fatalf("response = %#v; want %q", decoded.Data, test.want)
-			}
-		})
+	err := confirmationUserError(domain.ErrConfirmationDispatchUncertain)
+	var userErr userError
+	if !errors.As(err, &userErr) || !strings.Contains(userErr.message, "No automatic retry is scheduled") ||
+		!strings.Contains(userErr.message, "may remain and incur cost") || strings.Contains(userErr.message, "will retry") {
+		t.Fatalf("confirmation uncertainty message = %v", err)
 	}
 }
 
@@ -367,10 +1278,10 @@ func TestHandlerConfiguresAndAcceptsMissionAttachment(t *testing.T) {
 
 	handler, repository, privateKey := newTestHandler(
 		t,
-		[]string{"correlation-create", "correlation-configure", "correlation-upload"},
-		[]string{"session-1", "event-create", "event-configure"},
+		[]string{"correlation-configure", "correlation-upload"},
+		[]string{"event-configure"},
 	)
-	executeSignedRequest(t, handler, privateKey, createCommandBody("interaction-create", "owner-1", "guild-1", "channel-1"), testNow)
+	seedAutocompleteSession(t, repository, "session-1", "Saturday Arma", "saturday-arma", "owner-1", "guild-1")
 
 	configuredResponse := executeSignedRequest(
 		t,
@@ -381,7 +1292,7 @@ func TestHandlerConfiguresAndAcceptsMissionAttachment(t *testing.T) {
 	)
 	var configuredDecoded interactionResponse
 	decodeResponse(t, configuredResponse, &configuredDecoded)
-	if configuredDecoded.Data == nil || !strings.Contains(configuredDecoded.Data.Content, "Revision: `1`") {
+	if configuredDecoded.Data == nil || !strings.Contains(configuredDecoded.Data.Content, "Configuration: `1`") {
 		t.Fatalf("configure content = %#v", configuredDecoded.Data)
 	}
 	stored, err := repository.Get(context.Background(), "session-1")
@@ -391,7 +1302,7 @@ func TestHandlerConfiguresAndAcceptsMissionAttachment(t *testing.T) {
 	if stored.ConfigurationRevision != 1 || !stored.TeamSpeakEnabled {
 		t.Errorf("stored configuration = %#v", stored)
 	}
-	if !stored.Vanilla || configuredDecoded.Data == nil || !strings.Contains(configuredDecoded.Data.Content, "Vanilla: `true`") {
+	if !stored.Vanilla || configuredDecoded.Data == nil || !strings.Contains(configuredDecoded.Data.Content, "Mode: Vanilla") {
 		t.Errorf("vanilla configuration/response = %#v / %#v", stored, configuredDecoded.Data)
 	}
 
@@ -440,22 +1351,11 @@ func TestHandlerRejectsUnapprovedGuildWithoutCallingService(t *testing.T) {
 	}
 }
 
-func TestHandlerReturnsNotFoundForAnotherOwnersSession(t *testing.T) {
+func TestHandlerShowsGuildSessionStatusToApprovedNonOwner(t *testing.T) {
 	t.Parallel()
 
-	handler, _, privateKey := newTestHandler(
-		t,
-		[]string{"correlation-create", "correlation-status"},
-		[]string{"session-1", "event-1"},
-	)
-
-	executeSignedRequest(
-		t,
-		handler,
-		privateKey,
-		createCommandBody("interaction-create", "owner-1", "guild-1", "channel-1"),
-		testNow,
-	)
+	handler, repository, privateKey := newTestHandler(t, []string{"correlation-status"}, nil)
+	seedAutocompleteSession(t, repository, "session-1", "Saturday Arma", "saturday-arma", "owner-1", "guild-1")
 
 	response := executeSignedRequest(
 		t,
@@ -467,8 +1367,33 @@ func TestHandlerReturnsNotFoundForAnotherOwnersSession(t *testing.T) {
 
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "do not have access") {
-		t.Fatalf("content = %#v; want access rejection", decoded.Data)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Saturday Arma") || strings.Contains(decoded.Data.Content, "session-1") {
+		t.Fatalf("content = %#v; want readable guild-visible status without ID", decoded.Data)
+	}
+}
+
+func TestHandlerDoesNotBroadenMutationAuthorizationWithGuildStatusAccess(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(
+		t, []string{"correlation-configure"}, nil,
+	)
+	seedAutocompleteSession(t, repository, "session-1", "Saturday Arma", "saturday-arma", "owner-1", "guild-1")
+	response := executeSignedRequest(
+		t, handler, privateKey,
+		configureCommandBody("interaction-configure", "owner-2", "guild-1", "channel-1", "session-1"), testNow,
+	)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Session not found") {
+		t.Fatalf("mutation response = %#v; want owner-scoped rejection", decoded.Data)
+	}
+	session, err := repository.Get(context.Background(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.ConfigurationRevision != 0 {
+		t.Fatalf("configuration revision = %d; want unchanged", session.ConfigurationRevision)
 	}
 }
 
@@ -486,6 +1411,24 @@ func newTestHandler(
 	correlationIDs []string,
 	serviceIDs []string,
 ) (*Handler, *memory.SessionRepository, ed25519.PrivateKey) {
+	handler, repository, _, privateKey := newTestHandlerWithArtifactQueue(t, correlationIDs, serviceIDs)
+	return handler, repository, privateKey
+}
+
+func newTestHandlerWithArtifactQueue(
+	t *testing.T,
+	correlationIDs []string,
+	serviceIDs []string,
+) (*Handler, *memory.SessionRepository, *memory.ArtifactQueue, ed25519.PrivateKey) {
+	handler, repository, artifacts, _, privateKey := newTestHandlerWithQueues(t, correlationIDs, serviceIDs)
+	return handler, repository, artifacts, privateKey
+}
+
+func newTestHandlerWithQueues(
+	t *testing.T,
+	correlationIDs []string,
+	serviceIDs []string,
+) (*Handler, *memory.SessionRepository, *memory.ArtifactQueue, *memory.NotificationQueue, ed25519.PrivateKey) {
 	t.Helper()
 
 	seed := bytes.Repeat([]byte{7}, ed25519.SeedSize)
@@ -493,13 +1436,17 @@ func newTestHandler(
 	publicKey := privateKey.Public().(ed25519.PublicKey)
 
 	repository := memory.NewSessionRepository()
+	artifactQueue := memory.NewArtifactQueue()
+	notificationQueue := memory.NewNotificationQueue()
 	service, err := appsession.NewService(
 		repository,
 		&sequenceGenerator{ids: serviceIDs},
 		fixedClock{now: testNow},
 		7*24*time.Hour,
-		appsession.WithArtifactQueue(memory.NewArtifactQueue()),
+		appsession.WithArtifactQueue(artifactQueue),
+		appsession.WithNotificationQueue(notificationQueue),
 		appsession.WithCommandQueue(discardCommandQueue{}),
+		appsession.WithConfirmationRepository(repository),
 	)
 	if err != nil {
 		t.Fatalf("NewService() returned error: %v", err)
@@ -533,7 +1480,136 @@ func newTestHandler(
 		t.Fatalf("NewHandler() returned error: %v", err)
 	}
 
-	return handler, repository, privateKey
+	return handler, repository, artifactQueue, notificationQueue, privateKey
+}
+
+func seedAutocompleteSession(
+	t *testing.T,
+	repository *memory.SessionRepository,
+	sessionID string,
+	displayName string,
+	slug string,
+	ownerID string,
+	guildID string,
+) {
+	t.Helper()
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: sessionID, Slug: slug, DisplayName: displayName, GameType: "arma3",
+		OwnerDiscordUserID: ownerID, GuildID: guildID, ChannelID: "channel-1",
+	}, testNow)
+	if err != nil {
+		t.Fatalf("NewSession() returned error: %v", err)
+	}
+	event := domain.NewSessionCreatedEvent("event-"+sessionID, "correlation-"+sessionID, testActorForInteraction(ownerID), session, testNow)
+	idempotency, err := domain.NewCompletedIdempotencyRecord(
+		"autocomplete:"+sessionID, "hash-"+sessionID, sessionID, testNow, time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("NewCompletedIdempotencyRecord() returned error: %v", err)
+	}
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatalf("seed autocomplete session: %v", err)
+	}
+}
+
+func seedHandlerSessionState(
+	t *testing.T,
+	repository *memory.SessionRepository,
+	sessionID string,
+	displayName string,
+	slug string,
+	ownerID string,
+	guildID string,
+	state domain.LifecycleState,
+) {
+	t.Helper()
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: sessionID, Slug: slug, DisplayName: displayName, GameType: "arma3",
+		OwnerDiscordUserID: ownerID, GuildID: guildID, ChannelID: "channel-1",
+	}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState = state, state, state
+	event := domain.NewSessionCreatedEvent("event-"+sessionID, "correlation-"+sessionID, testActorForInteraction(ownerID), session, testNow)
+	idempotency, err := domain.NewCompletedIdempotencyRecord("state:"+sessionID, "hash-"+sessionID, sessionID, testNow, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatalf("seed state session: %v", err)
+	}
+}
+
+func seedHandlerPresetRevisionSession(t *testing.T, repository *memory.SessionRepository) {
+	t.Helper()
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-mods", Slug: "session-mods", DisplayName: "Session Mods", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState = domain.StateRunning, domain.StateRunning, domain.StateRunning
+	session.PresetObjectKey = "sessions/session-mods/input/presets/v1.html"
+	session.PresetArtifactStatus = domain.ArtifactAccepted
+	session.PresetRevisionSequence = 1
+	session.ActivePresetRevision = domain.PresetRevision{Number: 1, PresetObjectKey: session.PresetObjectKey, Status: domain.PresetRevisionActive, StagedAt: testNow, ActivatedAt: testNow}
+	event := domain.NewSessionCreatedEvent("event-session-mods", "correlation-session-mods", testActorForInteraction("owner-1"), session, testNow)
+	record, err := domain.NewCompletedIdempotencyRecord("seed:session-mods", "hash-session-mods", session.ID, testNow, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, record); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedCardControlSession(t *testing.T, repository *memory.SessionRepository) domain.Session {
+	t.Helper()
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: "session-card-controls", Slug: "card-controls", DisplayName: "Card Controls", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.PresetArtifactStatus = domain.ArtifactAccepted
+	session.PresetObjectKey = "sessions/session-card-controls/input/presets/source.html"
+	if err := session.RecordMutation(testNow.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	event := domain.NewSessionCreatedEvent(
+		"event-session-card-controls", "correlation-card-controls", testActorForInteraction("owner-1"), session, testNow,
+	)
+	record, err := domain.NewCompletedIdempotencyRecord(
+		"seed:session-card-controls", "hash-session-card-controls", session.ID, testNow, time.Hour,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, record); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.SaveModlistReference(context.Background(), domain.SessionModlistReference{
+		SessionID: session.ID, ChannelID: session.ChannelID, MessageID: "modlist-message-1",
+		ObjectKey: "sessions/session-card-controls/input/modlists/digest/card-controls-modlist.html",
+		Filename:  "card-controls-modlist.html", DeliveredRevision: 1,
+		DeliveredNotificationID: "modlist-card-controls", ContentSHA256: strings.Repeat("a", 64),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return session
+}
+
+func cardControlBody(action string, customID string) []byte {
+	return marshalPayload(map[string]any{
+		"id": "component-" + action, "application_id": "app-1", "type": interactionTypeMessageComponent,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "member-2"}, "roles": []string{"role-1"}},
+		"data":   map[string]any{"custom_id": customID, "component_type": componentTypeButton},
+	})
+}
+
+func testActorForInteraction(userID string) domain.Actor {
+	return domain.Actor{Type: domain.ActorTypeDiscordUser, ID: userID}
 }
 
 func executeSignedRequest(
@@ -579,18 +1655,144 @@ func createCommandBody(interactionID, ownerID, guildID, channelID string) []byte
 			"roles": []string{"role-1"},
 		},
 		"data": map[string]any{
-			"name": "session",
+			"name": "rb",
 			"options": []any{
 				map[string]any{
 					"type": applicationCommandOptionSubcommand,
 					"name": "create",
-					"options": []any{
-						map[string]any{"type": applicationCommandOptionString, "name": "slug", "value": "saturday-arma"},
-						map[string]any{"type": applicationCommandOptionString, "name": "name", "value": "Saturday Arma"},
-						map[string]any{"type": applicationCommandOptionString, "name": "game", "value": "arma3"},
-					},
 				},
 			},
+		},
+	})
+}
+
+func withAppPermissions(body []byte, permissions uint64) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		panic(err)
+	}
+	payload["app_permissions"] = strconv.FormatUint(permissions, 10)
+	return marshalPayload(payload)
+}
+
+func setupCommandBody(interactionID, sessionID string) []byte {
+	return commandBody(interactionID, "owner-1", "guild-1", "channel-1", "setup", []any{
+		map[string]any{"type": applicationCommandOptionString, "name": "session", "value": sessionID},
+	})
+}
+
+func setupModalSubmissionBody(interactionID, sessionID, displayName string, features []string, includeMission, includePreset bool) []byte {
+	attachments := map[string]any{}
+	missionValues, presetValues := []string{}, []string{}
+	if includeMission {
+		missionValues = []string{"attachment-mission"}
+		attachments["attachment-mission"] = map[string]any{
+			"id": "attachment-mission", "filename": "replacement.pbo", "size": 1024,
+			"url": "https://cdn.discordapp.com/attachments/1/2/replacement.pbo",
+		}
+	}
+	if includePreset {
+		presetValues = []string{"attachment-preset"}
+		attachments["attachment-preset"] = map[string]any{
+			"id": "attachment-preset", "filename": "replacement.html", "size": 2048,
+			"url": "https://cdn.discordapp.com/attachments/1/2/replacement.html",
+		}
+	}
+	label := func(component map[string]any) map[string]any {
+		return map[string]any{"type": componentTypeLabel, "component": component}
+	}
+	return marshalPayload(map[string]any{
+		"id": interactionID, "application_id": "app-1", "type": interactionTypeModalSubmit,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{
+			"custom_id": setupModalCustomIDPrefix + sessionID,
+			"components": []any{
+				label(map[string]any{"type": componentTypeTextInput, "custom_id": createNameCustomID, "value": displayName}),
+				label(map[string]any{"type": componentTypeTextInput, "custom_id": createDescriptionCustomID, "value": " Updated   description "}),
+				label(map[string]any{"type": componentTypeCheckboxGroup, "custom_id": createFeaturesCustomID, "values": features}),
+				label(map[string]any{"type": componentTypeFileUpload, "custom_id": createMissionCustomID, "values": missionValues}),
+				label(map[string]any{"type": componentTypeFileUpload, "custom_id": createPresetCustomID, "values": presetValues}),
+			},
+			"resolved": map[string]any{"attachments": attachments},
+		},
+	})
+}
+
+func seedSetupDraft(t *testing.T, repository *memory.SessionRepository, missionStatus, presetStatus domain.ArtifactStatus) {
+	t.Helper()
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: "session-setup", Slug: "original-setup", DisplayName: "Original Setup", Description: "Original description",
+		GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(domain.SessionConfiguration{
+		GameProfileID: defaultGameProfileID, SleepAfterSeconds: defaultSleepMinutes * 60,
+		ArchiveAfterSeconds: defaultArchiveDays * 86400,
+	}, testNow); err != nil {
+		t.Fatal(err)
+	}
+	session.MissionArtifactStatus = missionStatus
+	session.PresetArtifactStatus = presetStatus
+	if missionStatus == domain.ArtifactAccepted {
+		session.MissionObjectKey = "sessions/session-setup/input/mission.pbo"
+	}
+	if presetStatus == domain.ArtifactRejected {
+		session.PresetArtifactIssue = "Preset rejected"
+	}
+	if err := session.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	event := domain.NewSessionCreatedEvent("event-session-setup", "correlation-seed", testActorForInteraction("owner-1"), session, testNow)
+	idempotency, err := domain.NewCompletedIdempotencyRecord("seed:session-setup", "hash-session-setup", session.ID, testNow, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func createModalSubmissionBody(
+	interactionID string,
+	displayName string,
+	features []string,
+	includePreset bool,
+	missionFilename string,
+) []byte {
+	attachments := map[string]any{
+		"attachment-mission": map[string]any{
+			"id": "attachment-mission", "filename": missionFilename, "size": 1024,
+			"url": "https://cdn.discordapp.com/attachments/1/2/" + missionFilename,
+		},
+	}
+	presetValues := []string{}
+	if includePreset {
+		presetValues = []string{"attachment-preset"}
+		attachments["attachment-preset"] = map[string]any{
+			"id": "attachment-preset", "filename": "preset.html", "size": 2048,
+			"url": "https://cdn.discordapp.com/attachments/1/2/preset.html",
+		}
+	}
+	label := func(component map[string]any) map[string]any {
+		return map[string]any{"type": componentTypeLabel, "component": component}
+	}
+	return marshalPayload(map[string]any{
+		"id": interactionID, "application_id": "app-1", "type": interactionTypeModalSubmit,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{
+			"custom_id": createModalCustomID,
+			"components": []any{
+				label(map[string]any{"type": componentTypeTextInput, "custom_id": createNameCustomID, "value": displayName}),
+				label(map[string]any{"type": componentTypeTextInput, "custom_id": createDescriptionCustomID, "value": " Weekly   co-op\n"}),
+				label(map[string]any{"type": componentTypeCheckboxGroup, "custom_id": createFeaturesCustomID, "values": features}),
+				label(map[string]any{"type": componentTypeFileUpload, "custom_id": createMissionCustomID, "values": []string{"attachment-mission"}}),
+				label(map[string]any{"type": componentTypeFileUpload, "custom_id": createPresetCustomID, "values": presetValues}),
+			},
+			"resolved": map[string]any{"attachments": attachments},
 		},
 	})
 }
@@ -609,7 +1811,7 @@ func statusCommandBody(interactionID, ownerID, guildID, channelID, sessionID str
 		[]any{
 			map[string]any{
 				"type":  applicationCommandOptionString,
-				"name":  "session-id",
+				"name":  "session",
 				"value": sessionID,
 			},
 		},
@@ -618,7 +1820,7 @@ func statusCommandBody(interactionID, ownerID, guildID, channelID, sessionID str
 
 func configureCommandBody(interactionID, ownerID, guildID, channelID, sessionID string) []byte {
 	return commandBody(interactionID, ownerID, guildID, channelID, "configure", []any{
-		map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": sessionID},
+		map[string]any{"type": applicationCommandOptionString, "name": "session", "value": sessionID},
 		map[string]any{"type": applicationCommandOptionString, "name": "profile", "value": "arma3-default"},
 		map[string]any{"type": applicationCommandOptionInteger, "name": "sleep-minutes", "value": 60},
 		map[string]any{"type": applicationCommandOptionInteger, "name": "archive-days", "value": 14},
@@ -633,11 +1835,11 @@ func uploadCommandBody(interactionID, ownerID, guildID, channelID, sessionID str
 		"guild_id": guildID, "channel_id": channelID,
 		"member": map[string]any{"user": map[string]any{"id": ownerID}, "roles": []string{"role-1"}},
 		"data": map[string]any{
-			"name": "session",
+			"name": "rb",
 			"options": []any{map[string]any{
 				"type": applicationCommandOptionSubcommand, "name": "upload-mission",
 				"options": []any{
-					map[string]any{"type": applicationCommandOptionString, "name": "session-id", "value": sessionID},
+					map[string]any{"type": applicationCommandOptionString, "name": "session", "value": sessionID},
 					map[string]any{"type": applicationCommandOptionAttachment, "name": "file", "value": "attachment-1"},
 				},
 			}},
@@ -672,7 +1874,7 @@ func commandBody(
 			"roles": []string{"role-1"},
 		},
 		"data": map[string]any{
-			"name": "session",
+			"name": "rb",
 			"options": []any{
 				map[string]any{
 					"type":    applicationCommandOptionSubcommand,
@@ -697,6 +1899,40 @@ func adminAccessCommandBodyWithPermissions(interactionID, ownerID, guildID, chan
 			"name": "admin",
 			"options": []any{map[string]any{
 				"type": applicationCommandOptionSubcommand, "name": "access",
+			}},
+		},
+	})
+}
+
+func adminRepairCommandBody(interactionID, ownerID, permissions, sessionReference string) []byte {
+	return marshalPayload(map[string]any{
+		"id": interactionID, "application_id": "app-1", "type": interactionTypeApplicationCommand,
+		"guild_id": "guild-1", "channel_id": "channel-other",
+		"member": map[string]any{"user": map[string]any{"id": ownerID}, "roles": []string{}, "permissions": permissions},
+		"data": map[string]any{
+			"name": "admin",
+			"options": []any{map[string]any{
+				"type": applicationCommandOptionSubcommand, "name": "repair-card",
+				"options": []any{map[string]any{
+					"type": applicationCommandOptionString, "name": "session", "value": sessionReference,
+				}},
+			}},
+		},
+	})
+}
+
+func adminRepairAutocompleteBody(interactionID, ownerID, permissions string) []byte {
+	return marshalPayload(map[string]any{
+		"id": interactionID, "application_id": "app-1", "type": interactionTypeApplicationCommandAutocomplete,
+		"guild_id": "guild-1", "channel_id": "channel-other",
+		"member": map[string]any{"user": map[string]any{"id": ownerID}, "roles": []string{}, "permissions": permissions},
+		"data": map[string]any{
+			"name": "admin",
+			"options": []any{map[string]any{
+				"type": applicationCommandOptionSubcommand, "name": "repair-card",
+				"options": []any{map[string]any{
+					"type": applicationCommandOptionString, "name": "session", "value": "", "focused": true,
+				}},
 			}},
 		},
 	})

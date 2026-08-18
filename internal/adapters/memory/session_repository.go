@@ -12,24 +12,31 @@ import (
 
 // SessionRepository is an in-memory implementation for tests and local tools.
 type SessionRepository struct {
-	mu          sync.RWMutex
-	sessions    map[string]domain.Session
-	events      map[string][]domain.SessionEvent
-	idempotency map[string]domain.IdempotencyRecord
-	workflows   map[string]domain.Workflow
-	capacity    map[string]string
+	mu            sync.RWMutex
+	sessions      map[string]domain.Session
+	events        map[string][]domain.SessionEvent
+	idempotency   map[string]domain.IdempotencyRecord
+	workflows     map[string]domain.Workflow
+	capacity      map[string]string
+	cards         map[string]domain.SessionCardReference
+	modlists      map[string]domain.SessionModlistReference
+	confirmations map[string]domain.Confirmation
 }
 
 var _ ports.SessionRepository = (*SessionRepository)(nil)
+var _ ports.SessionCardRepository = (*SessionRepository)(nil)
 
 // NewSessionRepository creates an empty repository.
 func NewSessionRepository() *SessionRepository {
 	return &SessionRepository{
-		sessions:    make(map[string]domain.Session),
-		events:      make(map[string][]domain.SessionEvent),
-		idempotency: make(map[string]domain.IdempotencyRecord),
-		workflows:   make(map[string]domain.Workflow),
-		capacity:    make(map[string]string),
+		sessions:      make(map[string]domain.Session),
+		events:        make(map[string][]domain.SessionEvent),
+		idempotency:   make(map[string]domain.IdempotencyRecord),
+		workflows:     make(map[string]domain.Workflow),
+		capacity:      make(map[string]string),
+		cards:         make(map[string]domain.SessionCardReference),
+		modlists:      make(map[string]domain.SessionModlistReference),
+		confirmations: make(map[string]domain.Confirmation),
 	}
 }
 
@@ -74,6 +81,11 @@ func (repository *SessionRepository) Create(
 			session.ID,
 		)
 	}
+	for _, existing := range repository.sessions {
+		if existing.GuildID == session.GuildID && existing.Slug == session.Slug {
+			return fmt.Errorf("%w: %s", domain.ErrSlugConflict, session.Slug)
+		}
+	}
 
 	repository.sessions[session.ID] = session
 	repository.events[session.ID] = []domain.SessionEvent{
@@ -106,6 +118,74 @@ func (repository *SessionRepository) Get(
 	}
 
 	return session, nil
+}
+
+// SaveCardReference stores replaceable delivery metadata independently of the
+// session's optimistic lifecycle version.
+func (repository *SessionRepository) GetCardReference(ctx context.Context, sessionID string) (domain.SessionCardReference, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.SessionCardReference{}, err
+	}
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	reference, found := repository.cards[sessionID]
+	if !found {
+		return domain.SessionCardReference{}, fmt.Errorf("%w: session card %s", domain.ErrNotFound, sessionID)
+	}
+	return reference, nil
+}
+
+func (repository *SessionRepository) SaveCardReference(ctx context.Context, reference domain.SessionCardReference) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := reference.Validate(); err != nil {
+		return err
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	session, found := repository.sessions[reference.SessionID]
+	if !found {
+		return fmt.Errorf("%w: session %s", domain.ErrNotFound, reference.SessionID)
+	}
+	if session.ChannelID != reference.ChannelID {
+		return fmt.Errorf("card channel does not match session channel: %w", domain.ErrForbidden)
+	}
+	repository.cards[reference.SessionID] = reference
+	return nil
+}
+
+func (repository *SessionRepository) GetModlistReference(ctx context.Context, sessionID string) (domain.SessionModlistReference, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.SessionModlistReference{}, err
+	}
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	reference, found := repository.modlists[sessionID]
+	if !found {
+		return domain.SessionModlistReference{}, fmt.Errorf("%w: session modlist %s", domain.ErrNotFound, sessionID)
+	}
+	return reference, nil
+}
+
+func (repository *SessionRepository) SaveModlistReference(ctx context.Context, reference domain.SessionModlistReference) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := reference.Validate(); err != nil {
+		return err
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	session, found := repository.sessions[reference.SessionID]
+	if !found {
+		return fmt.Errorf("%w: session %s", domain.ErrNotFound, reference.SessionID)
+	}
+	if session.ChannelID != reference.ChannelID {
+		return fmt.Errorf("modlist channel does not match session channel: %w", domain.ErrForbidden)
+	}
+	repository.modlists[reference.SessionID] = reference
+	return nil
 }
 
 // SaveWithEvent updates a session using optimistic concurrency.
@@ -252,6 +332,42 @@ func (repository *SessionRepository) ListByOwner(
 		sessions = sessions[:limit]
 	}
 
+	return sessions, nil
+}
+
+// ListByGuild returns sessions in one Discord guild, newest first.
+func (repository *SessionRepository) ListByGuild(
+	ctx context.Context,
+	guildID string,
+	limit int32,
+) ([]domain.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 25
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	sessions := make([]domain.Session, 0)
+	for _, session := range repository.sessions {
+		if session.GuildID == guildID {
+			sessions = append(sessions, session)
+		}
+	}
+	sort.Slice(sessions, func(first, second int) bool {
+		if sessions[first].UpdatedAt.Equal(sessions[second].UpdatedAt) {
+			return sessions[first].ID > sessions[second].ID
+		}
+		return sessions[first].UpdatedAt.After(sessions[second].UpdatedAt)
+	})
+	if len(sessions) > int(limit) {
+		sessions = sessions[:limit]
+	}
 	return sessions, nil
 }
 

@@ -41,7 +41,7 @@ func TestServicePermanentlyDeletesResourcesAndLeavesTombstone(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	repository := memory.NewSessionRepository()
-	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "saturday-arma", DisplayName: "Saturday Arma", Description: "Weekly co-op night", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,5 +88,13 @@ func TestServicePermanentlyDeletesResourcesAndLeavesTombstone(t *testing.T) {
 	}
 	if !destroy.terminated || !destroy.volumeDeleted || clean.sessionID != session.ID || stored.LifecycleState != domain.StateDeleted || !stored.Infrastructure.Empty() || stored.MissionObjectKey != "" || stored.PresetObjectKey != "" {
 		t.Fatalf("destroy = %#v, clean = %#v, session = %#v", destroy, clean, stored)
+	}
+	if stored.DisplayName != "Saturday Arma" || stored.Slug != "saturday-arma" || stored.Description != "Weekly co-op night" {
+		t.Fatalf("tombstone readable identity = %#v", stored)
+	}
+	events := repository.Events(session.ID)
+	terminated := events[len(events)-1]
+	if terminated.Data["display_name"] != stored.DisplayName || terminated.Data["slug"] != stored.Slug || terminated.Data["description"] != stored.Description {
+		t.Fatalf("termination event identity = %#v", terminated.Data)
 	}
 }

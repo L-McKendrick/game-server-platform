@@ -47,6 +47,7 @@ func run() error {
 
 	repository := memory.NewSessionRepository()
 	artifactQueue := memory.NewArtifactQueue()
+	notificationQueue := memory.NewNotificationQueue()
 	generator := identity.Generator{}
 	clock := appsession.SystemClock{}
 
@@ -56,6 +57,7 @@ func run() error {
 		clock,
 		baseConfig.IdempotencyRetention,
 		appsession.WithArtifactQueue(artifactQueue),
+		appsession.WithNotificationQueue(notificationQueue),
 	)
 	if err != nil {
 		return fmt.Errorf("create session service: %w", err)

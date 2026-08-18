@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -118,6 +120,11 @@ func (service *Service) observeVolume(ctx context.Context, session domain.Sessio
 }
 
 func (service *Service) deleteObjects(ctx context.Context, session domain.Session, workflow domain.Workflow) (TaskResult, error) {
+	updated, progressErr := service.advanceProgress(ctx, session, workflow, domain.ProgressArtifactsRemoved)
+	if progressErr != nil {
+		return TaskResult{}, progressErr
+	}
+	session = updated
 	count, err := service.cleaner.DeleteSessionObjects(ctx, session.ID)
 	if err != nil {
 		return TaskResult{}, err
@@ -140,6 +147,7 @@ func (service *Service) complete(ctx context.Context, session domain.Session, wo
 			return TaskResult{}, err
 		}
 	}
+	session.ClearFailure()
 	if err := session.CompleteTermination(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}
@@ -169,6 +177,10 @@ func (service *Service) fail(ctx context.Context, session domain.Session, workfl
 	}
 	expectedVersion := session.Version
 	now := service.clock.Now().UTC()
+	if err := failurestate.Record(&session, workflow, request.ErrorCode, "ERR_TERMINATION_FAILED", workflow.CurrentStage,
+		"Permanent deletion stopped before every resource and stored object was confirmed absent.", failurestate.Impact(session, true), now); err != nil {
+		return TaskResult{}, err
+	}
 	if err := session.FailTermination(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}
@@ -183,6 +195,7 @@ func (service *Service) fail(ctx context.Context, session domain.Session, workfl
 	if err := service.workflows.CompleteWorkflow(ctx, session, expectedVersion, workflow, event); err != nil {
 		return TaskResult{}, err
 	}
+	service.notify(ctx, session, workflow)
 	return taskResult(session, workflow), nil
 }
 
@@ -208,15 +221,25 @@ func (service *Service) load(ctx context.Context, request TaskRequest) (domain.S
 }
 
 func (service *Service) notify(ctx context.Context, session domain.Session, workflow domain.Workflow) {
-	if service.notifications == nil {
-		return
+	_ = sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, service.clock.Now().UTC())
+}
+
+func (service *Service) advanceProgress(ctx context.Context, session domain.Session, workflow domain.Workflow, milestone domain.ProgressMilestone) (domain.Session, error) {
+	expected, now := session.Version, service.clock.Now().UTC()
+	changed, err := session.AdvanceProgress(workflow.ID, milestone, now)
+	if err != nil || !changed {
+		return session, err
 	}
-	id, err := service.ids.New(service.clock.Now())
+	id, err := service.ids.New(now)
 	if err != nil {
-		return
+		return domain.Session{}, err
 	}
-	content := "**Session terminated**\nSession: `" + session.ID + "`\nTagged EC2/EBS infrastructure and every stored session artifact/version were deleted. Only the audit tombstone remains."
-	_ = service.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: id, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: content, CorrelationID: workflow.CorrelationID, RequestedAt: service.clock.Now().UTC()})
+	event := domain.NewProgressMilestoneEvent(id, workflow, session, now)
+	if err := service.stages.SaveProvisioningStage(ctx, session, expected, event); err != nil {
+		return domain.Session{}, err
+	}
+	service.notify(ctx, session, workflow)
+	return session, nil
 }
 
 func taskResult(session domain.Session, workflow domain.Workflow) TaskResult {

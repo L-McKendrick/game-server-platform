@@ -27,6 +27,9 @@ func TestClientQuery_ReturnsLiveCountAndPlayerNames(t *testing.T) {
 	if len(status.PlayerNames) != 2 || status.PlayerNames[0] != "Alice" || status.PlayerNames[1] != "Bob" {
 		t.Fatalf("player names = %#v; want Alice and Bob", status.PlayerNames)
 	}
+	if status.MissionName != "Liberation RX" || status.MapName != "Altis" {
+		t.Fatalf("live mission = %q map = %q", status.MissionName, status.MapName)
+	}
 }
 
 func TestClientQuery_PlayerDetailFailureDoesNotTurnCountIntoZero(t *testing.T) {
@@ -101,7 +104,7 @@ func startTestServer(t *testing.T, playerDetails bool, infoChallenge bool) testS
 
 func infoResponse() []byte {
 	response := []byte{0xFF, 0xFF, 0xFF, 0xFF, infoResponseType, 17}
-	response = append(response, []byte("Test Server\x00Stratis\x00arma3\x00Arma 3\x00")...)
+	response = append(response, []byte("Test Server\x00Altis\x00arma3\x00Liberation RX\x00")...)
 	response = binary.LittleEndian.AppendUint16(response, 123)
 	return append(response, 2, 32)
 }

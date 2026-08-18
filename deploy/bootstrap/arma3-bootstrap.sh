@@ -8,6 +8,8 @@ DISPLAY_NAME="$(decode "$DISPLAY_NAME_B64")"
 DATA_VOLUME_ID="$(decode "$DATA_VOLUME_ID_B64")"
 MISSION_KEY="$(decode "$MISSION_KEY_B64")"
 PRESET_KEY="$(decode "$PRESET_KEY_B64")"
+PRESET_REVISION="$(decode "$PRESET_REVISION_B64")"
+PRESET_ROLLBACK="$(decode "$PRESET_ROLLBACK_B64")"
 ASSETS_BUCKET="$(decode "$ASSETS_BUCKET_B64")"
 STEAM_SECRET_ID="$(decode "$STEAM_SECRET_ID_B64")"
 AWS_REGION="$(decode "$AWS_REGION_B64")"
@@ -18,6 +20,7 @@ STATE_DIR="$ROOT/state"
 LOG_DIR="$ROOT/logs"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+checkpoint() { printf 'GSP_CHECKPOINT:%s\n' "$1"; }
 
 prepare_host() {
   command -v apt-get >/dev/null 2>&1 || { log "bootstrap requires the approved Ubuntu game-host image"; return 1; }
@@ -108,9 +111,13 @@ install_workshop() (
     chown steam:steam "$ROOT/config/mods.txt"
     return 0
   fi
-  aws s3 cp "s3://$ASSETS_BUCKET/$PRESET_KEY" "$ROOT/config/preset.html" --region "$AWS_REGION" --only-show-errors
-  mapfile -t ids < <(grep -Eio "id=[0-9]+|data-publishedfileid=[\"'][0-9]+" "$ROOT/config/preset.html" | grep -Eo '[0-9]+' | awk '!seen[$0]++')
-  : > "$ROOT/config/mods.txt"
+	local preset_file mods_file
+	mkdir -p "$ROOT/config/presets" "$ROOT/config/mod-revisions"
+	preset_file="$ROOT/config/presets/revision-$PRESET_REVISION.html"
+	mods_file="$ROOT/config/mod-revisions/revision-$PRESET_REVISION.txt"
+	aws s3 cp "s3://$ASSETS_BUCKET/$PRESET_KEY" "$preset_file" --region "$AWS_REGION" --only-show-errors
+	mapfile -t ids < <(grep -Eio "id=[0-9]+|data-publishedfileid=[\"'][0-9]+" "$preset_file" | grep -Eo '[0-9]+' | awk '!seen[$0]++')
+	: > "$mods_file"
   [ "${#ids[@]}" -gt 0 ] || return 0
   local runfile id source link mods=""
   runfile="$(mktemp /run/gsp-steam.XXXXXX)"
@@ -127,7 +134,10 @@ install_workshop() (
     ln -sfn "$source" "$link"
     mods="${mods:+$mods;}@workshop_$id"
   done
-  printf '%s' "$mods" > "$ROOT/config/mods.txt"
+	printf '%s' "$mods" > "$mods_file"
+	ln -sfn "presets/revision-$PRESET_REVISION.html" "$ROOT/config/preset.html"
+	ln -sfn "mod-revisions/revision-$PRESET_REVISION.txt" "$ROOT/config/mods.txt"
+	printf '%s' "$PRESET_REVISION" > "$ROOT/config/active-preset-revision"
   chown -R steam:steam "$ROOT/config" "$ROOT/home/Steam/steamapps/workshop" "$ROOT/arma3"
 )
 
@@ -228,6 +238,7 @@ EOF
 launch_and_verify() {
   systemctl restart arma3-server.service
   $TEAMSPEAK_ENABLED && systemctl restart teamspeak3-server.service
+  checkpoint HEALTH_VERIFICATION
   for _ in $(seq 1 60); do
     if systemctl is-active --quiet arma3-server.service && ss -H -lun | awk '{print $4}' | grep -Eq '(^|:)2302$'; then
       if ! $TEAMSPEAK_ENABLED || { systemctl is-active --quiet teamspeak3-server.service && ss -H -lun | awk '{print $4}' | grep -Eq '(^|:)9987$'; }; then
@@ -244,18 +255,29 @@ launch_and_verify() {
 
 exec 8>/run/gsp-bootstrap-host.lock
 flock -w 30 8
+checkpoint HOST_PREPARED
 prepare_host
 mkdir -p "$STATE_DIR" "$LOG_DIR"
 exec 9>"$STATE_DIR/bootstrap.lock"
 flock -w 30 9
 for stage in install_steamcmd install_arma install_workshop deploy_content install_teamspeak; do
+	case "$stage" in
+		install_steamcmd) checkpoint GAME_SERVER_INSTALLED;;
+		install_workshop) checkpoint MODS_APPLIED;;
+		deploy_content) checkpoint CONFIGURATION_READY;;
+	esac
   marker="$STATE_DIR/$stage.complete"
+	if [ "$stage" = install_workshop ] && [ "$VANILLA_MODE" = false ]; then
+		marker="$STATE_DIR/$stage.revision-$PRESET_REVISION.complete"
+		[ "$PRESET_ROLLBACK" = true ] && rm -f -- "$marker"
+	fi
   if [ -f "$marker" ]; then log "stage $stage already complete"; continue; fi
   log "starting stage $stage"
   "$stage"
   touch "$marker"
   log "completed stage $stage"
 done
+checkpoint SERVICE_STARTED
 log "starting stage launch_and_verify"
 launch_and_verify
 log "completed stage launch_and_verify"

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -132,6 +134,16 @@ func (service *Service) observe(ctx context.Context, session domain.Session, wor
 	result.Done = terminal(status.Status)
 	result.Succeeded = status.Status == "Success"
 	result.ObjectKey, result.SHA256, result.SizeBytes = status.ObjectKey, status.SHA256, status.SizeBytes
+	if result.Succeeded {
+		updated, progressErr := service.advanceProgress(ctx, session, workflow, domain.ProgressArchiveVerified)
+		if progressErr != nil {
+			return TaskResult{}, progressErr
+		}
+		session = updated
+		result = taskResult(session, workflow)
+		result.CommandID, result.Done, result.Succeeded = commandID, true, true
+		result.ObjectKey, result.SHA256, result.SizeBytes = status.ObjectKey, status.SHA256, status.SizeBytes
+	}
 	if result.Done && !result.Succeeded {
 		result.ErrorCode = "ERR_ARCHIVE_COMMAND"
 		result.ErrorMessage = bounded(status.ErrorMessage, "archive command failed")
@@ -150,13 +162,17 @@ func (service *Service) verify(ctx context.Context, session domain.Session, work
 	}
 	manifest := domain.ArchiveManifest{
 		SchemaVersion: 1, ArchiveID: workflow.ID, SessionID: session.ID,
+		SessionName: session.DisplayName, SessionSlug: session.Slug, Description: session.Description,
 		CreatedAt: workflow.StartedAt.UTC().Format(time.RFC3339Nano), Format: "tar+gzip",
 		ObjectKey: request.ObjectKey, SHA256: request.SHA256, SizeBytes: request.SizeBytes,
 		ContentRoots: archiveRoots(session), GameProfileID: session.GameProfileID,
 		ConfigurationRevision: session.ConfigurationRevision, MissionObjectKey: session.MissionObjectKey,
 		PresetObjectKey: session.PresetObjectKey, SourceInstanceID: session.Infrastructure.InstanceID,
-		Vanilla:            session.Vanilla,
-		SourceDataVolumeID: session.Infrastructure.DataVolumeID,
+		PresetRevisionSequence: session.EffectivePresetRevisionSequence(),
+		ActivePresetRevision:   domain.ArchivePresetRevisionSnapshot(session.EffectiveActivePresetRevision()),
+		PendingPresetRevision:  domain.ArchivePresetRevisionSnapshot(session.PendingPresetRevision),
+		Vanilla:                session.Vanilla,
+		SourceDataVolumeID:     session.Infrastructure.DataVolumeID,
 	}
 	if err := manifest.Validate(); err != nil {
 		return TaskResult{}, err
@@ -200,6 +216,7 @@ func (service *Service) recordVerified(ctx context.Context, session domain.Sessi
 	if err := service.stages.SaveProvisioningStage(ctx, session, expectedVersion, event); err != nil {
 		return TaskResult{}, err
 	}
+	service.notify(ctx, session, workflow)
 	return taskResult(session, workflow), nil
 }
 
@@ -266,6 +283,7 @@ func (service *Service) complete(ctx context.Context, session domain.Session, wo
 			return TaskResult{}, err
 		}
 	}
+	session.ClearFailure()
 	if err := session.CompleteArchive(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}
@@ -278,7 +296,7 @@ func (service *Service) complete(ctx context.Context, session domain.Session, wo
 	if err := service.workflows.CompleteWorkflow(ctx, session, expectedVersion, workflow, event); err != nil {
 		return TaskResult{}, err
 	}
-	service.notify(ctx, session, workflow, metadata)
+	service.notify(ctx, session, workflow)
 	result := taskResult(session, workflow)
 	result.Done, result.Succeeded = true, true
 	result.ObjectKey, result.SHA256, result.SizeBytes, result.ManifestObjectKey, result.ManifestSHA256, result.ManifestSizeBytes = metadata.ObjectKey, metadata.SHA256, metadata.SizeBytes, metadata.ManifestObjectKey, metadata.ManifestSHA256, metadata.ManifestSizeBytes
@@ -291,6 +309,10 @@ func (service *Service) fail(ctx context.Context, session domain.Session, workfl
 	}
 	expectedVersion := session.Version
 	now := service.clock.Now().UTC()
+	if err := failurestate.Record(&session, workflow, request.ErrorCode, "ERR_ARCHIVE_FAILED", workflow.CurrentStage,
+		"Archive processing stopped before every guarded stage was verified.", failurestate.Impact(session, true), now); err != nil {
+		return TaskResult{}, err
+	}
 	if err := session.FailArchive(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}
@@ -305,6 +327,7 @@ func (service *Service) fail(ctx context.Context, session domain.Session, workfl
 	if err := service.workflows.CompleteWorkflow(ctx, session, expectedVersion, workflow, event); err != nil {
 		return TaskResult{}, err
 	}
+	service.notify(ctx, session, workflow)
 	return taskResult(session, workflow), nil
 }
 
@@ -329,16 +352,26 @@ func (service *Service) load(ctx context.Context, request TaskRequest) (domain.S
 	return session, workflow, nil
 }
 
-func (service *Service) notify(ctx context.Context, session domain.Session, workflow domain.Workflow, metadata domain.ArchiveMetadata) {
-	if service.notifications == nil {
-		return
+func (service *Service) notify(ctx context.Context, session domain.Session, workflow domain.Workflow) {
+	_ = sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, service.clock.Now().UTC())
+}
+
+func (service *Service) advanceProgress(ctx context.Context, session domain.Session, workflow domain.Workflow, milestone domain.ProgressMilestone) (domain.Session, error) {
+	expected, now := session.Version, service.clock.Now().UTC()
+	changed, err := session.AdvanceProgress(workflow.ID, milestone, now)
+	if err != nil || !changed {
+		return session, err
 	}
-	id, err := service.ids.New(service.clock.Now())
+	id, err := service.ids.New(now)
 	if err != nil {
-		return
+		return domain.Session{}, err
 	}
-	content := "**Session archived**\nSession: `" + session.ID + "`\nArchive: `" + metadata.ID + "`\nDisposable EC2 and EBS resources were removed after checksum verification. Use `/session restore` to recreate it."
-	_ = service.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: id, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: content, CorrelationID: workflow.CorrelationID, RequestedAt: service.clock.Now().UTC()})
+	event := domain.NewProgressMilestoneEvent(id, workflow, session, now)
+	if err := service.stages.SaveProvisioningStage(ctx, session, expected, event); err != nil {
+		return domain.Session{}, err
+	}
+	service.notify(ctx, session, workflow)
+	return session, nil
 }
 
 func taskResult(session domain.Session, workflow domain.Workflow) TaskResult {

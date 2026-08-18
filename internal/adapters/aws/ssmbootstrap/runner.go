@@ -37,6 +37,7 @@ type Runner struct {
 }
 
 var _ ports.BootstrapRunner = (*Runner)(nil)
+var _ ports.PresetRevisionRunner = (*Runner)(nil)
 
 func New(client API, config Config) (*Runner, error) {
 	config.Region = strings.TrimSpace(config.Region)
@@ -54,10 +55,22 @@ func New(client API, config Config) (*Runner, error) {
 }
 
 func (runner *Runner) Start(ctx context.Context, session domain.Session) (string, error) {
-	if !session.CanStartBootstrap() && session.LifecycleState != domain.StateInstalling && session.LifecycleState != domain.StateRestoring {
+	applyingLifecycleRevision := session.HasApplyingPresetRevision(session.ActiveWorkflowID) && (session.LifecycleState == domain.StateWaking || session.LifecycleState == domain.StateRestoring)
+	if !session.CanStartBootstrap() && session.LifecycleState != domain.StateInstalling && !applyingLifecycleRevision {
 		return "", fmt.Errorf("%w: session is not bootstrap-ready", domain.ErrInvalidTransition)
 	}
-	script, err := runner.command(session)
+	return runner.start(ctx, session, false)
+}
+
+func (runner *Runner) StartRollback(ctx context.Context, session domain.Session) (string, error) {
+	if !session.HasApplyingPresetRevision(session.ActiveWorkflowID) {
+		return "", fmt.Errorf("%w: no applying preset revision to roll back", domain.ErrInvalidTransition)
+	}
+	return runner.start(ctx, session, true)
+}
+
+func (runner *Runner) start(ctx context.Context, session domain.Session, rollback bool) (string, error) {
+	script, err := runner.commandMode(session, rollback)
 	if err != nil {
 		return "", err
 	}
@@ -102,11 +115,52 @@ func (runner *Runner) Observe(ctx context.Context, instanceID string, commandID 
 	if len(message) > 500 {
 		message = message[len(message)-500:]
 	}
-	return ports.BootstrapCommandStatus{Status: string(output.Status), ErrorMessage: message}, nil
+	return ports.BootstrapCommandStatus{
+		Status: string(output.Status), ErrorMessage: message,
+		Checkpoints: parseCheckpoints(aws.ToString(output.StandardOutputContent)),
+	}, nil
+}
+
+func parseCheckpoints(output string) []domain.ProgressMilestone {
+	allowed := map[domain.ProgressMilestone]bool{
+		domain.ProgressHostPrepared: true, domain.ProgressGameServerInstalled: true,
+		domain.ProgressModsApplied: true, domain.ProgressConfigurationReady: true,
+		domain.ProgressServiceStarted: true, domain.ProgressHealthVerification: true,
+	}
+	seen := make(map[domain.ProgressMilestone]bool, len(allowed))
+	for _, line := range strings.Split(output, "\n") {
+		const prefix = "GSP_CHECKPOINT:"
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		checkpoint := domain.ProgressMilestone(strings.TrimSpace(strings.TrimPrefix(line, prefix)))
+		if allowed[checkpoint] && !seen[checkpoint] {
+			seen[checkpoint] = true
+		}
+	}
+	ordered, _ := domain.MilestonesForWorkflow(domain.BootstrapWorkflowType)
+	checkpoints := make([]domain.ProgressMilestone, 0, len(seen))
+	for _, checkpoint := range ordered {
+		if seen[checkpoint] {
+			checkpoints = append(checkpoints, checkpoint)
+		}
+	}
+	return checkpoints
 }
 
 func (runner *Runner) command(session domain.Session) (string, error) {
-	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || session.MissionObjectKey == "" || (!session.Vanilla && session.PresetObjectKey == "") {
+	return runner.commandMode(session, false)
+}
+
+func (runner *Runner) commandMode(session domain.Session, rollback bool) (string, error) {
+	presetObjectKey := session.PresetObjectKeyForApplication()
+	presetRevision := session.PresetRevisionForApplication()
+	if rollback {
+		active := session.EffectiveActivePresetRevision()
+		presetObjectKey, presetRevision = active.PresetObjectKey, active.Number
+	}
+	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || session.MissionObjectKey == "" || (!session.Vanilla && presetObjectKey == "") {
 		return "", fmt.Errorf("instance, data volume, mission, and a preset for modded sessions are required")
 	}
 	steamSecretID := runner.config.SteamSecretID
@@ -118,7 +172,9 @@ func (runner *Runner) command(session domain.Session) (string, error) {
 		"DISPLAY_NAME_B64":      session.DisplayName,
 		"DATA_VOLUME_ID_B64":    session.Infrastructure.DataVolumeID,
 		"MISSION_KEY_B64":       session.MissionObjectKey,
-		"PRESET_KEY_B64":        session.PresetObjectKey,
+		"PRESET_KEY_B64":        presetObjectKey,
+		"PRESET_REVISION_B64":   fmt.Sprintf("%d", presetRevision),
+		"PRESET_ROLLBACK_B64":   fmt.Sprintf("%t", rollback),
 		"ASSETS_BUCKET_B64":     runner.config.AssetsBucket,
 		"STEAM_SECRET_ID_B64":   steamSecretID,
 		"AWS_REGION_B64":        runner.config.Region,
@@ -126,7 +182,7 @@ func (runner *Runner) command(session domain.Session) (string, error) {
 	}
 	var command strings.Builder
 	command.WriteString("#!/usr/bin/env bash\nset -Eeuo pipefail\numask 077\n")
-	for _, key := range []string{"SESSION_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "PRESET_KEY_B64", "ASSETS_BUCKET_B64", "STEAM_SECRET_ID_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
+	for _, key := range []string{"SESSION_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "ASSETS_BUCKET_B64", "STEAM_SECRET_ID_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
 		command.WriteString("export " + key + "='" + base64.StdEncoding.EncodeToString([]byte(values[key])) + "'\n")
 	}
 	if session.TeamSpeakEnabled {

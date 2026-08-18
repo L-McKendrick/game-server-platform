@@ -4,16 +4,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/discord/componentid"
 )
 
 const (
-	interactionTypePing               = 1
-	interactionTypeApplicationCommand = 2
-	interactionTypeMessageComponent   = 3
+	interactionTypePing                           = 1
+	interactionTypeApplicationCommand             = 2
+	interactionTypeMessageComponent               = 3
+	interactionTypeApplicationCommandAutocomplete = 4
+	interactionTypeModalSubmit                    = 5
 
-	interactionResponsePong                     = 1
-	interactionResponseChannelMessageWithSource = 4
-	interactionResponseUpdateMessage            = 7
+	interactionResponsePong                             = 1
+	interactionResponseChannelMessageWithSource         = 4
+	interactionResponseDeferredChannelMessageWithSource = 5
+	interactionResponseDeferredUpdateMessage            = 6
+	interactionResponseUpdateMessage                    = 7
+	interactionResponseAutocompleteResult               = 8
+	interactionResponseModal                            = 9
 
 	applicationCommandOptionSubcommand = 1
 	applicationCommandOptionString     = 3
@@ -23,10 +31,45 @@ const (
 	applicationCommandOptionChannel    = 7
 	applicationCommandOptionRole       = 8
 
-	messageFlagEphemeral = 1 << 6
+	messageFlagEphemeral    = 1 << 6
+	messageFlagComponentsV2 = 1 << 15
 
-	componentTypeActionRow  = 1
-	componentTypeRoleSelect = 6
+	componentTypeActionRow     = 1
+	componentTypeButton        = 2
+	componentTypeStringSelect  = 3
+	componentTypeTextInput     = 4
+	componentTypeUserSelect    = 5
+	componentTypeRoleSelect    = 6
+	componentTypeMentionable   = 7
+	componentTypeChannelSelect = 8
+	componentTypeSection       = 9
+	componentTypeTextDisplay   = 10
+	componentTypeThumbnail     = 11
+	componentTypeMediaGallery  = 12
+	componentTypeFile          = 13
+	componentTypeSeparator     = 14
+	componentTypeContainer     = 17
+	componentTypeLabel         = 18
+	componentTypeFileUpload    = 19
+	componentTypeRadioGroup    = 21
+	componentTypeCheckboxGroup = 22
+	componentTypeCheckbox      = 23
+
+	buttonStylePrimary   = 1
+	buttonStyleSecondary = 2
+	buttonStyleSuccess   = 3
+	buttonStyleDanger    = 4
+	buttonStyleLink      = 5
+	buttonStylePremium   = 6
+
+	textInputStyleShort     = 1
+	textInputStyleParagraph = 2
+
+	separatorSpacingSmall = 1
+	separatorSpacingLarge = 2
+
+	componentCustomIDPrefix     = componentid.Prefix
+	maximumComponentCustomIDLen = componentid.MaximumCustomIDLength
 
 	administratorPermission = uint64(1 << 3)
 	manageGuildPermission   = uint64(1 << 5)
@@ -35,14 +78,15 @@ const (
 )
 
 type interactionPayload struct {
-	ID            string                  `json:"id"`
-	ApplicationID string                  `json:"application_id"`
-	Type          int                     `json:"type"`
-	Data          *applicationCommandData `json:"data,omitempty"`
-	GuildID       string                  `json:"guild_id,omitempty"`
-	ChannelID     string                  `json:"channel_id,omitempty"`
-	Member        *interactionMember      `json:"member,omitempty"`
-	User          *interactionUser        `json:"user,omitempty"`
+	ID             string                  `json:"id"`
+	ApplicationID  string                  `json:"application_id"`
+	Type           int                     `json:"type"`
+	AppPermissions string                  `json:"app_permissions,omitempty"`
+	Data           *applicationCommandData `json:"data,omitempty"`
+	GuildID        string                  `json:"guild_id,omitempty"`
+	ChannelID      string                  `json:"channel_id,omitempty"`
+	Member         *interactionMember      `json:"member,omitempty"`
+	User           *interactionUser        `json:"user,omitempty"`
 }
 
 type interactionMember struct {
@@ -62,10 +106,15 @@ type applicationCommandData struct {
 	CustomID      string                      `json:"custom_id,omitempty"`
 	ComponentType int                         `json:"component_type,omitempty"`
 	Values        []string                    `json:"values,omitempty"`
+	Components    []interactionComponent      `json:"components,omitempty"`
 }
 
 type applicationCommandResolved struct {
 	Attachments map[string]interactionAttachment `json:"attachments,omitempty"`
+	Users       map[string]json.RawMessage       `json:"users,omitempty"`
+	Members     map[string]json.RawMessage       `json:"members,omitempty"`
+	Roles       map[string]json.RawMessage       `json:"roles,omitempty"`
+	Channels    map[string]json.RawMessage       `json:"channels,omitempty"`
 }
 
 type interactionAttachment struct {
@@ -81,6 +130,7 @@ type applicationCommandOption struct {
 	Name    string                     `json:"name"`
 	Value   json.RawMessage            `json:"value,omitempty"`
 	Options []applicationCommandOption `json:"options,omitempty"`
+	Focused bool                       `json:"focused,omitempty"`
 }
 
 func integerOption(options []applicationCommandOption, name string, fallback int64) (int64, error) {
@@ -147,23 +197,116 @@ type interactionResponse struct {
 }
 
 type interactionResponseData struct {
-	Content         string                     `json:"content"`
-	Flags           int                        `json:"flags,omitempty"`
-	AllowedMentions interactionAllowedMentions `json:"allowed_mentions"`
-	Components      *[]interactionComponent    `json:"components,omitempty"`
+	Content         string                      `json:"content,omitempty"`
+	Flags           int                         `json:"flags,omitempty"`
+	AllowedMentions *interactionAllowedMentions `json:"allowed_mentions,omitempty"`
+	Components      *[]interactionComponent     `json:"components,omitempty"`
+	Choices         *[]applicationCommandChoice `json:"choices,omitempty"`
+	CustomID        string                      `json:"custom_id,omitempty"`
+	Title           string                      `json:"title,omitempty"`
+	Attachments     []interactionResponseFile   `json:"attachments,omitempty"`
 }
 
 type interactionComponent struct {
-	Type        int                    `json:"type"`
-	CustomID    string                 `json:"custom_id,omitempty"`
-	Placeholder string                 `json:"placeholder,omitempty"`
-	MinValues   *int                   `json:"min_values,omitempty"`
-	MaxValues   *int                   `json:"max_values,omitempty"`
-	Components  []interactionComponent `json:"components,omitempty"`
+	Type          int                             `json:"type"`
+	ID            int                             `json:"id,omitempty"`
+	CustomID      string                          `json:"custom_id,omitempty"`
+	Style         int                             `json:"style,omitempty"`
+	Label         string                          `json:"label,omitempty"`
+	Description   string                          `json:"description,omitempty"`
+	Content       string                          `json:"content,omitempty"`
+	Emoji         *interactionEmoji               `json:"emoji,omitempty"`
+	URL           string                          `json:"url,omitempty"`
+	SKUID         string                          `json:"sku_id,omitempty"`
+	Disabled      bool                            `json:"disabled,omitempty"`
+	Placeholder   string                          `json:"placeholder,omitempty"`
+	MinValues     *int                            `json:"min_values,omitempty"`
+	MaxValues     *int                            `json:"max_values,omitempty"`
+	MinLength     *int                            `json:"min_length,omitempty"`
+	MaxLength     *int                            `json:"max_length,omitempty"`
+	Required      *bool                           `json:"required,omitempty"`
+	Value         string                          `json:"value,omitempty"`
+	Values        []string                        `json:"values,omitempty"`
+	Options       []interactionSelectOption       `json:"options,omitempty"`
+	ChannelTypes  []int                           `json:"channel_types,omitempty"`
+	DefaultValues []interactionSelectDefaultValue `json:"default_values,omitempty"`
+	Components    []interactionComponent          `json:"components,omitempty"`
+	Component     *interactionComponent           `json:"component,omitempty"`
+	Accessory     *interactionComponent           `json:"accessory,omitempty"`
+	Media         *interactionUnfurledMediaItem   `json:"media,omitempty"`
+	Items         []interactionMediaGalleryItem   `json:"items,omitempty"`
+	File          *interactionUnfurledMediaItem   `json:"file,omitempty"`
+	Spoiler       bool                            `json:"spoiler,omitempty"`
+	Divider       *bool                           `json:"divider,omitempty"`
+	Spacing       int                             `json:"spacing,omitempty"`
+	AccentColor   *int                            `json:"accent_color,omitempty"`
+}
+
+type applicationCommandChoice struct {
+	Name  string `json:"name"`
+	Value any    `json:"value"`
+}
+
+type interactionResponseFile struct {
+	ID          string `json:"id"`
+	Filename    string `json:"filename,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+type interactionEmoji struct {
+	ID       string `json:"id,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Animated bool   `json:"animated,omitempty"`
+}
+
+type interactionSelectOption struct {
+	Label       string            `json:"label"`
+	Value       string            `json:"value"`
+	Description string            `json:"description,omitempty"`
+	Emoji       *interactionEmoji `json:"emoji,omitempty"`
+	Default     bool              `json:"default,omitempty"`
+}
+
+type interactionSelectDefaultValue struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+}
+
+type interactionUnfurledMediaItem struct {
+	URL          string `json:"url"`
+	ProxyURL     string `json:"proxy_url,omitempty"`
+	Height       int    `json:"height,omitempty"`
+	Width        int    `json:"width,omitempty"`
+	ContentType  string `json:"content_type,omitempty"`
+	AttachmentID string `json:"attachment_id,omitempty"`
+}
+
+type interactionMediaGalleryItem struct {
+	Media       interactionUnfurledMediaItem `json:"media"`
+	Description string                       `json:"description,omitempty"`
+	Spoiler     bool                         `json:"spoiler,omitempty"`
 }
 
 type interactionAllowedMentions struct {
 	Parse []string `json:"parse"`
+}
+
+type componentReference struct {
+	Action   string
+	Revision uint64
+	Token    string
+}
+
+func newComponentCustomID(action string, revision uint64, token string) (string, error) {
+	return componentid.New(action, revision, token)
+}
+
+func parseComponentCustomID(customID string) (componentReference, error) {
+	reference, err := componentid.Parse(customID)
+	if err != nil {
+		return componentReference{}, err
+	}
+	return componentReference{Action: reference.Action, Revision: reference.Revision, Token: reference.Token}, nil
 }
 
 func (payload interactionPayload) actorID() string {
@@ -179,7 +322,7 @@ func (payload interactionPayload) actorID() string {
 }
 
 func (payload interactionPayload) subcommand() (applicationCommandOption, error) {
-	return payload.namedSubcommand("session")
+	return payload.namedSubcommand("rb")
 }
 
 func (payload interactionPayload) namedSubcommand(commandName string) (applicationCommandOption, error) {
@@ -203,7 +346,7 @@ func (payload interactionPayload) namedSubcommand(commandName string) (applicati
 	subcommand := payload.Data.Options[0]
 	if subcommand.Type != applicationCommandOptionSubcommand {
 		return applicationCommandOption{}, fmt.Errorf(
-			"session command option %q is not a subcommand",
+			"rb command option %q is not a subcommand",
 			subcommand.Name,
 		)
 	}

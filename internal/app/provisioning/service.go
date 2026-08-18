@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -139,7 +141,11 @@ func (service *Service) prepare(ctx context.Context, request TaskRequest) (TaskR
 	if err := service.saveStage(ctx, session, expectedVersion, workflow, "CapacityReserved"); err != nil {
 		return TaskResult{}, err
 	}
-	return result(session, workflow), nil
+	response := result(session, workflow)
+	if notifyErr := sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, service.clock.Now().UTC()); notifyErr != nil {
+		response.Warning = notifyErr.Error()
+	}
+	return response, nil
 }
 
 func (service *Service) ensure(ctx context.Context, request TaskRequest) (TaskResult, error) {
@@ -170,7 +176,11 @@ func (service *Service) ensure(ctx context.Context, request TaskRequest) (TaskRe
 	if err := service.saveStage(ctx, session, expectedVersion, workflow, "InstanceLaunched"); err != nil {
 		return TaskResult{}, err
 	}
-	return resultWithObservation(session, workflow, observation), nil
+	response := resultWithObservation(session, workflow, observation)
+	if notifyErr := sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, service.clock.Now().UTC()); notifyErr != nil {
+		response.Warning = notifyErr.Error()
+	}
+	return response, nil
 }
 
 func (service *Service) observe(ctx context.Context, request TaskRequest) (TaskResult, error) {
@@ -232,6 +242,7 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 	}
 	expectedVersion := session.Version
 	now := service.clock.Now().UTC()
+	session.ClearFailure()
 	if err := session.CompleteInfrastructureProvisioning(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}
@@ -247,18 +258,8 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 		return TaskResult{}, err
 	}
 	response := result(session, workflow)
-	if service.notifications != nil {
-		notificationID, idErr := service.ids.New(now)
-		if idErr != nil {
-			response.Warning = idErr.Error()
-		} else if notifyErr := service.notifications.Enqueue(ctx, domain.NotificationRequest{
-			SchemaVersion: 1, NotificationID: notificationID, SessionID: session.ID,
-			GuildID: session.GuildID, ChannelID: session.ChannelID,
-			Content:       fmt.Sprintf("**Infrastructure ready**\nSession: `%s`\nThe instance is managed by Systems Manager. Run `/session start %s` again to begin the Arma bootstrap.", session.ID, session.ID),
-			CorrelationID: workflow.CorrelationID, RequestedAt: now,
-		}); notifyErr != nil {
-			response.Warning = notifyErr.Error()
-		}
+	if notifyErr := sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now); notifyErr != nil {
+		response.Warning = notifyErr.Error()
 	}
 	return response, nil
 }
@@ -303,6 +304,10 @@ func (service *Service) fail(ctx context.Context, request TaskRequest) (TaskResu
 	}
 	expectedVersion := session.Version
 	now := service.clock.Now().UTC()
+	if err := failurestate.Record(&session, workflow, request.ErrorCode, "ERR_PROVISIONING_FAILED", workflow.CurrentStage,
+		"Infrastructure provisioning stopped before readiness was confirmed.", failurestate.Impact(session, warning != "" || strings.EqualFold(strings.TrimSpace(request.ErrorCode), "ERR_AMBIGUOUS_LAUNCH")), now); err != nil {
+		return TaskResult{}, err
+	}
 	if err := session.FailInfrastructureProvisioning(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}
@@ -328,6 +333,9 @@ func (service *Service) fail(ctx context.Context, request TaskRequest) (TaskResu
 	}
 	response := result(session, workflow)
 	response.Warning = warning
+	if notifyErr := sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now); notifyErr != nil && response.Warning == "" {
+		response.Warning = notifyErr.Error()
+	}
 	return response, nil
 }
 
@@ -337,7 +345,8 @@ func (service *Service) launchRequest(session domain.Session) domain.ComputeLaun
 		securityGroups = append(securityGroups, service.config.VoiceSecurityGroupID)
 	}
 	return domain.ComputeLaunchRequest{
-		SessionID: session.ID, GameType: session.GameType, Project: service.config.Project,
+		SessionID: session.ID, SessionName: session.DisplayName, SessionSlug: session.Slug,
+		GameType: session.GameType, Project: service.config.Project,
 		Environment: service.config.Environment, AMIID: service.config.AMIID,
 		InstanceType: service.config.InstanceType, SubnetID: service.config.SubnetID,
 		SecurityGroupIDs: securityGroups, InstanceProfile: service.config.InstanceProfile,

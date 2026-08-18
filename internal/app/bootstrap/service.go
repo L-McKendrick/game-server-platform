@@ -6,16 +6,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
 const (
-	ActionPrepare  = "prepare"
-	ActionDispatch = "dispatch"
-	ActionObserve  = "observe"
-	ActionComplete = "complete"
-	ActionFail     = "fail"
+	ActionPrepare          = "prepare"
+	ActionDispatch         = "dispatch"
+	ActionObserve          = "observe"
+	ActionComplete         = "complete"
+	ActionFail             = "fail"
+	ActionRollbackDispatch = "dispatch_rollback"
+	ActionRollbackObserve  = "observe_rollback"
 )
 
 type Clock interface{ Now() time.Time }
@@ -50,13 +54,13 @@ type Service struct {
 	sessions      ports.SessionRepository
 	stages        ports.BootstrapRepository
 	workflows     ports.WorkflowRepository
-	runner        ports.BootstrapRunner
+	runner        ports.PresetRevisionRunner
 	notifications ports.NotificationQueue
 	ids           IDGenerator
 	clock         Clock
 }
 
-func NewService(sessions ports.SessionRepository, stages ports.BootstrapRepository, workflows ports.WorkflowRepository, runner ports.BootstrapRunner, notifications ports.NotificationQueue, ids IDGenerator, clock Clock) (*Service, error) {
+func NewService(sessions ports.SessionRepository, stages ports.BootstrapRepository, workflows ports.WorkflowRepository, runner ports.PresetRevisionRunner, notifications ports.NotificationQueue, ids IDGenerator, clock Clock) (*Service, error) {
 	if sessions == nil || stages == nil || workflows == nil || runner == nil || ids == nil || clock == nil {
 		return nil, fmt.Errorf("bootstrap dependencies are required")
 	}
@@ -78,9 +82,84 @@ func (service *Service) Handle(ctx context.Context, request TaskRequest) (TaskRe
 		return service.complete(ctx, request)
 	case ActionFail:
 		return service.fail(ctx, request)
+	case ActionRollbackDispatch:
+		return service.dispatchRollback(ctx, request)
+	case ActionRollbackObserve:
+		return service.observeRollback(ctx, request)
 	default:
 		return TaskResult{}, fmt.Errorf("unsupported bootstrap action %q", request.Action)
 	}
+}
+
+func (service *Service) dispatchRollback(ctx context.Context, request TaskRequest) (TaskResult, error) {
+	session, workflow, err := service.load(ctx, request)
+	if err != nil {
+		return TaskResult{}, err
+	}
+	result := taskResult(session, workflow)
+	if !session.HasApplyingPresetRevision(workflow.ID) {
+		result.Done, result.Succeeded = true, true
+		return result, nil
+	}
+	expected := session.Version
+	changed, progressErr := session.SetProgressState(workflow.ID, domain.ProgressRollingBack, service.clock.Now())
+	if progressErr != nil {
+		return TaskResult{}, progressErr
+	}
+	if changed {
+		if progressErr := service.saveProgress(ctx, session, expected, workflow); progressErr != nil {
+			return TaskResult{}, progressErr
+		}
+		result = taskResult(session, workflow)
+		service.notify(ctx, &result, session, workflow)
+	}
+	commandID, err := service.runner.StartRollback(ctx, session)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("start preset rollback: %w", err)
+	}
+	result.CommandID, result.Status = commandID, "PENDING"
+	return result, nil
+}
+
+func (service *Service) observeRollback(ctx context.Context, request TaskRequest) (TaskResult, error) {
+	session, workflow, err := service.load(ctx, request)
+	if err != nil {
+		return TaskResult{}, err
+	}
+	result := taskResult(session, workflow)
+	if !session.HasApplyingPresetRevision(workflow.ID) {
+		result.Done, result.Succeeded = true, true
+		return result, nil
+	}
+	status, err := service.runner.Observe(ctx, session.Infrastructure.InstanceID, strings.TrimSpace(request.CommandID))
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("observe preset rollback: %w", err)
+	}
+	result.CommandID, result.Status = request.CommandID, status.Status
+	result.Done = status.Status == "Success" || status.Status == "Failed" || status.Status == "TimedOut" || status.Status == "Cancelled"
+	result.Succeeded = status.Status == "Success"
+	if !result.Done {
+		return result, nil
+	}
+	expected, now := session.Version, service.clock.Now().UTC()
+	changed, err := session.RecordPresetRevisionRollback(workflow.ID, result.Succeeded, status.ErrorMessage, now)
+	if err != nil {
+		return TaskResult{}, err
+	}
+	if changed {
+		id, err := service.ids.New(now)
+		if err != nil {
+			return TaskResult{}, err
+		}
+		event := domain.NewPresetRevisionEvent(id, domain.EventPresetRevisionRolledBack, workflow.CorrelationID, domain.Actor{Type: domain.ActorTypeSystem, ID: domain.BootstrapWorkflowType}, session, session.PendingPresetRevision, now)
+		if err := service.stages.SaveBootstrapStage(ctx, session, expected, event); err != nil {
+			return TaskResult{}, err
+		}
+	}
+	if !result.Succeeded {
+		result.ErrorCode, result.ErrorMessage = "ERR_MOD_ROLLBACK_"+strings.ToUpper(status.Status), bounded(status.ErrorMessage, 500, "known-good mod rollback failed")
+	}
+	return result, nil
 }
 
 func (service *Service) prepare(ctx context.Context, request TaskRequest) (TaskResult, error) {
@@ -98,7 +177,9 @@ func (service *Service) prepare(ctx context.Context, request TaskRequest) (TaskR
 	if err := service.saveStage(ctx, session, expectedVersion, workflow, "InstallationStarted"); err != nil {
 		return TaskResult{}, err
 	}
-	return taskResult(session, workflow), nil
+	result := taskResult(session, workflow)
+	service.notify(ctx, &result, session, workflow)
+	return result, nil
 }
 
 func (service *Service) dispatch(ctx context.Context, request TaskRequest) (TaskResult, error) {
@@ -135,6 +216,26 @@ func (service *Service) observe(ctx context.Context, request TaskRequest) (TaskR
 	result := taskResult(session, workflow)
 	result.CommandID = commandID
 	result.Status = status.Status
+	checkpoints := status.Checkpoints
+	if status.Status == "Success" {
+		ordered, _ := domain.MilestonesForWorkflow(domain.BootstrapWorkflowType)
+		checkpoints = ordered[1 : len(ordered)-1]
+	}
+	expectedVersion := session.Version
+	var skipped []domain.ProgressMilestone
+	if session.Vanilla {
+		skipped = []domain.ProgressMilestone{domain.ProgressModsApplied}
+	}
+	progressChanged, progressErr := session.ApplyProgressSequence(workflow.ID, checkpoints, skipped, service.clock.Now())
+	if progressErr != nil {
+		return TaskResult{}, progressErr
+	}
+	if progressChanged {
+		if progressErr := service.saveProgress(ctx, session, expectedVersion, workflow); progressErr != nil {
+			return TaskResult{}, progressErr
+		}
+		service.notify(ctx, &result, session, workflow)
+	}
 	switch status.Status {
 	case "Success":
 		result.Done, result.Succeeded = true, true
@@ -152,13 +253,18 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 		return TaskResult{}, err
 	}
 	if workflow.Status == domain.WorkflowSucceeded {
-		return taskResult(session, workflow), nil
+		result := taskResult(session, workflow)
+		if err := sessioncard.EnqueueActivatedModlist(ctx, service.notifications, session, workflow, service.clock.Now().UTC()); err != nil {
+			result.Warning = err.Error()
+		}
+		return result, nil
 	}
 	if session.ActiveWorkflowID != workflow.ID || workflow.Type != domain.BootstrapWorkflowType {
 		return TaskResult{}, domain.ErrConflict
 	}
 	expectedVersion := session.Version
 	now := service.clock.Now().UTC()
+	session.ClearFailure()
 	if err := session.CompleteBootstrap(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}
@@ -173,7 +279,13 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 		return TaskResult{}, err
 	}
 	result := taskResult(session, workflow)
-	service.notify(ctx, &result, session, workflow, "**Game server ready**\nSession: `%s`\nAddress: `%s:2302`")
+	service.notify(ctx, &result, session, workflow)
+	if err := sessioncard.EnqueueActivatedModlist(ctx, service.notifications, session, workflow, now); err != nil {
+		if result.Warning != "" {
+			result.Warning += "; "
+		}
+		result.Warning += err.Error()
+	}
 	return result, nil
 }
 
@@ -190,6 +302,13 @@ func (service *Service) fail(ctx context.Context, request TaskRequest) (TaskResu
 	}
 	expectedVersion := session.Version
 	now := service.clock.Now().UTC()
+	if err := session.FailPresetRevisionApplication(workflow.ID, request.ErrorMessage, now); err != nil {
+		return TaskResult{}, err
+	}
+	if err := failurestate.Record(&session, workflow, request.ErrorCode, "ERR_BOOTSTRAP_FAILED", workflow.CurrentStage,
+		"Game and content setup stopped before health verification completed.", failurestate.Impact(session, false), now); err != nil {
+		return TaskResult{}, err
+	}
 	if err := session.FailBootstrap(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}
@@ -206,31 +325,23 @@ func (service *Service) fail(ctx context.Context, request TaskRequest) (TaskResu
 		return TaskResult{}, err
 	}
 	result := taskResult(session, workflow)
-	service.notify(ctx, &result, session, workflow, "**Game server bootstrap failed**\nSession: `%s`\nReference: `%s`")
+	service.notify(ctx, &result, session, workflow)
 	return result, nil
 }
 
-func (service *Service) notify(ctx context.Context, result *TaskResult, session domain.Session, workflow domain.Workflow, format string) {
-	if service.notifications == nil {
-		return
+func (service *Service) notify(ctx context.Context, result *TaskResult, session domain.Session, workflow domain.Workflow) {
+	if err := sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, service.clock.Now().UTC()); err != nil {
+		result.Warning = err.Error()
 	}
+}
+
+func (service *Service) saveProgress(ctx context.Context, session domain.Session, expectedVersion int64, workflow domain.Workflow) error {
 	now := service.clock.Now().UTC()
-	notificationID, err := service.ids.New(now)
+	event, err := service.event(now, domain.EventProgressMilestone, string(session.Progress.Milestone), workflow, session)
 	if err != nil {
-		result.Warning = err.Error()
-		return
+		return err
 	}
-	second := session.Infrastructure.PublicIPv4
-	if workflow.Status == domain.WorkflowFailed {
-		second = workflow.CorrelationID
-	}
-	if err := service.notifications.Enqueue(ctx, domain.NotificationRequest{
-		SchemaVersion: 1, NotificationID: notificationID, SessionID: session.ID,
-		GuildID: session.GuildID, ChannelID: session.ChannelID,
-		Content: fmt.Sprintf(format, session.ID, second), CorrelationID: workflow.CorrelationID, RequestedAt: now,
-	}); err != nil {
-		result.Warning = err.Error()
-	}
+	return service.stages.SaveBootstrapStage(ctx, session, expectedVersion, event)
 }
 
 func (service *Service) saveStage(ctx context.Context, session domain.Session, expectedVersion int64, workflow domain.Workflow, stage string) error {

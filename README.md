@@ -8,7 +8,7 @@ The platform currently provides:
 
 - Ed25519 verification against the exact raw Discord request body;
 - timestamp freshness, request-size, application-ID, and guild validation;
-- `/session create`, `/session list`, `/session status`, `/session configure`, uploads, start, sleep, wake, owner-confirmed archive, restore, and owner-confirmed irreversible termination;
+- `/rb create`, `/rb list`, `/rb status`, `/rb configure`, uploads, start, sleep, wake, owner-confirmed archive, restore, and owner-confirmed irreversible termination;
 - ephemeral responses with mentions disabled;
 - command idempotency derived from Discord interaction IDs;
 - API Gateway HTTP API v2 and Lambda backed by DynamoDB;
@@ -28,9 +28,10 @@ The platform currently provides:
 - an AWS monthly budget and a fail-closed provisioning enablement gate;
 - reproducible Lambda packages, least-privilege IAM, retained logs, and CI checks.
 
-The reconciliation state machine intentionally terminates with `PhaseNotImplemented`. `/session start` and restore use the development one-session capacity limit and AWS Budget alerts.
+The reconciliation state machine intentionally terminates with `PhaseNotImplemented`. `/rb start` and restore use the development one-session capacity limit and AWS Budget alerts.
 
-Next milestone: Phase 10 reliability, reconciliation, and orphan cleanup.
+Current milestone: Phase 12 Discord experience and session UX is proceeding by
+explicit roadmap reorder. Phases 10 and 11 remain pending.
 
 See [Phase 5: Infrastructure Provisioning](docs/phase-5-infrastructure-provisioning.md) for the implemented boundary and deployment safety gates.
 See [Phase 6: Arma Bootstrap](docs/phase-6-arma-bootstrap.md) for the resumable installation and health boundary.
@@ -70,7 +71,7 @@ go run ./cmd/discord-local
 The endpoint is `POST /discord/interactions`. Versioned development command definitions are stored in:
 
 ```text
-deploy/discord/session-command.json
+deploy/discord/rb-command.json
 deploy/discord/admin-command.json
 ```
 

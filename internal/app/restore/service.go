@@ -7,7 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
 	"github.com/L-McKendrick/game-server-platform/internal/app/provisioning"
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -24,6 +26,8 @@ const (
 	ActionObserveRestore    = "observe_restore"
 	ActionComplete          = "complete"
 	ActionFail              = "fail"
+	ActionRollbackDispatch  = "dispatch_rollback"
+	ActionRollbackObserve   = "observe_rollback"
 )
 
 type Clock interface{ Now() time.Time }
@@ -61,7 +65,7 @@ type Service struct {
 	stages        ports.ProvisioningRepository
 	workflows     ports.WorkflowRepository
 	compute       ports.ComputeProvisioner
-	bootstrap     ports.BootstrapRunner
+	bootstrap     ports.PresetRevisionRunner
 	restore       ports.RestoreRunner
 	store         ports.ArchiveStore
 	notifications ports.NotificationQueue
@@ -70,7 +74,7 @@ type Service struct {
 	config        Config
 }
 
-func NewService(sessions ports.SessionRepository, stages ports.ProvisioningRepository, workflows ports.WorkflowRepository, compute ports.ComputeProvisioner, bootstrap ports.BootstrapRunner, restore ports.RestoreRunner, store ports.ArchiveStore, notifications ports.NotificationQueue, ids IDGenerator, clock Clock, config Config) (*Service, error) {
+func NewService(sessions ports.SessionRepository, stages ports.ProvisioningRepository, workflows ports.WorkflowRepository, compute ports.ComputeProvisioner, bootstrap ports.PresetRevisionRunner, restore ports.RestoreRunner, store ports.ArchiveStore, notifications ports.NotificationQueue, ids IDGenerator, clock Clock, config Config) (*Service, error) {
 	if sessions == nil || stages == nil || workflows == nil || compute == nil || bootstrap == nil || restore == nil || store == nil || ids == nil || clock == nil {
 		return nil, fmt.Errorf("restore service dependencies are required")
 	}
@@ -99,18 +103,83 @@ func (service *Service) Handle(ctx context.Context, request TaskRequest) (TaskRe
 	case ActionDispatchBootstrap:
 		return service.dispatch(ctx, session, workflow, service.bootstrap)
 	case ActionObserveBootstrap:
-		return service.observeCommand(ctx, session, workflow, request.CommandID, service.bootstrap)
+		return service.observeCommand(ctx, session, workflow, request.CommandID, service.bootstrap, true)
 	case ActionDispatchRestore:
+		session, err = service.advanceProgress(ctx, session, workflow, domain.ProgressDataRestored)
+		if err != nil {
+			return TaskResult{}, err
+		}
 		return service.dispatch(ctx, session, workflow, service.restore)
 	case ActionObserveRestore:
-		return service.observeCommand(ctx, session, workflow, request.CommandID, service.restore)
+		return service.observeCommand(ctx, session, workflow, request.CommandID, service.restore, false)
 	case ActionComplete:
 		return service.complete(ctx, session, workflow)
 	case ActionFail:
 		return service.fail(ctx, session, workflow, request)
+	case ActionRollbackDispatch:
+		return service.dispatchRollback(ctx, session, workflow)
+	case ActionRollbackObserve:
+		return service.observeRollback(ctx, session, workflow, request.CommandID)
 	default:
 		return TaskResult{}, fmt.Errorf("unsupported restore action %q", request.Action)
 	}
+}
+
+func (service *Service) dispatchRollback(ctx context.Context, session domain.Session, workflow domain.Workflow) (TaskResult, error) {
+	response := result(session, workflow)
+	if !session.HasApplyingPresetRevision(workflow.ID) {
+		response.Done, response.Succeeded = true, true
+		return response, nil
+	}
+	updated, progressErr := service.setProgressState(ctx, session, workflow, domain.ProgressRollingBack)
+	if progressErr != nil {
+		return TaskResult{}, progressErr
+	}
+	session = updated
+	response = result(session, workflow)
+	commandID, err := service.bootstrap.StartRollback(ctx, session)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("start preset rollback: %w", err)
+	}
+	response.CommandID = commandID
+	return response, nil
+}
+
+func (service *Service) observeRollback(ctx context.Context, session domain.Session, workflow domain.Workflow, commandID string) (TaskResult, error) {
+	response := result(session, workflow)
+	if !session.HasApplyingPresetRevision(workflow.ID) {
+		response.Done, response.Succeeded = true, true
+		return response, nil
+	}
+	status, err := service.bootstrap.Observe(ctx, session.Infrastructure.InstanceID, strings.TrimSpace(commandID))
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("observe preset rollback: %w", err)
+	}
+	response.CommandID = strings.TrimSpace(commandID)
+	response.Done = terminal(status.Status)
+	response.Succeeded = status.Status == "Success"
+	if !response.Done {
+		return response, nil
+	}
+	expected, now := session.Version, service.clock.Now().UTC()
+	changed, err := session.RecordPresetRevisionRollback(workflow.ID, response.Succeeded, status.ErrorMessage, now)
+	if err != nil {
+		return TaskResult{}, err
+	}
+	if changed {
+		id, err := service.ids.New(now)
+		if err != nil {
+			return TaskResult{}, err
+		}
+		event := domain.NewPresetRevisionEvent(id, domain.EventPresetRevisionRolledBack, workflow.CorrelationID, domain.Actor{Type: domain.ActorTypeSystem, ID: domain.RestoreWorkflowType}, session, session.PendingPresetRevision, now)
+		if err := service.stages.SaveProvisioningStage(ctx, session, expected, event); err != nil {
+			return TaskResult{}, err
+		}
+	}
+	if !response.Succeeded {
+		response.ErrorCode, response.ErrorMessage = "ERR_MOD_ROLLBACK_"+strings.ToUpper(status.Status), bounded(status.ErrorMessage, "known-good mod rollback failed")
+	}
+	return response, nil
 }
 
 type commandRunner interface {
@@ -132,13 +201,24 @@ func (service *Service) verifyArchive(ctx context.Context, session domain.Sessio
 	if err := manifest.Validate(); err != nil {
 		return TaskResult{}, err
 	}
-	if manifest.SessionID != session.ID || manifest.ArchiveID != archive.ID || manifest.ObjectKey != archive.ObjectKey || manifest.SHA256 != archive.SHA256 || manifest.SizeBytes != archive.SizeBytes || manifest.GameProfileID != session.GameProfileID || manifest.ConfigurationRevision != session.ConfigurationRevision || manifest.MissionObjectKey != session.MissionObjectKey || manifest.PresetObjectKey != session.PresetObjectKey || manifest.Vanilla != session.Vanilla {
+	if manifest.SessionID != session.ID || manifest.ArchiveID != archive.ID || manifest.ObjectKey != archive.ObjectKey || manifest.SHA256 != archive.SHA256 || manifest.SizeBytes != archive.SizeBytes || manifest.GameProfileID != session.GameProfileID || manifest.ConfigurationRevision != session.ConfigurationRevision || manifest.MissionObjectKey != session.MissionObjectKey || manifest.PresetObjectKey != session.PresetObjectKey || manifest.Vanilla != session.Vanilla || !manifestReadableIdentityMatches(manifest, session) || !manifest.PresetRevisionIntentMatches(session) {
 		return TaskResult{}, fmt.Errorf("archive manifest does not match authoritative session metadata")
 	}
 	if err := service.store.Verify(ctx, ports.ArchiveObject{Key: archive.ObjectKey, SHA256: archive.SHA256, SizeBytes: archive.SizeBytes, ContentType: "application/gzip"}); err != nil {
 		return TaskResult{}, err
 	}
+	session, err = service.advanceProgress(ctx, session, workflow, domain.ProgressInfrastructureReady)
+	if err != nil {
+		return TaskResult{}, err
+	}
 	return result(session, workflow), nil
+}
+
+func manifestReadableIdentityMatches(manifest domain.ArchiveManifest, session domain.Session) bool {
+	if !manifest.IncludesReadableIdentity() {
+		return true
+	}
+	return manifest.SessionName == session.DisplayName && manifest.SessionSlug == session.Slug && manifest.Description == session.Description
 }
 
 func (service *Service) prepare(ctx context.Context, session domain.Session, workflow domain.Workflow) (TaskResult, error) {
@@ -202,6 +282,12 @@ func (service *Service) checkManaged(ctx context.Context, session domain.Session
 	if err != nil {
 		return TaskResult{}, err
 	}
+	if managed {
+		session, err = service.advanceProgress(ctx, session, workflow, domain.ProgressDataRestored)
+		if err != nil {
+			return TaskResult{}, err
+		}
+	}
 	response := result(session, workflow)
 	response.Managed = managed
 	return response, nil
@@ -217,7 +303,7 @@ func (service *Service) dispatch(ctx context.Context, session domain.Session, wo
 	return response, nil
 }
 
-func (service *Service) observeCommand(ctx context.Context, session domain.Session, workflow domain.Workflow, commandID string, runner commandRunner) (TaskResult, error) {
+func (service *Service) observeCommand(ctx context.Context, session domain.Session, workflow domain.Workflow, commandID string, runner commandRunner, bootstrapCommand bool) (TaskResult, error) {
 	status, err := runner.Observe(ctx, session.Infrastructure.InstanceID, commandID)
 	if err != nil {
 		return TaskResult{}, err
@@ -226,6 +312,38 @@ func (service *Service) observeCommand(ctx context.Context, session domain.Sessi
 	response.CommandID = commandID
 	response.Done = terminal(status.Status)
 	response.Succeeded = status.Status == "Success"
+	checkpoints := status.Checkpoints
+	if bootstrapCommand && response.Succeeded {
+		checkpoints = []domain.ProgressMilestone{
+			domain.ProgressHostPrepared, domain.ProgressGameServerInstalled,
+			domain.ProgressModsApplied, domain.ProgressConfigurationReady,
+			domain.ProgressServiceStarted, domain.ProgressHealthVerification,
+		}
+	}
+	if bootstrapCommand && len(checkpoints) > 0 {
+		expected, now := session.Version, service.clock.Now().UTC()
+		var skipped []domain.ProgressMilestone
+		if session.Vanilla {
+			skipped = []domain.ProgressMilestone{domain.ProgressModsApplied}
+		}
+		changed, progressErr := session.ApplyProgressSequence(workflow.ID, checkpoints, skipped, now)
+		if progressErr != nil {
+			return TaskResult{}, progressErr
+		}
+		if changed {
+			id, idErr := service.ids.New(now)
+			if idErr != nil {
+				return TaskResult{}, idErr
+			}
+			event := domain.NewProgressMilestoneEvent(id, workflow, session, now)
+			if saveErr := service.stages.SaveProvisioningStage(ctx, session, expected, event); saveErr != nil {
+				return TaskResult{}, saveErr
+			}
+			_ = sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now)
+			response = result(session, workflow)
+			response.CommandID, response.Done, response.Succeeded = commandID, terminal(status.Status), status.Status == "Success"
+		}
+	}
 	if response.Done && !response.Succeeded {
 		response.ErrorCode = "ERR_RESTORE_COMMAND"
 		response.ErrorMessage = bounded(status.ErrorMessage, "restore command failed")
@@ -237,9 +355,11 @@ func (service *Service) complete(ctx context.Context, session domain.Session, wo
 	if workflow.Status == domain.WorkflowSucceeded {
 		response := result(session, workflow)
 		response.Succeeded = true
+		response.Warning = notificationWarning(sessioncard.EnqueueActivatedModlist(ctx, service.notifications, session, workflow, service.clock.Now().UTC()))
 		return response, nil
 	}
 	expected, now := session.Version, service.clock.Now().UTC()
+	session.ClearFailure()
 	if err := session.CompleteRestore(workflow.ID, now); err != nil {
 		return TaskResult{}, err
 	}
@@ -254,11 +374,12 @@ func (service *Service) complete(ctx context.Context, session domain.Session, wo
 	}
 	response := result(session, workflow)
 	response.Succeeded = true
-	if service.notifications != nil {
-		id, idErr := service.ids.New(now)
-		if idErr == nil {
-			response.Warning = notificationWarning(service.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: id, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: "**Session restored**\nSession: `" + session.ID + "`\nA new host and data volume passed archive, bootstrap, and service-health verification.", CorrelationID: workflow.CorrelationID, RequestedAt: now}))
+	response.Warning = notificationWarning(sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now))
+	if err := sessioncard.EnqueueActivatedModlist(ctx, service.notifications, session, workflow, now); err != nil {
+		if response.Warning != "" {
+			response.Warning += "; "
 		}
+		response.Warning += err.Error()
 	}
 	return response, nil
 }
@@ -278,10 +399,17 @@ func (service *Service) fail(ctx context.Context, session domain.Session, workfl
 		}
 	}
 	expected, now := session.Version, service.clock.Now().UTC()
+	if err := session.FailPresetRevisionApplication(workflow.ID, request.ErrorMessage, now); err != nil {
+		return TaskResult{}, err
+	}
 	if release {
 		if err := service.stages.ReleaseCapacitySlot(ctx, slotID, session.ID); err != nil {
 			return TaskResult{}, err
 		}
+	}
+	if err := failurestate.Record(&session, workflow, request.ErrorCode, "ERR_RESTORE_FAILED", workflow.CurrentStage,
+		"Restore processing stopped before the replacement server was verified healthy.", failurestate.Impact(session, false), now); err != nil {
+		return TaskResult{}, err
 	}
 	if err := session.FailRestore(workflow.ID, now); err != nil {
 		return TaskResult{}, err
@@ -297,7 +425,47 @@ func (service *Service) fail(ctx context.Context, session domain.Session, workfl
 		return TaskResult{}, err
 	}
 	response := result(session, workflow)
+	response.Warning = notificationWarning(sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now))
 	return response, nil
+}
+
+func (service *Service) advanceProgress(ctx context.Context, session domain.Session, workflow domain.Workflow, milestone domain.ProgressMilestone) (domain.Session, error) {
+	expected, now := session.Version, service.clock.Now().UTC()
+	changed, err := session.AdvanceProgress(workflow.ID, milestone, now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if !changed {
+		return session, nil
+	}
+	id, err := service.ids.New(now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.NewProgressMilestoneEvent(id, workflow, session, now)
+	if err := service.stages.SaveProvisioningStage(ctx, session, expected, event); err != nil {
+		return domain.Session{}, err
+	}
+	_ = sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now)
+	return session, nil
+}
+
+func (service *Service) setProgressState(ctx context.Context, session domain.Session, workflow domain.Workflow, state domain.ProgressState) (domain.Session, error) {
+	expected, now := session.Version, service.clock.Now().UTC()
+	changed, err := session.SetProgressState(workflow.ID, state, now)
+	if err != nil || !changed {
+		return session, err
+	}
+	id, err := service.ids.New(now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.NewProgressMilestoneEvent(id, workflow, session, now)
+	if err := service.stages.SaveProvisioningStage(ctx, session, expected, event); err != nil {
+		return domain.Session{}, err
+	}
+	_ = sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now)
+	return session, nil
 }
 
 func (service *Service) load(ctx context.Context, request TaskRequest) (domain.Session, domain.Workflow, error) {
@@ -338,7 +506,7 @@ func (service *Service) launchRequest(session domain.Session, workflow domain.Wo
 	if len(token) > 64 {
 		token = token[:64]
 	}
-	return domain.ComputeLaunchRequest{SessionID: session.ID, GameType: session.GameType, Environment: service.config.Environment, Project: service.config.Project, AMIID: service.config.AMIID, InstanceType: service.config.InstanceType, SubnetID: service.config.SubnetID, SecurityGroupIDs: securityGroups, InstanceProfile: service.config.InstanceProfile, RootVolumeGiB: service.config.RootVolumeGiB, DataVolumeGiB: service.config.DataVolumeGiB, ClientToken: token}
+	return domain.ComputeLaunchRequest{SessionID: session.ID, SessionName: session.DisplayName, SessionSlug: session.Slug, GameType: session.GameType, Environment: service.config.Environment, Project: service.config.Project, AMIID: service.config.AMIID, InstanceType: service.config.InstanceType, SubnetID: service.config.SubnetID, SecurityGroupIDs: securityGroups, InstanceProfile: service.config.InstanceProfile, RootVolumeGiB: service.config.RootVolumeGiB, DataVolumeGiB: service.config.DataVolumeGiB, ClientToken: token}
 }
 
 func (service *Service) infrastructure(session domain.Session, observation domain.ComputeObservation) domain.Infrastructure {

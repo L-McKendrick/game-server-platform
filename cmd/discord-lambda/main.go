@@ -17,6 +17,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/lambdahttp"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsartifact"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqscommand"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/discord/interactions"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/steamquery"
 	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
@@ -40,8 +41,8 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load base configuration: %w", err)
 	}
-	if strings.TrimSpace(baseConfig.ArtifactQueueURL) == "" {
-		return nil, fmt.Errorf("ARTIFACT_QUEUE_URL is required")
+	if strings.TrimSpace(baseConfig.ArtifactQueueURL) == "" || strings.TrimSpace(baseConfig.NotificationQueueURL) == "" {
+		return nil, fmt.Errorf("ARTIFACT_QUEUE_URL and NOTIFICATION_QUEUE_URL are required")
 	}
 	if baseConfig.ProvisioningEnabled && strings.TrimSpace(baseConfig.CommandQueueURL) == "" {
 		return nil, fmt.Errorf("COMMAND_QUEUE_URL is required when provisioning is enabled")
@@ -64,10 +65,13 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 	artifactQueue := sqsartifact.New(sqs.NewFromConfig(awsConfiguration), baseConfig.ArtifactQueueURL)
 	ids := identity.Generator{}
 	clock := appsession.SystemClock{}
-	serviceOptions := []appsession.Option{appsession.WithArtifactQueue(artifactQueue)}
+	serviceOptions := []appsession.Option{
+		appsession.WithArtifactQueue(artifactQueue),
+		appsession.WithNotificationQueue(sqsnotification.New(sqs.NewFromConfig(awsConfiguration), baseConfig.NotificationQueueURL)),
+	}
 	if baseConfig.ProvisioningEnabled {
 		commandQueue := sqscommand.New(sqs.NewFromConfig(awsConfiguration), baseConfig.CommandQueueURL)
-		serviceOptions = append(serviceOptions, appsession.WithCommandQueue(commandQueue))
+		serviceOptions = append(serviceOptions, appsession.WithCommandQueue(commandQueue), appsession.WithConfirmationRepository(repository))
 	}
 	service, err := appsession.NewService(
 		repository,

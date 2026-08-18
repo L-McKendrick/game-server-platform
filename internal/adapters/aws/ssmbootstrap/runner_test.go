@@ -3,12 +3,15 @@ package ssmbootstrap
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
@@ -56,6 +59,62 @@ func TestStartBuildsSecretSafeResumableCommand(t *testing.T) {
 	}
 }
 
+func TestCommandInstallsApplyingPendingRevisionWithoutChangingActivePointer(t *testing.T) {
+	t.Parallel()
+	runner, err := New(&fakeSSM{}, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 17, 23, 0, 0, 0, time.UTC)
+	session := domain.Session{ID: "session-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: "sessions/session-1/input/presets/v1.html", PresetRevisionSequence: 2, LifecycleState: domain.StateWaking, ActiveWorkflowID: "wake-1", ActiveWorkflowType: domain.WakeWorkflowType, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}, ActivePresetRevision: domain.PresetRevision{Number: 1, PresetObjectKey: "sessions/session-1/input/presets/v1.html", Status: domain.PresetRevisionActive, StagedAt: now, ActivatedAt: now}, PendingPresetRevision: domain.PresetRevision{Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/presets/v2.html", Status: domain.PresetRevisionApplying, StagedAt: now, ApplyWorkflowID: "wake-1", ApplyStartedAt: now}}
+	script, err := runner.command(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingEncoded := base64.StdEncoding.EncodeToString([]byte(session.PendingPresetRevision.PresetObjectKey))
+	activeEncoded := base64.StdEncoding.EncodeToString([]byte(session.PresetObjectKey))
+	if !strings.Contains(script, pendingEncoded) || strings.Contains(script, activeEncoded) || !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte("2"))) {
+		t.Fatalf("command did not select pending revision: %s", script)
+	}
+	if session.PresetObjectKey != session.ActivePresetRevision.PresetObjectKey {
+		t.Fatal("command selection mutated active compatibility pointer")
+	}
+}
+
+func TestStartRollbackSelectsPriorActiveRevision(t *testing.T) {
+	t.Parallel()
+	client := &fakeSSM{}
+	runner, err := New(client, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
+	activeKey := "sessions/session-1/input/presets/v1.html"
+	pendingKey := "sessions/session-1/input/presets/v2.html"
+	session := domain.Session{
+		ID: "session-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: activeKey,
+		LifecycleState: domain.StateWaking, ActiveWorkflowID: "wake-1", ActiveWorkflowType: domain.WakeWorkflowType,
+		Infrastructure:       domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"},
+		ActivePresetRevision: domain.PresetRevision{Number: 1, PresetObjectKey: activeKey, Status: domain.PresetRevisionActive, StagedAt: now, ActivatedAt: now},
+		PendingPresetRevision: domain.PresetRevision{Number: 2, BaseRevision: 1, PresetObjectKey: pendingKey, Status: domain.PresetRevisionApplying,
+			StagedAt: now, ApplyWorkflowID: "wake-1", ApplyStartedAt: now},
+	}
+	commandID, err := runner.StartRollback(context.Background(), session)
+	if err != nil || commandID != "command-1" {
+		t.Fatalf("rollback command=%q err=%v", commandID, err)
+	}
+	script := client.sent.Parameters["commands"][0]
+	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(activeKey))) || strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(pendingKey))) {
+		t.Fatalf("rollback did not select active revision: %s", script)
+	}
+	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte("true"))) || !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte("1"))) {
+		t.Fatalf("rollback mode/revision missing: %s", script)
+	}
+	if session.PresetObjectKey != activeKey || session.ActivePresetRevision.Number != 1 || session.PendingPresetRevision.Number != 2 {
+		t.Fatal("rollback command construction mutated revision authority")
+	}
+}
+
 func TestGeneratedCommandPassesBashSyntaxCheck(t *testing.T) {
 	runner, err := New(&fakeSSM{}, testConfig())
 	if err != nil {
@@ -98,7 +157,7 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"get-secret-value", "login anonymous", "VANILLA_MODE", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
+	for _, required := range []string{"get-secret-value", "login anonymous", "VANILLA_MODE", "PRESET_REVISION", "PRESET_ROLLBACK", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "revision-$PRESET_REVISION.complete", "mod-revisions/revision-", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
 		if !strings.Contains(string(script), required) {
 			t.Errorf("script missing %q", required)
 		}
@@ -135,6 +194,30 @@ func TestObserveReturnsBoundedError(t *testing.T) {
 	status, err := runner.Observe(context.Background(), "i-1", "command-1")
 	if err != nil || status.Status != "Failed" || len(status.ErrorMessage) != 500 {
 		t.Fatalf("status = %#v, err = %v", status, err)
+	}
+}
+
+func TestObserveReturnsOnlyOrderedAllowlistedCheckpoints(t *testing.T) {
+	t.Parallel()
+	output := strings.Join([]string{
+		"Steam password=not-a-progress-fact",
+		"GSP_CHECKPOINT:MODS_APPLIED",
+		"GSP_CHECKPOINT:HOST_PREPARED",
+		"GSP_CHECKPOINT:NOT_A_REAL_STAGE",
+		"GSP_CHECKPOINT:MODS_APPLIED",
+		"GSP_CHECKPOINT:GAME_SERVER_INSTALLED",
+	}, "\n")
+	client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{
+		Status: types.CommandInvocationStatusInProgress, StandardOutputContent: aws.String(output),
+	}}
+	runner, _ := New(client, testConfig())
+	status, err := runner.Observe(context.Background(), "i-1", "command-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []domain.ProgressMilestone{domain.ProgressHostPrepared, domain.ProgressGameServerInstalled, domain.ProgressModsApplied}
+	if !reflect.DeepEqual(status.Checkpoints, want) || strings.Contains(fmt.Sprintf("%#v", status), "password") {
+		t.Fatalf("sanitized status = %#v; want checkpoints %#v", status, want)
 	}
 }
 

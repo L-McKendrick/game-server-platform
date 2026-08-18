@@ -31,6 +31,7 @@ func (session *Session) AcquireBootstrapWorkflowLock(workflowID string, lease ti
 	session.ObservedState = StateBootstrapping
 	session.LifecycleState = StateBootstrapping
 	session.HealthStatus = HealthStarting
+	session.beginPresetRevisionApplication(workflowID, now)
 	return session.Validate()
 }
 
@@ -42,6 +43,9 @@ func (session *Session) BeginBootstrapInstallation(workflowID string, now time.T
 	}
 	if session.LifecycleState != StateBootstrapping && session.LifecycleState != StateInstalling {
 		return fmt.Errorf("%w: bootstrap installation requires BOOTSTRAPPING", ErrInvalidTransition)
+	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressHostPrepared, now); err != nil {
+		return err
 	}
 	session.ObservedState = StateInstalling
 	session.LifecycleState = StateInstalling
@@ -60,6 +64,12 @@ func (session *Session) CompleteBootstrap(workflowID string, now time.Time) erro
 	if session.LifecycleState != StateInstalling {
 		return fmt.Errorf("%w: bootstrap completion requires INSTALLING", ErrInvalidTransition)
 	}
+	if err := session.completeProgressWithoutVersion(workflowID, now); err != nil {
+		return err
+	}
+	if _, _, err := session.promotePresetRevision(workflowID, now); err != nil {
+		return err
+	}
 	session.DesiredState = StateRunning
 	session.ObservedState = StateRunning
 	session.LifecycleState = StateRunning
@@ -74,6 +84,9 @@ func (session *Session) CompleteBootstrap(workflowID string, now time.Time) erro
 // same session can resume without reinstalling completed content.
 func (session *Session) FailBootstrap(workflowID string, now time.Time) error {
 	if err := session.requireBootstrapWorkflow(workflowID); err != nil {
+		return err
+	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
 		return err
 	}
 	session.ObservedState = StateFailed

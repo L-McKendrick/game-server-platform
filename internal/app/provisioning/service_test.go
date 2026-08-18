@@ -53,6 +53,15 @@ func (queue *testNotifications) Enqueue(_ context.Context, request domain.Notifi
 	return nil
 }
 
+func TestLaunchRequestIncludesReadableSessionIdentity(t *testing.T) {
+	t.Parallel()
+	service := Service{config: Config{Project: "game-server-platform", Environment: "dev", GameSecurityGroupID: "sg-game"}}
+	request := service.launchRequest(domain.Session{ID: "session-1", DisplayName: "Saturday Arma", Slug: "saturday-arma", GameType: "arma3"})
+	if request.SessionID != "session-1" || request.SessionName != "Saturday Arma" || request.SessionSlug != "saturday-arma" {
+		t.Fatalf("launch identity = %#v", request)
+	}
+}
+
 func TestProvisioningStagesCreateInfrastructureAndStopBeforeBootstrap(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
@@ -94,11 +103,26 @@ func TestProvisioningStagesCreateInfrastructureAndStopBeforeBootstrap(t *testing
 	if err != nil || completed.Status != domain.WorkflowSucceeded {
 		t.Fatalf("workflow = %#v, error = %v", completed, err)
 	}
-	if len(notifications.requests) != 1 {
-		t.Fatalf("notifications = %d; want 1", len(notifications.requests))
+	if len(notifications.requests) != 3 {
+		t.Fatalf("notifications = %d; want 3", len(notifications.requests))
 	}
-	if content := notifications.requests[0].Content; !strings.Contains(content, "/session start session-1") || strings.Contains(content, "Phase 6") {
-		t.Fatalf("notification content = %q", content)
+	wantNotificationIDs := []string{
+		"card-progress-" + workflow.ID + "-capacity-reserved",
+		"card-progress-" + workflow.ID + "-compute-ready",
+		"card-progress-" + workflow.ID + "-completed",
+	}
+	for index, want := range wantNotificationIDs {
+		if notifications.requests[index].NotificationID != want {
+			t.Fatalf("notification %d = %#v; want %q", index, notifications.requests[index], want)
+		}
+	}
+	notification := notifications.requests[2]
+	if notification.Kind != domain.NotificationSessionCard || notification.NotificationID != "card-progress-"+workflow.ID+"-completed" ||
+		notification.CardRevision != session.Version {
+		t.Fatalf("notification = %#v", notification)
+	}
+	if session.Progress.Milestone != domain.ProgressCompleted || session.Progress.WorkflowID != workflow.ID {
+		t.Fatalf("progress = %#v", session.Progress)
 	}
 }
 
@@ -131,6 +155,10 @@ func TestProvisioningFailureRetainsCapacityWhenAmbiguousLaunchIsDiscovered(t *te
 	}
 	if session.LifecycleState != domain.StateFailed || session.Infrastructure.InstanceID != "i-ambiguous" || session.Infrastructure.CapacitySlotID == "" {
 		t.Fatalf("failed session infrastructure = %#v", session)
+	}
+	if session.Failure.Code != "ERR_AMBIGUOUS_LAUNCH" || session.Failure.RetryDisposition != domain.RetryNotScheduled ||
+		session.Failure.ResourceImpact != domain.ResourceCostUnknown || strings.Contains(session.Failure.Detail, request.ErrorMessage) {
+		t.Fatalf("sanitized failure = %#v", session.Failure)
 	}
 }
 

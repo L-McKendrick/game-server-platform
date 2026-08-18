@@ -6,6 +6,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ec2compute"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmbootstrap"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmmonitor"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sleepwake"
@@ -20,6 +21,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"log/slog"
 	"os"
+	"strconv"
+	"strings"
 )
 
 type handler struct {
@@ -49,11 +52,42 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	service, err := sleepwake.NewService(repo, repo, repo, ec2compute.New(ec2.NewFromConfig(awsCfg), ssm.NewFromConfig(awsCfg)), monitor, sqsnotification.New(sqs.NewFromConfig(awsCfg), cfg.NotificationQueueURL), identity.Generator{}, appsession.SystemClock{})
+	timeout, err := sleepwakePositiveInt32("BOOTSTRAP_COMMAND_TIMEOUT_SECONDS", 21600)
+	if err != nil {
+		return nil, err
+	}
+	presetRunner, err := ssmbootstrap.New(ssm.NewFromConfig(awsCfg), ssmbootstrap.Config{
+		Region: cfg.AWSRegion, AssetsBucket: cfg.SessionAssetsBucket,
+		BootstrapScriptKey: strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_KEY")), SteamSecretID: strings.TrimSpace(os.Getenv("STEAM_SECRET_ID")),
+		TeamSpeakVersion: sleepwakeEnv("TEAMSPEAK_VERSION", "3.13.8"), TimeoutSeconds: timeout,
+	})
+	if err != nil {
+		return nil, err
+	}
+	service, err := sleepwake.NewService(repo, repo, repo, ec2compute.New(ec2.NewFromConfig(awsCfg), ssm.NewFromConfig(awsCfg)), monitor, sqsnotification.New(sqs.NewFromConfig(awsCfg), cfg.NotificationQueueURL), identity.Generator{}, appsession.SystemClock{}, sleepwake.WithPresetRevisionRunner(presetRunner))
 	if err != nil {
 		return nil, err
 	}
 	return &handler{service, logging.New(cfg.LogLevel)}, nil
+}
+
+func sleepwakePositiveInt32(name string, fallback int32) (int32, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return int32(value), nil
+}
+
+func sleepwakeEnv(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
 }
 func (h *handler) Handle(ctx context.Context, r sleepwake.TaskRequest) (sleepwake.TaskResult, error) {
 	out, err := h.service.Handle(ctx, r)

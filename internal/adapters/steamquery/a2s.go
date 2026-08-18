@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
@@ -21,6 +22,7 @@ const (
 	maxPacketBytes = 64 * 1024
 	maxSplitParts  = 16
 	maxPlayers     = 128
+	maxInfoRunes   = 128
 
 	packetHeader       uint32 = 0xFFFFFFFF
 	splitPacketHeader  uint32 = 0xFFFFFFFE
@@ -120,10 +122,19 @@ func (client *Client) info(connection net.Conn) (domain.PlayerStatus, error) {
 	if _, err := reader.byte(); err != nil { // protocol version
 		return domain.PlayerStatus{}, fmt.Errorf("parse A2S_INFO protocol: %w", err)
 	}
-	for range 4 { // server name, map, folder, game
-		if _, err := reader.string(); err != nil {
-			return domain.PlayerStatus{}, fmt.Errorf("parse A2S_INFO string: %w", err)
-		}
+	if _, err := reader.string(); err != nil { // server name
+		return domain.PlayerStatus{}, fmt.Errorf("parse A2S_INFO server name: %w", err)
+	}
+	mapName, err := reader.string()
+	if err != nil {
+		return domain.PlayerStatus{}, fmt.Errorf("parse A2S_INFO map: %w", err)
+	}
+	if _, err := reader.string(); err != nil { // game folder
+		return domain.PlayerStatus{}, fmt.Errorf("parse A2S_INFO folder: %w", err)
+	}
+	missionName, err := reader.string() // Arma reports the live mission as the game description.
+	if err != nil {
+		return domain.PlayerStatus{}, fmt.Errorf("parse A2S_INFO mission: %w", err)
 	}
 	if _, err := reader.uint16(); err != nil { // app ID
 		return domain.PlayerStatus{}, fmt.Errorf("parse A2S_INFO app ID: %w", err)
@@ -136,7 +147,34 @@ func (client *Client) info(connection net.Conn) (domain.PlayerStatus, error) {
 	if err != nil {
 		return domain.PlayerStatus{}, fmt.Errorf("parse A2S_INFO maximum players: %w", err)
 	}
-	return domain.PlayerStatus{PlayerCount: int(count), MaxPlayers: int(maximum)}, nil
+	return domain.PlayerStatus{
+		PlayerCount: int(count), MaxPlayers: int(maximum),
+		MissionName: boundedInfoLabel(missionName), MapName: boundedInfoLabel(mapName),
+	}, nil
+}
+
+func boundedInfoLabel(value string) string {
+	var builder strings.Builder
+	lastSpace := true
+	for _, character := range strings.TrimSpace(value) {
+		switch {
+		case unicode.IsControl(character), unicode.Is(unicode.Cf, character):
+			continue
+		case unicode.IsSpace(character):
+			if !lastSpace {
+				builder.WriteByte(' ')
+				lastSpace = true
+			}
+		default:
+			builder.WriteRune(character)
+			lastSpace = false
+		}
+	}
+	runes := []rune(strings.TrimSpace(builder.String()))
+	if len(runes) > maxInfoRunes {
+		runes = runes[:maxInfoRunes]
+	}
+	return string(runes)
 }
 
 func (client *Client) players(connection net.Conn) ([]string, error) {

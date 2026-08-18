@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,7 +108,8 @@ func TestService_VerifiesManifestBeforeCompletingDestruction(t *testing.T) {
 	if err := json.Unmarshal(store.body, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.SchemaVersion != 1 || manifest.SourceInstanceID != "i-1" || manifest.SourceDataVolumeID != "vol-1" || !manifest.Vanilla {
+	if manifest.SchemaVersion != 1 || manifest.SourceInstanceID != "i-1" || manifest.SourceDataVolumeID != "vol-1" || manifest.Vanilla || manifest.SessionName != session.DisplayName || manifest.SessionSlug != session.Slug || manifest.Description != session.Description ||
+		manifest.PresetRevisionSequence != 2 || manifest.ActivePresetRevision == nil || manifest.ActivePresetRevision.Number != 1 || manifest.PendingPresetRevision == nil || manifest.PendingPresetRevision.Number != 2 || manifest.PendingPresetRevision.Status != domain.PresetRevisionPending {
 		t.Fatalf("manifest = %#v", manifest)
 	}
 
@@ -135,12 +137,21 @@ func TestService_VerifiesManifestBeforeCompletingDestruction(t *testing.T) {
 
 func archiveServiceSession(t *testing.T, now time.Time) domain.Session {
 	t.Helper()
-	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "saturday-arma", DisplayName: "Saturday Arma", Description: "Weekly co-op night", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateRunning, domain.StateRunning, domain.StateRunning, domain.HealthHealthy
-	session.Vanilla = true
+	session.PresetObjectKey = "sessions/session-1/input/presets/v1.html"
+	session.PresetRevisionSequence = 2
+	session.ActivePresetRevision = domain.PresetRevision{
+		Number: 1, PresetObjectKey: session.PresetObjectKey, Status: domain.PresetRevisionActive, StagedAt: now, ActivatedAt: now,
+		Modlist: domain.PresetModlistMetadata{ObjectKey: "sessions/session-1/input/modlists/v1/session-1-modlist.html", Filename: "session-1-modlist.html", SHA256: strings.Repeat("a", 64), SizeBytes: 512, WorkshopCount: 2},
+	}
+	session.PendingPresetRevision = domain.PresetRevision{
+		Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/presets/v2.html", Status: domain.PresetRevisionPending, StagedAt: now.Add(time.Minute),
+		Modlist: domain.PresetModlistMetadata{ObjectKey: "sessions/session-1/input/modlists/v2/session-1-modlist.html", Filename: "session-1-modlist.html", SHA256: strings.Repeat("b", 64), SizeBytes: 640, WorkshopCount: 3},
+	}
 	session.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-1", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c7i-flex.large", InstanceID: "i-1", DataVolumeID: "vol-1", PublicIPv4: "203.0.113.1", LastObservedAt: now}
 	if err := session.Validate(); err != nil {
 		t.Fatal(err)

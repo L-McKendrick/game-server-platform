@@ -8,6 +8,20 @@
       "type": 1,
       "name": "access",
       "description": "Choose which Discord roles may use platform commands"
+    },
+    {
+      "type": 1,
+      "name": "repair-card",
+      "description": "Recreate or refresh a session's public card",
+      "options": [
+        {
+          "type": 3,
+          "name": "session",
+          "description": "Choose a session or enter its exact slug",
+          "required": true,
+          "autocomplete": true
+        }
+      ]
     }
   ]
 }

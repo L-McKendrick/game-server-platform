@@ -34,6 +34,8 @@ func (infrastructure Infrastructure) Empty() bool {
 // parameters for one session. Discord input never supplies these values.
 type ComputeLaunchRequest struct {
 	SessionID        string
+	SessionName      string
+	SessionSlug      string
 	GameType         string
 	Environment      string
 	Project          string
@@ -105,6 +107,9 @@ func (session *Session) AcquireProvisioningWorkflowLock(workflowID string, lease
 	session.ActiveWorkflowType = "ProvisionSession"
 	session.ActiveWorkflowStartedAt = now
 	session.ActiveWorkflowLeaseExpiresAt = now.Add(lease)
+	if err := session.beginProgress(workflowID, "ProvisionSession", now); err != nil {
+		return err
+	}
 	session.DesiredState = StateRunning
 	session.ObservedState = StateValidating
 	session.LifecycleState = StateValidating
@@ -141,6 +146,9 @@ func (session *Session) BeginInfrastructureProvisioning(workflowID string, capac
 		return fmt.Errorf("capacity slot ID is required")
 	}
 	session.Infrastructure.CapacitySlotID = capacitySlotID
+	if err := session.setProgressWithoutVersion(workflowID, ProgressCapacityReserved, now); err != nil {
+		return err
+	}
 	session.ObservedState = StateProvisioning
 	session.LifecycleState = StateProvisioning
 	session.Version++
@@ -164,6 +172,9 @@ func (session *Session) RecordInfrastructureLaunch(workflowID string, infrastruc
 		return err
 	}
 	session.Infrastructure = infrastructure
+	if err := session.setProgressWithoutVersion(workflowID, ProgressComputeReady, now); err != nil {
+		return err
+	}
 	session.Version++
 	session.UpdatedAt = now.UTC()
 	return session.Validate()
@@ -178,6 +189,9 @@ func (session *Session) CompleteInfrastructureProvisioning(workflowID string, no
 	}
 	if session.LifecycleState != StateProvisioning || session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" {
 		return fmt.Errorf("%w: complete infrastructure is required", ErrInvalidTransition)
+	}
+	if err := session.completeProgressWithoutVersion(workflowID, now); err != nil {
+		return err
 	}
 	session.ObservedState = StateBootstrapping
 	session.LifecycleState = StateBootstrapping
@@ -194,6 +208,9 @@ func (session *Session) CompleteInfrastructureProvisioning(workflowID string, no
 // explicit reconciliation and cleanup while releasing the workflow lease.
 func (session *Session) FailInfrastructureProvisioning(workflowID string, now time.Time) error {
 	if err := session.requireProvisioningWorkflow(workflowID); err != nil {
+		return err
+	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
 		return err
 	}
 	session.ObservedState = StateFailed
@@ -216,6 +233,9 @@ func (session *Session) AbortProvisioningWorkflowStart(workflowID string, now ti
 	}
 	if session.Infrastructure.InstanceID != "" || session.Infrastructure.CapacitySlotID != "" {
 		return fmt.Errorf("%w: provisioning resources already exist", ErrConflict)
+	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
+		return err
 	}
 	session.DesiredState = StateNew
 	session.ObservedState = StateNew

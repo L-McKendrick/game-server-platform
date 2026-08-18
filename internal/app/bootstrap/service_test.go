@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +42,10 @@ func (runner *testRunner) Start(context.Context, domain.Session) (string, error)
 	runner.starts++
 	return runner.commandID, nil
 }
+func (runner *testRunner) StartRollback(context.Context, domain.Session) (string, error) {
+	runner.starts++
+	return runner.commandID, nil
+}
 func (runner *testRunner) Observe(context.Context, string, string) (ports.BootstrapCommandStatus, error) {
 	return runner.status, nil
 }
@@ -57,7 +63,7 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 	repository, workflow := seedBootstrap(t, now)
 	runner := &testRunner{commandID: "command-1", status: ports.BootstrapCommandStatus{Status: "Success"}}
 	notifications := &testNotifications{}
-	service, err := NewService(repository, repository, repository, runner, notifications, &testIDs{values: []string{"stage-event", "ready-event", "notification-1"}}, testClock{now})
+	service, err := NewService(repository, repository, repository, runner, notifications, &testIDs{values: []string{"stage-event", "health-event", "ready-event"}}, testClock{now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +77,13 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 	dispatched, err := service.Handle(context.Background(), request)
 	if err != nil || dispatched.CommandID != "command-1" || runner.starts != 1 {
 		t.Fatalf("dispatch = %#v, err = %v", dispatched, err)
+	}
+	prePromotion, err := repository.Get(context.Background(), workflow.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prePromotion.PresetObjectKey != "sessions/session-1/input/preset.html" || prePromotion.PendingPresetRevision.Status != domain.PresetRevisionApplying {
+		t.Fatalf("pending revision promoted before health success: %#v", prePromotion)
 	}
 	request.Action, request.CommandID = ActionObserve, dispatched.CommandID
 	observed, err := service.Handle(context.Background(), request)
@@ -86,12 +99,31 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session.LifecycleState != domain.StateRunning || session.HealthStatus != domain.HealthHealthy || session.ActiveWorkflowID != "" {
+	if session.LifecycleState != domain.StateRunning || session.HealthStatus != domain.HealthHealthy || session.ActiveWorkflowID != "" || session.ActivePresetRevision.Number != 2 || !session.PendingPresetRevision.Empty() || session.PresetObjectKey != "sessions/session-1/input/preset-v2.html" {
 		t.Fatalf("session = %#v", session)
 	}
-	if len(notifications.requests) != 1 {
+	if len(notifications.requests) != 4 {
 		t.Fatalf("notifications = %#v", notifications.requests)
 	}
+	wantMilestones := []domain.ProgressMilestone{domain.ProgressHostPrepared, domain.ProgressHealthVerification, domain.ProgressCompleted}
+	for index, milestone := range wantMilestones {
+		request := notifications.requests[index]
+		if request.Kind != domain.NotificationSessionCard || request.NotificationID != "card-progress-"+workflow.ID+"-"+progressIDPart(milestone) {
+			t.Fatalf("notification %d = %#v", index, request)
+		}
+	}
+	modlist := notifications.requests[3]
+	if modlist.Kind != domain.NotificationSessionModlist || modlist.Attachment == nil || modlist.Attachment.ObjectKey != session.ActivePresetRevision.Modlist.ObjectKey || modlist.Attachment.Revision != session.Version {
+		t.Fatalf("promoted modlist notification = %#v", modlist)
+	}
+	if session.Progress.Milestone != domain.ProgressCompleted || session.Progress.WorkflowID != workflow.ID {
+		t.Fatalf("progress = %#v", session.Progress)
+	}
+}
+
+func progressIDPart(milestone domain.ProgressMilestone) string {
+	value := strings.ToLower(string(milestone))
+	return strings.ReplaceAll(value, "_", "-")
 }
 
 func TestObserveSanitizesFailedCommand(t *testing.T) {
@@ -126,6 +158,87 @@ func TestObserveSanitizesFailedCommand(t *testing.T) {
 	}
 }
 
+func TestObservePersistsManagedBootstrapCheckpointsInOneProgressMutation(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 18, 2, 0, 0, 0, time.UTC)
+	repository, workflow := seedBootstrap(t, now)
+	runner := &testRunner{status: ports.BootstrapCommandStatus{
+		Status: "InProgress",
+		Checkpoints: []domain.ProgressMilestone{
+			domain.ProgressHostPrepared, domain.ProgressGameServerInstalled,
+			domain.ProgressModsApplied, domain.ProgressConfigurationReady,
+		},
+	}}
+	notifications := &testNotifications{}
+	service, err := NewService(repository, repository, repository, runner, notifications, &testIDs{values: []string{"prepare-event", "progress-event"}}, testClock{now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := TaskRequest{Action: ActionPrepare, SessionID: workflow.SessionID, WorkflowID: workflow.ID}
+	if _, err := service.Handle(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	request.Action, request.CommandID = ActionObserve, "command-1"
+	result, err := service.Handle(context.Background(), request)
+	if err != nil || result.Done {
+		t.Fatalf("observe = %#v, err = %v", result, err)
+	}
+	session, err := repository.Get(context.Background(), workflow.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCompleted := []domain.ProgressMilestone{
+		domain.ProgressAccepted, domain.ProgressHostPrepared,
+		domain.ProgressGameServerInstalled, domain.ProgressModsApplied,
+	}
+	if session.Progress.Milestone != domain.ProgressConfigurationReady || !slices.Equal(session.Progress.CompletedMilestones, wantCompleted) {
+		t.Fatalf("progress = %#v; want completed %#v", session.Progress, wantCompleted)
+	}
+	if len(notifications.requests) != 2 || notifications.requests[1].NotificationID != "card-progress-"+workflow.ID+"-configuration-ready" {
+		t.Fatalf("notifications = %#v", notifications.requests)
+	}
+}
+
+func TestBootstrapFailureRollsBackAndRetainsFailedPendingRevision(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
+	repository, workflow := seedBootstrap(t, now)
+	runner := &testRunner{commandID: "rollback-command-1", status: ports.BootstrapCommandStatus{Status: "Success"}}
+	service, err := NewService(repository, repository, repository, runner, nil, &testIDs{values: []string{"rollback-progress-event", "rollback-event", "failure-event"}}, testClock{now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := TaskRequest{SessionID: workflow.SessionID, WorkflowID: workflow.ID, CorrelationID: workflow.CorrelationID}
+	request.Action = ActionRollbackDispatch
+	dispatched, err := service.Handle(context.Background(), request)
+	if err != nil || dispatched.CommandID != "rollback-command-1" || runner.starts != 1 {
+		t.Fatalf("rollback dispatch = %#v starts=%d err=%v", dispatched, runner.starts, err)
+	}
+	request.Action, request.CommandID = ActionRollbackObserve, dispatched.CommandID
+	observed, err := service.Handle(context.Background(), request)
+	if err != nil || !observed.Done || !observed.Succeeded {
+		t.Fatalf("rollback observe = %#v err=%v", observed, err)
+	}
+	request.Action, request.ErrorCode, request.ErrorMessage = ActionFail, "ERR_MOD_INSTALL", strings.Repeat("installer diagnosis ", 100)
+	if _, err := service.Handle(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	session, err := repository.Get(context.Background(), workflow.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.ActivePresetRevision.Number != 1 || session.PresetObjectKey != "sessions/session-1/input/preset.html" {
+		t.Fatalf("active revision changed during failure: %#v", session.ActivePresetRevision)
+	}
+	pending := session.PendingPresetRevision
+	if pending.Number != 2 || pending.Status != domain.PresetRevisionFailed || pending.RollbackDisposition != domain.PresetRollbackSucceeded || pending.FailureDetail == "" || len([]rune(pending.FailureDetail)) > domain.MaximumPresetRevisionFailureRunes {
+		t.Fatalf("retained pending revision = %#v", pending)
+	}
+	if session.ActiveWorkflowID != "" || session.LifecycleState != domain.StateFailed {
+		t.Fatalf("failed lifecycle state = %#v", session)
+	}
+}
+
 func seedBootstrap(t *testing.T, now time.Time) (*memory.SessionRepository, domain.Workflow) {
 	t.Helper()
 	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "arma", DisplayName: "Arma", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
@@ -151,6 +264,9 @@ func seedBootstrap(t *testing.T, now time.Time) (*memory.SessionRepository, doma
 		t.Fatal(err)
 	}
 	if err := session.CompleteInfrastructureProvisioning("provision", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.StagePresetRevision(1, "sessions/session-1/input/preset-v2.html", domain.PresetModlistMetadata{ObjectKey: "sessions/session-1/input/modlists/v2/arma-modlist.html", Filename: "arma-modlist.html", SHA256: strings.Repeat("b", 64), SizeBytes: 1200, WorkshopCount: 2}, now); err != nil {
 		t.Fatal(err)
 	}
 	repository := memory.NewSessionRepository()
