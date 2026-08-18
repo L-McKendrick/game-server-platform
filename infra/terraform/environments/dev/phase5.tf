@@ -753,7 +753,7 @@ resource "aws_sfn_state_machine" "provision_session" {
         }
         ResultSelector = { "result.$" = "$.Payload" }
         ResultPath     = "$.stage"
-        Retry          = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 2, BackoffRate = 2, MaxAttempts = 3 }]
+        Retry          = [local.lambda_transient_retry]
         Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "MarkFailed" }]
         Next           = "EnsureInstance"
       }
@@ -771,7 +771,7 @@ resource "aws_sfn_state_machine" "provision_session" {
         }
         ResultSelector = { "result.$" = "$.Payload" }
         ResultPath     = "$.stage"
-        Retry          = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 5, BackoffRate = 2, MaxAttempts = 3 }]
+        Retry          = [local.lambda_transient_retry]
         Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "MarkFailed" }]
         Next           = "WaitForInstance"
       }
@@ -790,7 +790,7 @@ resource "aws_sfn_state_machine" "provision_session" {
         }
         ResultSelector = { "result.$" = "$.Payload" }
         ResultPath     = "$.stage"
-        Retry          = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 5, BackoffRate = 2, MaxAttempts = 3 }]
+        Retry          = [local.lambda_transient_retry]
         Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "MarkFailed" }]
         Next           = "InstanceReady"
       }
@@ -834,7 +834,7 @@ resource "aws_sfn_state_machine" "provision_session" {
         }
         ResultSelector = { "result.$" = "$.Payload" }
         ResultPath     = "$.stage"
-        Retry          = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 5, BackoffRate = 2, MaxAttempts = 3 }]
+        Retry          = [local.lambda_transient_retry]
         Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "MarkFailed" }]
         Next           = "ManagedNodeReady"
       }
@@ -876,7 +876,7 @@ resource "aws_sfn_state_machine" "provision_session" {
           }
         }
         ResultPath = "$.completion"
-        Retry      = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 2, BackoffRate = 2, MaxAttempts = 3 }]
+        Retry      = [local.lambda_transient_retry]
         Catch      = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "MarkFailed" }]
         End        = true
       }

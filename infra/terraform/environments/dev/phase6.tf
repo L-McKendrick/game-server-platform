@@ -250,7 +250,7 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
           }
         }
         ResultPath = "$.preparation"
-        Retry      = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 2, BackoffRate = 2, MaxAttempts = 3 }]
+        Retry      = [local.lambda_transient_retry]
         Catch      = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }]
         Next       = "Dispatch"
       }
@@ -291,7 +291,7 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
         }
         ResultSelector = { "result.$" = "$.Payload" }
         ResultPath     = "$.observation"
-        Retry          = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 5, BackoffRate = 2, MaxAttempts = 3 }]
+        Retry          = [local.lambda_transient_retry]
         Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }]
         Next           = "CommandComplete"
       }
@@ -344,7 +344,7 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
           }
         }
         ResultPath = "$.completion"
-        Retry      = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 2, BackoffRate = 2, MaxAttempts = 3 }]
+        Retry      = [local.lambda_transient_retry]
         Catch      = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }]
         End        = true
       }
@@ -396,7 +396,7 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
         }
         ResultSelector = { "result.$" = "$.Payload" }
         ResultPath     = "$.rollback"
-        Retry          = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 5, BackoffRate = 2, MaxAttempts = 3 }]
+        Retry          = [local.lambda_transient_retry]
         Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.rollback_failure", Next = "MarkFailed" }]
         Next           = "RollbackComplete"
       }
@@ -439,7 +439,7 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
           }
         }
         ResultPath = "$.failure_record"
-        Retry      = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 2, BackoffRate = 2, MaxAttempts = 3 }]
+        Retry      = [local.lambda_transient_retry]
         Next       = "BootstrapFailed"
       }
       BootstrapFailed = {

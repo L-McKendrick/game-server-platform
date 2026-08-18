@@ -95,7 +95,7 @@ locals {
       TerminateInstance = {
         Type       = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters = { FunctionName = aws_lambda_function.archive_worker.function_name, Payload = { action = "terminate_instance", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
-        ResultPath = "$.termination", Retry = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 5, BackoffRate = 2, MaxAttempts = 3 }], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "WaitForTermination"
+        ResultPath = "$.termination", Retry = [local.lambda_transient_retry], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "WaitForTermination"
       }
       WaitForTermination = { Type = "Wait", Seconds = 15, Next = "ObserveTermination" }
       ObserveTermination = {
@@ -110,7 +110,7 @@ locals {
       DeleteVolume = {
         Type       = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters = { FunctionName = aws_lambda_function.archive_worker.function_name, Payload = { action = "delete_volume", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
-        ResultPath = "$.volume", Retry = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 5, BackoffRate = 2, MaxAttempts = 3 }], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "WaitForVolumeDeletion"
+        ResultPath = "$.volume", Retry = [local.lambda_transient_retry], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "WaitForVolumeDeletion"
       }
       WaitForVolumeDeletion = { Type = "Wait", Seconds = 10, Next = "ObserveVolumeDeletion" }
       ObserveVolumeDeletion = {
@@ -145,17 +145,17 @@ locals {
       VerifyArchive = {
         Type       = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "verify_archive", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
-        ResultPath = "$.verification", Retry = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 3, BackoffRate = 2, MaxAttempts = 3 }], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "Prepare"
+        ResultPath = "$.verification", Retry = [local.lambda_transient_retry], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "Prepare"
       }
       Prepare = {
         Type       = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "prepare", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
-        ResultPath = "$.prepared", Retry = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 3, BackoffRate = 2, MaxAttempts = 3 }], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "EnsureInstance"
+        ResultPath = "$.prepared", Retry = [local.lambda_transient_retry], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "EnsureInstance"
       }
       EnsureInstance = {
         Type       = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "ensure_instance", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
-        ResultPath = "$.instance", Retry = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 5, BackoffRate = 2, MaxAttempts = 3 }], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "InitializeInstanceAttempts"
+        ResultPath = "$.instance", Retry = [local.lambda_transient_retry], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "InitializeInstanceAttempts"
       }
       InitializeInstanceAttempts = { Type = "Pass", Result = 0, ResultPath = "$.attempt", Next = "WaitForInstance" }
       WaitForInstance            = { Type = "Wait", Seconds = 15, Next = "ObserveInstance" }
@@ -220,7 +220,7 @@ locals {
       Complete = {
         Type       = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "complete", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
-        Retry      = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 2, BackoffRate = 2, MaxAttempts = 3 }], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }], End = true
+        Retry      = [local.lambda_transient_retry], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }], End = true
       }
       DispatchRollback = {
         Type           = "Task", Resource = "arn:aws:states:::lambda:invoke"
@@ -256,7 +256,7 @@ locals {
       TerminateInstance = {
         Type       = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters = { FunctionName = aws_lambda_function.termination_worker.function_name, Payload = { action = "terminate_instance", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
-        ResultPath = "$.stage", Retry = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 3, BackoffRate = 2, MaxAttempts = 3 }], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "WaitForTermination"
+        ResultPath = "$.stage", Retry = [local.lambda_transient_retry], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "WaitForTermination"
       }
       WaitForTermination = { Type = "Wait", Seconds = 15, Next = "ObserveTermination" }
       ObserveTermination = {
@@ -271,7 +271,7 @@ locals {
       DeleteVolume = {
         Type       = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters = { FunctionName = aws_lambda_function.termination_worker.function_name, Payload = { action = "delete_volume", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
-        ResultPath = "$.stage", Retry = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 3, BackoffRate = 2, MaxAttempts = 3 }], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "WaitForVolumeDeletion"
+        ResultPath = "$.stage", Retry = [local.lambda_transient_retry], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "WaitForVolumeDeletion"
       }
       WaitForVolumeDeletion = { Type = "Wait", Seconds = 15, Next = "ObserveVolume" }
       ObserveVolume = {
@@ -286,7 +286,7 @@ locals {
       DeleteObjects = {
         Type           = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters     = { FunctionName = aws_lambda_function.termination_worker.function_name, Payload = { action = "delete_objects", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
-        ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.objects", Retry = [{ ErrorEquals = ["States.TaskFailed"], IntervalSeconds = 3, BackoffRate = 2, MaxAttempts = 3 }], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "Complete"
+        ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.objects", Retry = [local.lambda_transient_retry], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "Complete"
       }
       Complete = {
         Type       = "Task", Resource = "arn:aws:states:::lambda:invoke"

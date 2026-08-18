@@ -42,6 +42,7 @@ type Workflow struct {
 	LeaseExpiresAt    time.Time
 	CancelRequestedAt time.Time
 	CancelRequestedBy string
+	Retry             WorkflowRetry
 }
 
 func (workflow Workflow) Validate() error {
@@ -64,8 +65,12 @@ func (workflow Workflow) Validate() error {
 		return fmt.Errorf("workflow start timestamp is required")
 	case workflow.LeaseExpiresAt.IsZero() || !workflow.LeaseExpiresAt.After(workflow.StartedAt):
 		return fmt.Errorf("workflow lease expiration must follow its start")
+	case workflow.CancelRequestedAt.IsZero() != (strings.TrimSpace(workflow.CancelRequestedBy) == ""):
+		return fmt.Errorf("workflow cancellation timestamp and requester must be set together")
+	case !workflow.CancelRequestedAt.IsZero() && workflow.CancelRequestedAt.Before(workflow.StartedAt):
+		return fmt.Errorf("workflow cancellation cannot precede its start")
 	default:
-		return nil
+		return workflow.Retry.Validate()
 	}
 }
 

@@ -118,8 +118,44 @@ type WorkflowRepository interface {
 	SetWorkflowExecution(ctx context.Context, workflow domain.Workflow, expectedStatus domain.WorkflowStatus) error
 }
 
+// ReliabilityRepository owns atomic workflow-control and operator-audit state.
+// Cloud resource inventory and orphan cleanup use a separate Phase 10.2 port.
+type ReliabilityRepository interface {
+	SaveWorkflowCancellation(ctx context.Context, workflow domain.Workflow, expectedStatus domain.WorkflowStatus, event domain.SessionEvent) error
+	ListActiveWorkflowSessions(ctx context.Context, limit int32) ([]domain.Session, error)
+	SaveReconciliationFinding(ctx context.Context, finding domain.ReconciliationFinding) error
+	ListReconciliationFindings(ctx context.Context, sessionID string, limit int32) ([]domain.ReconciliationFinding, error)
+	SaveDeadLetterOperation(ctx context.Context, operation domain.DeadLetterOperation) error
+	GetDeadLetterOperation(ctx context.Context, operationID string) (domain.DeadLetterOperation, error)
+}
+
 type WorkflowStarter interface {
 	Start(ctx context.Context, workflow domain.Workflow) (string, error)
+}
+
+type WorkflowExecutionInspector interface {
+	Describe(ctx context.Context, executionARN string) (domain.WorkflowExecutionStatus, bool, error)
+}
+
+type DeadLetterManager interface {
+	Inspect(ctx context.Context, queue domain.DeadLetterQueue) (domain.DeadLetterInspection, string, error)
+	StartRedrive(ctx context.Context, queue domain.DeadLetterQueue, maxMessagesPerSecond int32) (sourceARN string, destinationARN string, error error)
+}
+
+type ResourceInventory interface {
+	List(ctx context.Context) ([]domain.ResourceObservation, error)
+}
+
+type OrphanCleaner interface {
+	Quarantine(ctx context.Context, finding domain.OrphanFinding) error
+	Cleanup(ctx context.Context, finding domain.OrphanFinding) error
+}
+
+type OrphanRepository interface {
+	ListSessionsForInventory(ctx context.Context, limit int32) ([]domain.Session, error)
+	SaveOrphanFinding(ctx context.Context, finding domain.OrphanFinding) error
+	GetOrphanFinding(ctx context.Context, findingID string) (domain.OrphanFinding, error)
+	ListOrphanFindings(ctx context.Context, limit int32) ([]domain.OrphanFinding, error)
 }
 
 type ProvisioningRepository interface {

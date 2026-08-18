@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
+	appreliability "github.com/L-McKendrick/game-server-platform/internal/app/reliability"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
@@ -70,6 +71,15 @@ func NewService(sessions ports.SessionRepository, stages ports.BootstrapReposito
 func (service *Service) Handle(ctx context.Context, request TaskRequest) (TaskResult, error) {
 	if strings.TrimSpace(request.SessionID) == "" || strings.TrimSpace(request.WorkflowID) == "" {
 		return TaskResult{}, fmt.Errorf("session and workflow IDs are required")
+	}
+	if request.Action == ActionPrepare {
+		session, workflow, err := service.load(ctx, request)
+		if err != nil {
+			return TaskResult{}, err
+		}
+		if err := appreliability.HonorLoadedAtInitialBoundary(ctx, service.workflows, service.ids, service.clock, session, workflow); err != nil {
+			return TaskResult{}, err
+		}
 	}
 	switch request.Action {
 	case ActionPrepare:

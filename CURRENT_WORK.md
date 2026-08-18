@@ -2,55 +2,45 @@
 
 ## State and Objective
 
-Phases 1-9 are complete. Phases 10 and 11 remain pending under the explicit
-user-approved deferral; Phase 12 proceeding first does not mark either deferred
-phase complete.
+Phase 10 is in progress on `codex/phase-10-reliability`. Steps 10.1 and 10.2
+are implemented and reviewed. Work is intentionally paused before Step 10.3 at
+the user's requested boundary.
 
-Work is on `codex/phase-12-discord-experience`. Steps 12.1 through 12.7 are
-complete. The follow-up public-card refinement in task 12.4.8 is complete on
-the phase branch.
+## Completed Reliability Work
 
-## Task 12.4.8 Outcome
-
-- Public session cards use a Discord embed with `ARMA 3 | Session Name`, a
-  text-labelled status, and a green/orange/red/gray sidebar for online, setup,
-  error, and inactive states. Plain text remains as a delivery fallback.
-- The upper card shows the description, live mission and map, player count, and
-  a Discord-native relative session-start time. A2S_INFO provides the bounded,
-  sanitized mission/map values through the same refresh path as player data.
-- Connection details place the linked active preset below the game address with
-  a separating blank line; vanilla shows `Modlist: None`. TeamSpeak is omitted
-  when disabled.
-- New cards expose only `Show players` and `Refresh`. The live roster is bounded
-  and ephemeral. Old control IDs remain accepted for already-posted cards, but
-  `View details`, card-only modlist download, and card-only help are no longer
-  generated. `/rb help` remains the help entry point.
-- Public cards no longer show Guidance or Last updated. Detailed private status
-  retains diagnostic guidance and freshness information.
+- Bounded Step Functions retries cover Lambda service, SDK, and throttling
+  failures only; application failures retain terminal catch/rollback behavior.
+- Owner-requested cancellation is persisted atomically and honored only before
+  the workflow's initial external mutation. Termination is not cancellable.
+- A scheduled reliability worker reconciles expired workflow locks, inspects
+  and idempotently redrives DLQs, records conservative orphan findings, and
+  exposes explicit quarantine and cleanup operator actions.
+- Orphan cleanup is restricted to fully tagged EC2 instances and detached EBS
+  volumes after a 24-hour age gate, 24-hour quarantine, and immediate
+  revalidation. Security groups, S3, malformed evidence, and uncertain cases
+  remain report-only.
+- `docs/phase-10-reliability.md` contains operator and disaster-recovery
+  procedures. Terraform defines the worker schedule, redrive allow policies,
+  least-privilege runtime policy, and DLQ/Lambda alarms.
 
 ## Validation
 
-- Full `go test ./...` and `go test -cover ./...` pass; session-card coverage is
-  82.5%, Discord interaction coverage is 71.0%, and notification sender coverage
-  is 80.2%.
-- `go vet ./...`, `go build ./cmd/...`, Lambda packaging, and
-  `git diff --check` pass.
-- Validation used Go 1.26.6, one patch newer than the repository's 1.26.5 CI
-  target.
+- Full `go test ./...`, `go vet ./...`, and `go build ./cmd/...` pass.
+- Focused reliability, orphan, domain, persistence, and adapter tests pass.
+- `terraform fmt -recursive infra/terraform` and development-environment
+  `terraform validate` pass. No Terraform apply or live cleanup/redrive action
+  was run.
 
 ## Operator Attention
 
-- Phase 10 retry policy and Phase 11 work remain deferred. No automatic retry
-  is scheduled for current failures or an unverified rollback.
+- Do not begin Step 10.3 until the user resumes it. It is the cached Steam
+  authorization and frozen EBS snapshot work.
 - Do not run Terraform apply without the separate plan, budget-recipient, and
-  deployment approvals. The ignored local `terraform.tfvars` and untracked
-  `infra/terraform/environments/dev/tfplan` were not modified.
-- `/rb create` remains non-billable. The existing two-command start/bootstrap
-  boundary is intentionally deferred to 12.8.7.
-- Phase 13.5 remains responsible for adding a game selector and extracting
-  game-specific creation/setup behavior before another game is exposed.
+  deployment approvals. The existing untracked
+  `infra/terraform/environments/dev/tfplan` remains untouched.
+- Terraform formatting normalized the ignored local `terraform.tfvars` file;
+  no values were displayed or intentionally changed.
 
 ## Exact Next Step
 
-Start task 12.8.1 only in a new development prompt. Do not combine it with
-later 12.8 tasks unless the user explicitly requests that scope.
+Pause. When explicitly resumed, begin task 10.3.1 only.
