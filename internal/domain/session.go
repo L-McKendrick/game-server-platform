@@ -400,6 +400,12 @@ func (session Session) Validate() error {
 		return fmt.Errorf("active workflow start timestamp is required")
 	case session.ActiveWorkflowID != "" && !session.ActiveWorkflowLeaseExpiresAt.After(session.ActiveWorkflowStartedAt):
 		return fmt.Errorf("active workflow lease must expire after it starts")
+	case session.ActiveWorkflowID != "" && !session.Progress.Empty() && session.Progress.WorkflowID != session.ActiveWorkflowID:
+		return fmt.Errorf("active workflow and progress workflow IDs must match")
+	case session.ActiveWorkflowID != "" && !session.Progress.Empty() && session.Progress.WorkflowType != session.ActiveWorkflowType:
+		return fmt.Errorf("active workflow and progress workflow types must match")
+	case session.ActiveWorkflowID != "" && !session.Progress.Empty() && !session.Progress.StartedAt.Equal(session.ActiveWorkflowStartedAt):
+		return fmt.Errorf("active workflow and progress start timestamps must match")
 	case session.ArchiveSourceState != "" && (session.ActiveWorkflowType != ArchiveWorkflowType || session.LifecycleState != StateArchiving):
 		return fmt.Errorf("archive source state requires an active archive workflow")
 	case !session.DesiredState.Valid():
@@ -422,9 +428,11 @@ func (session Session) Validate() error {
 		return fmt.Errorf("updated timestamp is required")
 	case session.UpdatedAt.Before(session.CreatedAt):
 		return fmt.Errorf("updated timestamp cannot precede created timestamp")
-	case !session.Progress.Empty() && session.Progress.UpdatedAt.Before(session.CreatedAt):
+	case !session.Progress.Empty() && session.Progress.StartedAt.Before(session.CreatedAt):
+		return fmt.Errorf("progress start timestamp cannot precede session creation")
+	case !session.Progress.Empty() && session.Progress.LastProgressAt.Before(session.CreatedAt):
 		return fmt.Errorf("progress timestamp cannot precede session creation")
-	case !session.Progress.Empty() && session.Progress.UpdatedAt.After(session.UpdatedAt):
+	case !session.Progress.Empty() && session.Progress.LastProgressAt.After(session.UpdatedAt):
 		return fmt.Errorf("progress timestamp cannot follow session update")
 	case !session.Failure.Empty() && session.Failure.FailedAt.After(session.UpdatedAt):
 		return fmt.Errorf("failure timestamp cannot follow session update")

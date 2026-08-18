@@ -156,6 +156,14 @@ func (s *Service) Handle(ctx context.Context, r TaskRequest) (TaskResult, error)
 func (s *Service) dispatchMods(ctx context.Context, session domain.Session, wf domain.Workflow) (TaskResult, error) {
 	out := result(session, wf)
 	if !session.HasApplyingPresetRevision(wf.ID) {
+		if wf.Type == domain.WakeWorkflowType && session.Progress.Milestone == domain.ProgressModsApplied {
+			updated, err := s.skipProgress(ctx, session, wf, domain.ProgressModsApplied, domain.ProgressServiceStarted)
+			if err != nil {
+				return TaskResult{}, err
+			}
+			session = updated
+			out = result(session, wf)
+		}
 		out.Done, out.Succeeded = true, true
 		return out, nil
 	}
@@ -189,6 +197,15 @@ func (s *Service) observeMods(ctx context.Context, session domain.Session, wf do
 	out.CommandID = strings.TrimSpace(commandID)
 	out.Done = status.Status == "Success" || status.Status == "Failed" || status.Status == "TimedOut" || status.Status == "Cancelled"
 	out.Succeeded = status.Status == "Success"
+	if out.Succeeded {
+		updated, progressErr := s.advanceProgress(ctx, session, wf, domain.ProgressServiceStarted)
+		if progressErr != nil {
+			return TaskResult{}, progressErr
+		}
+		session = updated
+		out = result(session, wf)
+		out.CommandID, out.Done, out.Succeeded = strings.TrimSpace(commandID), true, true
+	}
 	if out.Done && !out.Succeeded {
 		out.ErrorCode = "ERR_MOD_REVISION_" + strings.ToUpper(status.Status)
 		out.ErrorMessage = bounded(status.ErrorMessage, "pending mod revision failed")
@@ -205,6 +222,12 @@ func (s *Service) dispatchRollback(ctx context.Context, session domain.Session, 
 	if s.presetRunner == nil {
 		return TaskResult{}, fmt.Errorf("preset revision runner is not configured")
 	}
+	updated, progressErr := s.setProgressState(ctx, session, wf, domain.ProgressRollingBack)
+	if progressErr != nil {
+		return TaskResult{}, progressErr
+	}
+	session = updated
+	out = result(session, wf)
 	commandID, err := s.presetRunner.StartRollback(ctx, session)
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("start preset rollback: %w", err)
@@ -276,6 +299,14 @@ func (s *Service) observe(ctx context.Context, session domain.Session, wf domain
 	}
 	r.Done = o.State == "running"
 	r.Succeeded = r.Done
+	if r.Succeeded {
+		updated, progressErr := s.advanceProgress(ctx, session, wf, domain.ProgressModsApplied)
+		if progressErr != nil {
+			return TaskResult{}, progressErr
+		}
+		r = result(updated, wf)
+		r.Done, r.Succeeded = true, true
+	}
 	return r, nil
 }
 func (s *Service) complete(ctx context.Context, session domain.Session, wf domain.Workflow) (TaskResult, error) {
@@ -382,6 +413,54 @@ func (s *Service) saveProgress(ctx context.Context, session domain.Session, expe
 	}
 	event := domain.NewProgressMilestoneEvent(id, workflow, session, now)
 	return s.stages.SaveProvisioningStage(ctx, session, expectedVersion, event)
+}
+
+func (s *Service) advanceProgress(ctx context.Context, session domain.Session, workflow domain.Workflow, milestone domain.ProgressMilestone) (domain.Session, error) {
+	if s.stages == nil || s.ids == nil || s.clock == nil || session.Progress.WorkflowID != workflow.ID {
+		return session, nil
+	}
+	expected := session.Version
+	changed, err := session.AdvanceProgress(workflow.ID, milestone, s.clock.Now())
+	if err != nil || !changed {
+		return session, err
+	}
+	if err := s.saveProgress(ctx, session, expected, workflow); err != nil {
+		return domain.Session{}, err
+	}
+	s.notify(ctx, session, workflow)
+	return session, nil
+}
+
+func (s *Service) skipProgress(ctx context.Context, session domain.Session, workflow domain.Workflow, milestone, next domain.ProgressMilestone) (domain.Session, error) {
+	if s.stages == nil || s.ids == nil || s.clock == nil || session.Progress.WorkflowID != workflow.ID {
+		return session, nil
+	}
+	expected := session.Version
+	changed, err := session.SkipProgress(workflow.ID, milestone, next, s.clock.Now())
+	if err != nil || !changed {
+		return session, err
+	}
+	if err := s.saveProgress(ctx, session, expected, workflow); err != nil {
+		return domain.Session{}, err
+	}
+	s.notify(ctx, session, workflow)
+	return session, nil
+}
+
+func (s *Service) setProgressState(ctx context.Context, session domain.Session, workflow domain.Workflow, state domain.ProgressState) (domain.Session, error) {
+	if s.stages == nil || s.ids == nil || s.clock == nil || session.Progress.WorkflowID != workflow.ID {
+		return session, nil
+	}
+	expected := session.Version
+	changed, err := session.SetProgressState(workflow.ID, state, s.clock.Now())
+	if err != nil || !changed {
+		return session, err
+	}
+	if err := s.saveProgress(ctx, session, expected, workflow); err != nil {
+		return domain.Session{}, err
+	}
+	s.notify(ctx, session, workflow)
+	return session, nil
 }
 func result(s domain.Session, w domain.Workflow) TaskResult {
 	return TaskResult{SessionID: s.ID, WorkflowID: w.ID, State: string(s.LifecycleState)}

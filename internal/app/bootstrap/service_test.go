@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -104,7 +105,7 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 	if len(notifications.requests) != 4 {
 		t.Fatalf("notifications = %#v", notifications.requests)
 	}
-	wantMilestones := []domain.ProgressMilestone{domain.ProgressGameContentSetup, domain.ProgressHealthVerification, domain.ProgressCompleted}
+	wantMilestones := []domain.ProgressMilestone{domain.ProgressHostPrepared, domain.ProgressHealthVerification, domain.ProgressCompleted}
 	for index, milestone := range wantMilestones {
 		request := notifications.requests[index]
 		if request.Kind != domain.NotificationSessionCard || request.NotificationID != "card-progress-"+workflow.ID+"-"+progressIDPart(milestone) {
@@ -157,12 +158,53 @@ func TestObserveSanitizesFailedCommand(t *testing.T) {
 	}
 }
 
+func TestObservePersistsManagedBootstrapCheckpointsInOneProgressMutation(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 18, 2, 0, 0, 0, time.UTC)
+	repository, workflow := seedBootstrap(t, now)
+	runner := &testRunner{status: ports.BootstrapCommandStatus{
+		Status: "InProgress",
+		Checkpoints: []domain.ProgressMilestone{
+			domain.ProgressHostPrepared, domain.ProgressGameServerInstalled,
+			domain.ProgressModsApplied, domain.ProgressConfigurationReady,
+		},
+	}}
+	notifications := &testNotifications{}
+	service, err := NewService(repository, repository, repository, runner, notifications, &testIDs{values: []string{"prepare-event", "progress-event"}}, testClock{now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := TaskRequest{Action: ActionPrepare, SessionID: workflow.SessionID, WorkflowID: workflow.ID}
+	if _, err := service.Handle(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	request.Action, request.CommandID = ActionObserve, "command-1"
+	result, err := service.Handle(context.Background(), request)
+	if err != nil || result.Done {
+		t.Fatalf("observe = %#v, err = %v", result, err)
+	}
+	session, err := repository.Get(context.Background(), workflow.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCompleted := []domain.ProgressMilestone{
+		domain.ProgressAccepted, domain.ProgressHostPrepared,
+		domain.ProgressGameServerInstalled, domain.ProgressModsApplied,
+	}
+	if session.Progress.Milestone != domain.ProgressConfigurationReady || !slices.Equal(session.Progress.CompletedMilestones, wantCompleted) {
+		t.Fatalf("progress = %#v; want completed %#v", session.Progress, wantCompleted)
+	}
+	if len(notifications.requests) != 2 || notifications.requests[1].NotificationID != "card-progress-"+workflow.ID+"-configuration-ready" {
+		t.Fatalf("notifications = %#v", notifications.requests)
+	}
+}
+
 func TestBootstrapFailureRollsBackAndRetainsFailedPendingRevision(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
 	repository, workflow := seedBootstrap(t, now)
 	runner := &testRunner{commandID: "rollback-command-1", status: ports.BootstrapCommandStatus{Status: "Success"}}
-	service, err := NewService(repository, repository, repository, runner, nil, &testIDs{values: []string{"rollback-event", "failure-event"}}, testClock{now})
+	service, err := NewService(repository, repository, repository, runner, nil, &testIDs{values: []string{"rollback-progress-event", "rollback-event", "failure-event"}}, testClock{now})
 	if err != nil {
 		t.Fatal(err)
 	}

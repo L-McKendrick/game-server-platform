@@ -120,6 +120,11 @@ func (service *Service) observeVolume(ctx context.Context, session domain.Sessio
 }
 
 func (service *Service) deleteObjects(ctx context.Context, session domain.Session, workflow domain.Workflow) (TaskResult, error) {
+	updated, progressErr := service.advanceProgress(ctx, session, workflow, domain.ProgressArtifactsRemoved)
+	if progressErr != nil {
+		return TaskResult{}, progressErr
+	}
+	session = updated
 	count, err := service.cleaner.DeleteSessionObjects(ctx, session.ID)
 	if err != nil {
 		return TaskResult{}, err
@@ -217,6 +222,24 @@ func (service *Service) load(ctx context.Context, request TaskRequest) (domain.S
 
 func (service *Service) notify(ctx context.Context, session domain.Session, workflow domain.Workflow) {
 	_ = sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, service.clock.Now().UTC())
+}
+
+func (service *Service) advanceProgress(ctx context.Context, session domain.Session, workflow domain.Workflow, milestone domain.ProgressMilestone) (domain.Session, error) {
+	expected, now := session.Version, service.clock.Now().UTC()
+	changed, err := session.AdvanceProgress(workflow.ID, milestone, now)
+	if err != nil || !changed {
+		return session, err
+	}
+	id, err := service.ids.New(now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.NewProgressMilestoneEvent(id, workflow, session, now)
+	if err := service.stages.SaveProvisioningStage(ctx, session, expected, event); err != nil {
+		return domain.Session{}, err
+	}
+	service.notify(ctx, session, workflow)
+	return session, nil
 }
 
 func taskResult(session domain.Session, workflow domain.Workflow) TaskResult {

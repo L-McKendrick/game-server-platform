@@ -47,13 +47,24 @@ func render(card Projection, detailed bool) string {
 	}
 	fmt.Fprintf(
 		&builder,
-		"\n\n**Game:** %s\n**Mode:** %s\n**TeamSpeak:** %s\nStatus: %s\nHealth: %s\nStage: %s",
-		safe(card.Game), safe(card.Mode), enabled(card.TeamSpeak), safe(card.Lifecycle), safe(card.Health), safe(card.Stage),
+		"\n\n**Game:** %s\n**Mode:** %s\n**TeamSpeak:** %s\nStatus: %s\nHealth: %s",
+		safe(card.Game), safe(card.Mode), enabled(card.TeamSpeak), safe(card.Lifecycle), safe(card.Health),
 	)
+	if card.Progress.Visible {
+		fmt.Fprintf(&builder, "\n**Progress:** `%s` — Step %d/%d\n**Current stage:** %s", safeCode(card.Progress.Bar), card.Progress.Step, card.Progress.Total, safe(card.Stage))
+		if card.Progress.Condition != "" {
+			fmt.Fprintf(&builder, "\n**Progress state:** %s", safe(card.Progress.Condition))
+		}
+		if card.Progress.Guidance != "" {
+			fmt.Fprintf(&builder, "\n**Guidance:** %s", safe(card.Progress.Guidance))
+		}
+	} else {
+		fmt.Fprintf(&builder, "\n**Current stage:** %s", safe(card.Stage))
+	}
 	if card.CurrentOperation != "" {
 		fmt.Fprintf(&builder, "\n**Current operation:** %s", safe(card.CurrentOperation))
 	}
-	if card.Elapsed > 0 {
+	if card.Progress.Visible || card.Elapsed > 0 {
 		fmt.Fprintf(&builder, "\n**Elapsed:** %s", formatDuration(card.Elapsed))
 	}
 	if card.Endpoints.Game.Available {

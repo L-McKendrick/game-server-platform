@@ -134,6 +134,16 @@ func (service *Service) observe(ctx context.Context, session domain.Session, wor
 	result.Done = terminal(status.Status)
 	result.Succeeded = status.Status == "Success"
 	result.ObjectKey, result.SHA256, result.SizeBytes = status.ObjectKey, status.SHA256, status.SizeBytes
+	if result.Succeeded {
+		updated, progressErr := service.advanceProgress(ctx, session, workflow, domain.ProgressArchiveVerified)
+		if progressErr != nil {
+			return TaskResult{}, progressErr
+		}
+		session = updated
+		result = taskResult(session, workflow)
+		result.CommandID, result.Done, result.Succeeded = commandID, true, true
+		result.ObjectKey, result.SHA256, result.SizeBytes = status.ObjectKey, status.SHA256, status.SizeBytes
+	}
 	if result.Done && !result.Succeeded {
 		result.ErrorCode = "ERR_ARCHIVE_COMMAND"
 		result.ErrorMessage = bounded(status.ErrorMessage, "archive command failed")
@@ -206,6 +216,7 @@ func (service *Service) recordVerified(ctx context.Context, session domain.Sessi
 	if err := service.stages.SaveProvisioningStage(ctx, session, expectedVersion, event); err != nil {
 		return TaskResult{}, err
 	}
+	service.notify(ctx, session, workflow)
 	return taskResult(session, workflow), nil
 }
 
@@ -343,6 +354,24 @@ func (service *Service) load(ctx context.Context, request TaskRequest) (domain.S
 
 func (service *Service) notify(ctx context.Context, session domain.Session, workflow domain.Workflow) {
 	_ = sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, service.clock.Now().UTC())
+}
+
+func (service *Service) advanceProgress(ctx context.Context, session domain.Session, workflow domain.Workflow, milestone domain.ProgressMilestone) (domain.Session, error) {
+	expected, now := session.Version, service.clock.Now().UTC()
+	changed, err := session.AdvanceProgress(workflow.ID, milestone, now)
+	if err != nil || !changed {
+		return session, err
+	}
+	id, err := service.ids.New(now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.NewProgressMilestoneEvent(id, workflow, session, now)
+	if err := service.stages.SaveProvisioningStage(ctx, session, expected, event); err != nil {
+		return domain.Session{}, err
+	}
+	service.notify(ctx, session, workflow)
+	return session, nil
 }
 
 func taskResult(session domain.Session, workflow domain.Workflow) TaskResult {

@@ -16,7 +16,8 @@ func TestEnqueueProgressUsesMilestoneIdempotencyAndCardRevision(t *testing.T) {
 	session := domain.Session{
 		ID: "session-1", Version: 7, DisplayName: "Saturday Arma", Slug: "saturday-arma", GameType: "arma3",
 		GuildID: "guild-1", ChannelID: "channel-1", LifecycleState: domain.StateProvisioning, HealthStatus: domain.HealthStarting,
-		Progress:  domain.SessionProgress{WorkflowID: "workflow-1", WorkflowType: "ProvisionSession", Milestone: domain.ProgressInfrastructureReady, UpdatedAt: now},
+		Progress: domain.SessionProgress{WorkflowID: "workflow-1", WorkflowType: domain.ProvisionWorkflowType, Milestone: domain.ProgressInfrastructureReady,
+			CompletedMilestones: []domain.ProgressMilestone{domain.ProgressAccepted}, StartedAt: now.Add(-time.Minute), LastProgressAt: now},
 		CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
 	}
 	workflow := domain.Workflow{
@@ -38,6 +39,44 @@ func TestEnqueueProgressUsesMilestoneIdempotencyAndCardRevision(t *testing.T) {
 	request := requests[0]
 	if request.NotificationID != "card-progress-workflow-1-infrastructure-ready" || request.Kind != domain.NotificationSessionCard || request.CardRevision != session.Version {
 		t.Fatalf("request = %#v", request)
+	}
+}
+
+func TestEnqueueProgressSuppressesWaitingNoiseButPublishesActionRequired(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 18, 6, 0, 0, 0, time.UTC)
+	session := domain.Session{
+		ID: "session-1", Version: 3, DisplayName: "Saturday Arma", Slug: "saturday-arma", GameType: "arma3",
+		GuildID: "guild-1", ChannelID: "channel-1", LifecycleState: domain.StateProvisioning,
+		Progress: domain.SessionProgress{
+			WorkflowID: "workflow-1", WorkflowType: domain.ProvisionWorkflowType,
+			Milestone: domain.ProgressComputeReady, State: domain.ProgressActive,
+			CompletedMilestones: []domain.ProgressMilestone{domain.ProgressAccepted, domain.ProgressCapacityReserved},
+			StartedAt:           now.Add(-time.Minute), LastProgressAt: now,
+		},
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
+	}
+	workflow := domain.Workflow{ID: "workflow-1", SessionID: session.ID, Type: domain.ProvisionWorkflowType, Status: domain.WorkflowRunning, CorrelationID: "correlation-1", StartedAt: now.Add(-time.Minute)}
+	queue := memory.NewNotificationQueue()
+	if err := EnqueueProgress(context.Background(), queue, session, workflow, now); err != nil {
+		t.Fatal(err)
+	}
+	session.Progress.State = domain.ProgressWaiting
+	session.Version++
+	if err := EnqueueProgress(context.Background(), queue, session, workflow, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.Requests()) != 1 {
+		t.Fatalf("waiting state created card noise: %#v", queue.Requests())
+	}
+	session.Progress.State = domain.ProgressActionRequired
+	session.Version++
+	if err := EnqueueProgress(context.Background(), queue, session, workflow, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	requests := queue.Requests()
+	if len(requests) != 2 || requests[1].NotificationID != "card-progress-workflow-1-compute-ready-action-required" {
+		t.Fatalf("terminal progress requests = %#v", requests)
 	}
 }
 
@@ -81,7 +120,7 @@ func TestEnqueueProgressRejectsMismatchedWorkflow(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 15, 10, 0, 0, 0, time.UTC)
 	session := domain.Session{Progress: domain.SessionProgress{
-		WorkflowID: "workflow-1", WorkflowType: "ProvisionSession", Milestone: domain.ProgressAccepted, UpdatedAt: now,
+		WorkflowID: "workflow-1", WorkflowType: domain.ProvisionWorkflowType, Milestone: domain.ProgressAccepted, StartedAt: now, LastProgressAt: now,
 	}}
 	workflow := domain.Workflow{ID: "workflow-2", Type: "ProvisionSession"}
 	if err := EnqueueProgress(context.Background(), memory.NewNotificationQueue(), session, workflow, now); err == nil {

@@ -101,21 +101,17 @@ func (service *Service) Handle(ctx context.Context, request TaskRequest) (TaskRe
 	case ActionCheckManaged:
 		return service.checkManaged(ctx, session, workflow)
 	case ActionDispatchBootstrap:
-		session, err = service.advanceProgress(ctx, session, workflow, domain.ProgressGameContentSetup)
-		if err != nil {
-			return TaskResult{}, err
-		}
 		return service.dispatch(ctx, session, workflow, service.bootstrap)
 	case ActionObserveBootstrap:
-		return service.observeCommand(ctx, session, workflow, request.CommandID, service.bootstrap)
+		return service.observeCommand(ctx, session, workflow, request.CommandID, service.bootstrap, true)
 	case ActionDispatchRestore:
-		session, err = service.advanceProgress(ctx, session, workflow, domain.ProgressHealthVerification)
+		session, err = service.advanceProgress(ctx, session, workflow, domain.ProgressDataRestored)
 		if err != nil {
 			return TaskResult{}, err
 		}
 		return service.dispatch(ctx, session, workflow, service.restore)
 	case ActionObserveRestore:
-		return service.observeCommand(ctx, session, workflow, request.CommandID, service.restore)
+		return service.observeCommand(ctx, session, workflow, request.CommandID, service.restore, false)
 	case ActionComplete:
 		return service.complete(ctx, session, workflow)
 	case ActionFail:
@@ -135,6 +131,12 @@ func (service *Service) dispatchRollback(ctx context.Context, session domain.Ses
 		response.Done, response.Succeeded = true, true
 		return response, nil
 	}
+	updated, progressErr := service.setProgressState(ctx, session, workflow, domain.ProgressRollingBack)
+	if progressErr != nil {
+		return TaskResult{}, progressErr
+	}
+	session = updated
+	response = result(session, workflow)
 	commandID, err := service.bootstrap.StartRollback(ctx, session)
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("start preset rollback: %w", err)
@@ -203,6 +205,10 @@ func (service *Service) verifyArchive(ctx context.Context, session domain.Sessio
 		return TaskResult{}, fmt.Errorf("archive manifest does not match authoritative session metadata")
 	}
 	if err := service.store.Verify(ctx, ports.ArchiveObject{Key: archive.ObjectKey, SHA256: archive.SHA256, SizeBytes: archive.SizeBytes, ContentType: "application/gzip"}); err != nil {
+		return TaskResult{}, err
+	}
+	session, err = service.advanceProgress(ctx, session, workflow, domain.ProgressInfrastructureReady)
+	if err != nil {
 		return TaskResult{}, err
 	}
 	return result(session, workflow), nil
@@ -277,7 +283,7 @@ func (service *Service) checkManaged(ctx context.Context, session domain.Session
 		return TaskResult{}, err
 	}
 	if managed {
-		session, err = service.advanceProgress(ctx, session, workflow, domain.ProgressInfrastructureReady)
+		session, err = service.advanceProgress(ctx, session, workflow, domain.ProgressDataRestored)
 		if err != nil {
 			return TaskResult{}, err
 		}
@@ -297,7 +303,7 @@ func (service *Service) dispatch(ctx context.Context, session domain.Session, wo
 	return response, nil
 }
 
-func (service *Service) observeCommand(ctx context.Context, session domain.Session, workflow domain.Workflow, commandID string, runner commandRunner) (TaskResult, error) {
+func (service *Service) observeCommand(ctx context.Context, session domain.Session, workflow domain.Workflow, commandID string, runner commandRunner, bootstrapCommand bool) (TaskResult, error) {
 	status, err := runner.Observe(ctx, session.Infrastructure.InstanceID, commandID)
 	if err != nil {
 		return TaskResult{}, err
@@ -306,6 +312,38 @@ func (service *Service) observeCommand(ctx context.Context, session domain.Sessi
 	response.CommandID = commandID
 	response.Done = terminal(status.Status)
 	response.Succeeded = status.Status == "Success"
+	checkpoints := status.Checkpoints
+	if bootstrapCommand && response.Succeeded {
+		checkpoints = []domain.ProgressMilestone{
+			domain.ProgressHostPrepared, domain.ProgressGameServerInstalled,
+			domain.ProgressModsApplied, domain.ProgressConfigurationReady,
+			domain.ProgressServiceStarted, domain.ProgressHealthVerification,
+		}
+	}
+	if bootstrapCommand && len(checkpoints) > 0 {
+		expected, now := session.Version, service.clock.Now().UTC()
+		var skipped []domain.ProgressMilestone
+		if session.Vanilla {
+			skipped = []domain.ProgressMilestone{domain.ProgressModsApplied}
+		}
+		changed, progressErr := session.ApplyProgressSequence(workflow.ID, checkpoints, skipped, now)
+		if progressErr != nil {
+			return TaskResult{}, progressErr
+		}
+		if changed {
+			id, idErr := service.ids.New(now)
+			if idErr != nil {
+				return TaskResult{}, idErr
+			}
+			event := domain.NewProgressMilestoneEvent(id, workflow, session, now)
+			if saveErr := service.stages.SaveProvisioningStage(ctx, session, expected, event); saveErr != nil {
+				return TaskResult{}, saveErr
+			}
+			_ = sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now)
+			response = result(session, workflow)
+			response.CommandID, response.Done, response.Succeeded = commandID, terminal(status.Status), status.Status == "Success"
+		}
+	}
 	if response.Done && !response.Succeeded {
 		response.ErrorCode = "ERR_RESTORE_COMMAND"
 		response.ErrorMessage = bounded(status.ErrorMessage, "restore command failed")
@@ -399,6 +437,24 @@ func (service *Service) advanceProgress(ctx context.Context, session domain.Sess
 	}
 	if !changed {
 		return session, nil
+	}
+	id, err := service.ids.New(now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.NewProgressMilestoneEvent(id, workflow, session, now)
+	if err := service.stages.SaveProvisioningStage(ctx, session, expected, event); err != nil {
+		return domain.Session{}, err
+	}
+	_ = sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now)
+	return session, nil
+}
+
+func (service *Service) setProgressState(ctx context.Context, session domain.Session, workflow domain.Workflow, state domain.ProgressState) (domain.Session, error) {
+	expected, now := session.Version, service.clock.Now().UTC()
+	changed, err := session.SetProgressState(workflow.ID, state, now)
+	if err != nil || !changed {
+		return session, err
 	}
 	id, err := service.ids.New(now)
 	if err != nil {

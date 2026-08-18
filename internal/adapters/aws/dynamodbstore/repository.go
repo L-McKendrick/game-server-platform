@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -157,14 +158,21 @@ type sessionItem struct {
 	ProgressWorkflowID               string   `dynamodbav:"progress_workflow_id,omitempty"`
 	ProgressWorkflowType             string   `dynamodbav:"progress_workflow_type,omitempty"`
 	ProgressMilestone                string   `dynamodbav:"progress_milestone,omitempty"`
-	ProgressUpdatedAt                string   `dynamodbav:"progress_updated_at,omitempty"`
-	FailureCode                      string   `dynamodbav:"failure_code,omitempty"`
-	FailureStage                     string   `dynamodbav:"failure_stage,omitempty"`
-	FailureRetryDisposition          string   `dynamodbav:"failure_retry_disposition,omitempty"`
-	FailureResourceImpact            string   `dynamodbav:"failure_resource_impact,omitempty"`
-	FailureDetail                    string   `dynamodbav:"failure_detail,omitempty"`
-	FailureAt                        string   `dynamodbav:"failure_at,omitempty"`
-	FailureSupportReference          string   `dynamodbav:"failure_support_reference,omitempty"`
+	ProgressCompletedMilestones      []string `dynamodbav:"progress_completed_milestones,omitempty"`
+	ProgressSkippedMilestones        []string `dynamodbav:"progress_skipped_milestones,omitempty"`
+	ProgressState                    string   `dynamodbav:"progress_state,omitempty"`
+	ProgressStartedAt                string   `dynamodbav:"progress_started_at,omitempty"`
+	ProgressLastProgressAt           string   `dynamodbav:"progress_last_progress_at,omitempty"`
+	// ProgressUpdatedAt is retained as a write-through compatibility projection
+	// while older deployed readers still consume the Phase 12.4 field.
+	ProgressUpdatedAt       string `dynamodbav:"progress_updated_at,omitempty"`
+	FailureCode             string `dynamodbav:"failure_code,omitempty"`
+	FailureStage            string `dynamodbav:"failure_stage,omitempty"`
+	FailureRetryDisposition string `dynamodbav:"failure_retry_disposition,omitempty"`
+	FailureResourceImpact   string `dynamodbav:"failure_resource_impact,omitempty"`
+	FailureDetail           string `dynamodbav:"failure_detail,omitempty"`
+	FailureAt               string `dynamodbav:"failure_at,omitempty"`
+	FailureSupportReference string `dynamodbav:"failure_support_reference,omitempty"`
 
 	ActiveWorkflowID             string `dynamodbav:"active_workflow_id,omitempty"`
 	ActiveWorkflowType           string `dynamodbav:"active_workflow_type,omitempty"`
@@ -1087,7 +1095,12 @@ func toSessionItem(session domain.Session) sessionItem {
 		ProgressWorkflowID:               session.Progress.WorkflowID,
 		ProgressWorkflowType:             session.Progress.WorkflowType,
 		ProgressMilestone:                string(session.Progress.Milestone),
-		ProgressUpdatedAt:                optionalTimestamp(session.Progress.UpdatedAt),
+		ProgressCompletedMilestones:      progressMilestoneStrings(session.Progress.CompletedMilestones),
+		ProgressSkippedMilestones:        progressMilestoneStrings(session.Progress.SkippedMilestones),
+		ProgressState:                    string(session.Progress.State),
+		ProgressStartedAt:                optionalTimestamp(session.Progress.StartedAt),
+		ProgressLastProgressAt:           optionalTimestamp(session.Progress.LastProgressAt),
+		ProgressUpdatedAt:                optionalTimestamp(session.Progress.LastProgressAt),
 		FailureCode:                      session.Failure.Code,
 		FailureStage:                     session.Failure.Stage,
 		FailureRetryDisposition:          string(session.Failure.RetryDisposition),
@@ -1162,9 +1175,25 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("parse monitoring started_at: %w", err)
 	}
-	progressUpdatedAt, err := parseOptionalTimestamp(item.ProgressUpdatedAt)
+	progressLastProgressAt, err := parseOptionalTimestamp(item.ProgressLastProgressAt)
 	if err != nil {
-		return domain.Session{}, fmt.Errorf("parse progress updated_at: %w", err)
+		return domain.Session{}, fmt.Errorf("parse progress last_progress_at: %w", err)
+	}
+	if progressLastProgressAt.IsZero() {
+		progressLastProgressAt, err = parseOptionalTimestamp(item.ProgressUpdatedAt)
+		if err != nil {
+			return domain.Session{}, fmt.Errorf("parse progress updated_at: %w", err)
+		}
+	}
+	progressStartedAt, err := parseOptionalTimestamp(item.ProgressStartedAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse progress started_at: %w", err)
+	}
+	if progressStartedAt.IsZero() && item.ProgressWorkflowID != "" {
+		progressStartedAt = activeWorkflowStartedAt
+		if progressStartedAt.IsZero() {
+			progressStartedAt = progressLastProgressAt
+		}
 	}
 	failureAt, err := parseOptionalTimestamp(item.FailureAt)
 	if err != nil {
@@ -1201,6 +1230,11 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	presetStatus := domain.ArtifactStatus(item.PresetArtifactStatus)
 	if presetStatus == "" && strings.TrimSpace(item.PresetObjectKey) != "" {
 		presetStatus = domain.ArtifactAccepted
+	}
+	progressMilestone := legacyProgressMilestone(item.ProgressWorkflowType, item.ProgressMilestone, item.ProgressState)
+	progressCompleted := progressMilestones(item.ProgressCompletedMilestones)
+	if item.ProgressState == "" && len(progressCompleted) == 0 && len(item.ProgressSkippedMilestones) == 0 {
+		progressCompleted = legacyCompletedMilestones(item.ProgressWorkflowType, progressMilestone)
 	}
 
 	session := domain.Session{
@@ -1248,7 +1282,11 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		ArchiveSourceState: domain.LifecycleState(item.ArchiveSourceState),
 		Progress: domain.SessionProgress{
 			WorkflowID: item.ProgressWorkflowID, WorkflowType: item.ProgressWorkflowType,
-			Milestone: domain.ProgressMilestone(item.ProgressMilestone), UpdatedAt: progressUpdatedAt,
+			Milestone:           progressMilestone,
+			CompletedMilestones: progressCompleted,
+			SkippedMilestones:   progressMilestones(item.ProgressSkippedMilestones),
+			State:               progressState(item.ProgressState, item.ProgressMilestone, item.ActiveWorkflowID),
+			StartedAt:           progressStartedAt, LastProgressAt: progressLastProgressAt,
 		},
 		Failure: domain.FailureRecord{
 			Code: item.FailureCode, Stage: item.FailureStage,
@@ -1298,6 +1336,84 @@ func optionalTimestamp(value time.Time) string {
 		return ""
 	}
 	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func progressMilestoneStrings(milestones []domain.ProgressMilestone) []string {
+	if len(milestones) == 0 {
+		return nil
+	}
+	values := make([]string, len(milestones))
+	for index, milestone := range milestones {
+		values[index] = string(milestone)
+	}
+	return values
+}
+
+func progressMilestones(values []string) []domain.ProgressMilestone {
+	if len(values) == 0 {
+		return nil
+	}
+	milestones := make([]domain.ProgressMilestone, len(values))
+	for index, value := range values {
+		milestones[index] = domain.ProgressMilestone(value)
+	}
+	return milestones
+}
+
+func legacyProgressMilestone(workflowType, milestone, state string) domain.ProgressMilestone {
+	value := domain.ProgressMilestone(milestone)
+	if state != "" {
+		return value
+	}
+	if _, known := domain.MilestonesForWorkflow(workflowType); !known {
+		return value
+	}
+	switch value {
+	case domain.ProgressGameContentSetup:
+		if workflowType == domain.BootstrapWorkflowType {
+			return domain.ProgressHostPrepared
+		}
+	case domain.ProgressFailed:
+		return domain.ProgressAccepted
+	}
+	return value
+}
+
+func legacyCompletedMilestones(workflowType string, current domain.ProgressMilestone) []domain.ProgressMilestone {
+	milestones, known := domain.MilestonesForWorkflow(workflowType)
+	if !known {
+		return nil
+	}
+	currentIndex := slices.Index(milestones, current)
+	if currentIndex <= 0 {
+		return nil
+	}
+	end := currentIndex
+	if current == domain.ProgressCompleted {
+		end++
+	}
+	return slices.Clone(milestones[:end])
+}
+
+func progressState(value, milestone, activeWorkflowID string) domain.ProgressState {
+	if state := domain.ProgressState(value); state.Valid() {
+		return state
+	}
+	switch domain.ProgressMilestone(milestone) {
+	case domain.ProgressCompleted:
+		return domain.ProgressCompletedState
+	case domain.ProgressFailed:
+		return domain.ProgressActionRequired
+	}
+	if strings.TrimSpace(activeWorkflowID) != "" {
+		return domain.ProgressActive
+	}
+	// Legacy completed workflows often retained their last successful coarse
+	// milestone instead of a terminal marker.
+	if strings.TrimSpace(milestone) != "" {
+		return domain.ProgressCompletedState
+	}
+	return ""
 }
 
 // fixedTimestamp preserves chronological ordering when DynamoDB compares lock

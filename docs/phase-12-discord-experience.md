@@ -10,7 +10,7 @@ progress information, while internal identifiers and raw cloud diagnostics
 remain implementation details.
 
 This phase also introduces durable follow-up confirmations, actionable failure
-messages, safe post-creation modlist revisions, measured progress estimates, a
+messages, safe post-creation modlist revisions, milestone-based progress, a
 downloadable active modlist, and an admin cost summary. The bot never sends
 direct messages.
 
@@ -81,8 +81,8 @@ fields only when they are meaningful:
 
 - name, slug, and description;
 - game, vanilla/modded mode, and TeamSpeak selection;
-- lifecycle, health, current operation, major stage, elapsed time, ETA, and
-  last-update timestamp;
+- lifecycle, health, current operation, visual milestone bar, current stage,
+  elapsed time, and last-update timestamp;
 - player count;
 - copy-friendly Arma DNS/IP and game port;
 - copy-friendly TeamSpeak DNS/IP and voice port when enabled;
@@ -160,18 +160,26 @@ owner/guild/session/action/state-bound record within ten minutes.
 and expired codes fail closed. Future buttons may call the same application
 service but may not weaken this contract.
 
-### Progress and ETA
+### Milestone progress
 
-Persist major stages for accepted, infrastructure ready, game/content setup,
-health verification, and terminal completion/failure. Card delivery is
-idempotent, rate-limited, and secondary to authoritative state persistence.
+Persist stable ordered milestone sets for each workflow. The progress model
+stores the current milestone, completed milestones, operation start time, and
+last-progress time without raw command output. Bootstrap must expose meaningful
+checkpoints instead of appearing as one opaque managed-node operation.
 
-Elapsed time is available immediately. ETA requires meaningful bootstrap
-sub-stages and a documented minimum number of comparable successful samples.
-Separate vanilla and modded profiles, label the value as an estimate, update it
-only at milestones, and suppress it for failed, cancelled, stalled, sleeping,
-archived, or deleted sessions. Phase 13 performance work must reuse these stage
-definitions rather than introduce a second telemetry model.
+The public card and ephemeral status render a text-based visual bar together
+with `Step X/Y`, the current stage, and elapsed time. The bar represents
+completed checkpoints, not elapsed-time percentage or estimated remaining
+duration. Do not collect historical duration samples or present an ETA.
+
+Define deterministic rules for completed, skipped, replayed, retried, rolled
+back, failed, and cancelled milestones so progress never falsely advances or
+moves backward. Show concise qualitative guidance such as `Usually a few
+minutes` or `Often the longest stage; large modlists may take considerably
+longer`, without promising a completion time. Distinguish active, waiting,
+stalled, retrying, rollback, completed, and action-required states. Card
+delivery remains idempotent, milestone-only, rate-limited, and secondary to
+authoritative state persistence.
 
 ### Administration and cost
 

@@ -20,6 +20,7 @@ STATE_DIR="$ROOT/state"
 LOG_DIR="$ROOT/logs"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+checkpoint() { printf 'GSP_CHECKPOINT:%s\n' "$1"; }
 
 prepare_host() {
   command -v apt-get >/dev/null 2>&1 || { log "bootstrap requires the approved Ubuntu game-host image"; return 1; }
@@ -237,6 +238,7 @@ EOF
 launch_and_verify() {
   systemctl restart arma3-server.service
   $TEAMSPEAK_ENABLED && systemctl restart teamspeak3-server.service
+  checkpoint HEALTH_VERIFICATION
   for _ in $(seq 1 60); do
     if systemctl is-active --quiet arma3-server.service && ss -H -lun | awk '{print $4}' | grep -Eq '(^|:)2302$'; then
       if ! $TEAMSPEAK_ENABLED || { systemctl is-active --quiet teamspeak3-server.service && ss -H -lun | awk '{print $4}' | grep -Eq '(^|:)9987$'; }; then
@@ -253,11 +255,17 @@ launch_and_verify() {
 
 exec 8>/run/gsp-bootstrap-host.lock
 flock -w 30 8
+checkpoint HOST_PREPARED
 prepare_host
 mkdir -p "$STATE_DIR" "$LOG_DIR"
 exec 9>"$STATE_DIR/bootstrap.lock"
 flock -w 30 9
 for stage in install_steamcmd install_arma install_workshop deploy_content install_teamspeak; do
+	case "$stage" in
+		install_steamcmd) checkpoint GAME_SERVER_INSTALLED;;
+		install_workshop) checkpoint MODS_APPLIED;;
+		deploy_content) checkpoint CONFIGURATION_READY;;
+	esac
   marker="$STATE_DIR/$stage.complete"
 	if [ "$stage" = install_workshop ] && [ "$VANILLA_MODE" = false ]; then
 		marker="$STATE_DIR/$stage.revision-$PRESET_REVISION.complete"
@@ -269,6 +277,7 @@ for stage in install_steamcmd install_arma install_workshop deploy_content insta
   touch "$marker"
   log "completed stage $stage"
 done
+checkpoint SERVICE_STARTED
 log "starting stage launch_and_verify"
 launch_and_verify
 log "completed stage launch_and_verify"

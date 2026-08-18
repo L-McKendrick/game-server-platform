@@ -20,9 +20,19 @@ func EnqueueProgress(ctx context.Context, queue ports.NotificationQueue, session
 	if session.Progress.WorkflowID != workflow.ID || session.Progress.WorkflowType != workflow.Type || !session.Progress.Milestone.Valid() {
 		return fmt.Errorf("session progress does not match workflow")
 	}
+	if session.Progress.State == domain.ProgressWaiting || session.Progress.State == domain.ProgressRetrying {
+		return nil
+	}
 	milestone := strings.ToLower(string(session.Progress.Milestone))
-	notificationID := "card-progress-" + workflow.ID + "-" + strings.ReplaceAll(milestone, "_", "-")
-	renderedAt := session.Progress.UpdatedAt
+	notificationKey := strings.ReplaceAll(milestone, "_", "-")
+	if session.Progress.Milestone != domain.ProgressCompleted {
+		switch session.Progress.State {
+		case domain.ProgressRollingBack, domain.ProgressActionRequired, domain.ProgressCancelled:
+			notificationKey += "-" + strings.ReplaceAll(strings.ToLower(string(session.Progress.State)), "_", "-")
+		}
+	}
+	notificationID := "card-progress-" + workflow.ID + "-" + notificationKey
+	renderedAt := session.Progress.LastProgressAt
 	if renderedAt.IsZero() {
 		renderedAt = now
 	}

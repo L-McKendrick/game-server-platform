@@ -3,9 +3,11 @@ package ssmbootstrap
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -155,7 +157,7 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"get-secret-value", "login anonymous", "VANILLA_MODE", "PRESET_REVISION", "PRESET_ROLLBACK", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "revision-$PRESET_REVISION.complete", "mod-revisions/revision-", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
+	for _, required := range []string{"get-secret-value", "login anonymous", "VANILLA_MODE", "PRESET_REVISION", "PRESET_ROLLBACK", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "revision-$PRESET_REVISION.complete", "mod-revisions/revision-", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
 		if !strings.Contains(string(script), required) {
 			t.Errorf("script missing %q", required)
 		}
@@ -192,6 +194,30 @@ func TestObserveReturnsBoundedError(t *testing.T) {
 	status, err := runner.Observe(context.Background(), "i-1", "command-1")
 	if err != nil || status.Status != "Failed" || len(status.ErrorMessage) != 500 {
 		t.Fatalf("status = %#v, err = %v", status, err)
+	}
+}
+
+func TestObserveReturnsOnlyOrderedAllowlistedCheckpoints(t *testing.T) {
+	t.Parallel()
+	output := strings.Join([]string{
+		"Steam password=not-a-progress-fact",
+		"GSP_CHECKPOINT:MODS_APPLIED",
+		"GSP_CHECKPOINT:HOST_PREPARED",
+		"GSP_CHECKPOINT:NOT_A_REAL_STAGE",
+		"GSP_CHECKPOINT:MODS_APPLIED",
+		"GSP_CHECKPOINT:GAME_SERVER_INSTALLED",
+	}, "\n")
+	client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{
+		Status: types.CommandInvocationStatusInProgress, StandardOutputContent: aws.String(output),
+	}}
+	runner, _ := New(client, testConfig())
+	status, err := runner.Observe(context.Background(), "i-1", "command-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []domain.ProgressMilestone{domain.ProgressHostPrepared, domain.ProgressGameServerInstalled, domain.ProgressModsApplied}
+	if !reflect.DeepEqual(status.Checkpoints, want) || strings.Contains(fmt.Sprintf("%#v", status), "password") {
+		t.Fatalf("sanitized status = %#v; want checkpoints %#v", status, want)
 	}
 }
 

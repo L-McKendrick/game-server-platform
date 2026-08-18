@@ -26,6 +26,9 @@ func (session *Session) BeginSleep(workflowID string, lease time.Duration, now t
 	if err := session.AcquireWorkflowLock(strings.TrimSpace(workflowID), SleepWorkflowType, lease, now); err != nil {
 		return err
 	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressInstanceStopped, now); err != nil {
+		return err
+	}
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateSleeping, StateStopping, StateStopping, HealthStarting
 	return session.Validate()
 }
@@ -34,7 +37,7 @@ func (session *Session) CompleteSleep(workflowID string, now time.Time) error {
 	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) || session.ActiveWorkflowType != SleepWorkflowType {
 		return ErrConflict
 	}
-	if err := session.setProgressWithoutVersion(workflowID, ProgressCompleted, now); err != nil {
+	if err := session.completeProgressWithoutVersion(workflowID, now); err != nil {
 		return err
 	}
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateSleeping, StateSleeping, StateSleeping, HealthStopped
@@ -51,6 +54,9 @@ func (session *Session) BeginWake(workflowID string, lease time.Duration, now ti
 	if err := session.AcquireWorkflowLock(strings.TrimSpace(workflowID), WakeWorkflowType, lease, now); err != nil {
 		return err
 	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressComputeReady, now); err != nil {
+		return err
+	}
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateRunning, StateWaking, StateWaking, HealthStarting
 	session.beginPresetRevisionApplication(workflowID, now)
 	return session.Validate()
@@ -60,7 +66,7 @@ func (session *Session) CompleteWake(workflowID string, publicIPv4 string, now t
 	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) || session.ActiveWorkflowType != WakeWorkflowType {
 		return ErrConflict
 	}
-	if err := session.setProgressWithoutVersion(workflowID, ProgressCompleted, now); err != nil {
+	if err := session.completeProgressWithoutVersion(workflowID, now); err != nil {
 		return err
 	}
 	if _, _, err := session.promotePresetRevision(workflowID, now); err != nil {

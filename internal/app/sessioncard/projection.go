@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -37,6 +38,7 @@ type Projection struct {
 	Stage              string
 	OperationStartedAt time.Time
 	Elapsed            time.Duration
+	Progress           ProgressProjection
 
 	Players   PlayerProjection
 	Endpoints EndpointProjection
@@ -44,6 +46,16 @@ type Projection struct {
 	Failure   FailureProjection
 	Freshness FreshnessProjection
 	Artifacts ArtifactProjection
+}
+
+type ProgressProjection struct {
+	Visible   bool
+	Bar       string
+	Step      int
+	Total     int
+	Completed int
+	Condition string
+	Guidance  string
 }
 
 type PlayerProjection struct {
@@ -148,8 +160,18 @@ func Project(session domain.Session, options Options) Projection {
 	if label := progressLabel(session.Progress.Milestone); label != "" {
 		projection.Stage = label
 	}
+	projection.Progress = progressProjection(session, options.Workflow, now)
 
-	if session.ActiveWorkflowStartedAt.IsZero() == false {
+	if projection.Progress.Visible && !session.Progress.StartedAt.IsZero() {
+		projection.OperationStartedAt = session.Progress.StartedAt.UTC()
+		elapsedAt := now
+		if (session.Progress.State == domain.ProgressCompletedState || session.Progress.State == domain.ProgressActionRequired || session.Progress.State == domain.ProgressCancelled) && !session.Progress.LastProgressAt.IsZero() {
+			elapsedAt = session.Progress.LastProgressAt.UTC()
+		}
+		if elapsedAt.After(projection.OperationStartedAt) {
+			projection.Elapsed = elapsedAt.Sub(projection.OperationStartedAt).Round(time.Second)
+		}
+	} else if session.ActiveWorkflowStartedAt.IsZero() == false {
 		projection.OperationStartedAt = session.ActiveWorkflowStartedAt.UTC()
 		if now.After(projection.OperationStartedAt) {
 			projection.Elapsed = now.Sub(projection.OperationStartedAt).Round(time.Second)
@@ -263,19 +285,162 @@ func IsActiveModlistAttachment(session domain.Session, attachment domain.Notific
 func progressLabel(milestone domain.ProgressMilestone) string {
 	switch milestone {
 	case domain.ProgressAccepted:
-		return "Accepted"
+		return "Request accepted"
+	case domain.ProgressCapacityReserved:
+		return "Reserving capacity"
+	case domain.ProgressComputeReady:
+		return "Starting compute"
 	case domain.ProgressInfrastructureReady:
 		return "Infrastructure ready"
+	case domain.ProgressHostPrepared:
+		return "Preparing host"
+	case domain.ProgressGameServerInstalled:
+		return "Installing Arma 3 server"
+	case domain.ProgressModsApplied:
+		return "Applying mods"
+	case domain.ProgressConfigurationReady:
+		return "Deploying configuration"
+	case domain.ProgressServiceStarted:
+		return "Starting services"
 	case domain.ProgressGameContentSetup:
 		return "Game and content setup"
 	case domain.ProgressHealthVerification:
-		return "Health verification"
+		return "Verifying health"
+	case domain.ProgressInstanceStopped:
+		return "Stopping instance"
+	case domain.ProgressArchiveCreated:
+		return "Creating archive"
+	case domain.ProgressArchiveVerified:
+		return "Verifying archive"
+	case domain.ProgressDataRestored:
+		return "Restoring data"
+	case domain.ProgressRuntimeRemoved:
+		return "Removing runtime resources"
+	case domain.ProgressArtifactsRemoved:
+		return "Deleting stored artifacts"
+	case domain.ProgressResourcesInspected:
+		return "Inspecting resources"
+	case domain.ProgressMetadataReconciled:
+		return "Reconciling state"
 	case domain.ProgressCompleted:
 		return "Completed"
 	case domain.ProgressFailed:
 		return "Failed"
 	default:
 		return ""
+	}
+}
+
+// ProgressStageLabel exposes the same sanitized stage vocabulary to concise
+// interaction acknowledgements without duplicating renderer text.
+func ProgressStageLabel(milestone domain.ProgressMilestone) string {
+	return progressLabel(milestone)
+}
+
+func ProgressStep(workflowType string, milestone domain.ProgressMilestone) (int, int, bool) {
+	milestones, ok := domain.MilestonesForWorkflow(workflowType)
+	if !ok {
+		return 0, 0, false
+	}
+	index := slices.Index(milestones, milestone)
+	return index + 1, len(milestones), index >= 0
+}
+
+func progressProjection(session domain.Session, workflow *domain.Workflow, now time.Time) ProgressProjection {
+	progress := session.Progress
+	milestones, ok := domain.MilestonesForWorkflow(progress.WorkflowType)
+	if !ok || progress.Milestone == "" {
+		return ProgressProjection{}
+	}
+	current := slices.Index(milestones, progress.Milestone)
+	if current < 0 {
+		return ProgressProjection{}
+	}
+	completed := make(map[domain.ProgressMilestone]bool, len(progress.CompletedMilestones))
+	for _, milestone := range progress.CompletedMilestones {
+		completed[milestone] = true
+	}
+	var bar strings.Builder
+	for _, milestone := range milestones {
+		if completed[milestone] {
+			bar.WriteRune('■')
+		} else {
+			bar.WriteRune('□')
+		}
+	}
+	condition := progressCondition(session, workflow, now)
+	return ProgressProjection{
+		Visible: true, Bar: bar.String(), Step: current + 1,
+		Total: len(milestones), Completed: len(progress.CompletedMilestones),
+		Condition: condition, Guidance: progressGuidance(progress.Milestone, condition),
+	}
+}
+
+func progressCondition(session domain.Session, workflow *domain.Workflow, now time.Time) string {
+	state := session.Progress.State
+	if state == "" {
+		switch session.Progress.Milestone {
+		case domain.ProgressCompleted:
+			state = domain.ProgressCompletedState
+		case domain.ProgressFailed:
+			state = domain.ProgressActionRequired
+		default:
+			state = domain.ProgressActive
+		}
+	}
+	leaseExpired := session.ActiveWorkflowID == session.Progress.WorkflowID &&
+		!session.ActiveWorkflowLeaseExpiresAt.IsZero() && !now.Before(session.ActiveWorkflowLeaseExpiresAt)
+	workflowMatches := workflow != nil && workflow.ID == session.Progress.WorkflowID && workflow.SessionID == session.ID
+	if leaseExpired && (state == domain.ProgressActive || state == domain.ProgressWaiting) {
+		return "Stalled"
+	}
+	switch state {
+	case domain.ProgressWaiting:
+		return "Waiting"
+	case domain.ProgressRetrying:
+		return "Retrying"
+	case domain.ProgressRollingBack:
+		return "Rollback"
+	case domain.ProgressCompletedState:
+		return "Completed"
+	case domain.ProgressActionRequired:
+		return "Action required"
+	case domain.ProgressCancelled:
+		return "Action required (cancelled)"
+	default:
+		if workflowMatches && workflow.Status == domain.WorkflowPending {
+			return "Waiting"
+		}
+		return "Active"
+	}
+}
+
+func progressGuidance(milestone domain.ProgressMilestone, condition string) string {
+	switch condition {
+	case "Waiting":
+		return "Waiting for the current platform check; no additional operation was queued."
+	case "Stalled":
+		return "The workflow lease expired without a newer durable checkpoint; review status before taking action."
+	case "Retrying":
+		return "A bounded retry recorded by the workflow is in progress."
+	case "Rollback":
+		return "Returning to the prior known-good mod configuration; no automatic retry is scheduled afterward."
+	case "Completed":
+		return "The workflow finished; required steps completed and non-applicable steps remained skipped."
+	case "Action required":
+		return "Progress stopped; follow the action below. No retry is scheduled."
+	case "Action required (cancelled)":
+		return "The operation was cancelled without completing the current step."
+	}
+	switch milestone {
+	case domain.ProgressGameServerInstalled, domain.ProgressModsApplied:
+		return "Often the longest stage; large modlists may take considerably longer."
+	case domain.ProgressArchiveCreated, domain.ProgressDataRestored:
+		return "Large saved-data sets may take longer."
+	case domain.ProgressAccepted:
+		return "The request is recorded and work is beginning."
+	default:
+		return "Usually a few minutes."
 	}
 }
 

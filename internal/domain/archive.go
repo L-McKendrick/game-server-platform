@@ -84,6 +84,9 @@ func (session *Session) BeginArchive(workflowID string, lease time.Duration, now
 	if err := session.AcquireWorkflowLock(strings.TrimSpace(workflowID), ArchiveWorkflowType, lease, now); err != nil {
 		return err
 	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressArchiveCreated, now); err != nil {
+		return err
+	}
 	session.ArchiveSourceState = sourceState
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateArchiving, StateArchiving, StateArchiving
 	session.HealthStatus = HealthStarting
@@ -103,6 +106,9 @@ func (session *Session) RecordVerifiedArchive(workflowID string, archive Archive
 		return fmt.Errorf("%w: archive source state is invalid", ErrConflict)
 	}
 	session.Archive = archive
+	if err := session.setProgressSequenceWithoutVersion(workflowID, []ProgressMilestone{ProgressArchiveVerified, ProgressRuntimeRemoved}, now); err != nil {
+		return err
+	}
 	session.ArchiveSourceState = ""
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateArchived, StateDestroying, StateDestroying
 	session.HealthStatus = HealthStopped
@@ -118,7 +124,7 @@ func (session *Session) CompleteArchive(workflowID string, now time.Time) error 
 	if session.LifecycleState != StateDestroying || session.Archive.Validate() != nil {
 		return fmt.Errorf("%w: verified archive is required before destruction completes", ErrInvalidTransition)
 	}
-	if err := session.setProgressWithoutVersion(workflowID, ProgressCompleted, now); err != nil {
+	if err := session.completeProgressWithoutVersion(workflowID, now); err != nil {
 		return err
 	}
 	session.Infrastructure = Infrastructure{}
@@ -178,6 +184,9 @@ func (session *Session) BeginRestore(workflowID string, lease time.Duration, now
 	if err := session.AcquireWorkflowLock(strings.TrimSpace(workflowID), RestoreWorkflowType, lease, now); err != nil {
 		return err
 	}
+	if err := session.setProgressWithoutVersion(workflowID, ProgressArchiveVerified, now); err != nil {
+		return err
+	}
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateRunning, StateRestoring, StateRestoring
 	session.HealthStatus = HealthStarting
 	session.beginPresetRevisionApplication(workflowID, now)
@@ -223,7 +232,7 @@ func (session *Session) CompleteRestore(workflowID string, now time.Time) error 
 	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" {
 		return fmt.Errorf("%w: restored infrastructure is incomplete", ErrInvalidTransition)
 	}
-	if err := session.setProgressWithoutVersion(workflowID, ProgressCompleted, now); err != nil {
+	if err := session.completeProgressWithoutVersion(workflowID, now); err != nil {
 		return err
 	}
 	if _, _, err := session.promotePresetRevision(workflowID, now); err != nil {

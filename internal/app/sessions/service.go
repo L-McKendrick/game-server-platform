@@ -513,7 +513,7 @@ func activeOperation(session domain.Session, now time.Time) *domain.OperationInP
 	}
 	return &domain.OperationInProgressError{
 		WorkflowType: session.ActiveWorkflowType, Milestone: session.Progress.Milestone,
-		StartedAt: session.ActiveWorkflowStartedAt, UpdatedAt: session.Progress.UpdatedAt,
+		StartedAt: session.ActiveWorkflowStartedAt, UpdatedAt: session.Progress.LastProgressAt,
 	}
 }
 

@@ -103,15 +103,25 @@ func TestProvisioningStagesCreateInfrastructureAndStopBeforeBootstrap(t *testing
 	if err != nil || completed.Status != domain.WorkflowSucceeded {
 		t.Fatalf("workflow = %#v, error = %v", completed, err)
 	}
-	if len(notifications.requests) != 1 {
-		t.Fatalf("notifications = %d; want 1", len(notifications.requests))
+	if len(notifications.requests) != 3 {
+		t.Fatalf("notifications = %d; want 3", len(notifications.requests))
 	}
-	notification := notifications.requests[0]
-	if notification.Kind != domain.NotificationSessionCard || notification.NotificationID != "card-progress-"+workflow.ID+"-infrastructure-ready" ||
+	wantNotificationIDs := []string{
+		"card-progress-" + workflow.ID + "-capacity-reserved",
+		"card-progress-" + workflow.ID + "-compute-ready",
+		"card-progress-" + workflow.ID + "-completed",
+	}
+	for index, want := range wantNotificationIDs {
+		if notifications.requests[index].NotificationID != want {
+			t.Fatalf("notification %d = %#v; want %q", index, notifications.requests[index], want)
+		}
+	}
+	notification := notifications.requests[2]
+	if notification.Kind != domain.NotificationSessionCard || notification.NotificationID != "card-progress-"+workflow.ID+"-completed" ||
 		notification.CardRevision != session.Version {
 		t.Fatalf("notification = %#v", notification)
 	}
-	if session.Progress.Milestone != domain.ProgressInfrastructureReady || session.Progress.WorkflowID != workflow.ID {
+	if session.Progress.Milestone != domain.ProgressCompleted || session.Progress.WorkflowID != workflow.ID {
 		t.Fatalf("progress = %#v", session.Progress)
 	}
 }

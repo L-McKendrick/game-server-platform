@@ -22,9 +22,18 @@ func TestProjectMapsEveryAuthoritativeCardSectionWithoutInternalIDs(t *testing.T
 		MissionArtifactStatus: domain.ArtifactAccepted, PresetArtifactStatus: domain.ArtifactAccepted,
 		ActiveWorkflowID: "internal-workflow-id", ActiveWorkflowType: domain.BootstrapWorkflowType,
 		ActiveWorkflowStartedAt: started,
-		Infrastructure:          domain.Infrastructure{PublicIPv4: "203.0.113.10", LastObservedAt: infrastructureObserved},
-		PresetObjectKey:         "sessions/internal-session-id/input/presets/v2.html",
-		PresetRevisionSequence:  3,
+		Progress: domain.SessionProgress{
+			WorkflowID: "internal-workflow-id", WorkflowType: domain.BootstrapWorkflowType,
+			Milestone: domain.ProgressHealthVerification,
+			CompletedMilestones: []domain.ProgressMilestone{
+				domain.ProgressAccepted, domain.ProgressHostPrepared, domain.ProgressGameServerInstalled,
+				domain.ProgressModsApplied, domain.ProgressConfigurationReady, domain.ProgressServiceStarted,
+			},
+			State: domain.ProgressActive, StartedAt: started, LastProgressAt: started.Add(15 * time.Minute),
+		},
+		Infrastructure:         domain.Infrastructure{PublicIPv4: "203.0.113.10", LastObservedAt: infrastructureObserved},
+		PresetObjectKey:        "sessions/internal-session-id/input/presets/v2.html",
+		PresetRevisionSequence: 3,
 		ActivePresetRevision: domain.PresetRevision{
 			Number: 2, PresetObjectKey: "sessions/internal-session-id/input/presets/v2.html", Status: domain.PresetRevisionActive,
 			StagedAt: started.Add(-2 * time.Hour), ActivatedAt: started.Add(-time.Hour),
@@ -52,9 +61,12 @@ func TestProjectMapsEveryAuthoritativeCardSectionWithoutInternalIDs(t *testing.T
 		t.Fatalf("identity/configuration projection = %#v", projection)
 	}
 	if projection.Lifecycle != "Setting up" || projection.Health != "Starting" ||
-		projection.CurrentOperation != "Setting up game and content" || projection.Stage != "Health verification" ||
+		projection.CurrentOperation != "Setting up game and content" || projection.Stage != "Verifying health" ||
 		projection.OperationStartedAt != started || projection.Elapsed != 17*time.Minute+12*time.Second {
 		t.Fatalf("lifecycle projection = %#v", projection)
+	}
+	if !projection.Progress.Visible || projection.Progress.Bar != "■■■■■■□□" || projection.Progress.Step != 7 || projection.Progress.Total != 8 || projection.Progress.Completed != 6 {
+		t.Fatalf("progress projection = %#v", projection.Progress)
 	}
 	if !projection.Players.Available || projection.Players.Count != 2 || projection.Players.Capacity != 32 ||
 		len(projection.Players.Names) != 2 || projection.Players.ObservedAt != playersObserved {
@@ -85,9 +97,105 @@ func TestProjectMapsEveryAuthoritativeCardSectionWithoutInternalIDs(t *testing.T
 		}
 	}
 	if strings.Contains(public, "Alice") || !strings.Contains(detailed, "Player names: Alice, Bob") ||
+		!strings.Contains(public, "**Progress:** `■■■■■■□□` — Step 7/8") || !strings.Contains(public, "**Current stage:** Verifying health") ||
 		!strings.Contains(public, "Elapsed:** 17m 12s") || !strings.Contains(public, "Active mod revision:** `2` — active <t:") ||
 		!strings.Contains(public, "Pending mod revision:** `3` — Applying <t:") || !strings.Contains(detailed, "Players observed <t:") {
 		t.Fatalf("public=%q detailed=%q", public, detailed)
+	}
+	for _, forbidden := range []string{"Milestone", "ETA", "%"} {
+		if strings.Contains(public, forbidden) || strings.Contains(detailed, forbidden) {
+			t.Fatalf("rendered progress included forbidden label %q: public=%q detailed=%q", forbidden, public, detailed)
+		}
+	}
+}
+
+func TestProgressBarFillsCompletedCheckpointsOnly(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 18, 5, 0, 0, 0, time.UTC)
+	session := domain.Session{
+		DisplayName: "Vanilla wake", Slug: "vanilla-wake", GameType: "arma3",
+		LifecycleState: domain.StateWaking, HealthStatus: domain.HealthStarting, UpdatedAt: now,
+		Progress: domain.SessionProgress{
+			WorkflowID: "wake-1", WorkflowType: domain.WakeWorkflowType,
+			Milestone:           domain.ProgressServiceStarted,
+			CompletedMilestones: []domain.ProgressMilestone{domain.ProgressAccepted, domain.ProgressComputeReady},
+			SkippedMilestones:   []domain.ProgressMilestone{domain.ProgressModsApplied},
+			State:               domain.ProgressActive, StartedAt: now, LastProgressAt: now,
+		},
+	}
+	projection := Project(session, Options{Now: now.Add(-time.Minute)})
+	if projection.Progress.Bar != "■■□□□□" || projection.Progress.Completed != 2 || projection.Elapsed != 0 {
+		t.Fatalf("skipped/clock progress = %#v elapsed=%s", projection.Progress, projection.Elapsed)
+	}
+	content := RenderDetailed(projection)
+	if !strings.Contains(content, "Step 4/6") || !strings.Contains(content, "**Elapsed:** 0s") || strings.Contains(content, "Milestone") {
+		t.Fatalf("progress content = %q", content)
+	}
+}
+
+func TestProgressConditionAndGuidanceCoverOperationalStates(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 18, 6, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		state     domain.ProgressState
+		milestone domain.ProgressMilestone
+		lease     time.Time
+		want      string
+	}{
+		{name: "active", state: domain.ProgressActive, milestone: domain.ProgressGameServerInstalled, lease: now.Add(time.Hour), want: "Active"},
+		{name: "waiting", state: domain.ProgressWaiting, milestone: domain.ProgressHostPrepared, lease: now.Add(time.Hour), want: "Waiting"},
+		{name: "stalled", state: domain.ProgressActive, milestone: domain.ProgressHostPrepared, lease: now.Add(-time.Second), want: "Stalled"},
+		{name: "retrying", state: domain.ProgressRetrying, milestone: domain.ProgressHostPrepared, lease: now.Add(time.Hour), want: "Retrying"},
+		{name: "rollback", state: domain.ProgressRollingBack, milestone: domain.ProgressModsApplied, lease: now.Add(time.Hour), want: "Rollback"},
+		{name: "completed", state: domain.ProgressCompletedState, milestone: domain.ProgressCompleted, want: "Completed"},
+		{name: "action required", state: domain.ProgressActionRequired, milestone: domain.ProgressHostPrepared, want: "Action required"},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			session := domain.Session{
+				ID: "session-1", DisplayName: "Progress", Slug: "progress", GameType: "arma3",
+				ActiveWorkflowID: "workflow-1", ActiveWorkflowType: domain.BootstrapWorkflowType,
+				ActiveWorkflowLeaseExpiresAt: test.lease, LifecycleState: domain.StateInstalling,
+				UpdatedAt: now,
+				Progress: domain.SessionProgress{
+					WorkflowID: "workflow-1", WorkflowType: domain.BootstrapWorkflowType,
+					Milestone: test.milestone, State: test.state, StartedAt: now.Add(-time.Minute), LastProgressAt: now,
+				},
+			}
+			projection := Project(session, Options{Now: now})
+			if projection.Progress.Condition != test.want || projection.Progress.Guidance == "" {
+				t.Fatalf("condition = %#v; want %q with guidance", projection.Progress, test.want)
+			}
+			content := RenderPublic(projection)
+			if !strings.Contains(content, "**Progress state:** "+test.want) || !strings.Contains(content, "**Guidance:**") {
+				t.Fatalf("content = %q", content)
+			}
+		})
+	}
+}
+
+func TestTerminalProgressElapsedTimeDoesNotKeepGrowing(t *testing.T) {
+	t.Parallel()
+	started := time.Date(2026, 8, 18, 7, 0, 0, 0, time.UTC)
+	finished := started.Add(12 * time.Minute)
+	session := domain.Session{
+		DisplayName: "Finished", Slug: "finished", GameType: "arma3", LifecycleState: domain.StateRunning, UpdatedAt: finished,
+		Progress: domain.SessionProgress{
+			WorkflowID: "wake-1", WorkflowType: domain.WakeWorkflowType,
+			Milestone: domain.ProgressCompleted, State: domain.ProgressCompletedState,
+			CompletedMilestones: []domain.ProgressMilestone{
+				domain.ProgressAccepted, domain.ProgressComputeReady, domain.ProgressModsApplied,
+				domain.ProgressServiceStarted, domain.ProgressHealthVerification, domain.ProgressCompleted,
+			},
+			StartedAt: started, LastProgressAt: finished,
+		},
+	}
+	projection := Project(session, Options{Now: finished.Add(24 * time.Hour)})
+	if projection.Elapsed != 12*time.Minute || !strings.Contains(RenderPublic(projection), "**Elapsed:** 12m 0s") {
+		t.Fatalf("terminal elapsed = %s content=%q", projection.Elapsed, RenderPublic(projection))
 	}
 }
 

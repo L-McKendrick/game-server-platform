@@ -3,6 +3,7 @@ package dynamodbstore
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -512,8 +513,81 @@ func TestSessionItemRoundTripPreservesProgressMilestone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Progress != session.Progress {
+	if !reflect.DeepEqual(stored.Progress, session.Progress) {
 		t.Fatalf("progress = %#v; want %#v", stored.Progress, session.Progress)
+	}
+}
+
+func TestSessionItemMigratesLegacyProgressClocksOnRead(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 15, 10, 45, 0, 0, time.UTC)
+	session := testSession(t, now)
+	if err := session.AcquireWorkflowLock("workflow-legacy", domain.ProvisionWorkflowType, time.Hour, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	item := toSessionItem(session)
+	item.ProgressStartedAt = ""
+	item.ProgressLastProgressAt = ""
+	item.ProgressCompletedMilestones = nil
+	item.ProgressSkippedMilestones, item.ProgressState = nil, ""
+
+	stored, err := fromSessionItem(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Progress.StartedAt != session.ActiveWorkflowStartedAt || stored.Progress.LastProgressAt != session.Progress.LastProgressAt || len(stored.Progress.CompletedMilestones) != 0 {
+		t.Fatalf("migrated progress = %#v", stored.Progress)
+	}
+	migrated := toSessionItem(stored)
+	if migrated.ProgressStartedAt == "" || migrated.ProgressLastProgressAt == "" || migrated.ProgressUpdatedAt != migrated.ProgressLastProgressAt {
+		t.Fatalf("migration-on-write fields = %#v", migrated)
+	}
+}
+
+func TestSessionItemMigratesLegacyCompletedProgressFactsOnRead(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 15, 10, 50, 0, 0, time.UTC)
+	session := testSession(t, now)
+	if err := session.AcquireWorkflowLock("workflow-legacy", domain.ProvisionWorkflowType, time.Hour, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	item := toSessionItem(session)
+	item.ActiveWorkflowID, item.ActiveWorkflowType = "", ""
+	item.ActiveWorkflowStartedAt, item.ActiveWorkflowLeaseExpiresAt = "", ""
+	item.ProgressMilestone = string(domain.ProgressCompleted)
+	item.ProgressCompletedMilestones = nil
+	item.ProgressSkippedMilestones, item.ProgressState = nil, ""
+
+	stored, err := fromSessionItem(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := domain.MilestonesForWorkflow(domain.ProvisionWorkflowType)
+	if stored.Progress.State != domain.ProgressCompletedState || !reflect.DeepEqual(stored.Progress.CompletedMilestones, want) {
+		t.Fatalf("migrated completed progress = %#v; want state %s and completed %#v", stored.Progress, domain.ProgressCompletedState, want)
+	}
+}
+
+func TestSessionItemMigratesLegacyBootstrapFailureToVisibleActionRequiredProgress(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 15, 10, 55, 0, 0, time.UTC)
+	session := testSession(t, now)
+	if err := session.AcquireWorkflowLock("workflow-legacy", domain.BootstrapWorkflowType, time.Hour, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	item := toSessionItem(session)
+	item.ActiveWorkflowID, item.ActiveWorkflowType = "", ""
+	item.ActiveWorkflowStartedAt, item.ActiveWorkflowLeaseExpiresAt = "", ""
+	item.ProgressMilestone = string(domain.ProgressFailed)
+	item.ProgressCompletedMilestones = nil
+	item.ProgressSkippedMilestones, item.ProgressState = nil, ""
+
+	stored, err := fromSessionItem(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Progress.Milestone != domain.ProgressAccepted || stored.Progress.State != domain.ProgressActionRequired || len(stored.Progress.CompletedMilestones) != 0 {
+		t.Fatalf("migrated failed progress = %#v", stored.Progress)
 	}
 }
 
@@ -521,7 +595,9 @@ func TestSessionItemWithoutProgressRemainsReadable(t *testing.T) {
 	t.Parallel()
 	session := testSession(t, time.Date(2026, 8, 15, 11, 0, 0, 0, time.UTC))
 	item := toSessionItem(session)
-	item.ProgressWorkflowID, item.ProgressWorkflowType, item.ProgressMilestone, item.ProgressUpdatedAt = "", "", "", ""
+	item.ProgressWorkflowID, item.ProgressWorkflowType, item.ProgressMilestone = "", "", ""
+	item.ProgressCompletedMilestones = nil
+	item.ProgressStartedAt, item.ProgressLastProgressAt, item.ProgressUpdatedAt = "", "", ""
 
 	stored, err := fromSessionItem(item)
 	if err != nil {

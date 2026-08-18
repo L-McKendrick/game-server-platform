@@ -115,7 +115,38 @@ func (runner *Runner) Observe(ctx context.Context, instanceID string, commandID 
 	if len(message) > 500 {
 		message = message[len(message)-500:]
 	}
-	return ports.BootstrapCommandStatus{Status: string(output.Status), ErrorMessage: message}, nil
+	return ports.BootstrapCommandStatus{
+		Status: string(output.Status), ErrorMessage: message,
+		Checkpoints: parseCheckpoints(aws.ToString(output.StandardOutputContent)),
+	}, nil
+}
+
+func parseCheckpoints(output string) []domain.ProgressMilestone {
+	allowed := map[domain.ProgressMilestone]bool{
+		domain.ProgressHostPrepared: true, domain.ProgressGameServerInstalled: true,
+		domain.ProgressModsApplied: true, domain.ProgressConfigurationReady: true,
+		domain.ProgressServiceStarted: true, domain.ProgressHealthVerification: true,
+	}
+	seen := make(map[domain.ProgressMilestone]bool, len(allowed))
+	for _, line := range strings.Split(output, "\n") {
+		const prefix = "GSP_CHECKPOINT:"
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		checkpoint := domain.ProgressMilestone(strings.TrimSpace(strings.TrimPrefix(line, prefix)))
+		if allowed[checkpoint] && !seen[checkpoint] {
+			seen[checkpoint] = true
+		}
+	}
+	ordered, _ := domain.MilestonesForWorkflow(domain.BootstrapWorkflowType)
+	checkpoints := make([]domain.ProgressMilestone, 0, len(seen))
+	for _, checkpoint := range ordered {
+		if seen[checkpoint] {
+			checkpoints = append(checkpoints, checkpoint)
+		}
+	}
+	return checkpoints
 }
 
 func (runner *Runner) command(session domain.Session) (string, error) {

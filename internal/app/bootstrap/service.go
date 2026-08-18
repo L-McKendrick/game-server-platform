@@ -101,6 +101,18 @@ func (service *Service) dispatchRollback(ctx context.Context, request TaskReques
 		result.Done, result.Succeeded = true, true
 		return result, nil
 	}
+	expected := session.Version
+	changed, progressErr := session.SetProgressState(workflow.ID, domain.ProgressRollingBack, service.clock.Now())
+	if progressErr != nil {
+		return TaskResult{}, progressErr
+	}
+	if changed {
+		if progressErr := service.saveProgress(ctx, session, expected, workflow); progressErr != nil {
+			return TaskResult{}, progressErr
+		}
+		result = taskResult(session, workflow)
+		service.notify(ctx, &result, session, workflow)
+	}
 	commandID, err := service.runner.StartRollback(ctx, session)
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("start preset rollback: %w", err)
@@ -204,20 +216,29 @@ func (service *Service) observe(ctx context.Context, request TaskRequest) (TaskR
 	result := taskResult(session, workflow)
 	result.CommandID = commandID
 	result.Status = status.Status
+	checkpoints := status.Checkpoints
+	if status.Status == "Success" {
+		ordered, _ := domain.MilestonesForWorkflow(domain.BootstrapWorkflowType)
+		checkpoints = ordered[1 : len(ordered)-1]
+	}
+	expectedVersion := session.Version
+	var skipped []domain.ProgressMilestone
+	if session.Vanilla {
+		skipped = []domain.ProgressMilestone{domain.ProgressModsApplied}
+	}
+	progressChanged, progressErr := session.ApplyProgressSequence(workflow.ID, checkpoints, skipped, service.clock.Now())
+	if progressErr != nil {
+		return TaskResult{}, progressErr
+	}
+	if progressChanged {
+		if progressErr := service.saveProgress(ctx, session, expectedVersion, workflow); progressErr != nil {
+			return TaskResult{}, progressErr
+		}
+		service.notify(ctx, &result, session, workflow)
+	}
 	switch status.Status {
 	case "Success":
 		result.Done, result.Succeeded = true, true
-		expectedVersion := session.Version
-		changed, progressErr := session.AdvanceProgress(workflow.ID, domain.ProgressHealthVerification, service.clock.Now())
-		if progressErr != nil {
-			return TaskResult{}, progressErr
-		}
-		if changed {
-			if progressErr := service.saveProgress(ctx, session, expectedVersion, workflow); progressErr != nil {
-				return TaskResult{}, progressErr
-			}
-			service.notify(ctx, &result, session, workflow)
-		}
 	case "Cancelled", "Cancelling", "Failed", "TimedOut":
 		result.Done = true
 		result.ErrorCode = "ERR_BOOTSTRAP_COMMAND_" + strings.ToUpper(status.Status)

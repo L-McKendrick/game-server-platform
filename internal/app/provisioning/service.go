@@ -141,7 +141,11 @@ func (service *Service) prepare(ctx context.Context, request TaskRequest) (TaskR
 	if err := service.saveStage(ctx, session, expectedVersion, workflow, "CapacityReserved"); err != nil {
 		return TaskResult{}, err
 	}
-	return result(session, workflow), nil
+	response := result(session, workflow)
+	if notifyErr := sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, service.clock.Now().UTC()); notifyErr != nil {
+		response.Warning = notifyErr.Error()
+	}
+	return response, nil
 }
 
 func (service *Service) ensure(ctx context.Context, request TaskRequest) (TaskResult, error) {
@@ -172,7 +176,11 @@ func (service *Service) ensure(ctx context.Context, request TaskRequest) (TaskRe
 	if err := service.saveStage(ctx, session, expectedVersion, workflow, "InstanceLaunched"); err != nil {
 		return TaskResult{}, err
 	}
-	return resultWithObservation(session, workflow, observation), nil
+	response := resultWithObservation(session, workflow, observation)
+	if notifyErr := sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, service.clock.Now().UTC()); notifyErr != nil {
+		response.Warning = notifyErr.Error()
+	}
+	return response, nil
 }
 
 func (service *Service) observe(ctx context.Context, request TaskRequest) (TaskResult, error) {

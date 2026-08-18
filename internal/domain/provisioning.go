@@ -146,6 +146,9 @@ func (session *Session) BeginInfrastructureProvisioning(workflowID string, capac
 		return fmt.Errorf("capacity slot ID is required")
 	}
 	session.Infrastructure.CapacitySlotID = capacitySlotID
+	if err := session.setProgressWithoutVersion(workflowID, ProgressCapacityReserved, now); err != nil {
+		return err
+	}
 	session.ObservedState = StateProvisioning
 	session.LifecycleState = StateProvisioning
 	session.Version++
@@ -169,6 +172,9 @@ func (session *Session) RecordInfrastructureLaunch(workflowID string, infrastruc
 		return err
 	}
 	session.Infrastructure = infrastructure
+	if err := session.setProgressWithoutVersion(workflowID, ProgressComputeReady, now); err != nil {
+		return err
+	}
 	session.Version++
 	session.UpdatedAt = now.UTC()
 	return session.Validate()
@@ -184,7 +190,7 @@ func (session *Session) CompleteInfrastructureProvisioning(workflowID string, no
 	if session.LifecycleState != StateProvisioning || session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" {
 		return fmt.Errorf("%w: complete infrastructure is required", ErrInvalidTransition)
 	}
-	if err := session.setProgressWithoutVersion(workflowID, ProgressInfrastructureReady, now); err != nil {
+	if err := session.completeProgressWithoutVersion(workflowID, now); err != nil {
 		return err
 	}
 	session.ObservedState = StateBootstrapping

@@ -238,7 +238,20 @@ func addProgressEventData(data map[string]string, session Session, workflow Work
 		return
 	}
 	data["progress_milestone"] = string(session.Progress.Milestone)
-	data["progress_updated_at"] = session.Progress.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	completed := make([]string, len(session.Progress.CompletedMilestones))
+	for index, milestone := range session.Progress.CompletedMilestones {
+		completed[index] = string(milestone)
+	}
+	data["progress_completed_milestones"] = strings.Join(completed, ",")
+	skipped := make([]string, len(session.Progress.SkippedMilestones))
+	for index, milestone := range session.Progress.SkippedMilestones {
+		skipped[index] = string(milestone)
+	}
+	data["progress_skipped_milestones"] = strings.Join(skipped, ",")
+	data["progress_state"] = string(session.Progress.State)
+	data["progress_started_at"] = session.Progress.StartedAt.UTC().Format(time.RFC3339Nano)
+	data["progress_last_progress_at"] = session.Progress.LastProgressAt.UTC().Format(time.RFC3339Nano)
+	data["progress_updated_at"] = data["progress_last_progress_at"]
 }
 
 func addPresetApplicationEventData(data map[string]string, session Session, now time.Time) {

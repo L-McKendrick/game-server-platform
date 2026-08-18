@@ -116,13 +116,13 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.6.4** [x] On application failure, retain the failed pending revision for diagnosis and attempt to return the service to the prior known-good mod configuration.
       - **12.6.5** [x] Show active/pending revisions and application timing on the card, and promote the downloadable attachment only after the revision becomes active.
       - **12.6.6** [x] Preserve active/pending intent through archive manifests, restore validation, termination cleanup, audit history, and focused regression tests.
-    - **12.7** [ ] Add trustworthy progress measurement and ETA presentation.
-      - **12.7.1** [ ] Define a stable cross-workflow stage taxonomy and persist stage start/completion timestamps without raw command output.
-      - **12.7.2** [ ] Expose meaningful internal bootstrap stages instead of treating the entire managed-node command as one opaque interval.
-      - **12.7.3** [ ] Record bounded successful stage-duration samples separated by workflow type and relevant vanilla/modded profile.
-      - **12.7.4** [ ] Calculate remaining time only after a documented minimum sample count, exclude failed/retried outliers as specified, and label the result as an estimate.
-      - **12.7.5** [ ] Render elapsed time immediately, show `gathering timing data` before the threshold, and suppress ETA for failed, cancelled, stalled, sleeping, archived, or deleted sessions.
-      - **12.7.6** [ ] Align ETA stages with Phase 13 bootstrap performance telemetry and test sparse data, retries, clock anomalies, profile separation, and milestone-only card edits.
+    - **12.7** [x] Add milestone-based workflow progress presentation.
+      - **12.7.1** [x] Define stable ordered milestone sets per workflow and persist the current milestone, completed milestones, operation start time, and last-progress time without raw command output.
+      - **12.7.2** [x] Expose meaningful internal bootstrap checkpoints instead of treating the entire managed-node command as one opaque milestone.
+      - **12.7.3** [x] Define deterministic completion, skip, replay, retry, rollback, failure, and cancellation semantics so milestone progress never falsely advances or moves backward.
+      - **12.7.4** [x] Render a text-based completed-checkpoint bar, `Step X/Y`, current stage, and elapsed time on the public card and ephemeral status without presenting a time-completion percentage or ETA.
+      - **12.7.5** [x] Show concise qualitative stage guidance and distinguish active, waiting, stalled, retrying, rollback, completed, and action-required progress while retaining milestone-only rate-limited card edits.
+      - **12.7.6** [x] Test every workflow's milestone ordering, bootstrap checkpoints, skipped stages, replay, retries, rollback, failures, cancellation, clock anomalies, rendering bounds, and update rate limiting.
     - **12.8** [ ] Finish admin, help, cost, and release polish.
       - **12.8.1** [ ] Expand `/admin` into a permission-checked component menu for access, card repair, costs, and placeholders linked only to implemented policies.
       - **12.8.2** [ ] Add ephemeral `/admin costs` for yesterday, seven-day, and month-to-date platform totals, budget utilization, service breakdown, freshness, caching, and useful setup errors.

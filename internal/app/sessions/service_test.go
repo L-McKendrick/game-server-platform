@@ -621,7 +621,7 @@ func TestRequestLifecycleReturnsExistingProgressWithoutQueueingDuplicate(t *test
 		CommandID: "duplicate", CorrelationID: "correlation-duplicate", IdempotencyKey: "discord:duplicate", CommandType: domain.CommandSleepSession,
 	})
 	var active domain.OperationInProgressError
-	if !errors.As(err, &active) || active.WorkflowType != domain.SleepWorkflowType || active.Milestone != domain.ProgressAccepted {
+	if !errors.As(err, &active) || active.WorkflowType != domain.SleepWorkflowType || active.Milestone != domain.ProgressInstanceStopped {
 		t.Fatalf("RequestLifecycle() error = %#v; want active sleep progress", err)
 	}
 	if len(queue.commands) != 0 {

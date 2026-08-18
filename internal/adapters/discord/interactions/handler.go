@@ -1031,11 +1031,14 @@ func activeOperationMessage(active domain.OperationInProgressError) string {
 	if operation == "" {
 		operation = "Session operation"
 	}
-	progress := strings.ReplaceAll(strings.ToLower(string(active.Milestone)), "_", " ")
+	progress := sessioncard.ProgressStageLabel(active.Milestone)
 	if progress == "" {
-		progress = "accepted"
+		progress = "Request accepted"
 	}
-	message := fmt.Sprintf("**%s is already in progress**\nCurrent progress: %s.", operation, progress)
+	message := fmt.Sprintf("**%s is already in progress**\nCurrent stage: %s.", operation, progress)
+	if step, total, ok := sessioncard.ProgressStep(active.WorkflowType, active.Milestone); ok {
+		message = fmt.Sprintf("**%s is already in progress**\nStep %d/%d — %s.", operation, step, total, progress)
+	}
 	if !active.StartedAt.IsZero() {
 		message += fmt.Sprintf(" Started <t:%d:R>.", active.StartedAt.UTC().Unix())
 	}
