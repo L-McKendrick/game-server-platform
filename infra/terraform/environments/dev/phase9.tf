@@ -757,7 +757,7 @@ resource "aws_lambda_function" "restore_worker" {
       NOTIFICATION_QUEUE_URL               = aws_sqs_queue.notifications.url
       SESSION_ASSETS_BUCKET                = aws_s3_bucket.session_assets.id
       BOOTSTRAP_SCRIPT_KEY                 = aws_s3_object.bootstrap_script.key
-      STEAM_SECRET_ID                      = aws_secretsmanager_secret.steam_credentials.name
+      STEAM_AUTH_SECRET_ID                 = aws_secretsmanager_secret.steam_authorization_cache.name
       TEAMSPEAK_VERSION                    = var.teamspeak_version
       PROVISIONING_AMI_ID                  = data.aws_ssm_parameter.game_host_ami.value
       PROVISIONING_INSTANCE_TYPE           = var.provisioning_instance_type

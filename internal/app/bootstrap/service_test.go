@@ -158,6 +158,24 @@ func TestObserveSanitizesFailedCommand(t *testing.T) {
 	}
 }
 
+func TestObservePreservesStableSteamReauthorizationCode(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC)
+	repository, workflow := seedBootstrap(t, now)
+	runner := &testRunner{status: ports.BootstrapCommandStatus{Status: "Failed", ErrorCode: "ERR_STEAM_REAUTH_REQUIRED", ErrorMessage: "Steam authorization requires operator re-enrollment."}}
+	service, err := NewService(repository, repository, repository, runner, nil, &testIDs{values: []string{"stage-event"}}, testClock{now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Handle(context.Background(), TaskRequest{Action: ActionPrepare, SessionID: workflow.SessionID, WorkflowID: workflow.ID}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.Handle(context.Background(), TaskRequest{Action: ActionObserve, SessionID: workflow.SessionID, WorkflowID: workflow.ID, CommandID: "command-1"})
+	if err != nil || result.ErrorCode != "ERR_STEAM_REAUTH_REQUIRED" {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+}
+
 func TestObservePersistsManagedBootstrapCheckpointsInOneProgressMutation(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 18, 2, 0, 0, 0, time.UTC)

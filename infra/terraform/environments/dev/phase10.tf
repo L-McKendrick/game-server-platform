@@ -255,3 +255,57 @@ output "reliability_worker_function_name" {
   description = "Lambda function used for scheduled reliability scans and explicit operator actions."
   value       = aws_lambda_function.reliability_worker.function_name
 }
+
+data "aws_iam_policy_document" "steam_auth_enrollment_assume_role" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+    condition {
+      test     = "Bool"
+      variable = "aws:MultiFactorAuthPresent"
+      values   = ["true"]
+    }
+  }
+}
+
+resource "aws_iam_role" "steam_auth_enrollment" {
+  name                 = "${local.name_prefix}-steam-auth-enrollment"
+  description          = "MFA-gated operator role for local SteamCMD config.vdf enrollment and rollback."
+  assume_role_policy   = data.aws_iam_policy_document.steam_auth_enrollment_assume_role.json
+  max_session_duration = 3600
+}
+
+data "aws_iam_policy_document" "steam_auth_enrollment" {
+  statement {
+    sid       = "VersionSteamAuthorizationCache"
+    actions   = ["secretsmanager:DescribeSecret", "secretsmanager:PutSecretValue", "secretsmanager:UpdateSecretVersionStage"]
+    resources = [aws_secretsmanager_secret.steam_authorization_cache.arn]
+  }
+
+  statement {
+    sid       = "SerializeSteamAuthorizationEnrollment"
+    actions   = ["dynamodb:GetItem", "dynamodb:UpdateItem"]
+    resources = [aws_dynamodb_table.metadata.arn]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:LeadingKeys"
+      values   = ["STEAM_AUTH#CACHE"]
+    }
+  }
+
+}
+
+resource "aws_iam_role_policy" "steam_auth_enrollment" {
+  name   = "steam-auth-cache"
+  role   = aws_iam_role.steam_auth_enrollment.id
+  policy = data.aws_iam_policy_document.steam_auth_enrollment.json
+}
+
+output "steam_auth_enrollment_role_arn" {
+  description = "MFA-gated role to assume for a 15-minute local Steam authorization enrollment session."
+  value       = aws_iam_role.steam_auth_enrollment.arn
+}

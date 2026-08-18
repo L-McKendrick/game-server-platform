@@ -26,7 +26,8 @@ type Config struct {
 	Region             string
 	AssetsBucket       string
 	BootstrapScriptKey string
-	SteamSecretID      string
+	MetadataTableName  string
+	SteamAuthSecretID  string
 	TeamSpeakVersion   string
 	TimeoutSeconds     int32
 }
@@ -43,10 +44,11 @@ func New(client API, config Config) (*Runner, error) {
 	config.Region = strings.TrimSpace(config.Region)
 	config.AssetsBucket = strings.TrimSpace(config.AssetsBucket)
 	config.BootstrapScriptKey = strings.TrimSpace(config.BootstrapScriptKey)
-	config.SteamSecretID = strings.TrimSpace(config.SteamSecretID)
+	config.MetadataTableName = strings.TrimSpace(config.MetadataTableName)
+	config.SteamAuthSecretID = strings.TrimSpace(config.SteamAuthSecretID)
 	config.TeamSpeakVersion = strings.TrimSpace(config.TeamSpeakVersion)
-	if client == nil || config.Region == "" || config.AssetsBucket == "" || config.BootstrapScriptKey == "" || config.SteamSecretID == "" || config.TeamSpeakVersion == "" {
-		return nil, fmt.Errorf("SSM client, region, asset bucket, bootstrap script key, Steam secret, and TeamSpeak version are required")
+	if client == nil || config.Region == "" || config.AssetsBucket == "" || config.BootstrapScriptKey == "" || config.MetadataTableName == "" || config.SteamAuthSecretID == "" || config.TeamSpeakVersion == "" {
+		return nil, fmt.Errorf("SSM client, region, asset bucket, bootstrap script key, metadata table, Steam authorization cache, and TeamSpeak version are required")
 	}
 	if config.TimeoutSeconds < 900 || config.TimeoutSeconds > 172800 {
 		return nil, fmt.Errorf("bootstrap timeout must be between 900 and 172800 seconds")
@@ -111,14 +113,18 @@ func (runner *Runner) Observe(ctx context.Context, instanceID string, commandID 
 		}
 		return ports.BootstrapCommandStatus{}, err
 	}
-	message := strings.TrimSpace(aws.ToString(output.StandardErrorContent))
-	if len(message) > 500 {
-		message = message[len(message)-500:]
-	}
+	code, message := bootstrapFailure(aws.ToString(output.StandardErrorContent))
 	return ports.BootstrapCommandStatus{
-		Status: string(output.Status), ErrorMessage: message,
+		Status: string(output.Status), ErrorCode: code, ErrorMessage: message,
 		Checkpoints: parseCheckpoints(aws.ToString(output.StandardOutputContent)),
 	}, nil
+}
+
+func bootstrapFailure(stderr string) (string, string) {
+	if strings.Contains(stderr, "ERR_STEAM_REAUTH_REQUIRED") {
+		return "ERR_STEAM_REAUTH_REQUIRED", "Steam authorization requires operator re-enrollment."
+	}
+	return "", domain.SanitizeDiagnostic(stderr)
 }
 
 func parseCheckpoints(output string) []domain.ProgressMilestone {
@@ -163,9 +169,9 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || session.MissionObjectKey == "" || (!session.Vanilla && presetObjectKey == "") {
 		return "", fmt.Errorf("instance, data volume, mission, and a preset for modded sessions are required")
 	}
-	steamSecretID := runner.config.SteamSecretID
+	metadataTableName, steamAuthSecretID := runner.config.MetadataTableName, runner.config.SteamAuthSecretID
 	if session.Vanilla {
-		steamSecretID = ""
+		metadataTableName, steamAuthSecretID = "", ""
 	}
 	values := map[string]string{
 		"SESSION_ID_B64":        session.ID,
@@ -176,13 +182,14 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 		"PRESET_REVISION_B64":   fmt.Sprintf("%d", presetRevision),
 		"PRESET_ROLLBACK_B64":   fmt.Sprintf("%t", rollback),
 		"ASSETS_BUCKET_B64":     runner.config.AssetsBucket,
-		"STEAM_SECRET_ID_B64":   steamSecretID,
+		"METADATA_TABLE_B64":    metadataTableName,
+		"STEAM_AUTH_SECRET_B64": steamAuthSecretID,
 		"AWS_REGION_B64":        runner.config.Region,
 		"TEAMSPEAK_VERSION_B64": runner.config.TeamSpeakVersion,
 	}
 	var command strings.Builder
 	command.WriteString("#!/usr/bin/env bash\nset -Eeuo pipefail\numask 077\n")
-	for _, key := range []string{"SESSION_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "ASSETS_BUCKET_B64", "STEAM_SECRET_ID_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
+	for _, key := range []string{"SESSION_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
 		command.WriteString("export " + key + "='" + base64.StdEncoding.EncodeToString([]byte(values[key])) + "'\n")
 	}
 	if session.TeamSpeakEnabled {

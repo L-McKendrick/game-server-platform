@@ -251,7 +251,10 @@ func (service *Service) observe(ctx context.Context, request TaskRequest) (TaskR
 		result.Done, result.Succeeded = true, true
 	case "Cancelled", "Cancelling", "Failed", "TimedOut":
 		result.Done = true
-		result.ErrorCode = "ERR_BOOTSTRAP_COMMAND_" + strings.ToUpper(status.Status)
+		result.ErrorCode = strings.TrimSpace(status.ErrorCode)
+		if result.ErrorCode == "" {
+			result.ErrorCode = "ERR_BOOTSTRAP_COMMAND_" + strings.ToUpper(status.Status)
+		}
 		result.ErrorMessage = bounded(status.ErrorMessage, 500, "managed bootstrap command failed")
 	}
 	return result, nil

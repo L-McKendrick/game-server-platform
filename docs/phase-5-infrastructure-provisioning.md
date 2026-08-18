@@ -45,4 +45,4 @@ Deployment status: complete. The development guild completed an end-to-end provi
 
 ## Phase boundary
 
-Phase 5 verifies that the instance is running, its data volume is discoverable, and the instance is online in Systems Manager. Steam credentials, SteamCMD, Arma, DLC, Workshop content, mission deployment, TeamSpeak installation, and game health remain Phase 6.
+Phase 5 verifies that the instance is running, its data volume is discoverable, and the instance is online in Systems Manager. Steam authorization, SteamCMD, Arma, DLC, Workshop content, mission deployment, TeamSpeak installation, and game health remain later phases.

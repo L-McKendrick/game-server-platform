@@ -185,6 +185,7 @@ type MonitoringRunner interface {
 
 type BootstrapCommandStatus struct {
 	Status       string
+	ErrorCode    string
 	ErrorMessage string
 	// Checkpoints contains only allowlisted progress facts parsed from the
 	// managed command's output. Raw output never crosses this port.

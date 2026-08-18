@@ -142,7 +142,7 @@ resource "aws_lambda_function" "sleepwake_worker" {
       NOTIFICATION_QUEUE_URL            = aws_sqs_queue.notifications.url
       SESSION_ASSETS_BUCKET             = aws_s3_bucket.session_assets.bucket
       BOOTSTRAP_SCRIPT_KEY              = aws_s3_object.bootstrap_script.key
-      STEAM_SECRET_ID                   = aws_secretsmanager_secret.steam_credentials.name
+      STEAM_AUTH_SECRET_ID              = aws_secretsmanager_secret.steam_authorization_cache.name
       TEAMSPEAK_VERSION                 = var.teamspeak_version
       BOOTSTRAP_COMMAND_TIMEOUT_SECONDS = tostring(var.bootstrap_command_timeout_seconds)
     }

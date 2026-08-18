@@ -58,7 +58,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
      - **9.4.4** [x] Preserve vanilla intent through archive manifests and restore validation.
      - **9.4.5** [x] Add focused domain, application, Discord, persistence, bootstrap, and archive/restore regression coverage.
 
-10. **Reliability — In Progress**
+10. **Reliability — Done**
     - **10.1** [x] Add bounded retries, DLQ operations, reconciliation, and cancellation.
       - **10.1.1** [x] Define and persist bounded retry, cooperative cancellation, workflow reconciliation, and dead-letter operation state without weakening existing locks or idempotency.
       - **10.1.2** [x] Apply bounded transient retries and terminal-failure policies to queues, workers, and Step Functions while preserving partial-batch behavior and truthful retry status.
@@ -70,21 +70,21 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **10.2.2** [x] Persist orphan findings and implement retry-safe quarantine or cleanup only after immutable-tag, session-state, resource-reference, and minimum-age checks pass.
       - **10.2.3** [x] Add scheduled detection plus explicit operator inspect and cleanup commands; default every uncertain or malformed case to report-only behavior.
       - **10.2.4** [x] Document and focused-validate DynamoDB, S3/archive, Terraform-state, workflow, and retained-volume disaster recovery, including alarms and recovery evidence.
-    - **10.3** [ ] Replace routine Steam password login with a secure cached authorization flow.
-      - **10.3.1** [ ] Define and store the encrypted, versioned Steam authorization-cache contract with least-privilege access, serialized mutation, rollback, redaction, and explicit reauthorization state.
-      - **10.3.2** [ ] Add a short-lived operator enrollment and reauthorization procedure that never carries passwords or Guard codes through Discord, workflows, Lambda configuration, SSM command text, or persistent logs.
-      - **10.3.3** [ ] Inject cached `config.vdf` only during authenticated downloads, use username-only login, preserve valid updates, and remove authentication material before launch on every exit path.
-      - **10.3.4** [ ] Fail closed on renewed Steam Guard challenges, provide operator-safe guidance, and preserve anonymous vanilla behavior.
-      - **10.3.5** [ ] Add replacement-host reuse, invalidation, concurrency, cleanup, redaction, archive/restore, and vanilla regression coverage plus the operating runbook.
+    - **10.3** [x] Replace routine Steam password login with a secure cached authorization flow.
+      - **10.3.1** [x] Define and store the encrypted, versioned Steam authorization-cache contract with least-privilege access, serialized mutation, rollback, redaction, and explicit reauthorization state.
+      - **10.3.2** [x] Add a short-lived operator enrollment and reauthorization procedure that never carries passwords or Guard codes through Discord, workflows, Lambda configuration, SSM command text, or persistent logs.
+      - **10.3.3** [x] Inject cached `config.vdf` only during authenticated downloads, use username-only login, preserve valid updates, and remove authentication material before launch on every exit path.
+      - **10.3.4** [x] Fail closed on renewed Steam Guard challenges, provide operator-safe guidance, and preserve anonymous vanilla behavior.
+      - **10.3.5** [x] Add replacement-host reuse, invalidation, concurrency, cleanup, redaction, archive/restore, and vanilla regression coverage plus the operating runbook.
 
 11. **Production Hardening — Pending**
     - **11.1** [ ] Complete least-privilege and threat-model reviews.
     - **11.2** [ ] Add OIDC deployment, staging, dashboards, and tested runbooks.
     - **11.3** [ ] Verify costs and operational readiness.
 
-12. **Discord Experience and Session UX — In Progress (approved reorder; Phases 10-11 remain pending)**
-    - Proceeding before Phases 10 and 11 by explicit user approval because of
-      current limitations. This reorder does not complete or waive those phases.
+12. **Discord Experience and Session UX — In Progress (approved reorder; Phase 11 remains pending)**
+    - Proceeded before Phases 10 and 11 by explicit user approval because of
+      current limitations. Phase 10 is now complete; the reorder does not waive Phase 11.
     - Detailed design and execution guidance: `docs/phase-12-discord-experience.md`.
     - **12.1** [x] Establish the Discord interaction and presentation foundation.
       - **12.1.1** [x] Replace the `/session` command definition and routing with guild-only `/rb`; retain `/admin` separately and do not ship a compatibility alias.

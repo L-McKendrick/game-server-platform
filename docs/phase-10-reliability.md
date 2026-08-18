@@ -6,6 +6,9 @@ Steps 10.1 and 10.2 add recovery controls around the existing lifecycle. They
 do not change game behavior, create a new provisioning path, or authorize
 routine destructive automation.
 
+Step 10.3 replaces routine Steam password login with the separately documented
+encrypted authorization-cache flow in `docs/steam-auth-cache.md`.
+
 - Step Functions retry only Lambda service, SDK, and throttling failures. The
   policy is three attempts with exponential backoff, full jitter, and a
   30-second cap. Application and domain failures follow the existing terminal
@@ -116,6 +119,9 @@ findings, health results, operator identity, and rollback decision.
 Focused Go tests cover retry bounds, cancellation authorization and safe
 boundaries, reconciliation decisions, DLQ audit state, orphan evidence,
 quarantine, and cleanup gates. Terraform validation covers the scheduled
-worker, least-privilege boundaries, redrive allow policies, and alarms. Live
-redrive, quarantine, cleanup, restore, or Terraform apply requires a separate
+worker, least-privilege boundaries, redrive allow policies, alarms, and Steam
+authorization roles. Steam cache tests cover redaction, stable reauthorization,
+serialized replacement-host reuse, exit cleanup, archive/restore scrubbing,
+and anonymous vanilla behavior. Live redrive, quarantine, cleanup, restore,
+Steam enrollment/download, or Terraform apply requires a separate
 operator-approved exercise.

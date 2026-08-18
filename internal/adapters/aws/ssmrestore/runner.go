@@ -102,6 +102,8 @@ func (runner *Runner) command(session domain.Session) string {
 		"rm -rf -- /srv/game-server/config /srv/game-server/state /srv/game-server/logs /srv/game-server/arma3/mpmissions /srv/game-server/home/.local/share\n" +
 		"if " + voice + "; then rm -rf -- /srv/game-server/teamspeak; fi\n" +
 		"tar --no-same-owner --no-same-permissions --xattrs --acls -xzf \"$archive_file\" -C /srv/game-server\n" +
+		"rm -rf -- /srv/game-server/home/.local/share/Steam/config /srv/game-server/home/.local/share/Steam/logs /srv/game-server/home/Steam/config /srv/game-server/home/Steam/logs /srv/game-server/steamcmd/config /srv/game-server/steamcmd/logs\n" +
+		"find /srv/game-server/home /srv/game-server/steamcmd -type f \\( -name 'ssfn*' -o -name 'loginusers.vdf' \\) -delete 2>/dev/null || true\n" +
 		"rm -f -- /srv/game-server/state/install_steamcmd.complete /srv/game-server/state/install_arma.complete /srv/game-server/state/install_workshop*.complete /srv/game-server/state/deploy_content.complete /srv/game-server/state/install_teamspeak.complete\n" +
 		"chown -R steam:steam /srv/game-server/config /srv/game-server/state /srv/game-server/logs /srv/game-server/arma3/mpmissions /srv/game-server/home\n" +
 		"if " + voice + "; then chown -R teamspeak:teamspeak /srv/game-server/teamspeak; fi\n"
