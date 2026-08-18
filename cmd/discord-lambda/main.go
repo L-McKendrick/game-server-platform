@@ -21,6 +21,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/discord/interactions"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/steamquery"
 	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
+	appreliability "github.com/L-McKendrick/game-server-platform/internal/app/reliability"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
 	"github.com/L-McKendrick/game-server-platform/internal/identity"
@@ -69,6 +70,11 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 		appsession.WithArtifactQueue(artifactQueue),
 		appsession.WithNotificationQueue(sqsnotification.New(sqs.NewFromConfig(awsConfiguration), baseConfig.NotificationQueueURL)),
 	}
+	reliabilityService, err := appreliability.NewService(repository, repository, repository, ids, clock)
+	if err != nil {
+		return nil, fmt.Errorf("create reliability service: %w", err)
+	}
+	serviceOptions = append(serviceOptions, appsession.WithReliabilityService(reliabilityService))
 	if baseConfig.ProvisioningEnabled {
 		commandQueue := sqscommand.New(sqs.NewFromConfig(awsConfiguration), baseConfig.CommandQueueURL)
 		serviceOptions = append(serviceOptions, appsession.WithCommandQueue(commandQueue), appsession.WithConfirmationRepository(repository))

@@ -16,18 +16,23 @@ Command dispatch is intentionally single-attempt because Systems Manager Run Com
 
 ## Credential and content handling
 
-- Steam credentials use JSON keys `username` and `password` in `/game-server-platform/dev/steam-credentials`.
-- Terraform creates only the secret container; values never enter state, environment variables, workflow input, or logs.
-- The instance retrieves the secret at runtime. A mode-`0600` SteamCMD runscript is deleted on every exit.
-- First-login Steam Guard authorization is performed as a one-time operator action on the managed host. Any temporary `steam_guard_code` secret field must be removed after authorization; normal bootstrap reads only `username` and `password`.
+- Modded downloads use the Phase 10 versioned SteamCMD `config.vdf`
+  authorization cache and username-only login. See `docs/steam-auth-cache.md`.
+- Passwords and Steam Guard codes are entered only into an isolated operator
+  SteamCMD session and never enter Discord, AWS workflows, Lambda settings,
+  Systems Manager command text, persistent logs, archives, or session volumes.
+- The instance injects the encrypted cache only through `/run`, persists valid
+  SteamCMD cache updates under a global lease, and scrubs every authentication
+  path before game launch or exit.
 - The non-secret bootstrap script is deployed as a content-addressed, versioned S3 artifact; its short SSM launcher is kept below 4 KiB.
 - Mission input is always read from the session-scoped S3 prefix. Modded sessions also require a launcher preset; explicitly configured vanilla sessions require no preset. SSM output is stored under the session log prefix.
-- Vanilla sessions use `login anonymous` with the public Arma 3 dedicated-server app, do not select the Creator DLC beta branch, and skip Steam secret retrieval and Workshop processing entirely.
-- Steam Guard challenges fail closed and require explicit account authorization before retry.
+- Vanilla sessions use `login anonymous` with the public Arma 3 dedicated-server app, do not select the Creator DLC beta branch, and skip Steam authorization-cache access and Workshop processing entirely.
+- Steam Guard challenges fail closed with `ERR_STEAM_REAUTH_REQUIRED` and
+  require the local MFA-gated operator enrollment procedure before retry.
 - Workshop content is read from the authenticated Steam user's persistent library under `/srv/game-server/home/Steam/steamapps/workshop`.
 
-For a vanilla session, set `vanilla:true` on `/session configure`, upload only
-the mission, and then use `/session start`. The vanilla selection is immutable
+For a vanilla session, choose Vanilla in `/rb create` or `/rb setup`, upload
+only the mission, and then use `/rb start`. The vanilla selection is immutable
 after the session leaves `DRAFT`, like the rest of the session configuration.
 
 ## Host layout and health boundary

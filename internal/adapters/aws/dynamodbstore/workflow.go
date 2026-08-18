@@ -18,26 +18,30 @@ import (
 var _ ports.WorkflowRepository = (*Repository)(nil)
 
 type workflowItem struct {
-	PK                string `dynamodbav:"pk"`
-	SK                string `dynamodbav:"sk"`
-	EntityType        string `dynamodbav:"entity_type"`
-	SchemaVersion     int    `dynamodbav:"schema_version"`
-	WorkflowID        string `dynamodbav:"workflow_id"`
-	SessionID         string `dynamodbav:"session_id"`
-	WorkflowType      string `dynamodbav:"workflow_type"`
-	Status            string `dynamodbav:"status"`
-	RequestedBy       string `dynamodbav:"requested_by"`
-	CorrelationID     string `dynamodbav:"correlation_id"`
-	ExpectedVersion   int64  `dynamodbav:"expected_session_version"`
-	ExecutionARN      string `dynamodbav:"step_functions_execution_arn,omitempty"`
-	CurrentStage      string `dynamodbav:"current_stage,omitempty"`
-	ErrorCode         string `dynamodbav:"error_code,omitempty"`
-	ErrorMessage      string `dynamodbav:"error_message,omitempty"`
-	StartedAt         string `dynamodbav:"started_at"`
-	CompletedAt       string `dynamodbav:"completed_at,omitempty"`
-	LeaseExpiresAt    string `dynamodbav:"lease_expires_at"`
-	CancelRequestedAt string `dynamodbav:"cancel_requested_at,omitempty"`
-	CancelRequestedBy string `dynamodbav:"cancel_requested_by,omitempty"`
+	PK                 string `dynamodbav:"pk"`
+	SK                 string `dynamodbav:"sk"`
+	EntityType         string `dynamodbav:"entity_type"`
+	SchemaVersion      int    `dynamodbav:"schema_version"`
+	WorkflowID         string `dynamodbav:"workflow_id"`
+	SessionID          string `dynamodbav:"session_id"`
+	WorkflowType       string `dynamodbav:"workflow_type"`
+	Status             string `dynamodbav:"status"`
+	RequestedBy        string `dynamodbav:"requested_by"`
+	CorrelationID      string `dynamodbav:"correlation_id"`
+	ExpectedVersion    int64  `dynamodbav:"expected_session_version"`
+	ExecutionARN       string `dynamodbav:"step_functions_execution_arn,omitempty"`
+	CurrentStage       string `dynamodbav:"current_stage,omitempty"`
+	ErrorCode          string `dynamodbav:"error_code,omitempty"`
+	ErrorMessage       string `dynamodbav:"error_message,omitempty"`
+	StartedAt          string `dynamodbav:"started_at"`
+	CompletedAt        string `dynamodbav:"completed_at,omitempty"`
+	LeaseExpiresAt     string `dynamodbav:"lease_expires_at"`
+	CancelRequestedAt  string `dynamodbav:"cancel_requested_at,omitempty"`
+	CancelRequestedBy  string `dynamodbav:"cancel_requested_by,omitempty"`
+	RetryAttempt       int    `dynamodbav:"retry_attempt,omitempty"`
+	RetryMaxAttempts   int    `dynamodbav:"retry_max_attempts,omitempty"`
+	RetryLastAttemptAt string `dynamodbav:"retry_last_attempt_at,omitempty"`
+	RetryNextAttemptAt string `dynamodbav:"retry_next_attempt_at,omitempty"`
 }
 
 func (repository *Repository) AcquireWorkflow(
@@ -223,6 +227,8 @@ func toWorkflowItem(workflow domain.Workflow) workflowItem {
 		StartedAt: optionalTimestamp(workflow.StartedAt), CompletedAt: optionalTimestamp(workflow.CompletedAt),
 		LeaseExpiresAt:    optionalTimestamp(workflow.LeaseExpiresAt),
 		CancelRequestedAt: optionalTimestamp(workflow.CancelRequestedAt), CancelRequestedBy: workflow.CancelRequestedBy,
+		RetryAttempt: workflow.Retry.Attempt, RetryMaxAttempts: workflow.Retry.MaxAttempts,
+		RetryLastAttemptAt: optionalTimestamp(workflow.Retry.LastAttemptAt), RetryNextAttemptAt: optionalTimestamp(workflow.Retry.NextAttemptAt),
 	}
 }
 
@@ -243,6 +249,14 @@ func fromWorkflowItem(item workflowItem) (domain.Workflow, error) {
 	if err != nil {
 		return domain.Workflow{}, err
 	}
+	retryLastAttemptAt, err := parseOptionalTimestamp(item.RetryLastAttemptAt)
+	if err != nil {
+		return domain.Workflow{}, err
+	}
+	retryNextAttemptAt, err := parseOptionalTimestamp(item.RetryNextAttemptAt)
+	if err != nil {
+		return domain.Workflow{}, err
+	}
 	workflow := domain.Workflow{
 		ID: item.WorkflowID, SessionID: item.SessionID, Type: item.WorkflowType,
 		Status: domain.WorkflowStatus(item.Status), RequestedBy: item.RequestedBy,
@@ -251,6 +265,7 @@ func fromWorkflowItem(item workflowItem) (domain.Workflow, error) {
 		ErrorCode: item.ErrorCode, ErrorMessage: item.ErrorMessage,
 		StartedAt: startedAt, CompletedAt: completedAt, LeaseExpiresAt: leaseExpiresAt,
 		CancelRequestedAt: cancelRequestedAt, CancelRequestedBy: item.CancelRequestedBy,
+		Retry: domain.WorkflowRetry{Attempt: item.RetryAttempt, MaxAttempts: item.RetryMaxAttempts, LastAttemptAt: retryLastAttemptAt, NextAttemptAt: retryNextAttemptAt},
 	}
 	return workflow, workflow.Validate()
 }

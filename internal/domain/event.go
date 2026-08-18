@@ -20,6 +20,8 @@ const (
 	EventWorkflowStarted           EventType = "WorkflowStarted"
 	EventWorkflowFailed            EventType = "WorkflowFailed"
 	EventWorkflowCompleted         EventType = "WorkflowCompleted"
+	EventWorkflowCancelRequested   EventType = "WorkflowCancellationRequested"
+	EventWorkflowReconciled        EventType = "WorkflowReconciled"
 	EventProvisioningStage         EventType = "ProvisioningStageCompleted"
 	EventInfrastructureReady       EventType = "InfrastructureReady"
 	EventProvisioningFailed        EventType = "InfrastructureProvisioningFailed"

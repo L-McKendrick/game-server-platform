@@ -2,55 +2,49 @@
 
 ## State and Objective
 
-Phases 1-9 are complete. Phases 10 and 11 remain pending under the explicit
-user-approved deferral; Phase 12 proceeding first does not mark either deferred
-phase complete.
+Phase 10 is complete on `codex/phase-10-reliability`. Steps 10.1-10.3 are
+implemented and focused-validated. No Terraform apply, live Steam enrollment,
+or external cleanup/redrive action was run.
 
-Work is on `codex/phase-12-discord-experience`. Steps 12.1 through 12.7 are
-complete. The follow-up public-card refinement in task 12.4.8 is complete on
-the phase branch.
+## Completed Reliability Work
 
-## Task 12.4.8 Outcome
-
-- Public session cards use a Discord embed with `ARMA 3 | Session Name`, a
-  text-labelled status, and a green/orange/red/gray sidebar for online, setup,
-  error, and inactive states. Plain text remains as a delivery fallback.
-- The upper card shows the description, live mission and map, player count, and
-  a Discord-native relative session-start time. A2S_INFO provides the bounded,
-  sanitized mission/map values through the same refresh path as player data.
-- Connection details place the linked active preset below the game address with
-  a separating blank line; vanilla shows `Modlist: None`. TeamSpeak is omitted
-  when disabled.
-- New cards expose only `Show players` and `Refresh`. The live roster is bounded
-  and ephemeral. Old control IDs remain accepted for already-posted cards, but
-  `View details`, card-only modlist download, and card-only help are no longer
-  generated. `/rb help` remains the help entry point.
-- Public cards no longer show Guidance or Last updated. Detailed private status
-  retains diagnostic guidance and freshness information.
+- Bounded retries, cooperative pre-mutation cancellation, DLQ inspection and
+  redrive, stale-workflow reconciliation, alarms, and retry-safe audit state.
+- Conservative orphan detection with age, quarantine, immutable-tag, current
+  reference, and pre-delete revalidation gates; uncertain resources remain
+  report-only.
+- Disaster-recovery procedures for metadata, archives, Terraform state,
+  workflows, and retained volumes.
+- A versioned Secrets Manager SteamCMD `config.vdf` cache following Valve's
+  documented username-only CI login pattern. An MFA-gated local operator role
+  owns enrollment, invalidation, and rollback; passwords and Guard codes never
+  enter Discord or managed command channels.
+- A global DynamoDB lease serializes authenticated downloads. Hosts inject the
+  cache only under `/run`, preserve valid updates, fail closed with
+  `ERR_STEAM_REAUTH_REQUIRED`, and scrub authentication material before launch,
+  exit, archive, and restore. Vanilla sessions remain anonymous and receive no
+  authorization-cache identifiers.
+- Frozen AMIs/EBS snapshots may retain scrubbed SteamCMD, Arma, and Workshop
+  data, but never a signed-in Steam cache.
 
 ## Validation
 
-- Full `go test ./...` and `go test -cover ./...` pass; session-card coverage is
-  82.5%, Discord interaction coverage is 71.0%, and notification sender coverage
-  is 80.2%.
-- `go vet ./...`, `go build ./cmd/...`, Lambda packaging, and
-  `git diff --check` pass.
-- Validation used Go 1.26.6, one patch newer than the repository's 1.26.5 CI
-  target.
+- Focused affected-package Go tests, `go vet`, and command builds pass.
+- Bootstrap Bash syntax and operator PowerShell parsing pass.
+- Development Terraform formatting and validation pass.
+- Diff checks and legacy Steam password-flow searches pass.
 
 ## Operator Attention
 
-- Phase 10 retry policy and Phase 11 work remain deferred. No automatic retry
-  is scheduled for current failures or an unverified rollback.
 - Do not run Terraform apply without the separate plan, budget-recipient, and
-  deployment approvals. The ignored local `terraform.tfvars` and untracked
-  `infra/terraform/environments/dev/tfplan` were not modified.
-- `/rb create` remains non-billable. The existing two-command start/bootstrap
-  boundary is intentionally deferred to 12.8.7.
-- Phase 13.5 remains responsible for adding a game selector and extracting
-  game-specific creation/setup behavior before another game is exposed.
+  deployment approvals. The existing untracked
+  `infra/terraform/environments/dev/tfplan` remains untouched.
+- A live 15-minute operator enrollment and one controlled modded bootstrap are
+  still deployment acceptance exercises; follow `docs/steam-auth-cache.md`.
+- The ignored local `terraform.tfvars` remains outside this change.
 
 ## Exact Next Step
 
-Start task 12.8.1 only in a new development prompt. Do not combine it with
-later 12.8 tasks unless the user explicitly requests that scope.
+Await direction between Phase 11.1 production-hardening review and the
+previously reordered Step 12.8. Default to Phase 11.1; before development,
+break that step into numbered tasks in `PROJECT_PLAN.md`.

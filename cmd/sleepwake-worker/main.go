@@ -58,7 +58,7 @@ func build(ctx context.Context) (*handler, error) {
 	}
 	presetRunner, err := ssmbootstrap.New(ssm.NewFromConfig(awsCfg), ssmbootstrap.Config{
 		Region: cfg.AWSRegion, AssetsBucket: cfg.SessionAssetsBucket,
-		BootstrapScriptKey: strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_KEY")), SteamSecretID: strings.TrimSpace(os.Getenv("STEAM_SECRET_ID")),
+		BootstrapScriptKey: strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_KEY")), MetadataTableName: cfg.MetadataTable, SteamAuthSecretID: strings.TrimSpace(os.Getenv("STEAM_AUTH_SECRET_ID")),
 		TeamSpeakVersion: sleepwakeEnv("TEAMSPEAK_VERSION", "3.13.8"), TimeoutSeconds: timeout,
 	})
 	if err != nil {

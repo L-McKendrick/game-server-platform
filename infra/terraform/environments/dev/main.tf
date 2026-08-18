@@ -197,10 +197,19 @@ resource "aws_secretsmanager_secret" "discord_bot_token" {
   recovery_window_in_days = 7
 }
 
-resource "aws_secretsmanager_secret" "steam_credentials" {
-  name                    = "/${var.project_name}/${var.environment}/steam-credentials"
-  description             = "Steam credentials used during game server bootstrap."
+resource "aws_secretsmanager_secret" "steam_authorization_cache" {
+  name                    = "/${var.project_name}/${var.environment}/steam-authorization-cache"
+  description             = "Versioned SteamCMD config.vdf authorization cache; never stores a Steam password or Guard code."
   recovery_window_in_days = 7
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+moved {
+  from = aws_secretsmanager_secret.steam_credentials
+  to   = aws_secretsmanager_secret.steam_authorization_cache
 }
 
 resource "aws_sqs_queue" "artifact_ingest_dlq" {
@@ -452,8 +461,13 @@ output "discord_secret_name" {
 }
 
 output "steam_secret_name" {
-  description = "Secrets Manager name for Steam credentials."
-  value       = aws_secretsmanager_secret.steam_credentials.name
+  description = "Compatibility output for the versioned Steam authorization-cache secret name."
+  value       = aws_secretsmanager_secret.steam_authorization_cache.name
+}
+
+output "steam_authorization_cache_secret_name" {
+  description = "Secrets Manager name for the versioned SteamCMD config.vdf authorization cache."
+  value       = aws_secretsmanager_secret.steam_authorization_cache.name
 }
 
 output "discord_interactions_endpoint" {

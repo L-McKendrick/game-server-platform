@@ -61,7 +61,7 @@ func build(ctx context.Context) (*handler, error) {
 	}
 	repository := dynamodbstore.New(dynamodb.NewFromConfig(awsConfig), base.MetadataTable)
 	ssmClient := ssm.NewFromConfig(awsConfig)
-	bootstrap, err := ssmbootstrap.New(ssmClient, ssmbootstrap.Config{Region: base.AWSRegion, AssetsBucket: base.SessionAssetsBucket, BootstrapScriptKey: strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_KEY")), SteamSecretID: strings.TrimSpace(os.Getenv("STEAM_SECRET_ID")), TeamSpeakVersion: env("TEAMSPEAK_VERSION", "3.13.7"), TimeoutSeconds: 43200})
+	bootstrap, err := ssmbootstrap.New(ssmClient, ssmbootstrap.Config{Region: base.AWSRegion, AssetsBucket: base.SessionAssetsBucket, BootstrapScriptKey: strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_KEY")), MetadataTableName: base.MetadataTable, SteamAuthSecretID: strings.TrimSpace(os.Getenv("STEAM_AUTH_SECRET_ID")), TeamSpeakVersion: env("TEAMSPEAK_VERSION", "3.13.7"), TimeoutSeconds: 43200})
 	if err != nil {
 		return nil, err
 	}

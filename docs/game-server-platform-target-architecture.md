@@ -2258,7 +2258,7 @@ Never log:
 
 - passwords;
 - Discord bot token;
-- Steam password;
+- Steam authorization cache or enrollment material;
 - interaction tokens;
 - authorization headers;
 - complete Secrets Manager responses;
@@ -3177,7 +3177,7 @@ Reference: 01JCORRELATION
 
 - forged Discord interactions;
 - unauthorized Discord users invoking destructive commands;
-- leaked bot or Steam credentials;
+- leaked bot credentials or Steam authorization cache;
 - malicious uploaded mission/preset/archive;
 - command injection in bootstrap scripts;
 - path traversal during extraction;

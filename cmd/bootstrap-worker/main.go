@@ -53,7 +53,8 @@ func build(ctx context.Context) (*handler, error) {
 	runnerConfig := ssmbootstrap.Config{
 		Region: baseConfig.AWSRegion, AssetsBucket: strings.TrimSpace(os.Getenv("SESSION_ASSETS_BUCKET")),
 		BootstrapScriptKey: strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_KEY")),
-		SteamSecretID:      strings.TrimSpace(os.Getenv("STEAM_SECRET_ID")),
+		MetadataTableName:  baseConfig.MetadataTable,
+		SteamAuthSecretID:  strings.TrimSpace(os.Getenv("STEAM_AUTH_SECRET_ID")),
 		TeamSpeakVersion:   env("TEAMSPEAK_VERSION", "3.13.8"), TimeoutSeconds: timeout,
 	}
 	logger := logging.New(baseConfig.LogLevel)

@@ -53,6 +53,12 @@ var entries = map[string]entry{
 		"The platform stopped the workflow and retained the server for diagnosis.",
 		"Give the support reference to an operator before trying another start.",
 	},
+	"ERR_STEAM_REAUTH_REQUIRED": {
+		"Steam authorization needs renewed approval.",
+		"Steam rejected the cached login token or requested Steam Guard approval again.",
+		"The platform invalidated automated authenticated downloads and removed authentication material from the game host.",
+		"Ask an operator to run the Steam authorization enrollment procedure. Do not send a password or Steam Guard code through Discord.",
+	},
 	"ERR_ARCHIVE_COMMAND": {
 		"The archive could not be created and verified.",
 		"The managed backup command stopped before a portable archive was verified.",

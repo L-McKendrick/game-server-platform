@@ -434,9 +434,9 @@ The platform follows a least-privilege security model.
 
 Key practices include:
 
-* Steam credentials stored in managed secret storage  
+* Versioned SteamCMD authorization cache stored in encrypted managed secret storage
 * Minimal cloud permissions for virtual machines  
-* Temporary authentication wherever possible  
+* Local MFA-gated enrollment and ephemeral runtime cache injection
 * No embedded credentials in deployment scripts  
 * Restricted firewall rules  
 * Encrypted object storage  

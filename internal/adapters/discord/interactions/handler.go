@@ -73,6 +73,7 @@ type SessionService interface {
 	RequestConfirmation(ctx context.Context, command appsession.ConfirmationRequest) (domain.Confirmation, error)
 	Confirm(ctx context.Context, command appsession.ConfirmCommand) (domain.Confirmation, error)
 	CancelConfirmation(ctx context.Context, command appsession.CancelConfirmationCommand) (domain.Confirmation, error)
+	RequestWorkflowCancellation(ctx context.Context, command appsession.WorkflowCancellationCommand) (domain.Workflow, error)
 }
 
 type AccessService interface {
@@ -513,11 +514,26 @@ func (handler *Handler) routeCommand(
 	case "cancel-confirmation":
 		content, err := handler.cancelConfirmation(ctx, payload, subcommand.Options, actor)
 		return content, commandName, err
+	case "cancel":
+		content, err := handler.cancelWorkflow(ctx, payload, subcommand.Options, actor, correlationID)
+		return content, commandName, err
 	default:
 		return "", commandName, newUserError(
 			"That `/rb` subcommand is not supported yet.",
 		)
 	}
+}
+
+func (handler *Handler) cancelWorkflow(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, correlationID string) (string, error) {
+	sessionID, err := handler.resolveSessionID(ctx, options, actor, payload.GuildID, false, false)
+	if err != nil {
+		return "", err
+	}
+	workflow, err := handler.service.RequestWorkflowCancellation(ctx, appsession.WorkflowCancellationCommand{Actor: actor, SessionID: sessionID, GuildID: payload.GuildID, CorrelationID: correlationID})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("**Cancellation requested**\nThe `%s` workflow will stop only if it has not crossed its initial safe boundary. Otherwise its current operation and any required rollback will finish.", workflow.Type), nil
 }
 
 func (handler *Handler) createConfirmation(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, action string) (string, error) {

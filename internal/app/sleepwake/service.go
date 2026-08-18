@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
+	appreliability "github.com/L-McKendrick/game-server-platform/internal/app/reliability"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
@@ -85,6 +86,11 @@ func (s *Service) Handle(ctx context.Context, r TaskRequest) (TaskResult, error)
 	session, wf, err := s.load(ctx, r)
 	if err != nil {
 		return TaskResult{}, err
+	}
+	if r.Action == ActionPrepare {
+		if err := appreliability.HonorLoadedAtInitialBoundary(ctx, s.workflows, s.ids, s.clock, session, wf); err != nil {
+			return TaskResult{}, err
+		}
 	}
 	switch r.Action {
 	case ActionPrepare:

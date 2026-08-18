@@ -13,7 +13,7 @@ The host probe is read-only and returns compact JSON with:
 - `teamspeak_service` and `teamspeak_udp_9987` only when the session enables TeamSpeak;
 - `disk_used_percent`, `memory_available_bytes`, and an Arma player-count placeholder for the later query adapter.
 
-No secrets, Steam credentials, process environment, command arguments, or raw system logs are returned to DynamoDB, EventBridge, Discord, or CloudWatch metrics.
+No secrets, Steam authorization cache, process environment, command arguments, or raw system logs are returned to DynamoDB, EventBridge, Discord, or CloudWatch metrics.
 
 ## Health classification
 

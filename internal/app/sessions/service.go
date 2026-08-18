@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	appreliability "github.com/L-McKendrick/game-server-platform/internal/app/reliability"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
@@ -43,6 +44,7 @@ type Service struct {
 	commandQueue         ports.CommandQueue
 	confirmations        ports.ConfirmationRepository
 	notificationQueue    ports.NotificationQueue
+	reliability          *appreliability.Service
 	ids                  IDGenerator
 	clock                Clock
 	idempotencyRetention time.Duration
@@ -69,6 +71,10 @@ func WithConfirmationRepository(repository ports.ConfirmationRepository) Option 
 // WithNotificationQueue enables durable public session-card delivery.
 func WithNotificationQueue(queue ports.NotificationQueue) Option {
 	return func(service *Service) { service.notificationQueue = queue }
+}
+
+func WithReliabilityService(reliability *appreliability.Service) Option {
+	return func(service *Service) { service.reliability = reliability }
 }
 
 // NewService creates a session application service.
@@ -143,6 +149,30 @@ type ConfirmCommand struct {
 	CommandID      string
 	CorrelationID  string
 	IdempotencyKey string
+}
+
+type WorkflowCancellationCommand struct {
+	Actor                             domain.Actor
+	SessionID, GuildID, CorrelationID string
+}
+
+func (service *Service) RequestWorkflowCancellation(ctx context.Context, command WorkflowCancellationCommand) (domain.Workflow, error) {
+	if service.reliability == nil {
+		return domain.Workflow{}, fmt.Errorf("workflow cancellation is not configured")
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return domain.Workflow{}, err
+	}
+	if command.Actor.Type != domain.ActorTypeDiscordUser || session.OwnerDiscordUserID != command.Actor.ID || session.GuildID != strings.TrimSpace(command.GuildID) {
+		return domain.Workflow{}, domain.ErrForbidden
+	}
+	if session.ActiveWorkflowID == "" {
+		return domain.Workflow{}, fmt.Errorf("%w: session has no active workflow", domain.ErrInvalidTransition)
+	}
+	return service.reliability.RequestCancellation(ctx, appreliability.CancellationCommand{
+		SessionID: session.ID, WorkflowID: session.ActiveWorkflowID, RequestedBy: command.Actor.ID, CorrelationID: strings.TrimSpace(command.CorrelationID),
+	})
 }
 
 type CancelConfirmationCommand struct {

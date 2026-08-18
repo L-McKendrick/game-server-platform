@@ -39,7 +39,7 @@ func TestRunner_StartArchivesOnlyPortablePersistentPaths(t *testing.T) {
 		t.Fatalf("Start() = %q, %v", commandID, err)
 	}
 	script := client.sent.Parameters["commands"][0]
-	for _, required := range []string{"flock --wait 13000", "head-object", "archive_paths=(config state logs arma3/mpmissions 'home/.local/share')", "teamspeak3-server.service", "(^|:)2302$", "(^|:)9987$", "--checksum-sha256", "test \"$size_bytes\" -le 4294967296"} {
+	for _, required := range []string{"flock --wait 13000", "head-object", "archive_paths=(config state logs arma3/mpmissions 'home/.local/share')", "home/.local/share/Steam/config", "loginusers.vdf", "ssfn*", "--exclude='home/.local/share/Steam/config'", "teamspeak3-server.service", "(^|:)2302$", "(^|:)9987$", "--checksum-sha256", "test \"$size_bytes\" -le 4294967296"} {
 		if !strings.Contains(script, required) {
 			t.Fatalf("archive command missing %q", required)
 		}
