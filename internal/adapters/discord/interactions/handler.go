@@ -579,8 +579,12 @@ func (handler *Handler) confirmAction(ctx context.Context, payload interactionPa
 	if err != nil {
 		return "", newUserError("Enter the confirmation code exactly as shown.")
 	}
+	roles := []string{}
+	if payload.Member != nil {
+		roles = append(roles, payload.Member.Roles...)
+	}
 	confirmation, err := handler.service.Confirm(ctx, appsession.ConfirmCommand{
-		Actor: actor, GuildID: payload.GuildID, ChannelID: payload.ChannelID, Code: code,
+		Actor: actor, Roles: roles, GuildID: payload.GuildID, ChannelID: payload.ChannelID, Code: code,
 		CommandID: payload.ID, CorrelationID: correlationID, IdempotencyKey: "discord:" + payload.ID,
 	})
 	if err != nil {

@@ -252,6 +252,7 @@ data "aws_iam_policy_document" "discord_lambda" {
   statement {
     sid = "MetadataAccess"
     actions = [
+      "dynamodb:ConditionCheckItem",
       "dynamodb:GetItem",
       "dynamodb:PutItem",
       "dynamodb:Query",

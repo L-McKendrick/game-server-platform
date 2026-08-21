@@ -147,6 +147,8 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.8.6** [x] Update deployment/runbook documentation.
       - **12.8.7** [x] Make one `/rb start` orchestrate ready-session infrastructure provisioning through bootstrap and playable health acceptance; keep `/rb create` non-billable and return existing progress for repeated starts instead of requiring a second command.
       - **12.8.8** [x] Prevent bootstrap worker package/configuration drift, report the exact startup mismatch, and add a non-mutating deployment verification path before workflow retry.
+      - **12.8.9** [x] Grant the Discord interaction role the DynamoDB condition-check permission required by atomic archive and termination confirmations.
+      - **12.8.10** [x] Preserve Discord role context when confirmed archive and termination commands cross the asynchronous command boundary.
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.
