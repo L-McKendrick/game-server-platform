@@ -146,6 +146,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.8.5** [x] Apply guild-only contexts, least-visible admin command defaults, mobile-safe layouts, concise controls, text-plus-color states, and graceful stale-interaction handling.
       - **12.8.6** [x] Update deployment/runbook documentation.
       - **12.8.7** [x] Make one `/rb start` orchestrate ready-session infrastructure provisioning through bootstrap and playable health acceptance; keep `/rb create` non-billable and return existing progress for repeated starts instead of requiring a second command.
+      - **12.8.8** [x] Prevent bootstrap worker package/configuration drift, report the exact startup mismatch, and add a non-mutating deployment verification path before workflow retry.
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.

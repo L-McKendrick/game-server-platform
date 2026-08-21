@@ -25,6 +25,31 @@ type fakeSSM struct {
 	invocation *ssm.GetCommandInvocationOutput
 }
 
+func TestNewReportsExactMissingConfiguration(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		edit func(*Config)
+		want string
+	}{
+		{name: "asset bucket", edit: func(config *Config) { config.AssetsBucket = "" }, want: "SESSION_ASSETS_BUCKET"},
+		{name: "script key", edit: func(config *Config) { config.BootstrapScriptKey = "" }, want: "BOOTSTRAP_SCRIPT_KEY"},
+		{name: "metadata table", edit: func(config *Config) { config.MetadataTableName = "" }, want: "METADATA_TABLE_NAME"},
+		{name: "Steam authorization cache", edit: func(config *Config) { config.SteamAuthSecretID = "" }, want: "STEAM_AUTH_SECRET_ID"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			config := testConfig()
+			test.edit(&config)
+			_, err := New(&fakeSSM{}, config)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("New() error = %v; want missing %s", err, test.want)
+			}
+		})
+	}
+}
+
 func (fake *fakeSSM) SendCommand(_ context.Context, input *ssm.SendCommandInput, _ ...func(*ssm.Options)) (*ssm.SendCommandOutput, error) {
 	fake.sent = input
 	return &ssm.SendCommandOutput{Command: &types.Command{CommandId: aws.String("command-1")}}, nil

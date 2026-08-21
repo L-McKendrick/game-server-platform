@@ -3,8 +3,24 @@
 ## State and Objective
 
 Phases 1-10 are complete. Phase 11 remains pending under the approved Phase 12
-reorder. Phase 12 Steps 12.1-12.7 are merged. Step 12.8 is complete on
-`codex/phase-12-discord-experience`; stop before Phase 13.
+reorder. Bootstrap deployment-drift task 12.8.8 is complete on
+`codex/fix-bootstrap-worker-drift`. The pre-existing uncommitted Phase 12.9 work
+is preserved; reset task 12.9.7 remains the next planned feature task.
+
+## Bootstrap Incident Fix
+
+- Live bootstrap failed during Lambda initialization because an older worker
+  expected retired `STEAM_SECRET_ID` configuration while the deployed
+  environment correctly provided `STEAM_AUTH_SECRET_ID`.
+- The worker and Terraform now require the explicit `steam-auth-cache-v1`
+  runtime configuration contract. Startup failures identify the exact missing
+  setting instead of emitting an aggregate dependency error.
+- `scripts/verify-bootstrap-worker-deployment.ps1` compares the deployed Lambda
+  code hash with the freshly packaged ZIP, verifies required configuration, and
+  rejects the retired password variable before an operator retries bootstrap.
+- The current packages are built locally but no Terraform plan was created or
+  applied and no failed workflow was retried. Deployment still requires review
+  and approval of a fresh saved plan.
 
 ## Delivered
 

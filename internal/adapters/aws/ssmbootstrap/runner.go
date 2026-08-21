@@ -15,7 +15,10 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
-const documentName = "AWS-RunShellScript"
+const (
+	documentName                = "AWS-RunShellScript"
+	RuntimeConfigurationVersion = "steam-auth-cache-v1"
+)
 
 type API interface {
 	SendCommand(context.Context, *ssm.SendCommandInput, ...func(*ssm.Options)) (*ssm.SendCommandOutput, error)
@@ -47,8 +50,22 @@ func New(client API, config Config) (*Runner, error) {
 	config.MetadataTableName = strings.TrimSpace(config.MetadataTableName)
 	config.SteamAuthSecretID = strings.TrimSpace(config.SteamAuthSecretID)
 	config.TeamSpeakVersion = strings.TrimSpace(config.TeamSpeakVersion)
-	if client == nil || config.Region == "" || config.AssetsBucket == "" || config.BootstrapScriptKey == "" || config.MetadataTableName == "" || config.SteamAuthSecretID == "" || config.TeamSpeakVersion == "" {
-		return nil, fmt.Errorf("SSM client, region, asset bucket, bootstrap script key, metadata table, Steam authorization cache, and TeamSpeak version are required")
+	required := []struct {
+		missing bool
+		name    string
+	}{
+		{client == nil, "SSM client"},
+		{config.Region == "", "AWS_REGION"},
+		{config.AssetsBucket == "", "SESSION_ASSETS_BUCKET"},
+		{config.BootstrapScriptKey == "", "BOOTSTRAP_SCRIPT_KEY"},
+		{config.MetadataTableName == "", "METADATA_TABLE_NAME"},
+		{config.SteamAuthSecretID == "", "STEAM_AUTH_SECRET_ID"},
+		{config.TeamSpeakVersion == "", "TEAMSPEAK_VERSION"},
+	}
+	for _, value := range required {
+		if value.missing {
+			return nil, fmt.Errorf("bootstrap configuration is missing %s", value.name)
+		}
 	}
 	if config.TimeoutSeconds < 900 || config.TimeoutSeconds > 172800 {
 		return nil, fmt.Errorf("bootstrap timeout must be between 900 and 172800 seconds")
