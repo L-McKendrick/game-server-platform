@@ -4,7 +4,8 @@
 
 Phases 1-10 are complete. Phase 11 remains pending under the approved Phase 12
 reorder. Bootstrap deployment-drift task 12.8.8, confirmation fixes 12.8.9
-and 12.8.10, and vanilla Steam authorization fix 12.8.11 are complete on
+and 12.8.10, vanilla Steam authorization fix 12.8.11, and mission/card polish
+task 12.8.12 are complete on
 `codex/fix-bootstrap-worker-drift`. The pre-existing uncommitted Phase 12.9 work
 is preserved; reset task 12.9.7 remains the next planned feature task.
 
@@ -27,6 +28,11 @@ is preserved; reset task 12.9.7 remains the next planned feature task.
   not reject an already authorized owner as forbidden.
 - Vanilla and modded bootstrap now use the same cached Steam authorization for
   the Arma server package; vanilla continues to skip presets and Workshop.
+- New mission uploads preserve their original basename. Bootstrap also removes
+  the legacy digest prefix while deploying existing mission objects, including
+  the retained `test-8` input.
+- Public cards now lead with status, place game/session identity beneath it,
+  and add breathing room above mission, progress, and game-server sections.
 - The current packages are built locally but no Terraform plan was created or
   applied and no failed workflow was retried. Deployment still requires review
   and approval of a fresh saved plan.
@@ -87,6 +93,9 @@ is preserved; reset task 12.9.7 remains the next planned feature task.
 - The vanilla Steam authorization correction requires a fresh bootstrap-worker
   package and bootstrap-script S3 object deployment before retrying `test-8`;
   its running EC2 instance and retained EBS volume continue to incur cost.
+- Mission/card polish additionally requires fresh artifact-worker,
+  notification-producing worker, and bootstrap packages; the legacy mission
+  compatibility path avoids renaming the current `test-8` S3 object.
 - The user will run the credential-bearing deployment and Discord registration.
   Create and review a fresh release plan after packaging. It must include the
   changed Lambda packages plus `aws_sfn_state_machine.provision_session` and

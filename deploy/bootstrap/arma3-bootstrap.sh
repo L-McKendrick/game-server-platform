@@ -359,6 +359,9 @@ sqf_escape() { printf '%s' "$1" | sed 's/"/""/g'; }
 deploy_content() {
   local mission_file mission_template safe_name
   mission_file="$(basename "$MISSION_KEY")"
+  if [[ "$mission_file" =~ ^[0-9a-f]{64}-(.+\.[pP][bB][oO])$ ]]; then
+    mission_file="${BASH_REMATCH[1]}"
+  fi
   mission_template="${mission_file%.[Pp][Bb][Oo]}"
   mkdir -p "$ROOT/arma3/mpmissions" "$ROOT/home/.local/share/Arma 3 - Other Profiles/server"
   aws s3 cp "s3://$ASSETS_BUCKET/$MISSION_KEY" "$ROOT/arma3/mpmissions/$mission_file" --region "$AWS_REGION" --only-show-errors

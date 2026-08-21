@@ -195,6 +195,9 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 			t.Errorf("script contains legacy credential behavior %q", forbidden)
 		}
 	}
+	if !strings.Contains(string(script), `^[0-9a-f]{64}-(.+\.[pP][bB][oO])$`) {
+		t.Error("script does not normalize legacy digest-prefixed mission filenames")
+	}
 	assertBashSyntax(t, script)
 }
 

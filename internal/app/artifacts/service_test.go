@@ -76,7 +76,7 @@ func TestProcessStoresValidatedMissionAndPersistsMetadata(t *testing.T) {
 	if err := service.Process(context.Background(), request); err != nil {
 		t.Fatalf("Process() returned error: %v", err)
 	}
-	if len(objects.objects) != 1 || !strings.HasPrefix(objects.objects[0].key, "sessions/session-1/input/missions/") {
+	if len(objects.objects) != 1 || objects.objects[0].key != "sessions/session-1/input/missions/operation.pbo" {
 		t.Fatalf("stored objects = %#v; want one mission object", objects.objects)
 	}
 	session, err := repository.Get(context.Background(), "session-1")
