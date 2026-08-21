@@ -565,6 +565,74 @@ func TestRequestStartRoutesProvisionedSessionToBootstrap(t *testing.T) {
 	}
 }
 
+func TestRequestStartReturnsPendingBootstrapProgressWithoutQueueingDuplicate(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	queue := &recordingCommandQueue{}
+	actor := testActor("owner-1")
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: "session-continuation", Slug: "continuation", DisplayName: "Continuation", GameType: "arma3",
+		OwnerDiscordUserID: actor.ID, GuildID: "guild-1", ChannelID: "channel-1",
+	}, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(domain.SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400}, now.Add(-55*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AttachArtifact(domain.ArtifactMission, "sessions/session-continuation/input/mission.pbo", now.Add(-50*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AttachArtifact(domain.ArtifactPreset, "sessions/session-continuation/input/preset.html", now.Add(-49*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AcquireProvisioningWorkflowLock("provision", time.Hour, now.Add(-45*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.BeginInfrastructureProvisioning("provision", "slot-0", now.Add(-44*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.RecordInfrastructureLaunch("provision", domain.Infrastructure{
+		CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1",
+		SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "profile-1", AMIID: "ami-1",
+		InstanceType: "c7i-flex.large", InstanceID: "i-1", DataVolumeID: "vol-1",
+		PublicIPv4: "203.0.113.1", LastObservedAt: now.Add(-40 * time.Minute),
+	}, now.Add(-40*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.CompleteInfrastructureProvisioning("provision", now.Add(-35*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AcquireBootstrapWorkflowLock("bootstrap-continuation", 8*time.Hour, now.Add(-30*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	event := domain.NewSessionCreatedEvent("event-continuation", "correlation-create", actor, session, now)
+	idempotency, err := domain.NewCompletedIdempotencyRecord("create-continuation", "hash-continuation", session.ID, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour, WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = service.RequestStart(context.Background(), StartCommand{
+		Actor: actor, Roles: []string{"role-1"}, SessionID: session.ID,
+		GuildID: session.GuildID, ChannelID: session.ChannelID, CommandID: "duplicate-start",
+		CorrelationID: "duplicate-correlation", IdempotencyKey: "discord:duplicate-start",
+	})
+	var active domain.OperationInProgressError
+	if !errors.As(err, &active) || active.WorkflowType != domain.BootstrapWorkflowType || active.Milestone != domain.ProgressAccepted {
+		t.Fatalf("RequestStart() error = %#v; want pending bootstrap progress", err)
+	}
+	if len(queue.commands) != 0 {
+		t.Fatalf("duplicate queued commands = %#v", queue.commands)
+	}
+}
+
 func TestRequestLifecycle_AllowsGuildAdministratorForAnotherOwnersRunningSession(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)

@@ -87,7 +87,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       current limitations. Phase 10 is now complete; the reorder does not waive Phase 11.
     - Detailed design and execution guidance: `docs/phase-12-discord-experience.md`.
     - **12.1** [x] Establish the Discord interaction and presentation foundation.
-      - **12.1.1** [x] Replace the `/session` command definition and routing with guild-only `/rb`; retain `/admin` separately and do not ship a compatibility alias.
+      - **12.1.1** [x] Replace the `/session` command definition and routing with guild-only `/rb`; do not ship a compatibility alias, and consolidate administration under the protected `/rb admin` group during release polish.
       - **12.1.2** [x] Extend the Discord protocol boundary for autocomplete, modal submission, Components V2, buttons, selects, file uploads, and safe component revisions.
       - **12.1.3** [x] Add a shared session selector that returns authorized name/slug/state labels while carrying the immutable ID only as the hidden value.
       - **12.1.4** [x] Centralize Discord rendering, sanitization, native timestamps, status vocabulary, accessibility text, response bounds, and allowed-mention suppression.
@@ -138,14 +138,14 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.7.4** [x] Render a text-based completed-checkpoint bar, `Step X/Y`, current stage, and elapsed time on the public card and ephemeral status without presenting a time-completion percentage or ETA.
       - **12.7.5** [x] Show concise qualitative stage guidance and distinguish active, waiting, stalled, retrying, rollback, completed, and action-required progress while retaining milestone-only rate-limited card edits.
       - **12.7.6** [x] Test every workflow's milestone ordering, bootstrap checkpoints, skipped stages, replay, retries, rollback, failures, cancellation, clock anomalies, rendering bounds, and update rate limiting.
-    - **12.8** [ ] Finish admin, help, cost, and release polish.
-      - **12.8.1** [ ] Expand `/admin` into a permission-checked component menu for access, card repair, costs, and placeholders linked only to implemented policies.
-      - **12.8.2** [ ] Add ephemeral `/admin costs` for yesterday, seven-day, and month-to-date platform totals, budget utilization, service breakdown, freshness, caching, and useful setup errors.
-      - **12.8.3** [ ] Add optional per-session cost grouping only after cost-allocation tags are active; resolve hidden tag values to name/slug and label all figures as delayed estimates.
-      - **12.8.4** [ ] Add `/rb help`, first-run guidance, state-aware next actions, and useful empty/success responses without duplicating the operational runbook.
-      - **12.8.5** [ ] Apply guild-only contexts, least-visible admin command defaults, mobile-safe layouts, concise controls, text-plus-color states, and graceful stale-interaction handling.
-      - **12.8.6** [ ] Update deployment/runbook documentation and complete unit, integration, packaging, Terraform, Discord registration, and live guild acceptance for the phase.
-      - **12.8.7** [ ] Make one `/rb start` orchestrate ready-session infrastructure provisioning through bootstrap and playable health acceptance; keep `/rb create` non-billable and return existing progress for repeated starts instead of requiring a second command.
+    - **12.8** [x] Finish admin, help, and release polish.
+      - **12.8.1** [x] Consolidate administration under direct `/rb admin` as a permission-checked component menu for access and card repair only; replace or confirm removal of allowed roles, and recheck Administrator or Manage Server on every admin interaction.
+      - **12.8.2** [x] Omit the wishlist Discord cost command entirely so the Lambda makes no Cost Explorer request and needs no Billing permission.
+      - **12.8.3** [x] Keep budget alerts as an AWS operator concern and leave the existing Phase 5 Terraform budget guardrail unchanged pending any separately reviewed ownership migration.
+      - **12.8.4** [x] Add `/rb help`, first-run guidance, state-aware next actions, and useful empty/success responses without duplicating the operational runbook.
+      - **12.8.5** [x] Apply guild-only contexts, least-visible admin command defaults, mobile-safe layouts, concise controls, text-plus-color states, and graceful stale-interaction handling.
+      - **12.8.6** [x] Update deployment/runbook documentation.
+      - **12.8.7** [x] Make one `/rb start` orchestrate ready-session infrastructure provisioning through bootstrap and playable health acceptance; keep `/rb create` non-billable and return existing progress for repeated starts instead of requiring a second command.
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.

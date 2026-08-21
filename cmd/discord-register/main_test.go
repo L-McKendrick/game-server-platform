@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAndAdmin(t *testing.T) {
+func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAdminMenu(t *testing.T) {
 	t.Parallel()
 
 	type commandOption struct {
@@ -18,6 +18,7 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAndAdmin(t *testing.T)
 		Name         string          `json:"name"`
 		Options      []commandOption `json:"options"`
 		Autocomplete bool            `json:"autocomplete"`
+		Required     bool            `json:"required"`
 	}
 	var received []commandOption
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -54,14 +55,13 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAndAdmin(t *testing.T)
 		"token-1",
 		[]string{
 			filepath.Join(root, "deploy", "discord", "rb-command.json"),
-			filepath.Join(root, "deploy", "discord", "admin-command.json"),
 		},
 	)
 	if err != nil {
 		t.Fatalf("registerCommands() returned error: %v", err)
 	}
-	if len(received) != 2 || received[0].Name != "rb" || received[1].Name != "admin" {
-		t.Fatalf("registered commands = %#v; want rb and admin only", received)
+	if len(received) != 1 || received[0].Name != "rb" {
+		t.Fatalf("registered commands = %#v; want rb only", received)
 	}
 	targeting := map[string]bool{
 		"status": true, "setup": true, "mods": true,
@@ -74,6 +74,12 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAndAdmin(t *testing.T)
 		if subcommand.Name == "list" {
 			if len(subcommand.Options) != 2 || subcommand.Options[0].Name != "state" || subcommand.Options[1].Name != "page" {
 				t.Errorf("list options = %#v; want state filter and page", subcommand.Options)
+			}
+		}
+		if subcommand.Name == "help" {
+			if len(subcommand.Options) != 1 || subcommand.Options[0].Name != "session" ||
+				!subcommand.Options[0].Autocomplete || subcommand.Options[0].Required {
+				t.Errorf("help options = %#v; want one optional autocomplete session", subcommand.Options)
 			}
 		}
 		if subcommand.Name == "confirm" || subcommand.Name == "cancel-confirmation" {
@@ -95,9 +101,14 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAndAdmin(t *testing.T)
 	if len(targeting) != 0 {
 		t.Fatalf("session-targeting commands not verified: %#v", targeting)
 	}
-	if len(received[1].Options) != 2 || received[1].Options[1].Name != "repair-card" ||
-		len(received[1].Options[1].Options) != 1 || received[1].Options[1].Options[0].Name != "session" ||
-		!received[1].Options[1].Options[0].Autocomplete {
-		t.Fatalf("admin repair-card definition = %#v", received[1].Options)
+	var admin commandOption
+	for _, option := range received[0].Options {
+		if option.Name == "admin" {
+			admin = option
+			break
+		}
+	}
+	if admin.Type != 1 || len(admin.Options) != 0 {
+		t.Fatalf("rb admin definition = %#v", admin)
 	}
 }

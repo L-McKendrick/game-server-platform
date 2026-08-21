@@ -26,6 +26,18 @@ func TestComponentCustomIDRoundTrip(t *testing.T) {
 	}
 }
 
+func TestMemberCanManageGuildAcceptsDiscordVariableLengthPermissionStrings(t *testing.T) {
+	t.Parallel()
+	payload := interactionPayload{Member: &interactionMember{Permissions: "1208925819614629174706208"}}
+	if !payload.memberCanManageGuild() {
+		t.Fatal("memberCanManageGuild() = false; want Manage Guild bit within a permission value larger than uint64")
+	}
+	payload.Member.Permissions = "1208925819614629174706176"
+	if payload.memberCanManageGuild() {
+		t.Fatal("memberCanManageGuild() = true without Administrator or Manage Guild")
+	}
+}
+
 func TestComponentCustomIDRejectsUnsafeOrNonCanonicalValues(t *testing.T) {
 	t.Parallel()
 

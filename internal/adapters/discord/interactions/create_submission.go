@@ -111,7 +111,7 @@ func (handler *Handler) submitCreateModal(
 		teamSpeak = "On"
 	}
 	return fmt.Sprintf(
-		"**Draft session created**\nName: %s\nSlug: `%s`\nMode: %s\nTeamSpeak: %s\n%s\nUploads have not been validated yet.%s",
+		"**Draft session created**\nName: %s\nSlug: `%s`\nMode: %s\nTeamSpeak: %s\n%s\nUploads have not been validated yet.%s\n\nNext: use `/rb status` while validation finishes. After the required files are accepted, `/rb start` begins the server workflow.",
 		sanitizeInline(session.DisplayName), sanitizeCode(session.Slug), mode, teamSpeak, queued,
 		payload.channelCapabilities().plainTextNotice(),
 	), nil

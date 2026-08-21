@@ -692,6 +692,12 @@ data "aws_iam_policy_document" "provision_workflow" {
   }
 
   statement {
+    sid       = "QueueBootstrapContinuation"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.commands.arn]
+  }
+
+  statement {
     sid = "WorkflowLogDelivery"
     actions = [
       "logs:CreateLogDelivery",
@@ -875,10 +881,30 @@ resource "aws_sfn_state_machine" "provision_session" {
             "correlation_id.$" = "$.correlation_id"
           }
         }
-        ResultPath = "$.completion"
-        Retry      = [local.lambda_transient_retry]
-        Catch      = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "MarkFailed" }]
-        End        = true
+        ResultSelector = { "result.$" = "$.Payload" }
+        ResultPath     = "$.completion"
+        Retry          = [local.lambda_transient_retry]
+        Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "MarkFailed" }]
+        Next           = "QueueBootstrap"
+      }
+      QueueBootstrap = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::sqs:sendMessage"
+        Parameters = {
+          QueueUrl                   = aws_sqs_queue.commands.url
+          "MessageBody.$"            = "States.JsonToString($.completion.result.continuation)"
+          "MessageGroupId.$"         = "$.session_id"
+          "MessageDeduplicationId.$" = "$.completion.result.continuation.command_id"
+        }
+        Retry = [{
+          ErrorEquals     = ["Sqs.SdkClientException", "Sqs.ServiceException", "States.Timeout"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+          MaxDelaySeconds = 30
+          JitterStrategy  = "FULL"
+        }]
+        End = true
       }
       MarkFailed = {
         Type     = "Task"

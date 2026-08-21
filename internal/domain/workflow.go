@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -15,6 +17,16 @@ const (
 	WorkflowFailed    WorkflowStatus = "FAILED"
 	WorkflowCancelled WorkflowStatus = "CANCELLED"
 )
+
+const BootstrapContinuationParameter = "continuation_of"
+
+// BootstrapContinuationCommandID deterministically binds the internal
+// bootstrap command to the provisioning workflow while staying within the
+// Step Functions execution-name and command-ID limit.
+func BootstrapContinuationCommandID(provisionWorkflowID string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(provisionWorkflowID)))
+	return "bootstrap-" + hex.EncodeToString(sum[:])[:26]
+}
 
 func (status WorkflowStatus) Valid() bool {
 	switch status {

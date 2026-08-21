@@ -14,7 +14,6 @@ import (
 
 var commandDefinitionPaths = []string{
 	"deploy/discord/rb-command.json",
-	"deploy/discord/admin-command.json",
 }
 
 const discordAPIBaseURL = "https://discord.com/api/v10"
@@ -52,7 +51,7 @@ func run(ctx context.Context) error {
 		return err
 	}
 
-	fmt.Printf("Registered development /rb and /admin commands for guild %s.\n", guildID)
+	fmt.Printf("Registered development /rb commands for guild %s.\n", guildID)
 	return nil
 }
 

@@ -111,7 +111,7 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 	if err := handler.service.RequestArtifactIngest(ctx, actor, request); err != nil {
 		return "", modsStagingUserError(err)
 	}
-	return fmt.Sprintf("**Mod revision queued for validation**\n`%s` has not been accepted yet. The running server was not interrupted. If validation succeeds, revision %d will remain pending until the next start, wake, or restore.", sanitizeCode(attachment.Filename), expectedActiveRevision+1), nil
+	return fmt.Sprintf("**Mod revision queued for validation**\n`%s` has not been accepted yet. The running server was not interrupted. If validation succeeds, revision %d will remain pending until the next start, wake, or restore.\n\nNext: use `/rb status` to verify validation; a failed validation does not schedule a retry.", sanitizeCode(attachment.Filename), expectedActiveRevision+1), nil
 }
 
 func modsStagingUserError(err error) error {

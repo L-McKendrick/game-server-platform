@@ -983,7 +983,7 @@ func TestHandlerGuildManagerConfiguresRolesWithSelectMenu(t *testing.T) {
 
 	handler, _, privateKey := newTestHandler(
 		t,
-		[]string{"correlation-admin-command", "correlation-admin-select"},
+		[]string{"correlation-admin-command", "correlation-admin-access", "correlation-admin-select", "correlation-admin-clear", "correlation-admin-clear-confirm", "correlation-admin-clear-replay"},
 		nil,
 	)
 	menuResponse := executeSignedRequest(
@@ -1000,8 +1000,18 @@ func TestHandlerGuildManagerConfiguresRolesWithSelectMenu(t *testing.T) {
 	var menu interactionResponse
 	decodeResponse(t, menuResponse, &menu)
 	if menu.Type != interactionResponseChannelMessageWithSource || menu.Data == nil || menu.Data.Components == nil ||
-		len(*menu.Data.Components) != 1 || (*menu.Data.Components)[0].Components[0].Type != componentTypeRoleSelect {
+		len(*menu.Data.Components) != 1 || (*menu.Data.Components)[0].Components[0].CustomID != adminMenuCustomID {
 		t.Fatalf("admin menu response = %#v", menu)
+	}
+	accessResponse := executeSignedRequest(t, handler, privateKey, adminComponentBody(
+		"interaction-admin-access", "guild-manager", "32", adminMenuCustomID, componentTypeStringSelect, []string{adminMenuAccess},
+	), testNow)
+	var access interactionResponse
+	decodeResponse(t, accessResponse, &access)
+	if access.Type != interactionResponseUpdateMessage || access.Data == nil || access.Data.Components == nil ||
+		len(*access.Data.Components) != 3 || (*access.Data.Components)[1].Components[0].Type != componentTypeRoleSelect ||
+		len((*access.Data.Components)[1].Components[0].DefaultValues) != 1 {
+		t.Fatalf("admin access response = %#v", access)
 	}
 
 	selectionResponse := executeSignedRequest(
@@ -1015,7 +1025,8 @@ func TestHandlerGuildManagerConfiguresRolesWithSelectMenu(t *testing.T) {
 		!strings.Contains(selection.Data.Content, "Access settings updated") ||
 		!strings.Contains(selection.Data.Content, "<@&role-1>") ||
 		!strings.Contains(selection.Data.Content, "<@&role-2>") ||
-		selection.Data.Components == nil || len(*selection.Data.Components) != 0 {
+		selection.Data.Components == nil || len(*selection.Data.Components) != 3 ||
+		(*selection.Data.Components)[0].Components[0].CustomID != adminMenuCustomID {
 		t.Fatalf("admin selection response = %#v", selection)
 	}
 
@@ -1028,6 +1039,45 @@ func TestHandlerGuildManagerConfiguresRolesWithSelectMenu(t *testing.T) {
 	decodeResponse(t, createResponse, &created)
 	if created.Type != interactionResponseModal || created.Data == nil || created.Data.CustomID != createModalCustomID {
 		t.Fatalf("command after role configuration = %#v", created)
+	}
+
+	promptResponse := executeSignedRequest(t, handler, privateKey, adminComponentBody(
+		"interaction-clear-prompt", "guild-manager", "32", adminRoleClearPromptCustomID, componentTypeButton, nil,
+	), testNow)
+	var prompt interactionResponse
+	decodeResponse(t, promptResponse, &prompt)
+	if prompt.Type != interactionResponseUpdateMessage || prompt.Data == nil ||
+		!strings.Contains(prompt.Data.Content, "Remove all normal role access?") || prompt.Data.Components == nil || len(*prompt.Data.Components) != 2 {
+		t.Fatalf("clear prompt = %#v", prompt)
+	}
+	confirmCustomID := (*prompt.Data.Components)[1].Components[0].CustomID
+	if !strings.HasPrefix(confirmCustomID, adminRoleClearConfirmCustomID+":") {
+		t.Fatalf("revision-bound clear confirmation ID = %q", confirmCustomID)
+	}
+	confirmResponse := executeSignedRequest(t, handler, privateKey, adminComponentBody(
+		"interaction-clear-confirm", "guild-manager", "32", confirmCustomID, componentTypeButton, nil,
+	), testNow)
+	var confirmed interactionResponse
+	decodeResponse(t, confirmResponse, &confirmed)
+	if confirmed.Type != interactionResponseUpdateMessage || confirmed.Data == nil ||
+		!strings.Contains(confirmed.Data.Content, "All normal role access was removed") ||
+		!strings.Contains(confirmed.Data.Content, "normal member access is disabled") || confirmed.Data.Components == nil || len(*confirmed.Data.Components) != 2 {
+		t.Fatalf("clear confirmation = %#v", confirmed)
+	}
+	replayResponse := executeSignedRequest(t, handler, privateKey, adminComponentBody(
+		"interaction-clear-replay", "guild-manager", "32", confirmCustomID, componentTypeButton, nil,
+	), testNow)
+	var replayed interactionResponse
+	decodeResponse(t, replayResponse, &replayed)
+	if replayed.Data == nil || !strings.Contains(replayed.Data.Content, "stale") || !strings.Contains(replayed.Data.Content, "/rb admin") {
+		t.Fatalf("replayed clear confirmation = %#v", replayed)
+	}
+	deniedAfterClear := executeSignedRequest(t, handler, privateKey,
+		createCommandBody("interaction-create-after-clear", "owner-1", "guild-1", "different-channel"), testNow)
+	var denied interactionResponse
+	decodeResponse(t, deniedAfterClear, &denied)
+	if denied.Data == nil || !strings.Contains(denied.Data.Content, "not authorized") {
+		t.Fatalf("normal access after clear = %#v", denied)
 	}
 }
 
@@ -1047,46 +1097,13 @@ func TestHandlerRejectsAccessConfigurationWithoutGuildManagementPermission(t *te
 	}
 }
 
-func TestHandlerAdminRepairCardAutocompleteIsGuildScopedAndManagerOnly(t *testing.T) {
-	t.Parallel()
-	handler, repository, _, notifications, privateKey := newTestHandlerWithQueues(t, nil, nil)
-	seedAutocompleteSession(t, repository, "session-owned", "Owned Session", "owned-session", "owner-1", "guild-1")
-	seedAutocompleteSession(t, repository, "session-other-owner", "Other Session", "other-session", "owner-2", "guild-1")
-	seedAutocompleteSession(t, repository, "session-other-guild", "Elsewhere", "elsewhere", "owner-2", "guild-2")
-	seedHandlerSessionState(t, repository, "session-terminated", "Terminated", "terminated", "owner-2", "guild-1", domain.StateDeleted)
-
-	response := executeSignedRequest(t, handler, privateKey, adminRepairAutocompleteBody("autocomplete-repair", "manager-1", "32"), testNow)
-	var decoded interactionResponse
-	decodeResponse(t, response, &decoded)
-	if decoded.Type != interactionResponseAutocompleteResult || decoded.Data == nil || decoded.Data.Choices == nil {
-		t.Fatalf("admin autocomplete response = %#v", decoded)
-	}
-	values := map[any]bool{}
-	for _, choice := range *decoded.Data.Choices {
-		values[choice.Value] = true
-	}
-	if !values["session-owned"] || !values["session-other-owner"] || values["session-other-guild"] || values["session-terminated"] {
-		t.Fatalf("admin autocomplete values = %#v", values)
-	}
-
-	unauthorized := executeSignedRequest(t, handler, privateKey, adminRepairAutocompleteBody("autocomplete-repair-denied", "member-1", "0"), testNow)
-	var denied interactionResponse
-	decodeResponse(t, unauthorized, &denied)
-	if denied.Type != interactionResponseAutocompleteResult || denied.Data == nil || denied.Data.Choices == nil || len(*denied.Data.Choices) != 0 {
-		t.Fatalf("unauthorized admin autocomplete = %#v", denied)
-	}
-	if len(notifications.Requests()) != 0 {
-		t.Fatalf("autocomplete queued notifications = %#v", notifications.Requests())
-	}
-}
-
 func TestHandlerGuildManagerQueuesIdempotentCurrentCardRepair(t *testing.T) {
 	t.Parallel()
 	handler, repository, _, notifications, privateKey := newTestHandlerWithQueues(
 		t, []string{"correlation-repair-1", "correlation-repair-2"}, nil,
 	)
 	seedAutocompleteSession(t, repository, "session-repair", "Repair Me", "repair-me", "owner-2", "guild-1")
-	body := adminRepairCommandBody("interaction-repair", "manager-1", "32", "session-repair")
+	body := adminComponentBody("interaction-repair", "manager-1", "32", adminRepairSelectCustomID, componentTypeStringSelect, []string{"session-repair"})
 	for attempt := 1; attempt <= 2; attempt++ {
 		response := executeSignedRequest(t, handler, privateKey, body, testNow)
 		var decoded interactionResponse
@@ -1103,7 +1120,7 @@ func TestHandlerGuildManagerQueuesIdempotentCurrentCardRepair(t *testing.T) {
 		t.Fatalf("repair notifications = %#v", requests)
 	}
 
-	denied := executeSignedRequest(t, handler, privateKey, adminRepairCommandBody("interaction-repair-denied", "member-1", "0", "session-repair"), testNow)
+	denied := executeSignedRequest(t, handler, privateKey, adminComponentBody("interaction-repair-denied", "member-1", "0", adminRepairSelectCustomID, componentTypeStringSelect, []string{"session-repair"}), testNow)
 	var deniedResponse interactionResponse
 	decodeResponse(t, denied, &deniedResponse)
 	if deniedResponse.Data == nil || !strings.Contains(deniedResponse.Data.Content, "Manage Server") || len(notifications.Requests()) != 1 {
@@ -1141,6 +1158,41 @@ func TestHandlerListsAndShowsSessionStatus(t *testing.T) {
 	decodeResponse(t, statusResponse, &statusDecoded)
 	if statusDecoded.Data == nil || !strings.Contains(statusDecoded.Data.Content, "Status: Setting up") || strings.Contains(statusDecoded.Data.Content, "session-1") {
 		t.Fatalf("status content = %#v; want readable status without immutable ID", statusDecoded.Data)
+	}
+}
+
+func TestHandlerHelpProvidesFirstRunOverviewAndGuildScopedNextAction(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(t, []string{"correlation-help-first", "correlation-help-overview", "correlation-help-session"}, nil)
+	firstResponse := executeSignedRequest(t, handler, privateKey,
+		commandBody("interaction-help-first", "owner-1", "guild-1", "channel-1", "help", nil), testNow)
+	var first interactionResponse
+	decodeResponse(t, firstResponse, &first)
+	if first.Data == nil || first.Data.Flags&messageFlagEphemeral == 0 ||
+		!strings.Contains(first.Data.Content, "Getting started") || !strings.Contains(first.Data.Content, "non-billable") ||
+		!strings.Contains(first.Data.Content, "/rb start") || strings.Contains(first.Data.Content, "automatic retry") {
+		t.Fatalf("first-run help = %#v", first.Data)
+	}
+
+	seedHandlerSessionState(t, repository, "opaque-help-session", "Help Session", "help-session", "owner-1", "guild-1", domain.StateNew)
+	overviewResponse := executeSignedRequest(t, handler, privateKey,
+		commandBody("interaction-help-overview", "owner-1", "guild-1", "channel-1", "help", nil), testNow)
+	var overview interactionResponse
+	decodeResponse(t, overviewResponse, &overview)
+	if overview.Data == nil || !strings.Contains(overview.Data.Content, "Platform help") || !strings.Contains(overview.Data.Content, "runbook") {
+		t.Fatalf("overview help = %#v", overview.Data)
+	}
+
+	selectedResponse := executeSignedRequest(t, handler, privateKey,
+		commandBody("interaction-help-session", "member-1", "guild-1", "channel-1", "help", []any{map[string]any{
+			"type": applicationCommandOptionString, "name": "session", "value": "opaque-help-session",
+		}}), testNow)
+	var selected interactionResponse
+	decodeResponse(t, selectedResponse, &selected)
+	if selected.Data == nil || !strings.Contains(selected.Data.Content, "Help Session") || !strings.Contains(selected.Data.Content, "/rb start") ||
+		strings.Contains(selected.Data.Content, "opaque-help-session") || !strings.Contains(selected.Data.Content, "no command shown here is queued automatically") {
+		t.Fatalf("selected help = %#v", selected.Data)
 	}
 }
 
@@ -1273,6 +1325,18 @@ func TestConfirmationQueueUncertaintyNeverPromisesRetry(t *testing.T) {
 	}
 }
 
+func TestUnknownCommandErrorIsBoundedAndWarnsWithoutPromisingRetry(t *testing.T) {
+	t.Parallel()
+	handler := &Handler{}
+	message := handler.commandErrorMessage(errors.New("sensitive internal failure"), "safe-reference")
+	if !strings.Contains(message, "Reference: `safe-reference`") ||
+		!strings.Contains(message, "No automatic retry is scheduled") ||
+		!strings.Contains(message, "may remain and incur cost") ||
+		strings.Contains(message, "sensitive internal failure") || strings.Contains(message, "will retry") {
+		t.Fatalf("unknown command message = %q", message)
+	}
+}
+
 func TestHandlerConfiguresAndAcceptsMissionAttachment(t *testing.T) {
 	t.Parallel()
 
@@ -1348,6 +1412,29 @@ func TestHandlerRejectsUnapprovedGuildWithoutCallingService(t *testing.T) {
 	}
 	if len(sessions) != 0 {
 		t.Fatalf("session count = %d; want 0", len(sessions))
+	}
+}
+
+func TestHandlerRejectsNonGuildContextBeforeAuthorizationOrRouting(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, privateKey := newTestHandler(t, nil, nil)
+	body := marshalPayload(map[string]any{
+		"id": "interaction-dm", "application_id": "app-1", "type": interactionTypeApplicationCommand,
+		"channel_id": "dm-channel", "user": map[string]any{"id": "owner-1"},
+		"data": map[string]any{"name": "rb", "options": []any{map[string]any{
+			"type": applicationCommandOptionSubcommand, "name": "help", "options": []any{},
+		}}},
+	})
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || decoded.Data.Flags&messageFlagEphemeral == 0 || !strings.Contains(decoded.Data.Content, "only in a configured Discord server") {
+		t.Fatalf("non-guild response = %#v", decoded)
+	}
+	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+	if err != nil || len(sessions) != 0 {
+		t.Fatalf("sessions = %#v error=%v", sessions, err)
 	}
 }
 
@@ -1891,60 +1978,147 @@ func adminAccessCommandBody(interactionID, ownerID, guildID, channelID string) [
 }
 
 func adminAccessCommandBodyWithPermissions(interactionID, ownerID, guildID, channelID, permissions string) []byte {
+	return rbAdminCommandBody(interactionID, ownerID, guildID, channelID, permissions)
+}
+
+func TestHandlerRBAdminMenuNavigatesOnlyImplementedPolicyAreas(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, _, notifications, privateKey := newTestHandlerWithQueues(t,
+		[]string{"admin-menu-id", "admin-repair-menu-id", "admin-repair-select-id"}, nil)
+	seedAutocompleteSession(t, repository, "session-owned", "Owned Session", "owned-session", "owner-1", "guild-1")
+	seedAutocompleteSession(t, repository, "session-other-owner", "Other Session", "other-session", "owner-2", "guild-1")
+	seedAutocompleteSession(t, repository, "session-other-guild", "Elsewhere", "elsewhere", "owner-2", "guild-2")
+
+	menuResponse := executeSignedRequest(t, handler, privateKey, adminMenuCommandBody("admin-menu", "manager-1", "32"), testNow)
+	var menu interactionResponse
+	decodeResponse(t, menuResponse, &menu)
+	if menu.Type != interactionResponseChannelMessageWithSource || menu.Data == nil || menu.Data.Flags&messageFlagEphemeral == 0 ||
+		menu.Data.Components == nil || len(*menu.Data.Components) != 1 {
+		t.Fatalf("admin menu = %#v", menu)
+	}
+	navigation := (*menu.Data.Components)[0].Components[0]
+	if navigation.CustomID != adminMenuCustomID || navigation.Type != componentTypeStringSelect || len(navigation.Options) != 2 {
+		t.Fatalf("admin navigation = %#v", navigation)
+	}
+	values := map[string]bool{}
+	for _, option := range navigation.Options {
+		values[option.Value] = true
+	}
+	if !values[adminMenuAccess] || !values[adminMenuRepair] || values["costs"] || values["schedule"] || values["duration"] {
+		t.Fatalf("admin menu options = %#v", navigation.Options)
+	}
+
+	repairResponse := executeSignedRequest(t, handler, privateKey, adminComponentBody(
+		"admin-repair-menu", "manager-1", "32", adminMenuCustomID, componentTypeStringSelect, []string{adminMenuRepair},
+	), testNow)
+	var repair interactionResponse
+	decodeResponse(t, repairResponse, &repair)
+	if repair.Type != interactionResponseUpdateMessage || repair.Data == nil || repair.Data.Components == nil || len(*repair.Data.Components) != 2 {
+		t.Fatalf("repair view = %#v", repair)
+	}
+	selector := (*repair.Data.Components)[1].Components[0]
+	if selector.CustomID != adminRepairSelectCustomID || len(selector.Options) != 2 {
+		t.Fatalf("repair selector = %#v", selector)
+	}
+	for _, option := range selector.Options {
+		if option.Value == "session-other-guild" {
+			t.Fatalf("repair selector leaked another guild: %#v", selector.Options)
+		}
+	}
+
+	queued := executeSignedRequest(t, handler, privateKey, adminComponentBody(
+		"admin-repair-select", "manager-1", "32", adminRepairSelectCustomID, componentTypeStringSelect, []string{"session-other-owner"},
+	), testNow)
+	var queuedResponse interactionResponse
+	decodeResponse(t, queued, &queuedResponse)
+	if queuedResponse.Type != interactionResponseUpdateMessage || queuedResponse.Data == nil ||
+		!strings.Contains(queuedResponse.Data.Content, "repair queued") || len(notifications.Requests()) != 1 {
+		t.Fatalf("queued repair = %#v notifications=%#v", queuedResponse, notifications.Requests())
+	}
+}
+
+func TestHandlerRBAdminComponentsRecheckManageGuildAndRejectUnknownValues(t *testing.T) {
+	t.Parallel()
+
+	handler, _, privateKey := newTestHandler(t, []string{"admin-unknown-id", "admin-role-id", "admin-stale-id"}, nil)
+	denied := executeSignedRequest(t, handler, privateKey, adminComponentBody(
+		"admin-component-denied", "member-1", "0", adminMenuCustomID, componentTypeStringSelect, []string{adminMenuAccess},
+	), testNow)
+	var deniedResponse interactionResponse
+	decodeResponse(t, denied, &deniedResponse)
+	if deniedResponse.Data == nil || !strings.Contains(deniedResponse.Data.Content, "Manage Server") || deniedResponse.Data.Components != nil {
+		t.Fatalf("denied admin component = %#v", deniedResponse)
+	}
+
+	unknown := executeSignedRequest(t, handler, privateKey, adminComponentBody(
+		"admin-component-unknown", "manager-1", "32", adminMenuCustomID, componentTypeStringSelect, []string{"costs"},
+	), testNow)
+	var unknownResponse interactionResponse
+	decodeResponse(t, unknown, &unknownResponse)
+	if unknownResponse.Data == nil || !strings.Contains(unknownResponse.Data.Content, "not available") {
+		t.Fatalf("unknown admin component = %#v", unknownResponse)
+	}
+
+	unverified := executeSignedRequest(t, handler, privateKey, adminComponentBody(
+		"admin-role-unverified", "manager-1", "32", adminRoleSelectCustomID, componentTypeRoleSelect, []string{"forged-role"},
+	), testNow)
+	var unverifiedResponse interactionResponse
+	decodeResponse(t, unverified, &unverifiedResponse)
+	if unverifiedResponse.Data == nil || !strings.Contains(unverifiedResponse.Data.Content, "could not verify") {
+		t.Fatalf("unverified role response = %#v", unverifiedResponse)
+	}
+
+	stale := executeSignedRequest(t, handler, privateKey, adminComponentBody(
+		"admin-repair-stale", "manager-1", "32", adminRepairSelectCustomID, componentTypeStringSelect, []string{"missing-session"},
+	), testNow)
+	var staleResponse interactionResponse
+	decodeResponse(t, stale, &staleResponse)
+	if staleResponse.Data == nil || !strings.Contains(staleResponse.Data.Content, "control is stale") ||
+		!strings.Contains(staleResponse.Data.Content, "/rb admin") || strings.Contains(staleResponse.Data.Content, "missing-session") {
+		t.Fatalf("stale admin response = %#v", staleResponse)
+	}
+}
+
+func rbAdminCommandBody(interactionID, ownerID, guildID, channelID, permissions string) []byte {
 	return marshalPayload(map[string]any{
 		"id": interactionID, "application_id": "app-1", "type": interactionTypeApplicationCommand,
 		"guild_id": guildID, "channel_id": channelID,
 		"member": map[string]any{"user": map[string]any{"id": ownerID}, "roles": []string{}, "permissions": permissions},
 		"data": map[string]any{
-			"name": "admin",
+			"name": "rb",
 			"options": []any{map[string]any{
-				"type": applicationCommandOptionSubcommand, "name": "access",
+				"type": applicationCommandOptionSubcommand, "name": "admin",
 			}},
 		},
 	})
 }
 
-func adminRepairCommandBody(interactionID, ownerID, permissions, sessionReference string) []byte {
-	return marshalPayload(map[string]any{
-		"id": interactionID, "application_id": "app-1", "type": interactionTypeApplicationCommand,
-		"guild_id": "guild-1", "channel_id": "channel-other",
-		"member": map[string]any{"user": map[string]any{"id": ownerID}, "roles": []string{}, "permissions": permissions},
-		"data": map[string]any{
-			"name": "admin",
-			"options": []any{map[string]any{
-				"type": applicationCommandOptionSubcommand, "name": "repair-card",
-				"options": []any{map[string]any{
-					"type": applicationCommandOptionString, "name": "session", "value": sessionReference,
-				}},
-			}},
-		},
-	})
+func adminMenuCommandBody(interactionID, ownerID, permissions string) []byte {
+	return rbAdminCommandBody(interactionID, ownerID, "guild-1", "channel-other", permissions)
 }
 
-func adminRepairAutocompleteBody(interactionID, ownerID, permissions string) []byte {
+func adminComponentBody(interactionID, ownerID, permissions, customID string, componentType int, values []string) []byte {
 	return marshalPayload(map[string]any{
-		"id": interactionID, "application_id": "app-1", "type": interactionTypeApplicationCommandAutocomplete,
+		"id": interactionID, "application_id": "app-1", "type": interactionTypeMessageComponent,
 		"guild_id": "guild-1", "channel_id": "channel-other",
 		"member": map[string]any{"user": map[string]any{"id": ownerID}, "roles": []string{}, "permissions": permissions},
-		"data": map[string]any{
-			"name": "admin",
-			"options": []any{map[string]any{
-				"type": applicationCommandOptionSubcommand, "name": "repair-card",
-				"options": []any{map[string]any{
-					"type": applicationCommandOptionString, "name": "session", "value": "", "focused": true,
-				}},
-			}},
-		},
+		"data":   map[string]any{"custom_id": customID, "component_type": componentType, "values": values},
 	})
 }
 
 func adminRoleSelectionBody(interactionID, ownerID, guildID, channelID string, roleIDs []string) []byte {
+	resolved := map[string]any{}
+	for _, roleID := range roleIDs {
+		resolved[roleID] = map[string]any{"id": roleID, "name": "Allowed role"}
+	}
 	return marshalPayload(map[string]any{
 		"id": interactionID, "application_id": "app-1", "type": interactionTypeMessageComponent,
 		"guild_id": guildID, "channel_id": channelID,
 		"member": map[string]any{"user": map[string]any{"id": ownerID}, "roles": []string{}, "permissions": "32"},
 		"data": map[string]any{
 			"custom_id": adminRoleSelectCustomID, "component_type": componentTypeRoleSelect, "values": roleIDs,
+			"resolved": map[string]any{"roles": resolved},
 		},
 	})
 }

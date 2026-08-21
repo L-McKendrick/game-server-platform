@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -58,18 +59,71 @@ func (service *Service) Authorize(ctx context.Context, guildID string, channelID
 	return domain.ErrForbidden
 }
 
+// AllowedRoles returns the effective role set shown by the administration UI.
+// A persisted empty set intentionally disables normal-member access while
+// preserving the separate Administrator/Manage Server recovery path.
+func (service *Service) AllowedRoles(ctx context.Context, guildID string) ([]string, int64, error) {
+	policy, err := service.repository.GetAccessPolicy(ctx, strings.TrimSpace(guildID))
+	if err == nil {
+		return append([]string(nil), policy.AllowedRoleIDs...), policy.Version, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return nil, 0, err
+	}
+	roles := make([]string, 0, len(service.fallbackRoles))
+	for roleID := range service.fallbackRoles {
+		roles = append(roles, roleID)
+	}
+	sort.Strings(roles)
+	return roles, 0, nil
+}
+
+// ClearRoles removes normal-member access only when the policy revision shown
+// by the confirmation is still current. Version zero binds the deployment
+// fallback before the guild has persisted its first policy.
+func (service *Service) ClearRoles(ctx context.Context, guildID, userID string, canManageGuild bool, expectedVersion int64) (domain.GuildAccessPolicy, error) {
+	if !canManageGuild {
+		return domain.GuildAccessPolicy{}, domain.ErrForbidden
+	}
+	current, err := service.repository.GetAccessPolicy(ctx, strings.TrimSpace(guildID))
+	if err == nil {
+		if current.Version != expectedVersion {
+			return domain.GuildAccessPolicy{}, domain.ErrConflict
+		}
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return domain.GuildAccessPolicy{}, err
+	} else if expectedVersion != 0 {
+		return domain.GuildAccessPolicy{}, domain.ErrConflict
+	}
+	policy := domain.GuildAccessPolicy{
+		GuildID: strings.TrimSpace(guildID), Version: expectedVersion + 1,
+		UpdatedBy: strings.TrimSpace(userID), UpdatedAt: service.clock.Now().UTC(),
+	}
+	if err := policy.Validate(); err != nil {
+		return domain.GuildAccessPolicy{}, err
+	}
+	if err := service.repository.SaveAccessPolicy(ctx, policy, expectedVersion); err != nil {
+		return domain.GuildAccessPolicy{}, err
+	}
+	return policy, nil
+}
+
 func (service *Service) Configure(ctx context.Context, guildID string, userID string, canManageGuild bool, roleIDs []string, channelIDs []string) (domain.GuildAccessPolicy, error) {
 	if !canManageGuild {
 		return domain.GuildAccessPolicy{}, domain.ErrForbidden
 	}
 	expectedVersion := int64(0)
+	normalizedRoles, normalizedChannels := unique(roleIDs), unique(channelIDs)
 	if current, err := service.repository.GetAccessPolicy(ctx, guildID); err == nil {
+		if slices.Equal(unique(current.AllowedRoleIDs), normalizedRoles) && slices.Equal(unique(current.AllowedChannelIDs), normalizedChannels) {
+			return current, nil
+		}
 		expectedVersion = current.Version
 	} else if !errors.Is(err, domain.ErrNotFound) {
 		return domain.GuildAccessPolicy{}, err
 	}
 	policy := domain.GuildAccessPolicy{
-		GuildID: strings.TrimSpace(guildID), AllowedRoleIDs: unique(roleIDs), AllowedChannelIDs: unique(channelIDs),
+		GuildID: strings.TrimSpace(guildID), AllowedRoleIDs: normalizedRoles, AllowedChannelIDs: normalizedChannels,
 		Version: expectedVersion + 1, UpdatedBy: strings.TrimSpace(userID), UpdatedAt: service.clock.Now().UTC(),
 	}
 	if err := policy.Validate(); err != nil {

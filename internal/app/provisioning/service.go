@@ -2,6 +2,7 @@ package provisioning
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -72,12 +73,13 @@ type TaskRequest struct {
 }
 
 type TaskResult struct {
-	SessionID  string `json:"session_id"`
-	WorkflowID string `json:"workflow_id"`
-	Ready      bool   `json:"ready,omitempty"`
-	Managed    bool   `json:"managed,omitempty"`
-	State      string `json:"state,omitempty"`
-	Warning    string `json:"warning,omitempty"`
+	SessionID    string                  `json:"session_id"`
+	WorkflowID   string                  `json:"workflow_id"`
+	Ready        bool                    `json:"ready,omitempty"`
+	Managed      bool                    `json:"managed,omitempty"`
+	State        string                  `json:"state,omitempty"`
+	Warning      string                  `json:"warning,omitempty"`
+	Continuation *domain.CommandEnvelope `json:"continuation,omitempty"`
 }
 
 type Service struct {
@@ -244,34 +246,91 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 	if err != nil {
 		return TaskResult{}, err
 	}
-	if workflow.Status == domain.WorkflowSucceeded {
-		return result(session, workflow), nil
+	warning := ""
+	if workflow.Status != domain.WorkflowSucceeded {
+		if session.ActiveWorkflowID != workflow.ID || workflow.Type != domain.ProvisionWorkflowType {
+			return TaskResult{}, domain.ErrConflict
+		}
+		expectedVersion := session.Version
+		now := service.clock.Now().UTC()
+		session.ClearFailure()
+		if err := session.CompleteInfrastructureProvisioning(workflow.ID, now); err != nil {
+			return TaskResult{}, err
+		}
+		workflow.Status = domain.WorkflowSucceeded
+		workflow.CurrentStage = "InfrastructureReady"
+		workflow.CompletedAt = now
+		eventID, err := service.ids.New(now)
+		if err != nil {
+			return TaskResult{}, err
+		}
+		event := domain.NewProvisioningEvent(eventID, domain.EventInfrastructureReady, "InfrastructureReady", workflow, session, now)
+		if err := service.workflows.CompleteWorkflow(ctx, session, expectedVersion, workflow, event); err != nil {
+			return TaskResult{}, err
+		}
+		if notifyErr := sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now); notifyErr != nil {
+			// Card delivery remains secondary to the durable continuation.
+			warning = notifyErr.Error()
+		}
 	}
-	if session.ActiveWorkflowID != workflow.ID || workflow.Type != "ProvisionSession" {
+	return service.ensureBootstrapContinuation(ctx, session, workflow, warning)
+}
+
+func (service *Service) ensureBootstrapContinuation(ctx context.Context, session domain.Session, provision domain.Workflow, warning string) (TaskResult, error) {
+	if provision.Type != domain.ProvisionWorkflowType || provision.Status != domain.WorkflowSucceeded {
 		return TaskResult{}, domain.ErrConflict
 	}
-	expectedVersion := session.Version
-	now := service.clock.Now().UTC()
-	session.ClearFailure()
-	if err := session.CompleteInfrastructureProvisioning(workflow.ID, now); err != nil {
+	commandID := domain.BootstrapContinuationCommandID(provision.ID)
+	bootstrap, err := service.workflows.GetWorkflow(ctx, session.ID, commandID)
+	if err == nil {
+		if bootstrap.Type != domain.BootstrapWorkflowType || bootstrap.RequestedBy != provision.RequestedBy || bootstrap.CorrelationID != provision.CorrelationID {
+			return TaskResult{}, domain.ErrIdempotencyConflict
+		}
+		response := result(session, provision)
+		response.Warning = warning
+		response.Continuation = bootstrapContinuationCommand(session, provision, bootstrap)
+		return response, nil
+	}
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return TaskResult{}, err
 	}
-	workflow.Status = domain.WorkflowSucceeded
-	workflow.CurrentStage = "InfrastructureReady"
-	workflow.CompletedAt = now
+	if session.ActiveWorkflowID != "" {
+		return TaskResult{}, domain.ErrWorkflowLocked
+	}
+	now := service.clock.Now().UTC()
+	expectedVersion := session.Version
+	if err := session.AcquireBootstrapWorkflowLock(commandID, 8*time.Hour, now); err != nil {
+		return TaskResult{}, err
+	}
+	bootstrap = domain.Workflow{
+		ID: commandID, SessionID: session.ID, Type: domain.BootstrapWorkflowType, Status: domain.WorkflowPending,
+		RequestedBy: provision.RequestedBy, CorrelationID: provision.CorrelationID,
+		ExpectedVersion: expectedVersion, StartedAt: now, LeaseExpiresAt: now.Add(8 * time.Hour),
+	}
 	eventID, err := service.ids.New(now)
 	if err != nil {
 		return TaskResult{}, err
 	}
-	event := domain.NewProvisioningEvent(eventID, domain.EventInfrastructureReady, "InfrastructureReady", workflow, session, now)
-	if err := service.workflows.CompleteWorkflow(ctx, session, expectedVersion, workflow, event); err != nil {
+	event := domain.NewWorkflowEvent(eventID, domain.EventWorkflowStarted, provision.CorrelationID,
+		domain.Actor{Type: domain.ActorTypeSystem, ID: domain.ProvisionWorkflowType}, session, bootstrap, now)
+	if err := service.workflows.AcquireWorkflow(ctx, session, expectedVersion, bootstrap, event); err != nil {
 		return TaskResult{}, err
 	}
-	response := result(session, workflow)
-	if notifyErr := sessioncard.EnqueueProgress(ctx, service.notifications, session, workflow, now); notifyErr != nil {
-		response.Warning = notifyErr.Error()
-	}
+	response := result(session, provision)
+	response.Warning = warning
+	response.Continuation = bootstrapContinuationCommand(session, provision, bootstrap)
 	return response, nil
+}
+
+func bootstrapContinuationCommand(session domain.Session, provision, bootstrap domain.Workflow) *domain.CommandEnvelope {
+	return &domain.CommandEnvelope{
+		SchemaVersion: 1, CommandID: bootstrap.ID, CommandType: domain.CommandBootstrapServer,
+		RequestedAt: bootstrap.StartedAt,
+		Actor:       domain.CommandActor{DiscordUserID: provision.RequestedBy, GuildID: session.GuildID, ChannelID: session.ChannelID},
+		SessionID:   session.ID, IdempotencyKey: "workflow-continuation:" + provision.ID,
+		CorrelationID: provision.CorrelationID,
+		Parameters:    map[string]string{domain.BootstrapContinuationParameter: provision.ID},
+	}
 }
 
 func (service *Service) fail(ctx context.Context, request TaskRequest) (TaskResult, error) {

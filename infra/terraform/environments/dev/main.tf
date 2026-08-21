@@ -54,13 +54,13 @@ variable "discord_allowed_guild_ids" {
 }
 
 variable "discord_allowed_role_ids" {
-  description = "Optional bootstrap fallback role IDs; /admin access replaces these at runtime."
+  description = "Optional bootstrap fallback role IDs; /rb admin access replaces these at runtime."
   type        = set(string)
   default     = []
 }
 
 variable "discord_allowed_channel_ids" {
-  description = "Optional bootstrap fallback channel IDs; /admin access replaces these at runtime."
+  description = "Optional bootstrap fallback channel IDs; /rb admin access replaces these at runtime."
   type        = set(string)
   default     = []
 }
@@ -281,7 +281,6 @@ data "aws_iam_policy_document" "discord_lambda" {
     actions   = ["sqs:SendMessage"]
     resources = [aws_sqs_queue.notifications.arn]
   }
-
 
   statement {
     sid = "RuntimeLogDelivery"

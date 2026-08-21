@@ -28,7 +28,9 @@ The lifecycle state machines are explicit `PhaseNotImplemented` definitions and 
 Administrator, role, and channel IDs do not need to be Terraform inputs. After deployment, a Discord server administrator runs:
 
 ```text
-/admin access
+/rb admin
 ```
 
-Discord responds with a role select menu. The selected role IDs are stored in DynamoDB and used immediately by the interaction Lambda.
+Discord responds with a protected component menu. Its access view can replace
+the complete allowed-role set or, after confirmation, remove normal-role access.
+The persisted policy is used immediately by the interaction Lambda.

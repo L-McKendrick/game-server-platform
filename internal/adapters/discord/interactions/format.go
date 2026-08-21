@@ -64,7 +64,7 @@ func (discordRenderer) sessionStatus(session domain.Session, players *domain.Pla
 func (discordRenderer) sessionList(sessions []domain.Session, page int, totalPages int, filterLabel string) string {
 	if len(sessions) == 0 {
 		if filterLabel == "Active sessions" {
-			return "You do not have any active sessions. Use `/rb create` to create one, or choose the terminated filter to view deleted records."
+			return "You do not have any active sessions in this server. Use `/rb create` to open the non-billable setup flow, `/rb help` for the short lifecycle guide, or choose the terminated filter to view deleted records."
 		}
 		return fmt.Sprintf("No sessions match **%s**. Choose another lifecycle filter.", sanitizeInline(filterLabel))
 	}
