@@ -54,7 +54,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
    - **9.4** [x] Support explicitly configured vanilla Arma sessions without a mod preset or Steam account.
      - **9.4.1** [x] Add a persisted, backward-compatible vanilla-session configuration flag and expose it through Discord configuration/status output.
      - **9.4.2** [x] Make a configured mission sufficient for vanilla-session readiness while retaining the preset requirement for modded sessions.
-     - **9.4.3** [x] Bootstrap vanilla sessions with anonymous SteamCMD and skip all preset, Workshop, and Steam-secret access.
+     - **9.4.3** [x] Bootstrap vanilla sessions with the shared cached Steam authorization while skipping all preset and Workshop processing.
      - **9.4.4** [x] Preserve vanilla intent through archive manifests and restore validation.
      - **9.4.5** [x] Add focused domain, application, Discord, persistence, bootstrap, and archive/restore regression coverage.
 
@@ -74,7 +74,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **10.3.1** [x] Define and store the encrypted, versioned Steam authorization-cache contract with least-privilege access, serialized mutation, rollback, redaction, and explicit reauthorization state.
       - **10.3.2** [x] Add a short-lived operator enrollment and reauthorization procedure that never carries passwords or Guard codes through Discord, workflows, Lambda configuration, SSM command text, or persistent logs.
       - **10.3.3** [x] Inject cached `config.vdf` only during authenticated downloads, use username-only login, preserve valid updates, and remove authentication material before launch on every exit path.
-      - **10.3.4** [x] Fail closed on renewed Steam Guard challenges, provide operator-safe guidance, and preserve anonymous vanilla behavior.
+      - **10.3.4** [x] Fail closed on renewed Steam Guard challenges, provide operator-safe guidance, and preserve Workshop-free vanilla behavior.
       - **10.3.5** [x] Add replacement-host reuse, invalidation, concurrency, cleanup, redaction, archive/restore, and vanilla regression coverage plus the operating runbook.
 
 11. **Production Hardening — Pending**
@@ -149,6 +149,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.8.8** [x] Prevent bootstrap worker package/configuration drift, report the exact startup mismatch, and add a non-mutating deployment verification path before workflow retry.
       - **12.8.9** [x] Grant the Discord interaction role the DynamoDB condition-check permission required by atomic archive and termination confirmations.
       - **12.8.10** [x] Preserve Discord role context when confirmed archive and termination commands cross the asynchronous command boundary.
+      - **12.8.11** [x] Use the cached Steam authorization for the Arma server package in both vanilla and modded bootstrap while keeping vanilla Workshop-free.
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.

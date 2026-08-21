@@ -3,8 +3,8 @@
 ## State and Objective
 
 Phases 1-10 are complete. Phase 11 remains pending under the approved Phase 12
-reorder. Bootstrap deployment-drift task 12.8.8 and confirmation fixes 12.8.9
-and 12.8.10 are complete on
+reorder. Bootstrap deployment-drift task 12.8.8, confirmation fixes 12.8.9
+and 12.8.10, and vanilla Steam authorization fix 12.8.11 are complete on
 `codex/fix-bootstrap-worker-drift`. The pre-existing uncommitted Phase 12.9 work
 is preserved; reset task 12.9.7 remains the next planned feature task.
 
@@ -25,6 +25,8 @@ is preserved; reset task 12.9.7 remains the next planned feature task.
 - Confirmed archive and termination commands now preserve the invoking member's
   Discord roles across the FIFO boundary so command-worker reauthorization does
   not reject an already authorized owner as forbidden.
+- Vanilla and modded bootstrap now use the same cached Steam authorization for
+  the Arma server package; vanilla continues to skip presets and Workshop.
 - The current packages are built locally but no Terraform plan was created or
   applied and no failed workflow was retried. Deployment still requires review
   and approval of a fresh saved plan.
@@ -82,6 +84,9 @@ is preserved; reset task 12.9.7 remains the next planned feature task.
 - The confirmed-command role-context correction also requires a freshly
   packaged Discord interaction Lambda. Previously queued messages without roles
   cannot be repaired by redrive; create a new confirmation after deployment.
+- The vanilla Steam authorization correction requires a fresh bootstrap-worker
+  package and bootstrap-script S3 object deployment before retrying `test-8`;
+  its running EC2 instance and retained EBS volume continue to incur cost.
 - The user will run the credential-bearing deployment and Discord registration.
   Create and review a fresh release plan after packaging. It must include the
   changed Lambda packages plus `aws_sfn_state_machine.provision_session` and

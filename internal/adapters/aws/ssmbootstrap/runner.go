@@ -186,10 +186,6 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || session.MissionObjectKey == "" || (!session.Vanilla && presetObjectKey == "") {
 		return "", fmt.Errorf("instance, data volume, mission, and a preset for modded sessions are required")
 	}
-	metadataTableName, steamAuthSecretID := runner.config.MetadataTableName, runner.config.SteamAuthSecretID
-	if session.Vanilla {
-		metadataTableName, steamAuthSecretID = "", ""
-	}
 	values := map[string]string{
 		"SESSION_ID_B64":        session.ID,
 		"DISPLAY_NAME_B64":      session.DisplayName,
@@ -199,8 +195,8 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 		"PRESET_REVISION_B64":   fmt.Sprintf("%d", presetRevision),
 		"PRESET_ROLLBACK_B64":   fmt.Sprintf("%t", rollback),
 		"ASSETS_BUCKET_B64":     runner.config.AssetsBucket,
-		"METADATA_TABLE_B64":    metadataTableName,
-		"STEAM_AUTH_SECRET_B64": steamAuthSecretID,
+		"METADATA_TABLE_B64":    runner.config.MetadataTableName,
+		"STEAM_AUTH_SECRET_B64": runner.config.SteamAuthSecretID,
 		"AWS_REGION_B64":        runner.config.Region,
 		"TEAMSPEAK_VERSION_B64": runner.config.TeamSpeakVersion,
 	}

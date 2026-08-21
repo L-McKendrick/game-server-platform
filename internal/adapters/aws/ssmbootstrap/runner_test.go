@@ -152,7 +152,7 @@ func TestGeneratedCommandPassesBashSyntaxCheck(t *testing.T) {
 	assertBashSyntax(t, []byte(script))
 }
 
-func TestVanillaCommandUsesAnonymousModeWithoutPresetOrSecretIdentifier(t *testing.T) {
+func TestVanillaCommandUsesSteamAuthorizationWithoutPreset(t *testing.T) {
 	t.Parallel()
 	runner, err := New(&fakeSSM{}, testConfig())
 	if err != nil {
@@ -168,13 +168,13 @@ func TestVanillaCommandUsesAnonymousModeWithoutPresetOrSecretIdentifier(t *testi
 		t.Fatal(err)
 	}
 	if !strings.Contains(script, "export VANILLA_MODE=true") {
-		t.Fatal("vanilla command did not enable anonymous bootstrap mode")
+		t.Fatal("vanilla command did not enable vanilla content mode")
 	}
-	if strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(testConfig().SteamAuthSecretID))) {
-		t.Fatal("vanilla command included the Steam secret identifier")
+	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(testConfig().SteamAuthSecretID))) {
+		t.Fatal("vanilla command omitted the Steam authorization secret identifier")
 	}
-	if strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(testConfig().MetadataTableName))) {
-		t.Fatal("vanilla command included the Steam authorization-state table")
+	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(testConfig().MetadataTableName))) {
+		t.Fatal("vanilla command omitted the Steam authorization-state table")
 	}
 	assertBashSyntax(t, []byte(script))
 }
@@ -185,12 +185,12 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"get-secret-value", "put-secret-value", "AWSCURRENT", "source_version_id", "config_sha256", "STEAM_AUTH#CACHE", "lease_expires_at < :now", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "login anonymous", "VANILLA_MODE", "PRESET_REVISION", "PRESET_ROLLBACK", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "revision-$PRESET_REVISION.complete", "mod-revisions/revision-", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
+	for _, required := range []string{"get-secret-value", "put-secret-value", "AWSCURRENT", "source_version_id", "config_sha256", "STEAM_AUTH#CACHE", "lease_expires_at < :now", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "VANILLA_MODE", "PRESET_REVISION", "PRESET_ROLLBACK", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "revision-$PRESET_REVISION.complete", "mod-revisions/revision-", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
 		if !strings.Contains(string(script), required) {
 			t.Errorf("script missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{".password", "STEAM_SECRET_ID", "steam_guard_code", "login \"%s\" \"%s\""} {
+	for _, forbidden := range []string{".password", "STEAM_SECRET_ID", "steam_guard_code", "login anonymous", "login \"%s\" \"%s\""} {
 		if strings.Contains(string(script), forbidden) {
 			t.Errorf("script contains legacy credential behavior %q", forbidden)
 		}

@@ -26,7 +26,7 @@ Command dispatch is intentionally single-attempt because Systems Manager Run Com
   path before game launch or exit.
 - The non-secret bootstrap script is deployed as a content-addressed, versioned S3 artifact; its short SSM launcher is kept below 4 KiB.
 - Mission input is always read from the session-scoped S3 prefix. Modded sessions also require a launcher preset; explicitly configured vanilla sessions require no preset. SSM output is stored under the session log prefix.
-- Vanilla sessions use `login anonymous` with the public Arma 3 dedicated-server app, do not select the Creator DLC beta branch, and skip Steam authorization-cache access and Workshop processing entirely.
+- Vanilla sessions use the same cached Steam authorization as modded sessions for the Arma 3 dedicated-server app, do not select the Creator DLC beta branch, and skip preset and Workshop processing entirely.
 - Steam Guard challenges fail closed with `ERR_STEAM_REAUTH_REQUIRED` and
   require the local MFA-gated operator enrollment procedure before retry.
 - Workshop content is read from the authenticated Steam user's persistent library under `/srv/game-server/home/Steam/steamapps/workshop`.

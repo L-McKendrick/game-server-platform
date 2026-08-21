@@ -122,6 +122,6 @@ quarantine, and cleanup gates. Terraform validation covers the scheduled
 worker, least-privilege boundaries, redrive allow policies, alarms, and Steam
 authorization roles. Steam cache tests cover redaction, stable reauthorization,
 serialized replacement-host reuse, exit cleanup, archive/restore scrubbing,
-and anonymous vanilla behavior. Live redrive, quarantine, cleanup, restore,
+and Workshop-free vanilla behavior. Live redrive, quarantine, cleanup, restore,
 Steam enrollment/download, or Terraform apply requires a separate
 operator-approved exercise.

@@ -137,7 +137,6 @@ link_ephemeral_steam_path() {
 
 begin_steam_auth() {
   local response payload config_b64 expected_sha actual_sha config_size
-  [ "$VANILLA_MODE" = false ] || return 0
   [ -n "$METADATA_TABLE" ] && [ -n "$STEAM_AUTH_SECRET_ID" ] || { printf 'ERR_STEAM_REAUTH_REQUIRED: Steam authorization cache is not configured.\n' >&2; return 42; }
   STEAM_AUTH_ROOT="$(mktemp -d /run/gsp-steam-auth.XXXXXX)"
   chmod 700 "$STEAM_AUTH_ROOT"
@@ -256,12 +255,6 @@ trap 'exit 143' TERM
 
 steam_login_file() {
   local target="$1" escaped_user
-  if [ "$VANILLA_MODE" = true ]; then
-    printf 'login anonymous\n' >> "$target"
-    chmod 600 "$target"
-    chown steam:steam "$target"
-    return 0
-  fi
   $STEAM_AUTH_ACTIVE || { printf 'ERR_STEAM_REAUTH_REQUIRED: Steam authorization cache is not active.\n' >&2; return 42; }
   escaped_user="${STEAM_AUTH_USERNAME//\\/\\\\}"; escaped_user="${escaped_user//\"/\\\"}"
   printf 'login "%s"\n' "$escaped_user" >> "$target"
@@ -274,22 +267,18 @@ run_steamcmd() {
   local runfile="$1" output_file code
   output_file="${STEAM_AUTH_ROOT:-/run}/steamcmd-output.$$.log"
   set +e
-  if [ "$VANILLA_MODE" = true ]; then
-    runuser -u steam -- "$ROOT/steamcmd/steamcmd.sh" +runscript "$runfile" >"$output_file" 2>&1
-  else
-    runuser -u steam -- env HOME="$STEAM_AUTH_ROOT/home" "$ROOT/steamcmd/steamcmd.sh" +runscript "$runfile" >"$output_file" 2>&1
-  fi
+  runuser -u steam -- env HOME="$STEAM_AUTH_ROOT/home" "$ROOT/steamcmd/steamcmd.sh" +runscript "$runfile" >"$output_file" 2>&1
   code=$?
   set -e
-  if [ "$VANILLA_MODE" = false ] && grep -Eqi 'Steam Guard|two[- ]factor|Account Logon Denied|InvalidPassword|Invalid Password|login failure|password required' "$output_file"; then
+  if grep -Eqi 'Steam Guard|two[- ]factor|Account Logon Denied|InvalidPassword|Invalid Password|login failure|password required' "$output_file"; then
     STEAM_AUTH_VALID=false
     mark_steam_reauthorization_required
     rm -f -- "$output_file"
     printf 'ERR_STEAM_REAUTH_REQUIRED: Steam authorization requires operator re-enrollment.\n' >&2
     return 42
   fi
-  if [ "$VANILLA_MODE" = false ] && grep -Eqi 'Logged in OK|Waiting for user info.*OK' "$output_file"; then STEAM_AUTH_VALID=true; fi
-  if [ "$VANILLA_MODE" = false ] && [ "$code" -eq 0 ]; then STEAM_AUTH_VALID=true; fi
+  if grep -Eqi 'Logged in OK|Waiting for user info.*OK' "$output_file"; then STEAM_AUTH_VALID=true; fi
+  if [ "$code" -eq 0 ]; then STEAM_AUTH_VALID=true; fi
   rm -f -- "$output_file"
   if [ "$code" -ne 0 ]; then
     log "SteamCMD download failed without exposing its raw output"
@@ -490,7 +479,7 @@ mkdir -p "$STATE_DIR" "$LOG_DIR"
 exec 9>"$STATE_DIR/bootstrap.lock"
 flock -w 30 9
 for stage in install_steamcmd install_arma install_workshop deploy_content install_teamspeak; do
-	if [ "$stage" = install_arma ] && [ "$VANILLA_MODE" = false ] && ! $STEAM_AUTH_ACTIVE; then begin_steam_auth; fi
+	if [ "$stage" = install_arma ] && ! $STEAM_AUTH_ACTIVE; then begin_steam_auth; fi
 	case "$stage" in
 		install_steamcmd) checkpoint GAME_SERVER_INSTALLED;;
 		install_workshop) checkpoint MODS_APPLIED;;
