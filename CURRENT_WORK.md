@@ -9,6 +9,10 @@ task 12.8.12, and explicit create-game selection task 12.8.13 are complete on
 `codex/fix-bootstrap-worker-drift`. The pre-existing uncommitted Phase 12.9 work
 is preserved; reset task 12.9.7 remains the next planned feature task.
 
+Repository handoff guidance now requires every state-changing development turn
+to end `CURRENT_WORK.md` with concise, change-specific application commands and
+to remove stale or redundant deployment steps.
+
 ## Bootstrap Incident Fix
 
 - Live bootstrap failed during Lambda initialization because an older worker
@@ -114,7 +118,7 @@ is preserved; reset task 12.9.7 remains the next planned feature task.
   are the known development targets. No bot token was retrieved and no final
   command registration or live-guild acceptance was performed.
 
-## Operator Commands
+## Commands to Apply Current Changes
 
 From the repository root in PowerShell:
 
@@ -125,9 +129,12 @@ $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-8-final.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-12-8-final.tfplan
-# Apply only after separate approval of that exact saved plan.
+terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-8-current.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-12-8-current.tfplan
+# Apply only after reviewing and approving that exact saved plan.
+terraform -chdir=infra/terraform/environments/dev apply phase-12-8-current.tfplan
+
+./scripts/verify-bootstrap-worker-deployment.ps1
 
 ./scripts/register-discord-command.ps1 `
   -ApplicationId "1533676701354299402" `

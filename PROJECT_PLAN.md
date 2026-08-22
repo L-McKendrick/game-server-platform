@@ -152,6 +152,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.8.11** [x] Use the cached Steam authorization for the Arma server package in both vanilla and modded bootstrap while keeping vanilla Workshop-free.
       - **12.8.12** [x] Preserve uploaded mission basenames and polish public-card heading order and section spacing.
       - **12.8.13** [x] Require an explicit supported game when opening `/rb create` and preserve that selection through submission.
+      - **12.8.14** [x] Require change-specific operator application commands in every state-changing development handoff.
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.
