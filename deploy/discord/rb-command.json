@@ -6,7 +6,18 @@
     {
       "type": 1,
       "name": "create",
-      "description": "Open the guided Arma 3 session setup"
+      "description": "Open guided setup for a supported game",
+      "options": [
+        {
+          "type": 3,
+          "name": "game",
+          "description": "Game server to create",
+          "required": true,
+          "choices": [
+            {"name": "Arma 3", "value": "arma-3"}
+          ]
+        }
+      ]
     },
     {
       "type": 1,

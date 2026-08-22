@@ -366,7 +366,12 @@ func (handler *Handler) ServeHTTP(
 			writeInteractionMessage(writer, message)
 			return
 		}
-		writeCreateModal(writer)
+		gameType, err := createGameType(payload)
+		if err != nil {
+			writeInteractionMessage(writer, err.Error())
+			return
+		}
+		writeCreateModal(writer, gameType)
 		return
 	}
 	if payload.isRBSetupCommand() {

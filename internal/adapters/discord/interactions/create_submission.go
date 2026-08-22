@@ -13,6 +13,7 @@ import (
 )
 
 type createModalSubmission struct {
+	gameType    string
 	name        string
 	description string
 	modded      bool
@@ -40,7 +41,7 @@ func (handler *Handler) submitCreateModal(
 		IdempotencyKey: keyPrefix + ":create",
 		DisplayName:    submission.name,
 		Description:    submission.description,
-		GameType:       "arma3",
+		GameType:       submission.gameType,
 		GuildID:        strings.TrimSpace(payload.GuildID),
 		ChannelID:      strings.TrimSpace(payload.ChannelID),
 	})
@@ -128,7 +129,7 @@ func parseCreateModalSubmission(
 		return createModalSubmission{}, newUserError("The creation form is malformed or expired. Run `/rb create` again.")
 	}
 
-	var submission createModalSubmission
+	var submission = createModalSubmission{gameType: "arma3"}
 	seen := make(map[string]bool, 5)
 	for _, label := range payload.Data.Components {
 		if label.Type != componentTypeLabel || label.Component == nil {

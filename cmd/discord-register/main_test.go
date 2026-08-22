@@ -68,8 +68,9 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAdminMenu(t *testing.T
 		"start": true, "sleep": true, "wake": true, "archive": true, "restore": true, "terminate": true,
 	}
 	for _, subcommand := range received[0].Options {
-		if subcommand.Name == "create" && len(subcommand.Options) != 0 {
-			t.Errorf("create options = %#v; want optionless modal launcher", subcommand.Options)
+		if subcommand.Name == "create" && (len(subcommand.Options) != 1 || subcommand.Options[0].Name != "game" ||
+			subcommand.Options[0].Type != 3 || !subcommand.Options[0].Required) {
+			t.Errorf("create options = %#v; want one required game choice", subcommand.Options)
 		}
 		if subcommand.Name == "list" {
 			if len(subcommand.Options) != 2 || subcommand.Options[0].Name != "state" || subcommand.Options[1].Name != "page" {

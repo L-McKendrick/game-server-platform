@@ -5,7 +5,7 @@
 Phases 1-10 are complete. Phase 11 remains pending under the approved Phase 12
 reorder. Bootstrap deployment-drift task 12.8.8, confirmation fixes 12.8.9
 and 12.8.10, vanilla Steam authorization fix 12.8.11, and mission/card polish
-task 12.8.12 are complete on
+task 12.8.12, and explicit create-game selection task 12.8.13 are complete on
 `codex/fix-bootstrap-worker-drift`. The pre-existing uncommitted Phase 12.9 work
 is preserved; reset task 12.9.7 remains the next planned feature task.
 
@@ -33,6 +33,9 @@ is preserved; reset task 12.9.7 remains the next planned feature task.
   the retained `test-8` input.
 - Public cards now lead with status, place game/session identity beneath it,
   and add breathing room above mission, progress, and game-server sections.
+- `/rb create` now requires the native Discord `game` option. Its sole current
+  choice is `Arma 3` (`arma-3`), and the selection is preserved through the
+  modal before the internal `arma3` session type is created.
 - The current packages are built locally but no Terraform plan was created or
   applied and no failed workflow was retried. Deployment still requires review
   and approval of a fresh saved plan.
@@ -96,6 +99,8 @@ is preserved; reset task 12.9.7 remains the next planned feature task.
 - Mission/card polish additionally requires fresh artifact-worker,
   notification-producing worker, and bootstrap packages; the legacy mission
   compatibility path avoids renaming the current `test-8` S3 object.
+- Explicit create-game selection requires a fresh Discord interaction package
+  and re-registration of the `/rb` command definition.
 - The user will run the credential-bearing deployment and Discord registration.
   Create and review a fresh release plan after packaging. It must include the
   changed Lambda packages plus `aws_sfn_state_machine.provision_session` and

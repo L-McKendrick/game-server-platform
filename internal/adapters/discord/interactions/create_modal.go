@@ -1,6 +1,7 @@
 package interactions
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -8,7 +9,9 @@ import (
 )
 
 const (
-	createModalCustomID = "rb:create:v1"
+	createModalCustomID = "rb:create:v2:arma3"
+	createGameOption    = "game"
+	createGameArma3     = "arma-3"
 
 	createNameCustomID        = "create:name"
 	createDescriptionCustomID = "create:description"
@@ -32,7 +35,32 @@ func (payload interactionPayload) isRBCreateCommand() bool {
 	return err == nil && subcommand.Name == "create"
 }
 
-func writeCreateModal(writer http.ResponseWriter) {
+func createGameType(payload interactionPayload) (string, error) {
+	subcommand, err := payload.subcommand()
+	if err != nil {
+		return "", err
+	}
+	for _, option := range subcommand.Options {
+		if option.Name != createGameOption {
+			continue
+		}
+		if option.Type != applicationCommandOptionString {
+			return "", newUserError("Choose a supported game before opening session setup.")
+		}
+		var selected string
+		if err := json.Unmarshal(option.Value, &selected); err != nil || selected != createGameArma3 {
+			return "", newUserError("Choose a supported game before opening session setup.")
+		}
+		return "arma3", nil
+	}
+	return "", newUserError("Choose a game before opening session setup.")
+}
+
+func writeCreateModal(writer http.ResponseWriter, gameType string) {
+	if gameType != "arma3" {
+		writeInteractionMessage(writer, "That game is not supported yet.")
+		return
+	}
 	writeSessionSetupModal(writer, createModalCustomID, "Create Arma 3 session", domain.Session{}, true)
 }
 

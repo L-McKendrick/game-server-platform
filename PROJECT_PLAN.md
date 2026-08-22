@@ -151,11 +151,12 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.8.10** [x] Preserve Discord role context when confirmed archive and termination commands cross the asynchronous command boundary.
       - **12.8.11** [x] Use the cached Steam authorization for the Arma server package in both vanilla and modded bootstrap while keeping vanilla Workshop-free.
       - **12.8.12** [x] Preserve uploaded mission basenames and polish public-card heading order and section spacing.
+      - **12.8.13** [x] Require an explicit supported game when opening `/rb create` and preserve that selection through submission.
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.
     - **13.2** [ ] Add multiple mission uploads and safe in-game mission rotation with artifact history and authorization.
     - **13.3** [ ] Add an admin-configurable maximum session duration, owner warnings, and auditable admin extension.
     - **13.4** [ ] Evaluate scheduling and operational analytics using the Phase 12 admin and presentation contracts.
-    - **13.5** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; add an autocomplete game field to `/rb create` and route the selected supported game into its game-specific setup contract.
+    - **13.5** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; extend `/rb create` beyond its required Arma 3 choice and route each supported game into its game-specific setup contract.
     - **13.6** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.
