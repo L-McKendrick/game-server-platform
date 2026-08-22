@@ -29,6 +29,9 @@ STEAM_AUTH_ACTIVE=false
 STEAM_AUTH_VALID=false
 STEAM_AUTH_FINALIZED=false
 STEAM_AUTH_PERSIST_ATTEMPTED=false
+STEAM_AUTH_LOCK_HEARTBEAT_PID=""
+STEAM_AUTH_LOCK_LEASE_SECONDS=900
+STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=300
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 checkpoint() { printf 'GSP_CHECKPOINT:%s\n' "$1"; }
@@ -83,7 +86,15 @@ scrub_persistent_steam_auth() {
 
 steam_auth_key() { printf '{"pk":{"S":"STEAM_AUTH#CACHE"},"sk":{"S":"STATE"}}'; }
 
+stop_steam_auth_lock_heartbeat() {
+  [ -n "$STEAM_AUTH_LOCK_HEARTBEAT_PID" ] || return 0
+  kill "$STEAM_AUTH_LOCK_HEARTBEAT_PID" >/dev/null 2>&1 || true
+  wait "$STEAM_AUTH_LOCK_HEARTBEAT_PID" 2>/dev/null || true
+  STEAM_AUTH_LOCK_HEARTBEAT_PID=""
+}
+
 release_steam_auth_lock() {
+  stop_steam_auth_lock_heartbeat
   [ -n "$STEAM_AUTH_LOCK_OWNER" ] || return 0
   local values
   values="$(jq -cn --arg owner "$STEAM_AUTH_LOCK_OWNER" '{":owner":{"S":$owner}}')"
@@ -95,6 +106,7 @@ release_steam_auth_lock() {
 
 mark_steam_reauthorization_required() {
   local values now
+  stop_steam_auth_lock_heartbeat
   [ -n "$STEAM_AUTH_LOCK_OWNER" ] || return 0
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   values="$(jq -cn --arg owner "$STEAM_AUTH_LOCK_OWNER" --arg now "$now" '{":owner":{"S":$owner},":status":{"S":"REAUTH_REQUIRED"},":code":{"S":"ERR_STEAM_REAUTH_REQUIRED"},":now":{"S":$now}}')"
@@ -105,11 +117,39 @@ mark_steam_reauthorization_required() {
   STEAM_AUTH_LOCK_OWNER=""
 }
 
+refresh_steam_auth_lock() {
+  local expires_epoch values
+  [ -n "$STEAM_AUTH_LOCK_OWNER" ] || return 1
+  expires_epoch="$(($(date -u +%s) + STEAM_AUTH_LOCK_LEASE_SECONDS))"
+  values="$(jq -cn --arg owner "$STEAM_AUTH_LOCK_OWNER" --argjson expires "$expires_epoch" '{":owner":{"S":$owner},":expires":{"N":($expires|tostring)}}')"
+  aws dynamodb update-item --region "$AWS_REGION" --table-name "$METADATA_TABLE" --key "$(steam_auth_key)" \
+    --update-expression 'SET lease_expires_at = :expires' \
+    --condition-expression 'lease_owner = :owner' --expression-attribute-values "$values" >/dev/null 2>&1
+}
+
+start_steam_auth_lock_heartbeat() {
+  local bootstrap_pid="$$"
+  (
+    trap 'exit 0' INT TERM
+    while sleep "$STEAM_AUTH_LOCK_HEARTBEAT_SECONDS"; do
+      if ! refresh_steam_auth_lock; then
+        sleep 5
+        if ! refresh_steam_auth_lock; then
+          log "Steam authorization lease renewal failed; stopping bootstrap"
+          kill -TERM "$bootstrap_pid" >/dev/null 2>&1 || true
+          exit 1
+        fi
+      fi
+    done
+  ) &
+  STEAM_AUTH_LOCK_HEARTBEAT_PID="$!"
+}
+
 acquire_steam_auth_lock() {
   local now_epoch expires_epoch values state_file status
   STEAM_AUTH_LOCK_OWNER="$SESSION_ID:$$:$(cat /proc/sys/kernel/random/uuid)"
   now_epoch="$(date -u +%s)"
-  expires_epoch="$((now_epoch + 25200))"
+  expires_epoch="$((now_epoch + STEAM_AUTH_LOCK_LEASE_SECONDS))"
   values="$(jq -cn --arg owner "$STEAM_AUTH_LOCK_OWNER" --argjson now "$now_epoch" --argjson expires "$expires_epoch" '{":owner":{"S":$owner},":now":{"N":($now|tostring)},":expires":{"N":($expires|tostring)}}')"
   state_file="$STEAM_AUTH_ROOT/lock.json"
   if ! aws dynamodb update-item --region "$AWS_REGION" --table-name "$METADATA_TABLE" --key "$(steam_auth_key)" \
@@ -126,6 +166,7 @@ acquire_steam_auth_lock() {
     printf 'ERR_STEAM_REAUTH_REQUIRED: Steam authorization requires operator re-enrollment.\n' >&2
     return 42
   fi
+  start_steam_auth_lock_heartbeat
 }
 
 link_ephemeral_steam_path() {
@@ -357,7 +398,7 @@ install_workshop() (
 sqf_escape() { printf '%s' "$1" | sed 's/"/""/g'; }
 
 deploy_content() {
-  local mission_file mission_template safe_name
+  local mission_file mission_template safe_mission_template safe_name
   mission_file="$(basename "$MISSION_KEY")"
   if [[ "$mission_file" =~ ^[0-9a-f]{64}-(.+\.[pP][bB][oO])$ ]]; then
     mission_file="${BASH_REMATCH[1]}"
@@ -366,6 +407,7 @@ deploy_content() {
   mkdir -p "$ROOT/arma3/mpmissions" "$ROOT/home/.local/share/Arma 3 - Other Profiles/server"
   aws s3 cp "s3://$ASSETS_BUCKET/$MISSION_KEY" "$ROOT/arma3/mpmissions/$mission_file" --region "$AWS_REGION" --only-show-errors
   safe_name="$(sqf_escape "$DISPLAY_NAME")"
+  safe_mission_template="$(sqf_escape "$mission_template")"
   cat > "$ROOT/config/server.cfg" <<EOF
 hostname = "$safe_name";
 maxPlayers = 32;
@@ -375,7 +417,7 @@ BattlEye = 1;
 persistent = 1;
 class Missions {
   class Primary {
-    template = "$mission_template";
+    template = "$safe_mission_template";
     difficulty = "Regular";
   };
 };

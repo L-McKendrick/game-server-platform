@@ -97,7 +97,12 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 		directory = "presets"
 	}
 	objectFilename := request.Filename
-	if request.Kind == domain.ArtifactPreset {
+	if request.Kind == domain.ArtifactMission {
+		objectFilename, err = domain.NormalizeMissionFilename(request.Filename)
+		if err != nil {
+			return fmt.Errorf("normalize mission filename: %w", err)
+		}
+	} else {
 		objectFilename = digestHex + "-" + request.Filename
 	}
 	objectKey := path.Join(

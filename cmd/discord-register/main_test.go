@@ -16,7 +16,9 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAdminMenu(t *testing.T
 	type commandOption struct {
 		Type         int             `json:"type"`
 		Name         string          `json:"name"`
+		Value        string          `json:"value"`
 		Options      []commandOption `json:"options"`
+		Choices      []commandOption `json:"choices"`
 		Autocomplete bool            `json:"autocomplete"`
 		Required     bool            `json:"required"`
 	}
@@ -69,7 +71,8 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAdminMenu(t *testing.T
 	}
 	for _, subcommand := range received[0].Options {
 		if subcommand.Name == "create" && (len(subcommand.Options) != 1 || subcommand.Options[0].Name != "game" ||
-			subcommand.Options[0].Type != 3 || !subcommand.Options[0].Required) {
+			subcommand.Options[0].Type != 3 || !subcommand.Options[0].Required || len(subcommand.Options[0].Choices) != 1 ||
+			subcommand.Options[0].Choices[0].Name != "Arma 3" || subcommand.Options[0].Choices[0].Value != "arma-3") {
 			t.Errorf("create options = %#v; want one required game choice", subcommand.Options)
 		}
 		if subcommand.Name == "list" {

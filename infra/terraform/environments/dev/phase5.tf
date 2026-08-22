@@ -686,9 +686,12 @@ resource "aws_lambda_function" "provisioning_worker" {
 
 data "aws_iam_policy_document" "provision_workflow" {
   statement {
-    sid       = "InvokeProvisioningWorker"
-    actions   = ["lambda:InvokeFunction"]
-    resources = [aws_lambda_function.provisioning_worker.arn]
+    sid     = "InvokeProvisioningWorker"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      aws_lambda_function.provisioning_worker.arn,
+      aws_lambda_function.bootstrap_worker.arn,
+    ]
   }
 
   statement {
@@ -904,7 +907,26 @@ resource "aws_sfn_state_machine" "provision_session" {
           MaxDelaySeconds = 30
           JitterStrategy  = "FULL"
         }]
-        End = true
+        Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.continuation_failure", Next = "MarkBootstrapQueueFailed" }]
+        End   = true
+      }
+      MarkBootstrapQueueFailed = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.bootstrap_worker.function_name
+          Payload = {
+            action             = "fail"
+            "session_id.$"     = "$.session_id"
+            "workflow_id.$"    = "$.completion.result.continuation.command_id"
+            "correlation_id.$" = "$.correlation_id"
+            error_code         = "ERR_BOOTSTRAP_QUEUE_DELIVERY"
+            error_message      = "Bootstrap continuation could not be queued."
+          }
+        }
+        ResultPath = "$.continuation_failure_record"
+        Retry      = [local.lambda_transient_retry]
+        End        = true
       }
       MarkFailed = {
         Type     = "Task"

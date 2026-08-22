@@ -95,9 +95,11 @@ For a modded bootstrap, the game host:
    lease before the Arma service can start.
 
 The lease spans the Arma and Workshop downloads, preventing two replacement or
-ephemeral hosts from racing cache updates. A stale lease expires after seven
-hours. Normal exit, error, interrupt, later launch, archive, and restore paths
-all scrub authentication material. Frozen AMIs or EBS snapshots may contain
+ephemeral hosts from racing cache updates. The host renews a 15-minute lease
+every five minutes and stops bootstrap if renewal loses ownership. A forcibly
+killed host therefore leaves at most a 15-minute stale lease. Normal exit,
+error, interrupt, later launch, archive, and restore paths all scrub
+authentication material. Frozen AMIs or EBS snapshots may contain
 SteamCMD/game data only after that scrub; never bake a signed-in cache into a
 snapshot or session data volume.
 

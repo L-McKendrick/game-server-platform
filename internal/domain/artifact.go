@@ -28,6 +28,51 @@ const (
 	ArtifactPurposePresetRevision ArtifactIngestPurpose = "PRESET_REVISION"
 )
 
+const maxArtifactFilenameBytes = 255
+
+// NormalizeMissionFilename preserves conventional Arma mission names while
+// replacing characters that are unsafe in object keys, host paths, or
+// server.cfg string values. The .pbo extension is normalized for consistency.
+func NormalizeMissionFilename(filename string) (string, error) {
+	name := strings.TrimSpace(filename)
+	switch {
+	case name == "":
+		return "", fmt.Errorf("attachment filename is required")
+	case len([]byte(name)) > maxArtifactFilenameBytes:
+		return "", fmt.Errorf("attachment filename exceeds %d bytes", maxArtifactFilenameBytes)
+	case strings.ContainsAny(name, `/\\`):
+		return "", fmt.Errorf("attachment filename must not contain a path")
+	}
+
+	extension := filepath.Ext(name)
+	if !strings.EqualFold(extension, ".pbo") {
+		return "", fmt.Errorf("mission attachment must use the .pbo extension")
+	}
+
+	stem := strings.TrimSuffix(name, extension)
+	var normalized strings.Builder
+	replaced := false
+	for _, character := range stem {
+		safe := character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' ||
+			character == '.' || character == '_' || character == '-'
+		if safe {
+			normalized.WriteRune(character)
+			replaced = false
+			continue
+		}
+		if !replaced {
+			normalized.WriteByte('_')
+			replaced = true
+		}
+	}
+	if strings.Trim(normalized.String(), "._-") == "" {
+		return "mission.pbo", nil
+	}
+	return normalized.String() + ".pbo", nil
+}
+
 func (status ArtifactStatus) Valid() bool {
 	return status == "" || status == ArtifactPending || status == ArtifactAccepted || status == ArtifactRejected
 }
@@ -62,6 +107,10 @@ func (request ArtifactIngestRequest) Validate() error {
 	host := strings.ToLower(parsed.Hostname())
 	allowedHost := host == "cdn.discordapp.com" || host == "media.discordapp.net"
 	extension := strings.ToLower(filepath.Ext(strings.TrimSpace(request.Filename)))
+	var missionFilenameError error
+	if request.Kind == ArtifactMission {
+		_, missionFilenameError = NormalizeMissionFilename(request.Filename)
+	}
 
 	switch {
 	case request.SchemaVersion != 1:
@@ -74,10 +123,12 @@ func (request ArtifactIngestRequest) Validate() error {
 		return fmt.Errorf("attachment ID is required")
 	case strings.TrimSpace(request.Filename) == "":
 		return fmt.Errorf("attachment filename is required")
+	case len([]byte(strings.TrimSpace(request.Filename))) > maxArtifactFilenameBytes:
+		return fmt.Errorf("attachment filename exceeds %d bytes", maxArtifactFilenameBytes)
 	case strings.ContainsAny(request.Filename, `/\\`):
 		return fmt.Errorf("attachment filename must not contain a path")
-	case request.Kind == ArtifactMission && extension != ".pbo":
-		return fmt.Errorf("mission attachment must use the .pbo extension")
+	case request.Kind == ArtifactMission && missionFilenameError != nil:
+		return missionFilenameError
 	case request.Kind == ArtifactPreset && extension != ".html" && extension != ".htm":
 		return fmt.Errorf("preset attachment must use the .html or .htm extension")
 	case request.SizeBytes <= 0:

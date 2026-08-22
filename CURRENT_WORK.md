@@ -1,122 +1,56 @@
 # Current Work
 
-## State and Objective
+## Active Branch and Scope
 
-Phases 1-10 are complete. Phase 11 remains pending under the approved Phase 12
-reorder. Bootstrap deployment-drift task 12.8.8, confirmation fixes 12.8.9
-and 12.8.10, vanilla Steam authorization fix 12.8.11, and mission/card polish
-task 12.8.12, and explicit create-game selection task 12.8.13 are complete on
-`codex/fix-bootstrap-worker-drift`. The pre-existing uncommitted Phase 12.9 work
-is preserved; reset task 12.9.7 remains the next planned feature task.
+- Branch: `codex/fix-bootstrap-worker-drift`.
+- Phase 12.8 is complete through task 12.8.15. This branch contains the Discord
+  admin/start orchestration, bootstrap drift correction, confirmation IAM and
+  role-context fixes, shared Steam authorization, mission/card polish, required
+  `/rb create arma-3` selection, and the final security/reliability review.
+- The user-owned untracked `infra/terraform/environments/dev/tfplan` remains
+  untouched and must not be reused for this release.
 
-Repository handoff guidance now requires every state-changing development turn
-to end `CURRENT_WORK.md` with concise, change-specific application commands and
-to remove stale or redundant deployment steps.
+## Review Hardening
 
-## Bootstrap Incident Fix
-
-- Live bootstrap failed during Lambda initialization because an older worker
-  expected retired `STEAM_SECRET_ID` configuration while the deployed
-  environment correctly provided `STEAM_AUTH_SECRET_ID`.
-- The worker and Terraform now require the explicit `steam-auth-cache-v1`
-  runtime configuration contract. Startup failures identify the exact missing
-  setting instead of emitting an aggregate dependency error.
-- `scripts/verify-bootstrap-worker-deployment.ps1` compares the deployed Lambda
-  code hash with the freshly packaged ZIP, verifies required configuration, and
-  rejects the retired password variable before an operator retries bootstrap.
-- The Discord interaction role now permits DynamoDB condition checks on the
-  metadata table so atomic archive and termination confirmations can be created
-  and consumed.
-- Confirmed archive and termination commands now preserve the invoking member's
-  Discord roles across the FIFO boundary so command-worker reauthorization does
-  not reject an already authorized owner as forbidden.
-- Vanilla and modded bootstrap now use the same cached Steam authorization for
-  the Arma server package; vanilla continues to skip presets and Workshop.
-- New mission uploads preserve their original basename. Bootstrap also removes
-  the legacy digest prefix while deploying existing mission objects, including
-  the retained `test-8` input.
-- Public cards now lead with status, place game/session identity beneath it,
-  and add breathing room above mission, progress, and game-server sections.
-- `/rb create` now requires the native Discord `game` option. Its sole current
-  choice is `Arma 3` (`arma-3`), and the selection is preserved through the
-  modal before the internal `arma3` session type is created.
-- The current packages are built locally but no Terraform plan was created or
-  applied and no failed workflow was retried. Deployment still requires review
-  and approval of a fresh saved plan.
-
-## Delivered
-
-- `/rb admin` is the single protected administration entry point. It opens an
-  ephemeral component menu for access and card repair; there is no standalone
-  `/admin` command or nested admin syntax.
-- Normal access follows a durable Discord role policy. Administrator or Manage
-  Server is rechecked from each signed command/component payload. The role
-  picker replaces the complete allowed set, and removing all normal-role access
-  requires a separate danger confirmation while the manager recovery path
-  remains available.
-- The wishlist Discord cost command is omitted. The Lambda has no Cost Explorer
-  integration or Billing permission. The existing Phase 5 Terraform budget is
-  unchanged; any ownership migration remains separate operator work.
-- `/rb help`, first-run guidance, state-aware next actions, useful empty/success
-  responses, guild-only behavior, mobile-safe component layouts, accessible
-  text-plus-color states, and bounded stale-interaction guidance are complete.
-- One `/rb start` now persists a deterministic pending bootstrap workflow after
-  provisioning succeeds and queues its internal continuation through the
-  existing FIFO command boundary. The command worker accepts that continuation
-  only when its provision workflow, requester, correlation, guild/channel,
-  deterministic identity, idempotency key, and active bootstrap lock all match.
-  Repeated starts return existing progress and queue no duplicate work.
-- `DEV_SETUP.local.md` is gitignored and contains a non-secret session startup,
-  authentication, deployment-gate, and Git checklist.
+- Provisioning now validates that a replayed bootstrap continuation is still
+  pending/running and still owns the session lock. A terminal or detached
+  continuation fails closed instead of returning a stale command.
+- If the provisioning state machine cannot enqueue its reserved bootstrap
+  continuation after bounded retries, it invokes the bootstrap failure path.
+  This records a stable failure and releases the session workflow lock instead
+  of leaving `/rb status` stuck in startup for the eight-hour lease.
+- Steam authorization now uses a renewable 15-minute DynamoDB lease with a
+  five-minute heartbeat. Loss of lease ownership stops bootstrap; a forcibly
+  killed host can block a retry for at most 15 minutes rather than seven hours.
+- Mission uploads preserve conventional names such as `test.Stratis.pbo`,
+  normalize unsafe characters before S3/host storage, enforce a 255-byte name
+  bound, and escape the mission template when rendering `server.cfg`.
+- Command-registration coverage binds the user-facing `Arma 3` choice to the
+  internal `arma-3` value so future game expansion cannot silently drift.
 
 ## Validation
 
-- `go test ./...`, `go test -cover ./...`, `go vet ./...`, and
-  `go build ./cmd/...` pass using workspace-local Go caches.
-- Focused native tests pass for domain, access, provisioning, sessions, and
-  registration. The changed workflow and Discord suites also pass under
-  Go JavaScript/WebAssembly with Node.
-- Race coverage was not run locally because this Windows host has no C compiler;
-  CI remains authoritative for `go test -race -cover ./...`.
+- `go test ./...`, `go vet ./...`, and `go build ./cmd/...` pass with
+  workspace-local Go caches.
+- Focused artifact, provisioning, bootstrap-script, domain, and command
+  registration tests pass; the bootstrap artifact passes `bash -n`.
 - `terraform fmt -check -recursive infra/terraform` and
   `terraform -chdir=infra/terraform/environments/dev validate` pass.
-- The `/rb` JSON parses, the retired command definition is absent,
-  `git diff --check` passes, and all 12 Lambda archives package successfully.
+- The `/rb` command JSON parses and `git diff --check` passes.
+- Race coverage was not run locally because this Windows host has no C
+  compiler; CI remains authoritative for `go test -race -cover ./...`.
 
 ## Deployment Disposition
 
-- The previously approved `phase-12-8-6-scoped.tfplan` was applied successfully
-  with 0 additions, 12 Lambda updates, and 0 deletions. All functions then
-  reported `Successful`/`Active`, and the unsigned endpoint probe returned 401.
-- That applied plan predates the final 12.8.7 continuation and streamlined admin
-  changes. It is stale and must not be reused or represented as deploying the
-  completed step.
-- Live confirmation acceptance shows the DynamoDB condition-check IAM
-  correction is deployed; the exact operator-applied plan was not inspected in
-  this workspace.
-- The confirmed-command role-context correction also requires a freshly
-  packaged Discord interaction Lambda. Previously queued messages without roles
-  cannot be repaired by redrive; create a new confirmation after deployment.
-- The vanilla Steam authorization correction requires a fresh bootstrap-worker
-  package and bootstrap-script S3 object deployment before retrying `test-8`;
-  its running EC2 instance and retained EBS volume continue to incur cost.
-- Mission/card polish additionally requires fresh artifact-worker,
-  notification-producing worker, and bootstrap packages; the legacy mission
-  compatibility path avoids renaming the current `test-8` S3 object.
-- Explicit create-game selection requires a fresh Discord interaction package
-  and re-registration of the `/rb` command definition.
-- The user will run the credential-bearing deployment and Discord registration.
-  Create and review a fresh release plan after packaging. It must include the
-  changed Lambda packages plus `aws_sfn_state_machine.provision_session` and
-  `aws_iam_role_policy.provision_workflow`. A full plan may time out here while
-  refreshing the unchanged AWS Budgets endpoint; any scoped alternative still
-  requires exact review and approval.
-- The populated local Terraform inputs, all saved plans, and the user-owned
-  untracked `infra/terraform/environments/dev/tfplan` remain untouched.
-- Discord application `1533676701354299402`, guild `1192304488351019008`, and
-  endpoint `https://ujg7q9fubf.execute-api.us-west-2.amazonaws.com/discord/interactions`
-  are the known development targets. No bot token was retrieved and no final
-  command registration or live-guild acceptance was performed.
+- These review changes are not deployed. They change the provisioning Step
+  Functions definition/IAM, bootstrap script object, artifact worker,
+  provisioning and bootstrap workers, Discord interaction package, and `/rb`
+  command definition.
+- Create and inspect a new Terraform plan after packaging. Do not apply if it
+  contains unrelated deletions or changes outside the expected release scope.
+- Known development targets are Discord application `1533676701354299402`,
+  guild `1192304488351019008`, AWS profile `game-server-dev`, and Region
+  `us-west-2`.
 
 ## Commands to Apply Current Changes
 
@@ -129,10 +63,10 @@ $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-8-current.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-12-8-current.tfplan
-# Apply only after reviewing and approving that exact saved plan.
-terraform -chdir=infra/terraform/environments/dev apply phase-12-8-current.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-review-hardening.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-12-review-hardening.tfplan
+# Apply only after reviewing and approving this exact saved plan.
+terraform -chdir=infra/terraform/environments/dev apply phase-12-review-hardening.tfplan
 
 ./scripts/verify-bootstrap-worker-deployment.ps1
 
@@ -140,8 +74,3 @@ terraform -chdir=infra/terraform/environments/dev apply phase-12-8-current.tfpla
   -ApplicationId "1533676701354299402" `
   -GuildId "1192304488351019008"
 ```
-
-After deployment, run the runbook's non-billable acceptance with a configured
-role member and a manager. Billable/destructive checks remain **not run —
-approval required** unless separately authorized. Phase 10 retries remain
-deferred: no retry was scheduled, performed, or implied.
