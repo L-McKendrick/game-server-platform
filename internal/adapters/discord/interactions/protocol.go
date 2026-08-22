@@ -23,13 +23,14 @@ const (
 	interactionResponseAutocompleteResult               = 8
 	interactionResponseModal                            = 9
 
-	applicationCommandOptionSubcommand = 1
-	applicationCommandOptionString     = 3
-	applicationCommandOptionInteger    = 4
-	applicationCommandOptionBoolean    = 5
-	applicationCommandOptionAttachment = 11
-	applicationCommandOptionChannel    = 7
-	applicationCommandOptionRole       = 8
+	applicationCommandOptionSubcommand      = 1
+	applicationCommandOptionSubcommandGroup = 2
+	applicationCommandOptionString          = 3
+	applicationCommandOptionInteger         = 4
+	applicationCommandOptionBoolean         = 5
+	applicationCommandOptionAttachment      = 11
+	applicationCommandOptionChannel         = 7
+	applicationCommandOptionRole            = 8
 
 	messageFlagEphemeral    = 1 << 6
 	messageFlagComponentsV2 = 1 << 15
@@ -71,10 +72,15 @@ const (
 	componentCustomIDPrefix     = componentid.Prefix
 	maximumComponentCustomIDLen = componentid.MaximumCustomIDLength
 
-	administratorPermission = uint64(1 << 3)
-	manageGuildPermission   = uint64(1 << 5)
+	adminMenuCustomID             = "rb:admin:menu:v1"
+	adminRoleSelectCustomID       = "rb:admin:access:roles:v1"
+	adminRoleClearPromptCustomID  = "rb:admin:access:clear:v1"
+	adminRoleClearConfirmCustomID = "rb:admin:access:clear-confirm:v1"
+	adminRoleClearCancelCustomID  = "rb:admin:access:clear-cancel:v1"
+	adminRepairSelectCustomID     = "rb:admin:repair:session:v1"
 
-	adminRoleSelectCustomID = "admin:access:roles"
+	adminMenuAccess = "access"
+	adminMenuRepair = "repair-card"
 )
 
 type interactionPayload struct {

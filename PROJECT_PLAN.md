@@ -54,7 +54,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
    - **9.4** [x] Support explicitly configured vanilla Arma sessions without a mod preset or Steam account.
      - **9.4.1** [x] Add a persisted, backward-compatible vanilla-session configuration flag and expose it through Discord configuration/status output.
      - **9.4.2** [x] Make a configured mission sufficient for vanilla-session readiness while retaining the preset requirement for modded sessions.
-     - **9.4.3** [x] Bootstrap vanilla sessions with anonymous SteamCMD and skip all preset, Workshop, and Steam-secret access.
+     - **9.4.3** [x] Bootstrap vanilla sessions with the shared cached Steam authorization while skipping all preset and Workshop processing.
      - **9.4.4** [x] Preserve vanilla intent through archive manifests and restore validation.
      - **9.4.5** [x] Add focused domain, application, Discord, persistence, bootstrap, and archive/restore regression coverage.
 
@@ -74,7 +74,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **10.3.1** [x] Define and store the encrypted, versioned Steam authorization-cache contract with least-privilege access, serialized mutation, rollback, redaction, and explicit reauthorization state.
       - **10.3.2** [x] Add a short-lived operator enrollment and reauthorization procedure that never carries passwords or Guard codes through Discord, workflows, Lambda configuration, SSM command text, or persistent logs.
       - **10.3.3** [x] Inject cached `config.vdf` only during authenticated downloads, use username-only login, preserve valid updates, and remove authentication material before launch on every exit path.
-      - **10.3.4** [x] Fail closed on renewed Steam Guard challenges, provide operator-safe guidance, and preserve anonymous vanilla behavior.
+      - **10.3.4** [x] Fail closed on renewed Steam Guard challenges, provide operator-safe guidance, and preserve Workshop-free vanilla behavior.
       - **10.3.5** [x] Add replacement-host reuse, invalidation, concurrency, cleanup, redaction, archive/restore, and vanilla regression coverage plus the operating runbook.
 
 11. **Production Hardening — Pending**
@@ -87,7 +87,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       current limitations. Phase 10 is now complete; the reorder does not waive Phase 11.
     - Detailed design and execution guidance: `docs/phase-12-discord-experience.md`.
     - **12.1** [x] Establish the Discord interaction and presentation foundation.
-      - **12.1.1** [x] Replace the `/session` command definition and routing with guild-only `/rb`; retain `/admin` separately and do not ship a compatibility alias.
+      - **12.1.1** [x] Replace the `/session` command definition and routing with guild-only `/rb`; do not ship a compatibility alias, and consolidate administration under the protected `/rb admin` group during release polish.
       - **12.1.2** [x] Extend the Discord protocol boundary for autocomplete, modal submission, Components V2, buttons, selects, file uploads, and safe component revisions.
       - **12.1.3** [x] Add a shared session selector that returns authorized name/slug/state labels while carrying the immutable ID only as the hidden value.
       - **12.1.4** [x] Centralize Discord rendering, sanitization, native timestamps, status vocabulary, accessibility text, response bounds, and allowed-mention suppression.
@@ -138,19 +138,27 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.7.4** [x] Render a text-based completed-checkpoint bar, `Step X/Y`, current stage, and elapsed time on the public card and ephemeral status without presenting a time-completion percentage or ETA.
       - **12.7.5** [x] Show concise qualitative stage guidance and distinguish active, waiting, stalled, retrying, rollback, completed, and action-required progress while retaining milestone-only rate-limited card edits.
       - **12.7.6** [x] Test every workflow's milestone ordering, bootstrap checkpoints, skipped stages, replay, retries, rollback, failures, cancellation, clock anomalies, rendering bounds, and update rate limiting.
-    - **12.8** [ ] Finish admin, help, cost, and release polish.
-      - **12.8.1** [ ] Expand `/admin` into a permission-checked component menu for access, card repair, costs, and placeholders linked only to implemented policies.
-      - **12.8.2** [ ] Add ephemeral `/admin costs` for yesterday, seven-day, and month-to-date platform totals, budget utilization, service breakdown, freshness, caching, and useful setup errors.
-      - **12.8.3** [ ] Add optional per-session cost grouping only after cost-allocation tags are active; resolve hidden tag values to name/slug and label all figures as delayed estimates.
-      - **12.8.4** [ ] Add `/rb help`, first-run guidance, state-aware next actions, and useful empty/success responses without duplicating the operational runbook.
-      - **12.8.5** [ ] Apply guild-only contexts, least-visible admin command defaults, mobile-safe layouts, concise controls, text-plus-color states, and graceful stale-interaction handling.
-      - **12.8.6** [ ] Update deployment/runbook documentation and complete unit, integration, packaging, Terraform, Discord registration, and live guild acceptance for the phase.
-      - **12.8.7** [ ] Make one `/rb start` orchestrate ready-session infrastructure provisioning through bootstrap and playable health acceptance; keep `/rb create` non-billable and return existing progress for repeated starts instead of requiring a second command.
+    - **12.8** [x] Finish admin, help, and release polish.
+      - **12.8.1** [x] Consolidate administration under direct `/rb admin` as a permission-checked component menu for access and card repair only; replace or confirm removal of allowed roles, and recheck Administrator or Manage Server on every admin interaction.
+      - **12.8.2** [x] Omit the wishlist Discord cost command entirely so the Lambda makes no Cost Explorer request and needs no Billing permission.
+      - **12.8.3** [x] Keep budget alerts as an AWS operator concern and leave the existing Phase 5 Terraform budget guardrail unchanged pending any separately reviewed ownership migration.
+      - **12.8.4** [x] Add `/rb help`, first-run guidance, state-aware next actions, and useful empty/success responses without duplicating the operational runbook.
+      - **12.8.5** [x] Apply guild-only contexts, least-visible admin command defaults, mobile-safe layouts, concise controls, text-plus-color states, and graceful stale-interaction handling.
+      - **12.8.6** [x] Update deployment/runbook documentation.
+      - **12.8.7** [x] Make one `/rb start` orchestrate ready-session infrastructure provisioning through bootstrap and playable health acceptance; keep `/rb create` non-billable and return existing progress for repeated starts instead of requiring a second command.
+      - **12.8.8** [x] Prevent bootstrap worker package/configuration drift, report the exact startup mismatch, and add a non-mutating deployment verification path before workflow retry.
+      - **12.8.9** [x] Grant the Discord interaction role the DynamoDB condition-check permission required by atomic archive and termination confirmations.
+      - **12.8.10** [x] Preserve Discord role context when confirmed archive and termination commands cross the asynchronous command boundary.
+      - **12.8.11** [x] Use the cached Steam authorization for the Arma server package in both vanilla and modded bootstrap while keeping vanilla Workshop-free.
+      - **12.8.12** [x] Preserve uploaded mission basenames and polish public-card heading order and section spacing.
+      - **12.8.13** [x] Require an explicit supported game when opening `/rb create` and preserve that selection through submission.
+      - **12.8.14** [x] Require change-specific operator application commands in every state-changing development handoff.
+      - **12.8.15** [x] Review and harden the release branch with recoverable bootstrap continuation delivery, renewable Steam authorization leases, mission filename/config sanitization, and command-schema drift coverage.
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.
     - **13.2** [ ] Add multiple mission uploads and safe in-game mission rotation with artifact history and authorization.
     - **13.3** [ ] Add an admin-configurable maximum session duration, owner warnings, and auditable admin extension.
     - **13.4** [ ] Evaluate scheduling and operational analytics using the Phase 12 admin and presentation contracts.
-    - **13.5** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; add an autocomplete game field to `/rb create` and route the selected supported game into its game-specific setup contract.
+    - **13.5** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; extend `/rb create` beyond its required Arma 3 choice and route each supported game into its game-specific setup contract.
     - **13.6** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.

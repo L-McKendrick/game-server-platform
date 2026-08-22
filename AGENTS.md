@@ -6,6 +6,18 @@ Start every development session by reading `CURRENT_WORK.md`, then `PROJECT_PLAN
 
 After development that changes project state, refresh both files. Keep them brief and factual; replace stale information instead of appending history. Record only the current handoff in `CURRENT_WORK.md` and durable roadmap status in `PROJECT_PLAN.md`. Skip updates after read-only work.
 
+For every state-changing development handoff, update `CURRENT_WORK.md` with a
+final `Commands to Apply Current Changes` section containing copy-pasteable
+PowerShell commands tailored to the files and deployable components changed in
+that work. Include only required actions and order them as an operator should
+run them, such as packaging affected Lambda archives, creating and reviewing a
+fresh saved Terraform plan, applying that exact reviewed plan, running relevant
+deployment verification, and re-registering Discord commands when command
+definitions changed. Do not leave generic, stale, redundant, or previously
+completed deployment steps in this section. Never reference or reuse an older
+saved plan; use a new descriptive plan filename and preserve user-owned plan
+files. If no deployment or registration is required, state that explicitly.
+
 If there are any important/critical items that require user attention before development can continue, append these in CURRENT_WORK.md, along with a default value/action that will be taken if not specified otherwise (if applicable).
 
 ## Project Structure & Module Organization

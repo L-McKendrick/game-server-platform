@@ -530,8 +530,7 @@ Initial command set:
 | `/session delete` | Permanently delete metadata and retained artifacts according to policy |
 | `/session logs` | Retrieve a diagnostic summary or signed log link |
 | `/session cancel` | Request cancellation of a cancellable workflow |
-| `/admin reconcile` | Reconcile session metadata with AWS resources |
-| `/admin cleanup` | Review or clean orphaned resources |
+| `/rb admin` | Open a protected component menu for implemented administration actions |
 
 Permissions are based on Discord guild, role, channel, user identity, and session ownership.
 

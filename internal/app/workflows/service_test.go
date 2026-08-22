@@ -158,6 +158,56 @@ func TestStart_AllowsGuildAdministratorForSleepWorkflow(t *testing.T) {
 	}
 }
 
+func TestStart_ResumesTrustedBootstrapContinuationWithoutDiscordRoleReplay(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	repository, command := seedBootstrapContinuation(t, now)
+	starter := &workflowStarter{arn: "arn:aws:states:us-west-2:123456789012:execution:BootstrapGameServer:" + command.CommandID}
+	service, err := NewService(repository, repository, starter, rejectAuthorizer{}, &workflowIDs{}, workflowClock{now}, 8*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := service.Start(context.Background(), command)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if workflow.Status != domain.WorkflowRunning || workflow.ExecutionARN != starter.arn || starter.calls != 1 {
+		t.Fatalf("workflow = %#v, starter calls = %d", workflow, starter.calls)
+	}
+}
+
+func TestStart_RejectsForgedBootstrapContinuation(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		mutate func(*domain.CommandEnvelope)
+	}{
+		{name: "wrong command ID", mutate: func(command *domain.CommandEnvelope) { command.CommandID = "bootstrap-forged" }},
+		{name: "wrong requester", mutate: func(command *domain.CommandEnvelope) { command.Actor.DiscordUserID = "attacker" }},
+		{name: "wrong guild", mutate: func(command *domain.CommandEnvelope) { command.Actor.GuildID = "other-guild" }},
+		{name: "wrong correlation", mutate: func(command *domain.CommandEnvelope) { command.CorrelationID = "other-correlation" }},
+		{name: "wrong idempotency", mutate: func(command *domain.CommandEnvelope) { command.IdempotencyKey = "discord:forged" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository, command := seedBootstrapContinuation(t, now)
+			test.mutate(&command)
+			starter := &workflowStarter{arn: "unexpected"}
+			service, err := NewService(repository, repository, starter, rejectAuthorizer{}, &workflowIDs{}, workflowClock{now}, 8*time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.Start(context.Background(), command); !errors.Is(err, domain.ErrForbidden) {
+				t.Fatalf("Start() error = %v; want forbidden", err)
+			}
+			if starter.calls != 0 {
+				t.Fatalf("starter calls = %d", starter.calls)
+			}
+		})
+	}
+}
+
 func TestStart_TerminationIsOwnerOnlyAndAcquiresDeletingState(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
@@ -222,6 +272,65 @@ func seedWorkflowRepository(t *testing.T, now time.Time) *memory.SessionReposito
 		t.Fatalf("Create() returned error: %v", err)
 	}
 	return repository
+}
+
+func seedBootstrapContinuation(t *testing.T, now time.Time) (*memory.SessionRepository, domain.CommandEnvelope) {
+	t.Helper()
+	repository := seedWorkflowRepository(t, now)
+	session, err := repository.Get(context.Background(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedVersion := session.Version
+	if err := session.AcquireProvisioningWorkflowLock("provision-1", 2*time.Hour, now); err != nil {
+		t.Fatal(err)
+	}
+	provision := domain.Workflow{
+		ID: "provision-1", SessionID: session.ID, Type: domain.ProvisionWorkflowType, Status: domain.WorkflowRunning,
+		RequestedBy: session.OwnerDiscordUserID, CorrelationID: "start-correlation", ExpectedVersion: expectedVersion,
+		ExecutionARN: "arn:provision", CurrentStage: "Started", StartedAt: now, LeaseExpiresAt: now.Add(2 * time.Hour),
+	}
+	actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: session.OwnerDiscordUserID}
+	if err := repository.AcquireWorkflow(context.Background(), session, expectedVersion, provision,
+		domain.NewWorkflowEvent("provision-start", domain.EventWorkflowStarted, provision.CorrelationID, actor, session, provision, now)); err != nil {
+		t.Fatal(err)
+	}
+	expectedVersion = session.Version
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus =
+		domain.StateRunning, domain.StateProvisioning, domain.StateProvisioning, domain.HealthStarting
+	session.Infrastructure = domain.Infrastructure{
+		CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"},
+		InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c7i.large", InstanceID: "i-1", DataVolumeID: "vol-1", PublicIPv4: "203.0.113.1", LastObservedAt: now,
+	}
+	if err := session.CompleteInfrastructureProvisioning(provision.ID, now); err != nil {
+		t.Fatal(err)
+	}
+	provision.Status, provision.CurrentStage, provision.CompletedAt = domain.WorkflowSucceeded, "InfrastructureReady", now
+	if err := repository.CompleteWorkflow(context.Background(), session, expectedVersion, provision,
+		domain.NewProvisioningEvent("provision-complete", domain.EventInfrastructureReady, "InfrastructureReady", provision, session, now)); err != nil {
+		t.Fatal(err)
+	}
+	continuationID := domain.BootstrapContinuationCommandID(provision.ID)
+	expectedVersion = session.Version
+	if err := session.AcquireBootstrapWorkflowLock(continuationID, 8*time.Hour, now); err != nil {
+		t.Fatal(err)
+	}
+	bootstrap := domain.Workflow{
+		ID: continuationID, SessionID: session.ID, Type: domain.BootstrapWorkflowType, Status: domain.WorkflowPending,
+		RequestedBy: session.OwnerDiscordUserID, CorrelationID: provision.CorrelationID, ExpectedVersion: expectedVersion,
+		StartedAt: now, LeaseExpiresAt: now.Add(8 * time.Hour),
+	}
+	if err := repository.AcquireWorkflow(context.Background(), session, expectedVersion, bootstrap,
+		domain.NewWorkflowEvent("bootstrap-start", domain.EventWorkflowStarted, bootstrap.CorrelationID,
+			domain.Actor{Type: domain.ActorTypeSystem, ID: domain.ProvisionWorkflowType}, session, bootstrap, now)); err != nil {
+		t.Fatal(err)
+	}
+	return repository, domain.CommandEnvelope{
+		SchemaVersion: 1, CommandID: continuationID, CommandType: domain.CommandBootstrapServer, RequestedAt: now,
+		Actor:     domain.CommandActor{DiscordUserID: session.OwnerDiscordUserID, GuildID: session.GuildID, ChannelID: session.ChannelID},
+		SessionID: session.ID, IdempotencyKey: "workflow-continuation:" + provision.ID, CorrelationID: provision.CorrelationID,
+		Parameters: map[string]string{domain.BootstrapContinuationParameter: provision.ID},
+	}
 }
 
 type rejectAuthorizer struct{}

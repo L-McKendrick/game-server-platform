@@ -38,7 +38,6 @@ func LoadDiscord() (DiscordConfig, error) {
 	if err != nil {
 		return DiscordConfig{}, err
 	}
-
 	config := DiscordConfig{
 		PublicKeyHex:      strings.TrimSpace(os.Getenv("DISCORD_PUBLIC_KEY")),
 		ApplicationID:     strings.TrimSpace(os.Getenv("DISCORD_APPLICATION_ID")),

@@ -11,8 +11,8 @@ remain implementation details.
 
 This phase also introduces durable follow-up confirmations, actionable failure
 messages, safe post-creation modlist revisions, milestone-based progress, a
-downloadable active modlist, and an admin cost summary. The bot never sends
-direct messages.
+downloadable active modlist, and streamlined role-based administration. The
+bot never sends direct messages.
 
 `PROJECT_PLAN.md` is the authoritative task order. This document defines the
 cross-task behavior and decisions that must remain stable during implementation.
@@ -22,7 +22,8 @@ cross-task behavior and decisions that must remain stable during implementation.
 ### Commands and privacy
 
 - Replace `/session` with `/rb` immediately; do not maintain an alias.
-- Keep `/admin` separate and privilege-check every admin interaction on the
+- Keep administration behind the direct `/rb admin` subcommand, open an
+  ephemeral component menu, and privilege-check every admin interaction on the
   server even when Discord command visibility is restricted.
 - Register commands for guild contexts only. The bot has no DM workflow.
 - Modal input, command acknowledgements, detailed status, lists, help, errors,
@@ -31,6 +32,17 @@ cross-task behavior and decisions that must remain stable during implementation.
 - One public card is created in the invoking channel for each session. It is
   the only persistent public lifecycle message and is edited at useful
   milestones rather than replaced or spammed.
+
+Registration uses Discord's guild-command bulk-overwrite endpoint, which is
+inherently unavailable in DMs; `contexts` is not added because Discord defines
+that field only for global commands. The HTTP boundary also rejects a missing
+guild before authorization, autocomplete, or routing. Because Discord applies
+`default_member_permissions` and command permission overrides to the root
+command rather than an individual nested subcommand group, `/rb admin` cannot
+be selectively hidden without also hiding normal `/rb` actions. The root stays
+available to configured platform roles, all admin responses remain ephemeral,
+and every nested admin interaction is reauthorized using the current signed
+Administrator or Manage Server permission.
 
 ### Identity and display
 
@@ -122,6 +134,13 @@ commands in this phase.
 - A repeated request for an active operation returns its current progress
   rather than a generic conflict or a second workflow/card.
 
+The optionless help path distinguishes a true first run from an existing
+owner session and stays a short orientation rather than copying the runbook.
+Its optional guild-visible session selector resolves opaque values
+authoritatively, gives one lifecycle-specific next action, calls out the
+billable start/restore boundaries, and never queues work. Failed, rejected,
+deleting, and rollback guidance states that no automatic retry is scheduled.
+
 ### Modlist artifact and revisions
 
 Do not repeatedly attach a preset to the frequently edited card. Maintain a
@@ -184,19 +203,28 @@ stalled, retrying, rollback, completed, and action-required states. Card
 delivery remains idempotent, milestone-only, rate-limited, and secondary to
 authoritative state persistence.
 
-### Administration and cost
+### Administration
 
-`/admin` evolves from access configuration into a permission-checked component
-menu. Only expose controls backed by implemented policies. Phase 12 includes
-access, card repair, costs, and contextual help; later scheduling and duration
-features can attach to the same menu.
+`/rb admin` is a permission-checked direct subcommand that opens a component
+menu.
+Normal platform access follows Discord's role model, while every admin command
+and component rechecks the invoking member's current Administrator or Manage
+Server permission. Only expose controls backed by implemented policies. Phase
+12 includes access and card repair; the access view replaces the complete role
+set and offers a separately confirmed remove-all action. An empty persisted set
+disables normal-role access while Administrator or Manage Server remains the
+recovery path. Contextual help remains under `/rb help`.
+The wishlist cost command is omitted entirely, so Discord makes no Cost
+Explorer requests and the Lambda role needs no Billing permissions. Existing
+AWS budget alerts remain an operator concern outside Discord. Later scheduling
+and duration features can attach to the same menu only after their policies
+exist.
 
-`/admin costs` is ephemeral and initially reports cached platform totals for
-yesterday, seven days, and month to date, budget utilization, service grouping,
-and source freshness. Clearly label AWS billing data as delayed. Per-session
-costs are optional until cost-allocation tags are active and populated; resolve
-tag values to name/slug and keep internal IDs hidden. Missing Cost Explorer,
-budget, IAM, or tag setup produces actionable configuration guidance.
+Public cards retain stacked plain-text fallbacks and pair explicit state
+labels/icons with embed color. Their only default buttons are `Show players`
+and `Refresh`. Unknown, expired, revision-drifted, and deleted-state controls
+return ephemeral reopen/refresh guidance without echoing custom IDs or raw
+state.
 
 ## Design Guidelines
 
@@ -262,8 +290,8 @@ Phase 12 is complete only when a live guild user can create a vanilla and a
 modded session through `/rb create`, operate them without copying an internal
 ID, follow one repairable public card, retrieve private detail, understand and
 recover from representative failures, stage and apply a new modlist, download
-the active sanitized preset, complete destructive follow-up confirmation, and
-obtain an authorized delayed cost summary. Automated verification must cover
+the active sanitized preset, and complete destructive follow-up confirmation.
+Automated verification must cover
 authorization, idempotency, replay, redaction, bounds, stale components,
 partial Discord failure, persistence compatibility, workflow regressions, and
 Terraform/command registration.

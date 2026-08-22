@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,6 +36,16 @@ func TestCommandEnvelopeRejectsTransactionUnsafeCommandID(t *testing.T) {
 	command.CommandID = "1234567890123456789012345678901234567"
 	if err := command.Validate(); err == nil {
 		t.Fatal("Validate() returned nil error for a command ID longer than the DynamoDB transaction token limit")
+	}
+}
+
+func TestBootstrapContinuationCommandIDIsDeterministicAndBounded(t *testing.T) {
+	t.Parallel()
+	first := BootstrapContinuationCommandID("provision-workflow-with-a-very-long-external-identifier")
+	second := BootstrapContinuationCommandID("provision-workflow-with-a-very-long-external-identifier")
+	other := BootstrapContinuationCommandID("another-provision-workflow")
+	if first != second || first == other || len(first) != 36 || !strings.HasPrefix(first, "bootstrap-") {
+		t.Fatalf("continuation IDs = %q, %q, %q", first, second, other)
 	}
 }
 

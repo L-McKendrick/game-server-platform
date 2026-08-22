@@ -12,7 +12,7 @@ The platform currently provides:
 - ephemeral responses with mentions disabled;
 - command idempotency derived from Discord interaction IDs;
 - API Gateway HTTP API v2 and Lambda backed by DynamoDB;
-- DynamoDB-backed guild access configured through an ephemeral Discord role select menu opened by `/admin access`;
+- DynamoDB-backed guild access configured through the ephemeral `/rb admin` menu, with role replacement and confirmed removal;
 - an asynchronous attachment worker with approved-host downloads, strict bounds, SHA-256 hashing, content validation, isolated S3 persistence, and conditional metadata updates;
 - a Secrets Manager-backed Discord notification worker;
 - normalized command and workflow contracts with conditional per-session workflow leases;
@@ -49,7 +49,7 @@ DISCORD_APPLICATION_ID=<Discord application ID>
 DISCORD_ALLOWED_GUILD_IDS=<comma-separated development guild IDs>
 ```
 
-No administrator, role, or channel IDs need to be preconfigured. Discord members with Administrator or Manage Server permission can run `/admin access` and choose the allowed roles. Optional `DISCORD_ALLOWED_ROLE_IDS` and `DISCORD_ALLOWED_CHANNEL_IDS` values remain available as a deployment fallback.
+No administrator, role, or channel IDs need to be preconfigured. Discord members with Administrator or Manage Server permission can open `/rb admin`, replace the allowed roles, or remove all normal-role access after a confirmation. Optional `DISCORD_ALLOWED_ROLE_IDS` and `DISCORD_ALLOWED_CHANNEL_IDS` values remain available as a deployment fallback until a guild policy is persisted.
 
 Optional environment variables:
 
@@ -72,7 +72,6 @@ The endpoint is `POST /discord/interactions`. Versioned development command defi
 
 ```text
 deploy/discord/rb-command.json
-deploy/discord/admin-command.json
 ```
 
 ## Development deployment
@@ -94,6 +93,11 @@ $env:DISCORD_BOT_TOKEN = "<bot-token-from-Secrets-Manager>"
 go run ./cmd/discord-register
 Remove-Item Env:DISCORD_BOT_TOKEN
 ```
+
+Registration bulk-overwrites the development guild with `/rb` only, including
+`/rb help` and the protected `/rb admin` group. Follow the complete packaging,
+plan-review, cost-tag, role, and live-acceptance procedure in
+`docs/runbooks/deploy-discord-interactions.md`.
 
 Never place the bot token in a `.tfvars` file, command definition, log, or Terraform state.
 

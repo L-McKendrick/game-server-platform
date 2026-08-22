@@ -95,14 +95,17 @@ For a modded bootstrap, the game host:
    lease before the Arma service can start.
 
 The lease spans the Arma and Workshop downloads, preventing two replacement or
-ephemeral hosts from racing cache updates. A stale lease expires after seven
-hours. Normal exit, error, interrupt, later launch, archive, and restore paths
-all scrub authentication material. Frozen AMIs or EBS snapshots may contain
+ephemeral hosts from racing cache updates. The host renews a 15-minute lease
+every five minutes and stops bootstrap if renewal loses ownership. A forcibly
+killed host therefore leaves at most a 15-minute stale lease. Normal exit,
+error, interrupt, later launch, archive, and restore paths all scrub
+authentication material. Frozen AMIs or EBS snapshots may contain
 SteamCMD/game data only after that scrub; never bake a signed-in cache into a
 snapshot or session data volume.
 
-Vanilla sessions do not receive the secret or metadata-table identifiers and
-continue to use `login anonymous` without acquiring the authorization lease.
+Vanilla and modded sessions use the same cached authorization and serialized
+lease for the Arma server package. Vanilla sessions still skip preset and
+Workshop processing.
 
 ## Guard challenge, invalidation, and rollback
 
@@ -136,8 +139,8 @@ approved Terraform plan/apply, enroll the new cache before starting a modded
 session. Verify that the former credential secret enters its configured
 recovery window and is no longer referenced by any IAM policy or worker.
 
-Focused validation includes Go tests for command redaction, username-only and
-anonymous login behavior, stable reauthorization errors, archive/restore
+Focused validation includes Go tests for command redaction, username-only
+login behavior across vanilla and modded sessions, stable reauthorization errors, archive/restore
 scrubbing, PowerShell parsing, Bash syntax, Terraform validation, and a static
 search for legacy password-login code. A live enrollment and Steam download
 remain an explicit operator acceptance exercise because they require Steam

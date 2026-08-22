@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"mime"
 	"net/http"
 	"strconv"
@@ -78,7 +79,9 @@ type SessionService interface {
 
 type AccessService interface {
 	Authorize(ctx context.Context, guildID string, channelID string, userID string, roles []string) error
+	AllowedRoles(ctx context.Context, guildID string) ([]string, int64, error)
 	Configure(ctx context.Context, guildID string, userID string, canManageGuild bool, roleIDs []string, channelIDs []string) (domain.GuildAccessPolicy, error)
+	ClearRoles(ctx context.Context, guildID string, userID string, canManageGuild bool, expectedVersion int64) (domain.GuildAccessPolicy, error)
 }
 
 // Clock supplies current UTC time for signature validation and tests.
@@ -258,7 +261,17 @@ func (handler *Handler) ServeHTTP(
 		return
 	}
 
-	if _, allowed := handler.allowedGuildIDs[strings.TrimSpace(payload.GuildID)]; !allowed {
+	guildID := strings.TrimSpace(payload.GuildID)
+	if guildID == "" {
+		handler.logger.Warn("rejected Discord interaction outside a guild")
+		if payload.Type == interactionTypeApplicationCommandAutocomplete {
+			writeAutocompleteChoices(writer, nil)
+		} else {
+			writeInteractionMessage(writer, "This command is available only in a configured Discord server.")
+		}
+		return
+	}
+	if _, allowed := handler.allowedGuildIDs[guildID]; !allowed {
 		handler.logger.Warn(
 			"rejected Discord interaction from unapproved guild",
 			slog.String("guild_id", payload.GuildID),
@@ -275,13 +288,13 @@ func (handler *Handler) ServeHTTP(
 	if payload.Member != nil {
 		roles = payload.Member.Roles
 	}
-	if payload.isAdminCommand() || payload.isAdminRoleSelection() {
+	if payload.isAdminCommand() || payload.isAdminComponent() {
 		if !payload.memberCanManageGuild() {
 			handler.logger.Warn("rejected Discord administration without Manage Server permission", slog.String("guild_id", payload.GuildID))
 			if payload.Type == interactionTypeApplicationCommandAutocomplete {
 				writeAutocompleteChoices(writer, nil)
 			} else {
-				writeInteractionMessage(writer, "Only members with Administrator or Manage Server permission can use `/admin` actions.")
+				writeInteractionMessage(writer, "Only members with Administrator or Manage Server permission can use `/rb admin` actions.")
 			}
 			return
 		}
@@ -303,7 +316,7 @@ func (handler *Handler) ServeHTTP(
 		}
 		if err := handler.handleAdmin(request.Context(), writer, payload, actorID, correlationID); err != nil {
 			handler.logger.Error("Discord administration failed", slog.String("correlation_id", correlationID), slog.Any("error", err))
-			writeInteractionMessage(writer, handler.commandErrorMessage(err, correlationID))
+			writeInteractionMessage(writer, handler.adminErrorMessage(err, correlationID))
 			return
 		}
 		handler.logger.Info("Discord administration completed", slog.String("correlation_id", correlationID), slog.String("guild_id", payload.GuildID))
@@ -353,7 +366,12 @@ func (handler *Handler) ServeHTTP(
 			writeInteractionMessage(writer, message)
 			return
 		}
-		writeCreateModal(writer)
+		gameType, err := createGameType(payload)
+		if err != nil {
+			writeInteractionMessage(writer, err.Error())
+			return
+		}
+		writeCreateModal(writer, gameType)
 		return
 	}
 	if payload.isRBSetupCommand() {
@@ -479,6 +497,9 @@ func (handler *Handler) routeCommand(
 
 	commandName := "rb " + subcommand.Name
 	switch subcommand.Name {
+	case "help":
+		content, err := handler.help(ctx, subcommand.Options, actor, payload.GuildID)
+		return content, commandName, err
 	case "list":
 		content, err := handler.listSessions(ctx, subcommand.Options, actor, payload.GuildID)
 		return content, commandName, err
@@ -533,7 +554,7 @@ func (handler *Handler) cancelWorkflow(ctx context.Context, payload interactionP
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("**Cancellation requested**\nThe `%s` workflow will stop only if it has not crossed its initial safe boundary. Otherwise its current operation and any required rollback will finish.", workflow.Type), nil
+	return fmt.Sprintf("**Cancellation requested**\nThe `%s` workflow will stop only if it has not crossed its initial safe boundary. Otherwise its current operation and any required rollback will finish. No new retry was scheduled.\n\nNext: use `/rb status` to verify the authoritative outcome.", workflow.Type), nil
 }
 
 func (handler *Handler) createConfirmation(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, action string) (string, error) {
@@ -563,8 +584,12 @@ func (handler *Handler) confirmAction(ctx context.Context, payload interactionPa
 	if err != nil {
 		return "", newUserError("Enter the confirmation code exactly as shown.")
 	}
+	roles := []string{}
+	if payload.Member != nil {
+		roles = append(roles, payload.Member.Roles...)
+	}
 	confirmation, err := handler.service.Confirm(ctx, appsession.ConfirmCommand{
-		Actor: actor, GuildID: payload.GuildID, ChannelID: payload.ChannelID, Code: code,
+		Actor: actor, Roles: roles, GuildID: payload.GuildID, ChannelID: payload.ChannelID, Code: code,
 		CommandID: payload.ID, CorrelationID: correlationID, IdempotencyKey: "discord:" + payload.ID,
 	})
 	if err != nil {
@@ -586,7 +611,7 @@ func (handler *Handler) cancelConfirmation(ctx context.Context, payload interact
 	if err != nil {
 		return "", confirmationUserError(err)
 	}
-	return fmt.Sprintf("**%s confirmation cancelled**\nNo destructive work was queued. The code cannot be used again.", strings.ToUpper(string(confirmation.Action[:1]))+strings.ToLower(string(confirmation.Action[1:]))), nil
+	return fmt.Sprintf("**%s confirmation cancelled**\nNo destructive work was queued. The code cannot be used again.\n\nNext: use `/rb status` or request a new action if it is still appropriate.", strings.ToUpper(string(confirmation.Action[:1]))+strings.ToLower(string(confirmation.Action[1:]))), nil
 }
 
 func confirmationUserError(err error) error {
@@ -673,60 +698,201 @@ func (handler *Handler) startSession(
 
 func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actorID, correlationID string) error {
 	if payload.isAdminCommand() {
-		subcommand, err := payload.namedSubcommand("admin")
-		if err != nil {
-			return newUserError("Use a supported `/admin` action.")
-		}
-		if subcommand.Name == "repair-card" {
-			content, repairErr := handler.repairSessionCard(ctx, payload, subcommand.Options, actorID, correlationID)
-			if repairErr != nil {
-				return repairErr
-			}
-			writeInteractionMessage(writer, content)
-			return nil
-		}
-		if subcommand.Name != "access" {
-			return newUserError("Use `/admin access` or `/admin repair-card`.")
-		}
-		minimum, maximum := 1, 25
-		components := []interactionComponent{{
-			Type: componentTypeActionRow,
-			Components: []interactionComponent{{
-				Type: componentTypeRoleSelect, CustomID: adminRoleSelectCustomID,
-				Placeholder: "Select allowed roles", MinValues: &minimum, MaxValues: &maximum,
-			}},
-		}}
-		writeJSON(writer, http.StatusOK, interactionResponse{
-			Type: interactionResponseChannelMessageWithSource,
-			Data: renderer.messageData(
-				"Choose the Discord roles that may use game-server platform commands.",
-				messageFlagEphemeral,
-				&components,
-			),
-		})
+		handler.writeAdminView(writer, interactionResponseChannelMessageWithSource,
+			"**Server administration**\nChoose an administration area. Normal access is role-based; every control here rechecks Administrator or Manage Server.",
+			"", nil)
 		return nil
 	}
-	if payload.Data == nil || len(payload.Data.Values) == 0 {
-		return newUserError("Select at least one role.")
+	if payload.Data == nil {
+		return newUserError("This administration control is invalid or has expired.")
 	}
-	policy, err := handler.access.Configure(ctx, payload.GuildID, actorID, true, payload.Data.Values, nil)
+	if strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") {
+		if payload.Data.ComponentType != componentTypeButton {
+			return newUserError("This administration control is invalid or has expired.")
+		}
+		expectedVersion, err := strconv.ParseInt(strings.TrimPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":"), 10, 64)
+		if err != nil || expectedVersion < 0 {
+			return newUserError("This administration control is invalid or has expired.")
+		}
+		policy, err := handler.access.ClearRoles(ctx, payload.GuildID, actorID, true, expectedVersion)
+		if err != nil {
+			return fmt.Errorf("remove guild role access: %w", err)
+		}
+		return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID,
+			fmt.Sprintf("All normal role access was removed at revision `%d`.", policy.Version))
+	}
+	switch payload.Data.CustomID {
+	case adminMenuCustomID:
+		if payload.Data.ComponentType != componentTypeStringSelect || len(payload.Data.Values) != 1 {
+			return newUserError("Choose one administration area.")
+		}
+		switch payload.Data.Values[0] {
+		case adminMenuAccess:
+			return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "")
+		case adminMenuRepair:
+			return handler.writeAdminRepairView(ctx, writer, payload, actorID)
+		default:
+			return newUserError("That administration area is not available.")
+		}
+	case adminRoleSelectCustomID:
+		if payload.Data.ComponentType != componentTypeRoleSelect || len(payload.Data.Values) == 0 || len(payload.Data.Values) > 25 {
+			return newUserError("Select between one and 25 Discord roles.")
+		}
+		if payload.Data.Resolved == nil || !resolvedRolesContain(payload.Data.Resolved.Roles, payload.Data.Values) {
+			return newUserError("Discord could not verify every selected role. Reopen `/rb admin` and try again.")
+		}
+		policy, err := handler.access.Configure(ctx, payload.GuildID, actorID, true, payload.Data.Values, nil)
+		if err != nil {
+			return fmt.Errorf("configure guild access: %w", err)
+		}
+		mentions := make([]string, 0, len(policy.AllowedRoleIDs))
+		for _, roleID := range policy.AllowedRoleIDs {
+			mentions = append(mentions, "<@&"+roleID+">")
+		}
+		return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID,
+			fmt.Sprintf("Access settings updated to revision `%d`: %s.", policy.Version, strings.Join(mentions, ", ")))
+	case adminRoleClearPromptCustomID:
+		if payload.Data.ComponentType != componentTypeButton {
+			return newUserError("This administration control is invalid or has expired.")
+		}
+		roleIDs, version, err := handler.access.AllowedRoles(ctx, payload.GuildID)
+		if err != nil {
+			return fmt.Errorf("read guild access roles: %w", err)
+		}
+		if len(roleIDs) == 0 {
+			return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "Normal role access is already disabled.")
+		}
+		controls := []interactionComponent{{Type: componentTypeActionRow, Components: []interactionComponent{
+			{Type: componentTypeButton, Style: buttonStyleDanger, Label: "Remove role access", CustomID: fmt.Sprintf("%s:%d", adminRoleClearConfirmCustomID, version)},
+			{Type: componentTypeButton, Style: buttonStyleSecondary, Label: "Keep current roles", CustomID: adminRoleClearCancelCustomID},
+		}}}
+		handler.writeAdminView(writer, interactionResponseUpdateMessage,
+			"**Remove all normal role access?**\nMembers will no longer be able to use normal `/rb` commands. Administrators and members with Manage Server can still reopen `/rb admin` and restore access.",
+			adminMenuAccess, controls)
+		return nil
+	case adminRoleClearCancelCustomID:
+		if payload.Data.ComponentType != componentTypeButton {
+			return newUserError("This administration control is invalid or has expired.")
+		}
+		return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "No access roles were changed.")
+	case adminRepairSelectCustomID:
+		if payload.Data.ComponentType != componentTypeStringSelect || len(payload.Data.Values) != 1 {
+			return newUserError("Choose one session card to repair.")
+		}
+		value, err := json.Marshal(payload.Data.Values[0])
+		if err != nil {
+			return fmt.Errorf("encode selected session: %w", err)
+		}
+		content, err := handler.repairSessionCard(ctx, payload, []applicationCommandOption{{
+			Type: applicationCommandOptionString, Name: "session", Value: value,
+		}}, actorID, correlationID)
+		if err != nil {
+			return err
+		}
+		handler.writeAdminView(writer, interactionResponseUpdateMessage, content, adminMenuRepair, nil)
+		return nil
+	default:
+		return newUserError("This administration control is invalid or has expired.")
+	}
+}
+
+func (handler *Handler) writeAdminAccessView(ctx context.Context, writer http.ResponseWriter, responseType int, guildID, status string) error {
+	roleIDs, _, err := handler.access.AllowedRoles(ctx, guildID)
 	if err != nil {
-		return fmt.Errorf("configure guild access: %w", err)
+		return fmt.Errorf("read guild access roles: %w", err)
 	}
-	mentions := make([]string, 0, len(policy.AllowedRoleIDs))
-	for _, roleID := range policy.AllowedRoleIDs {
+	if len(roleIDs) > 25 {
+		return newUserError("This server has more than 25 configured access roles. Reduce the policy through the operator runbook before editing it in Discord.")
+	}
+	minimum, maximum := 1, 25
+	defaults := make([]interactionSelectDefaultValue, 0, len(roleIDs))
+	mentions := make([]string, 0, len(roleIDs))
+	for _, roleID := range roleIDs {
+		defaults = append(defaults, interactionSelectDefaultValue{ID: roleID, Type: "role"})
 		mentions = append(mentions, "<@&"+roleID+">")
 	}
-	emptyComponents := []interactionComponent{}
-	writeJSON(writer, http.StatusOK, interactionResponse{
-		Type: interactionResponseUpdateMessage,
-		Data: renderer.messageData(
-			fmt.Sprintf("**Access settings updated**\nRevision: `%d`\nAllowed roles: %s", policy.Version, strings.Join(mentions, ", ")),
-			0,
-			&emptyComponents,
-		),
-	})
+	controls := []interactionComponent{{
+		Type: componentTypeActionRow,
+		Components: []interactionComponent{{
+			Type: componentTypeRoleSelect, CustomID: adminRoleSelectCustomID,
+			Placeholder: "Replace allowed roles", MinValues: &minimum, MaxValues: &maximum, DefaultValues: defaults,
+		}},
+	}}
+	if len(roleIDs) > 0 {
+		controls = append(controls, interactionComponent{Type: componentTypeActionRow, Components: []interactionComponent{{
+			Type: componentTypeButton, Style: buttonStyleDanger, Label: "Remove all role access", CustomID: adminRoleClearPromptCustomID,
+		}}})
+	}
+	current := "None — normal member access is disabled."
+	if len(mentions) > 0 {
+		current = strings.Join(mentions, ", ")
+	}
+	content := "**Platform access**\nCurrent allowed roles: " + current + "\n\nUse the role picker to replace the complete allowed-role set. Use the removal action only when normal member access should be disabled. `/rb admin` always requires Administrator or Manage Server."
+	if strings.TrimSpace(status) != "" {
+		content = "**Saved**\n" + status + "\n\n" + content
+	}
+	handler.writeAdminView(writer, responseType,
+		content,
+		adminMenuAccess, controls)
 	return nil
+}
+
+func (handler *Handler) writeAdminRepairView(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actorID string) error {
+	selections, err := handler.service.Select(ctx, appsession.SelectQuery{
+		Actor: domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID}, GuildID: payload.GuildID,
+		Limit: maximumAutocompleteChoices, AllowGuildMember: true,
+	})
+	if err != nil {
+		return fmt.Errorf("select repairable sessions: %w", err)
+	}
+	if len(selections) == 0 {
+		handler.writeAdminView(writer, interactionResponseUpdateMessage,
+			"**Repair a session card**\nNo non-terminated session cards are available in this server.", adminMenuRepair, nil)
+		return nil
+	}
+	options := make([]interactionSelectOption, 0, len(selections))
+	for _, selection := range selections {
+		options = append(options, interactionSelectOption{
+			Label: sessionSelectionLabel(selection), Value: selection.ID,
+			Description: "Refresh or recreate the authoritative public card",
+		})
+	}
+	minimum, maximum := 1, 1
+	controls := []interactionComponent{{
+		Type: componentTypeActionRow,
+		Components: []interactionComponent{{
+			Type: componentTypeStringSelect, CustomID: adminRepairSelectCustomID,
+			Placeholder: "Choose a session card", MinValues: &minimum, MaxValues: &maximum, Options: options,
+		}},
+	}}
+	handler.writeAdminView(writer, interactionResponseUpdateMessage,
+		"**Repair a session card**\nChoose one session. The bot will refresh its authoritative card or recreate a deleted card in the original channel.",
+		adminMenuRepair, controls)
+	return nil
+}
+
+func (handler *Handler) writeAdminView(writer http.ResponseWriter, responseType int, content, selected string, controls []interactionComponent) {
+	minimum, maximum := 1, 1
+	menu := interactionComponent{
+		Type: componentTypeActionRow,
+		Components: []interactionComponent{{
+			Type: componentTypeStringSelect, CustomID: adminMenuCustomID,
+			Placeholder: "Choose an administration area", MinValues: &minimum, MaxValues: &maximum,
+			Options: []interactionSelectOption{
+				{Label: "Access", Value: adminMenuAccess, Description: "Configure allowed Discord roles", Default: selected == adminMenuAccess},
+				{Label: "Repair card", Value: adminMenuRepair, Description: "Refresh or recreate a session card", Default: selected == adminMenuRepair},
+			},
+		}},
+	}
+	components := append([]interactionComponent{menu}, controls...)
+	flags := 0
+	if responseType == interactionResponseChannelMessageWithSource {
+		flags = messageFlagEphemeral
+	}
+	writeJSON(writer, http.StatusOK, interactionResponse{
+		Type: responseType,
+		Data: renderer.messageData(content, flags, &components),
+	})
 }
 
 func (handler *Handler) repairSessionCard(
@@ -760,23 +926,41 @@ func (handler *Handler) repairSessionCard(
 
 func (payload interactionPayload) isAdminCommand() bool {
 	return (payload.Type == interactionTypeApplicationCommand || payload.Type == interactionTypeApplicationCommandAutocomplete) &&
-		payload.Data != nil && strings.TrimSpace(payload.Data.Name) == "admin"
+		payload.Data != nil && strings.TrimSpace(payload.Data.Name) == "rb" && len(payload.Data.Options) == 1 &&
+		payload.Data.Options[0].Type == applicationCommandOptionSubcommand && strings.TrimSpace(payload.Data.Options[0].Name) == "admin" &&
+		len(payload.Data.Options[0].Options) == 0
 }
 
-func (payload interactionPayload) isAdminRoleSelection() bool {
-	return payload.Type == interactionTypeMessageComponent && payload.Data != nil &&
-		payload.Data.ComponentType == componentTypeRoleSelect && payload.Data.CustomID == adminRoleSelectCustomID
+func (payload interactionPayload) isAdminComponent() bool {
+	if payload.Type != interactionTypeMessageComponent || payload.Data == nil {
+		return false
+	}
+	switch payload.Data.CustomID {
+	case adminMenuCustomID, adminRoleSelectCustomID, adminRoleClearPromptCustomID, adminRoleClearCancelCustomID, adminRepairSelectCustomID:
+		return true
+	default:
+		return strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":")
+	}
 }
 
 func (payload interactionPayload) memberCanManageGuild() bool {
 	if payload.Member == nil {
 		return false
 	}
-	permissions, err := strconv.ParseUint(strings.TrimSpace(payload.Member.Permissions), 10, 64)
-	if err != nil {
+	permissions, ok := new(big.Int).SetString(strings.TrimSpace(payload.Member.Permissions), 10)
+	if !ok || permissions.Sign() < 0 {
 		return false
 	}
-	return permissions&administratorPermission != 0 || permissions&manageGuildPermission != 0
+	return permissions.Bit(3) == 1 || permissions.Bit(5) == 1
+}
+
+func resolvedRolesContain(resolved map[string]json.RawMessage, selected []string) bool {
+	for _, roleID := range selected {
+		if _, ok := resolved[strings.TrimSpace(roleID)]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (handler *Handler) configureSession(
@@ -1031,10 +1215,21 @@ func (handler *Handler) commandErrorMessage(err error, correlationID string) str
 		return "Create a durable confirmation with `/rb archive` or `/rb terminate` before requesting that action."
 	default:
 		return fmt.Sprintf(
-			"The command failed. Reference: `%s`",
+			"The command failed. Reference: `%s`\nState may be unchanged or partially complete. No automatic retry is scheduled. Check `/rb status` before trying again. Provisioned resources may remain and incur cost.",
 			sanitizeInline(correlationID),
 		)
 	}
+}
+
+func (handler *Handler) adminErrorMessage(err error, correlationID string) string {
+	var userErr userError
+	if errors.As(err, &userErr) {
+		return userErr.message
+	}
+	if errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrConflict) || errors.Is(err, domain.ErrInvalidTransition) {
+		return "This administration control is stale because the underlying state changed. Reopen `/rb admin` and try again."
+	}
+	return handler.commandErrorMessage(err, correlationID)
 }
 
 func activeOperationMessage(active domain.OperationInProgressError) string {

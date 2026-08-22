@@ -60,8 +60,12 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 	if err != nil {
 		return domain.Workflow{}, err
 	}
+	trustedContinuation, err := service.validateBootstrapContinuation(ctx, command, workflowType)
+	if err != nil {
+		return domain.Workflow{}, err
+	}
 	canManageLifecycle := command.Actor.CanManageGuild && isOwnerOrAdminLifecycle(workflowType)
-	if !canManageLifecycle {
+	if !trustedContinuation && !canManageLifecycle {
 		if err := service.authorizer.Authorize(
 			ctx,
 			command.Actor.GuildID,
@@ -119,6 +123,35 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 		return domain.Workflow{}, err
 	}
 	return service.startExecution(ctx, session, workflow, actor)
+}
+
+func (service *Service) validateBootstrapContinuation(ctx context.Context, command domain.CommandEnvelope, workflowType string) (bool, error) {
+	provisionID := command.Parameters[domain.BootstrapContinuationParameter]
+	if provisionID == "" {
+		return false, nil
+	}
+	if workflowType != domain.BootstrapWorkflowType || command.CommandID != domain.BootstrapContinuationCommandID(provisionID) ||
+		command.IdempotencyKey != "workflow-continuation:"+provisionID {
+		return false, domain.ErrForbidden
+	}
+	provision, err := service.workflows.GetWorkflow(ctx, command.SessionID, provisionID)
+	if err != nil {
+		return false, err
+	}
+	if provision.Type != domain.ProvisionWorkflowType || provision.Status != domain.WorkflowSucceeded ||
+		provision.RequestedBy != command.Actor.DiscordUserID || provision.CorrelationID != command.CorrelationID {
+		return false, domain.ErrForbidden
+	}
+	session, err := service.sessions.Get(ctx, command.SessionID)
+	if err != nil {
+		return false, err
+	}
+	if session.OwnerDiscordUserID != command.Actor.DiscordUserID || session.GuildID != command.Actor.GuildID ||
+		session.ChannelID != command.Actor.ChannelID || session.ActiveWorkflowID != command.CommandID ||
+		session.ActiveWorkflowType != domain.BootstrapWorkflowType {
+		return false, domain.ErrForbidden
+	}
+	return true, nil
 }
 
 func isOwnerOrAdminLifecycle(workflowType string) bool {

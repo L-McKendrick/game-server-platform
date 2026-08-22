@@ -149,26 +149,45 @@ func (handler *Handler) querySessionPlayers(ctx context.Context, session domain.
 }
 
 func contextualCardHelp(session domain.Session) string {
-	next := "Use `/rb status` for current details."
+	next := sessionNextAction(session)
+	return fmt.Sprintf("**Help for %s**\n%s\n\nCard controls are read-only; lifecycle changes remain explicit `/rb` commands.", sanitizeInline(session.DisplayName), next)
+}
+
+func sessionNextAction(session domain.Session) string {
+	next := "use `/rb status` for current details."
 	switch session.LifecycleState {
 	case domain.StateDraft:
-		next = "Use `/rb setup` to finish or repair configuration."
-	case domain.StateNew, domain.StateReady:
-		next = "Use `/rb start` when you are ready to allocate infrastructure."
+		if session.MissionArtifactStatus == domain.ArtifactPending || session.PresetArtifactStatus == domain.ArtifactPending {
+			next = "use `/rb status` while upload validation finishes; no infrastructure has been allocated."
+		} else {
+			next = "use `/rb setup` to finish or repair configuration. A rejected file has no scheduled retry."
+		}
+	case domain.StateNew:
+		next = "the required setup is accepted. The owner can use `/rb start` to begin the billable server workflow."
+	case domain.StateReady:
+		next = "use `/rb status` for connection details or `/rb sleep` when the ready server is no longer needed."
+	case domain.StateValidating:
+		next = "use `/rb status` to follow the accepted start request; no second operation is needed."
 	case domain.StateProvisioning, domain.StateBootstrapping, domain.StateInstalling, domain.StateWaking, domain.StateRestoring:
-		next = "Setup is still running. Use `/rb status` to follow the current stage."
+		next = "use `/rb status` to follow the current stage. No second operation is needed."
 	case domain.StateRunning, domain.StateIdle:
-		next = "Use `/rb status` for live details or `/rb sleep` when the server is no longer needed."
-	case domain.StateStopping, domain.StateSleeping, domain.StateWarning1, domain.StateWarning2:
-		next = "Use `/rb wake` to bring the retained server back online."
+		next = "use `/rb status` for live details, `/rb mods` to stage a later revision, or `/rb sleep` when the server is no longer needed."
+	case domain.StateStopping:
+		next = "use `/rb status` until the stop completes, then `/rb wake` when the retained server is needed again."
+	case domain.StateSleeping, domain.StateWarning1, domain.StateWarning2:
+		next = "use `/rb wake` to bring the retained server back online."
+	case domain.StateArchiving, domain.StateDestroying:
+		next = "use `/rb status` while the verified archive workflow completes. No retry is scheduled by this help action."
 	case domain.StateArchived:
-		next = "Use `/rb restore` to create replacement infrastructure from the verified archive."
+		next = "use `/rb restore` to create billable replacement infrastructure from the verified archive."
 	case domain.StateFailed:
-		next = "Use `/rb status` for the latest safe failure details before choosing a recovery action."
-	case domain.StateDeleting, domain.StateDeleted:
-		next = "This session is terminated and has no lifecycle action available."
+		next = "use `/rb status` for the latest safe failure details before choosing a recovery action. No automatic retry is scheduled."
+	case domain.StateDeleting:
+		next = "use `/rb status` while termination finishes. This action is irreversible and has no scheduled retry."
+	case domain.StateDeleted:
+		next = "this session is terminated and has no lifecycle action available; use `/rb create` for a new non-billable draft."
 	}
-	return fmt.Sprintf("**Help for %s**\n%s\n\nCard controls are read-only; lifecycle changes remain explicit `/rb` commands.", sanitizeInline(session.DisplayName), next)
+	return next
 }
 
 func componentErrorMessage(err error) string {

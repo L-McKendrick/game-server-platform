@@ -15,7 +15,10 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
-const documentName = "AWS-RunShellScript"
+const (
+	documentName                = "AWS-RunShellScript"
+	RuntimeConfigurationVersion = "steam-auth-cache-v1"
+)
 
 type API interface {
 	SendCommand(context.Context, *ssm.SendCommandInput, ...func(*ssm.Options)) (*ssm.SendCommandOutput, error)
@@ -47,8 +50,22 @@ func New(client API, config Config) (*Runner, error) {
 	config.MetadataTableName = strings.TrimSpace(config.MetadataTableName)
 	config.SteamAuthSecretID = strings.TrimSpace(config.SteamAuthSecretID)
 	config.TeamSpeakVersion = strings.TrimSpace(config.TeamSpeakVersion)
-	if client == nil || config.Region == "" || config.AssetsBucket == "" || config.BootstrapScriptKey == "" || config.MetadataTableName == "" || config.SteamAuthSecretID == "" || config.TeamSpeakVersion == "" {
-		return nil, fmt.Errorf("SSM client, region, asset bucket, bootstrap script key, metadata table, Steam authorization cache, and TeamSpeak version are required")
+	required := []struct {
+		missing bool
+		name    string
+	}{
+		{client == nil, "SSM client"},
+		{config.Region == "", "AWS_REGION"},
+		{config.AssetsBucket == "", "SESSION_ASSETS_BUCKET"},
+		{config.BootstrapScriptKey == "", "BOOTSTRAP_SCRIPT_KEY"},
+		{config.MetadataTableName == "", "METADATA_TABLE_NAME"},
+		{config.SteamAuthSecretID == "", "STEAM_AUTH_SECRET_ID"},
+		{config.TeamSpeakVersion == "", "TEAMSPEAK_VERSION"},
+	}
+	for _, value := range required {
+		if value.missing {
+			return nil, fmt.Errorf("bootstrap configuration is missing %s", value.name)
+		}
 	}
 	if config.TimeoutSeconds < 900 || config.TimeoutSeconds > 172800 {
 		return nil, fmt.Errorf("bootstrap timeout must be between 900 and 172800 seconds")
@@ -169,10 +186,6 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || session.MissionObjectKey == "" || (!session.Vanilla && presetObjectKey == "") {
 		return "", fmt.Errorf("instance, data volume, mission, and a preset for modded sessions are required")
 	}
-	metadataTableName, steamAuthSecretID := runner.config.MetadataTableName, runner.config.SteamAuthSecretID
-	if session.Vanilla {
-		metadataTableName, steamAuthSecretID = "", ""
-	}
 	values := map[string]string{
 		"SESSION_ID_B64":        session.ID,
 		"DISPLAY_NAME_B64":      session.DisplayName,
@@ -182,8 +195,8 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 		"PRESET_REVISION_B64":   fmt.Sprintf("%d", presetRevision),
 		"PRESET_ROLLBACK_B64":   fmt.Sprintf("%t", rollback),
 		"ASSETS_BUCKET_B64":     runner.config.AssetsBucket,
-		"METADATA_TABLE_B64":    metadataTableName,
-		"STEAM_AUTH_SECRET_B64": steamAuthSecretID,
+		"METADATA_TABLE_B64":    runner.config.MetadataTableName,
+		"STEAM_AUTH_SECRET_B64": runner.config.SteamAuthSecretID,
 		"AWS_REGION_B64":        runner.config.Region,
 		"TEAMSPEAK_VERSION_B64": runner.config.TeamSpeakVersion,
 	}

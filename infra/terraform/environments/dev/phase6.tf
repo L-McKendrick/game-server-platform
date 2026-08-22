@@ -177,15 +177,16 @@ resource "aws_lambda_function" "bootstrap_worker" {
 
   environment {
     variables = {
-      APP_ENV                           = var.environment
-      LOG_LEVEL                         = "info"
-      METADATA_TABLE_NAME               = aws_dynamodb_table.metadata.name
-      NOTIFICATION_QUEUE_URL            = aws_sqs_queue.notifications.url
-      SESSION_ASSETS_BUCKET             = aws_s3_bucket.session_assets.id
-      BOOTSTRAP_SCRIPT_KEY              = aws_s3_object.bootstrap_script.key
-      STEAM_AUTH_SECRET_ID              = aws_secretsmanager_secret.steam_authorization_cache.name
-      TEAMSPEAK_VERSION                 = var.teamspeak_version
-      BOOTSTRAP_COMMAND_TIMEOUT_SECONDS = tostring(var.bootstrap_command_timeout_seconds)
+      APP_ENV                                 = var.environment
+      LOG_LEVEL                               = "info"
+      METADATA_TABLE_NAME                     = aws_dynamodb_table.metadata.name
+      NOTIFICATION_QUEUE_URL                  = aws_sqs_queue.notifications.url
+      SESSION_ASSETS_BUCKET                   = aws_s3_bucket.session_assets.id
+      BOOTSTRAP_SCRIPT_KEY                    = aws_s3_object.bootstrap_script.key
+      STEAM_AUTH_SECRET_ID                    = aws_secretsmanager_secret.steam_authorization_cache.name
+      TEAMSPEAK_VERSION                       = var.teamspeak_version
+      BOOTSTRAP_COMMAND_TIMEOUT_SECONDS       = tostring(var.bootstrap_command_timeout_seconds)
+      BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION = "steam-auth-cache-v1"
     }
   }
 

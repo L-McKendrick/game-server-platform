@@ -114,7 +114,7 @@ func (handler *Handler) submitSetupModal(ctx context.Context, payload interactio
 		result += " Replacement " + strings.Join(queued, " and ") + " queued for validation; the files have not been accepted yet."
 	}
 	return fmt.Sprintf(
-		"**Draft setup updated**\nName: %s\nSlug: `%s`\n%s%s",
+		"**Draft setup updated**\nName: %s\nSlug: `%s`\n%s%s\n\nNext: use `/rb status` to verify validation. Rejected files are not retried automatically.",
 		sanitizeInline(session.DisplayName), sanitizeCode(session.Slug), result,
 		payload.channelCapabilities().plainTextNotice(),
 	), nil

@@ -47,3 +47,4 @@ Thumbs.db
 # Codex local context
 !AGENTS.md
 !CURRENT_WORK.md
+/DEV_SETUP.local.md

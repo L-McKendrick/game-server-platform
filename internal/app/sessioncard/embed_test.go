@@ -28,14 +28,14 @@ func TestRenderPublicEmbedMatchesApprovedCardAndUsesLiveMission(t *testing.T) {
 	if err := embed.Validate(); err != nil {
 		t.Fatalf("embed validation error = %v", err)
 	}
-	if embed.Title != "ARMA 3 | Saturday Operations" || embed.Color != embedColorOnline || !strings.Contains(embed.Description, "ONLINE · HEALTHY") {
+	if embed.Title != "🟢 ONLINE · HEALTHY" || embed.Color != embedColorOnline || !strings.HasPrefix(embed.Description, "**ARMA 3 | Saturday Operations**") {
 		t.Fatalf("embed heading = %#v", embed)
 	}
-	if len(embed.Fields) != 3 || embed.Fields[0].Name != "CURRENT MISSION" ||
+	if len(embed.Fields) != 3 || embed.Fields[0].Name != "\u200b\nCURRENT MISSION" ||
 		!strings.Contains(embed.Fields[0].Value, "Liberation RX on Altis\n12 of 40 players · session started <t:") {
 		t.Fatalf("mission field = %#v", embed.Fields)
 	}
-	if embed.Fields[1].Name != "Game server" || !strings.Contains(embed.Fields[1].Value, "`203.0.113.20:2302`\n\n**Modlist:** [Saturday Operations]") {
+	if embed.Fields[1].Name != "\u200b\nGame server" || !strings.Contains(embed.Fields[1].Value, "`203.0.113.20:2302`\n\n**Modlist:** [Saturday Operations]") {
 		t.Fatalf("game connection field = %#v", embed.Fields[1])
 	}
 	if embed.Fields[2].Name != "TeamSpeak" || embed.Fields[2].Value != "`203.0.113.20:9987`" {
@@ -56,14 +56,14 @@ func TestRenderPublicEmbedOmitsTeamSpeakAndUsesVanillaModlist(t *testing.T) {
 		Infrastructure: domain.Infrastructure{PublicIPv4: "203.0.113.21"}, UpdatedAt: time.Now().UTC(),
 	}
 	embed := RenderPublicEmbed(Project(session, Options{Now: session.UpdatedAt}))
-	if embed.Color != embedColorInactive || !strings.Contains(embed.Description, "ARCHIVED · OFFLINE") {
+	if embed.Color != embedColorInactive || !strings.Contains(embed.Title, "ARCHIVED · OFFLINE") {
 		t.Fatalf("archived presentation = %#v", embed)
 	}
 	for _, field := range embed.Fields {
 		if field.Name == "TeamSpeak" {
 			t.Fatalf("disabled TeamSpeak field rendered: %#v", embed.Fields)
 		}
-		if field.Name == "Game server" && !strings.Contains(field.Value, "**Modlist:** None") {
+		if strings.TrimSpace(strings.TrimPrefix(field.Name, "\u200b")) == "Game server" && !strings.Contains(field.Value, "**Modlist:** None") {
 			t.Fatalf("vanilla modlist = %#v", field)
 		}
 	}
@@ -77,14 +77,14 @@ func TestRenderPublicEmbedUsesSetupAndFailureColorsWithTextLabels(t *testing.T) 
 		Progress:  domain.SessionProgress{WorkflowID: "workflow", WorkflowType: domain.BootstrapWorkflowType, Milestone: domain.ProgressModsApplied, State: domain.ProgressActive, StartedAt: now},
 		UpdatedAt: now,
 	}, Options{Now: now}))
-	if setup.Color != embedColorSetup || !strings.Contains(setup.Description, "SETTING UP") {
+	if setup.Color != embedColorSetup || !strings.Contains(setup.Title, "SETTING UP") {
 		t.Fatalf("setup embed = %#v", setup)
 	}
 	failure := RenderPublicEmbed(Project(domain.Session{
 		DisplayName: "Failed", GameType: "arma3", LifecycleState: domain.StateFailed, HealthStatus: domain.HealthUnhealthy,
 		UpdatedAt: now,
 	}, Options{Now: now}))
-	if failure.Color != embedColorError || !strings.Contains(failure.Description, "ACTION REQUIRED") {
+	if failure.Color != embedColorError || !strings.Contains(failure.Title, "ACTION REQUIRED") {
 		t.Fatalf("failure embed = %#v", failure)
 	}
 }

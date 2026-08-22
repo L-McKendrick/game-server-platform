@@ -25,6 +25,31 @@ type fakeSSM struct {
 	invocation *ssm.GetCommandInvocationOutput
 }
 
+func TestNewReportsExactMissingConfiguration(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		edit func(*Config)
+		want string
+	}{
+		{name: "asset bucket", edit: func(config *Config) { config.AssetsBucket = "" }, want: "SESSION_ASSETS_BUCKET"},
+		{name: "script key", edit: func(config *Config) { config.BootstrapScriptKey = "" }, want: "BOOTSTRAP_SCRIPT_KEY"},
+		{name: "metadata table", edit: func(config *Config) { config.MetadataTableName = "" }, want: "METADATA_TABLE_NAME"},
+		{name: "Steam authorization cache", edit: func(config *Config) { config.SteamAuthSecretID = "" }, want: "STEAM_AUTH_SECRET_ID"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			config := testConfig()
+			test.edit(&config)
+			_, err := New(&fakeSSM{}, config)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("New() error = %v; want missing %s", err, test.want)
+			}
+		})
+	}
+}
+
 func (fake *fakeSSM) SendCommand(_ context.Context, input *ssm.SendCommandInput, _ ...func(*ssm.Options)) (*ssm.SendCommandOutput, error) {
 	fake.sent = input
 	return &ssm.SendCommandOutput{Command: &types.Command{CommandId: aws.String("command-1")}}, nil
@@ -127,7 +152,7 @@ func TestGeneratedCommandPassesBashSyntaxCheck(t *testing.T) {
 	assertBashSyntax(t, []byte(script))
 }
 
-func TestVanillaCommandUsesAnonymousModeWithoutPresetOrSecretIdentifier(t *testing.T) {
+func TestVanillaCommandUsesSteamAuthorizationWithoutPreset(t *testing.T) {
 	t.Parallel()
 	runner, err := New(&fakeSSM{}, testConfig())
 	if err != nil {
@@ -143,13 +168,13 @@ func TestVanillaCommandUsesAnonymousModeWithoutPresetOrSecretIdentifier(t *testi
 		t.Fatal(err)
 	}
 	if !strings.Contains(script, "export VANILLA_MODE=true") {
-		t.Fatal("vanilla command did not enable anonymous bootstrap mode")
+		t.Fatal("vanilla command did not enable vanilla content mode")
 	}
-	if strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(testConfig().SteamAuthSecretID))) {
-		t.Fatal("vanilla command included the Steam secret identifier")
+	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(testConfig().SteamAuthSecretID))) {
+		t.Fatal("vanilla command omitted the Steam authorization secret identifier")
 	}
-	if strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(testConfig().MetadataTableName))) {
-		t.Fatal("vanilla command included the Steam authorization-state table")
+	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(testConfig().MetadataTableName))) {
+		t.Fatal("vanilla command omitted the Steam authorization-state table")
 	}
 	assertBashSyntax(t, []byte(script))
 }
@@ -160,15 +185,18 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"get-secret-value", "put-secret-value", "AWSCURRENT", "source_version_id", "config_sha256", "STEAM_AUTH#CACHE", "lease_expires_at < :now", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "login anonymous", "VANILLA_MODE", "PRESET_REVISION", "PRESET_ROLLBACK", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "revision-$PRESET_REVISION.complete", "mod-revisions/revision-", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
+	for _, required := range []string{"get-secret-value", "put-secret-value", "AWSCURRENT", "source_version_id", "config_sha256", "STEAM_AUTH#CACHE", "lease_expires_at < :now", "refresh_steam_auth_lock", "start_steam_auth_lock_heartbeat", "STEAM_AUTH_LOCK_LEASE_SECONDS=900", "STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=300", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "VANILLA_MODE", "PRESET_REVISION", "PRESET_ROLLBACK", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "revision-$PRESET_REVISION.complete", "mod-revisions/revision-", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "safe_mission_template=\"$(sqf_escape \"$mission_template\")\"", "template = \"$safe_mission_template\";", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
 		if !strings.Contains(string(script), required) {
 			t.Errorf("script missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{".password", "STEAM_SECRET_ID", "steam_guard_code", "login \"%s\" \"%s\""} {
+	for _, forbidden := range []string{".password", "STEAM_SECRET_ID", "steam_guard_code", "login anonymous", "login \"%s\" \"%s\"", "now_epoch + 25200"} {
 		if strings.Contains(string(script), forbidden) {
 			t.Errorf("script contains legacy credential behavior %q", forbidden)
 		}
+	}
+	if !strings.Contains(string(script), `^[0-9a-f]{64}-(.+\.[pP][bB][oO])$`) {
+		t.Error("script does not normalize legacy digest-prefixed mission filenames")
 	}
 	assertBashSyntax(t, script)
 }

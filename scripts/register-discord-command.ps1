@@ -32,26 +32,29 @@ try {
         throw "A Discord bot token is required."
     }
 
-    $Body = Get-Content -Raw -Path $CommandFile
-    $null = $Body | ConvertFrom-Json
+	$Command = Get-Content -Raw -Path $CommandFile | ConvertFrom-Json
+	[object[]]$Commands = @($Command)
+	$Body = ConvertTo-Json -InputObject $Commands -Depth 100 -Compress
 
     $Uri = "https://discord.com/api/v10/applications/$ApplicationId/guilds/$GuildId/commands"
     $UserAgent = "DiscordBot (https://github.com/L-McKendrick/game-server-platform, 0.1.0)"
 
-    $Response = Invoke-RestMethod `
-        -Method Post `
+	$Response = Invoke-RestMethod `
+		-Method Put `
         -Uri $Uri `
         -Headers @{ Authorization = "Bot $Token" } `
         -UserAgent $UserAgent `
         -ContentType "application/json" `
         -Body $Body
 
-    [pscustomobject]@{
-        Id          = $Response.id
-        Name        = $Response.name
-        Description = $Response.description
-        Version     = $Response.version
-    } | Format-List
+	$Response | ForEach-Object {
+		[pscustomobject]@{
+			Id          = $_.id
+			Name        = $_.name
+			Description = $_.description
+			Version     = $_.version
+		}
+	} | Format-List
 }
 finally {
     $Token = $null

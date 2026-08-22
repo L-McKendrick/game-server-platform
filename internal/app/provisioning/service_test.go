@@ -2,6 +2,7 @@ package provisioning
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -62,7 +63,7 @@ func TestLaunchRequestIncludesReadableSessionIdentity(t *testing.T) {
 	}
 }
 
-func TestProvisioningStagesCreateInfrastructureAndStopBeforeBootstrap(t *testing.T) {
+func TestProvisioningStagesCreateInfrastructureAndAcquireBootstrapContinuation(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	repository, workflow := seededRepository(t, now)
@@ -76,6 +77,7 @@ func TestProvisioningStagesCreateInfrastructureAndStopBeforeBootstrap(t *testing
 		t.Fatal(err)
 	}
 	request := TaskRequest{SessionID: "session-1", WorkflowID: workflow.ID, CorrelationID: workflow.CorrelationID}
+	var completion TaskResult
 	for _, action := range []string{ActionPrepare, ActionEnsure, ActionObserve, ActionCheckManaged, ActionComplete} {
 		request.Action = action
 		result, err := service.Handle(context.Background(), request)
@@ -88,12 +90,16 @@ func TestProvisioningStagesCreateInfrastructureAndStopBeforeBootstrap(t *testing
 		if action == ActionCheckManaged && !result.Managed {
 			t.Fatal("managed check is false")
 		}
+		if action == ActionComplete {
+			completion = result
+		}
 	}
 	session, err := repository.Get(context.Background(), "session-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if session.LifecycleState != domain.StateBootstrapping || session.ActiveWorkflowID != "" {
+	continuationID := domain.BootstrapContinuationCommandID(workflow.ID)
+	if session.LifecycleState != domain.StateBootstrapping || session.ActiveWorkflowID != continuationID || session.ActiveWorkflowType != domain.BootstrapWorkflowType {
 		t.Fatalf("session = %#v", session)
 	}
 	if session.Infrastructure.InstanceID != "i-1" || session.Infrastructure.DataVolumeID != "vol-1" {
@@ -102,6 +108,17 @@ func TestProvisioningStagesCreateInfrastructureAndStopBeforeBootstrap(t *testing
 	completed, err := repository.GetWorkflow(context.Background(), session.ID, workflow.ID)
 	if err != nil || completed.Status != domain.WorkflowSucceeded {
 		t.Fatalf("workflow = %#v, error = %v", completed, err)
+	}
+	bootstrap, err := repository.GetWorkflow(context.Background(), session.ID, continuationID)
+	if err != nil || bootstrap.Status != domain.WorkflowPending || bootstrap.Type != domain.BootstrapWorkflowType {
+		t.Fatalf("bootstrap workflow = %#v, error = %v", bootstrap, err)
+	}
+	if completion.Continuation == nil || completion.Continuation.CommandID != continuationID ||
+		completion.Continuation.Parameters[domain.BootstrapContinuationParameter] != workflow.ID {
+		t.Fatalf("continuation = %#v", completion.Continuation)
+	}
+	if err := completion.Continuation.Validate(); err != nil {
+		t.Fatalf("continuation validation error = %v", err)
 	}
 	if len(notifications.requests) != 3 {
 		t.Fatalf("notifications = %d; want 3", len(notifications.requests))
@@ -118,11 +135,27 @@ func TestProvisioningStagesCreateInfrastructureAndStopBeforeBootstrap(t *testing
 	}
 	notification := notifications.requests[2]
 	if notification.Kind != domain.NotificationSessionCard || notification.NotificationID != "card-progress-"+workflow.ID+"-completed" ||
-		notification.CardRevision != session.Version {
+		notification.CardRevision != bootstrap.ExpectedVersion {
 		t.Fatalf("notification = %#v", notification)
 	}
-	if session.Progress.Milestone != domain.ProgressCompleted || session.Progress.WorkflowID != workflow.ID {
+	if session.Progress.Milestone != domain.ProgressAccepted || session.Progress.WorkflowID != continuationID {
 		t.Fatalf("progress = %#v", session.Progress)
+	}
+
+	replayed, err := service.Handle(context.Background(), request)
+	if err != nil {
+		t.Fatalf("replayed complete error = %v", err)
+	}
+	if replayed.Continuation == nil || replayed.Continuation.CommandID != continuationID {
+		t.Fatalf("replayed continuation = %#v", replayed.Continuation)
+	}
+
+	bootstrap.Status = domain.WorkflowFailed
+	if err := repository.SetWorkflowExecution(context.Background(), bootstrap, domain.WorkflowPending); err != nil {
+		t.Fatalf("mark bootstrap workflow failed: %v", err)
+	}
+	if _, err := service.Handle(context.Background(), request); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("replay with terminal continuation error = %v; want conflict", err)
 	}
 }
 

@@ -76,7 +76,7 @@ func TestProcessStoresValidatedMissionAndPersistsMetadata(t *testing.T) {
 	if err := service.Process(context.Background(), request); err != nil {
 		t.Fatalf("Process() returned error: %v", err)
 	}
-	if len(objects.objects) != 1 || !strings.HasPrefix(objects.objects[0].key, "sessions/session-1/input/missions/") {
+	if len(objects.objects) != 1 || objects.objects[0].key != "sessions/session-1/input/missions/operation.pbo" {
 		t.Fatalf("stored objects = %#v; want one mission object", objects.objects)
 	}
 	session, err := repository.Get(context.Background(), "session-1")
@@ -102,6 +102,29 @@ func TestProcessStoresValidatedMissionAndPersistsMetadata(t *testing.T) {
 	}
 	if len(notifications.requests) != 2 || notifications.requests[0].NotificationID != notifications.requests[1].NotificationID {
 		t.Fatalf("replay notifications = %#v; want deterministic ID", notifications.requests)
+	}
+}
+
+func TestProcessSanitizesMissionFilenameBeforeObjectStorage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 8, 8, 21, 0, 0, 0, time.UTC)
+	repository := seededRepository(t, now)
+	downloader := &testDownloader{body: []byte("0123456789abcdef")}
+	objects := &testObjectStore{}
+	service, err := NewService(repository, downloader, objects, &testNotifications{}, &testIDs{ids: []string{"artifact-event-1"}}, testClock{now}, 7*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := missionRequest(now, int64(len(downloader.body)))
+	request.Filename = `operation";passwordAdmin="unsafe.Stratis.pbo`
+
+	if err := service.Process(context.Background(), request); err != nil {
+		t.Fatalf("Process() returned error: %v", err)
+	}
+	want := "sessions/session-1/input/missions/operation_passwordAdmin_unsafe.Stratis.pbo"
+	if len(objects.objects) != 1 || objects.objects[0].key != want {
+		t.Fatalf("stored objects = %#v; want %q", objects.objects, want)
 	}
 }
 
