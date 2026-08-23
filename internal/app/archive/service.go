@@ -178,6 +178,7 @@ func (service *Service) verify(ctx context.Context, session domain.Session, work
 		ActivePresetRevision:   domain.ArchivePresetRevisionSnapshot(session.EffectiveActivePresetRevision()),
 		PendingPresetRevision:  domain.ArchivePresetRevisionSnapshot(session.PendingPresetRevision),
 		Vanilla:                session.Vanilla,
+		CreatorDLCs:            append([]string(nil), session.CreatorDLCs...),
 		SourceDataVolumeID:     session.Infrastructure.DataVolumeID,
 	}
 	if err := manifest.Validate(); err != nil {

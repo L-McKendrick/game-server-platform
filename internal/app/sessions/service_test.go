@@ -40,6 +40,45 @@ func (queue failingCommandQueue) Enqueue(context.Context, domain.CommandEnvelope
 	return queue.err
 }
 
+func TestUpdateModOptionsAutomaticallyStartsCreatorDLCOnlyReadySession(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 8, 23, 14, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-cdlc-only", Slug: "cdlc-only", DisplayName: "cDLC only", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(domain.SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 86400, StartWhenReady: true}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AttachArtifact(domain.ArtifactMission, "sessions/session-cdlc-only/input/missions/mission.pbo", now); err != nil {
+		t.Fatal(err)
+	}
+	record, _ := domain.NewCompletedIdempotencyRecord("create-cdlc", "hash", session.ID, now, time.Hour)
+	event := domain.NewSessionCreatedEvent("create-event", "create-correlation", testActor("owner-1"), session, now)
+	if err := repository.Create(ctx, session, event, record); err != nil {
+		t.Fatal(err)
+	}
+	queue := &recordingCommandQueue{}
+	service, err := NewService(repository, &sequenceIDGenerator{ids: []string{"config-event"}}, fixedClock{now}, time.Hour, WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := UpdateModOptionsCommand{Actor: testActor("owner-1"), SessionID: session.ID, GuildID: session.GuildID, CorrelationID: "mods-correlation", IdempotencyKey: "mods-idempotency", ExpectedVersion: session.Version, CreatorDLCs: []string{domain.CreatorDLCWesternSahara}}
+	first, err := service.UpdateModOptions(ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.UpdateModOptions(ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.LifecycleState != domain.StateNew || second.LifecycleState != domain.StateNew || len(queue.commands) != 2 || queue.commands[0].CommandID != queue.commands[1].CommandID || queue.commands[0].IdempotencyKey != queue.commands[1].IdempotencyKey {
+		t.Fatalf("sessions=(%s,%s) commands=%#v", first.LifecycleState, second.LifecycleState, queue.commands)
+	}
+}
+
 func TestRequestArtifactIngestAllowsOwnerToQueueRunningPresetRevision(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 17, 21, 0, 0, 0, time.UTC)
@@ -1067,6 +1106,29 @@ func TestTransitionRejectsInvalidStateChange(t *testing.T) {
 
 	if stored.Version != 1 {
 		t.Errorf("stored version = %d; want 1", stored.Version)
+	}
+}
+
+func TestConfigureRequestIdentityCanonicalizesCreatorDLCOrder(t *testing.T) {
+	t.Parallel()
+	base := ConfigureCommand{
+		Actor: testActor("owner-1"), SessionID: "session-1", GuildID: "guild-1", IdempotencyKey: "configure-1",
+		GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400,
+	}
+	first := base
+	first.CreatorDLCs = []string{domain.CreatorDLCReactionForces, domain.CreatorDLCGlobalMobilization}
+	second := base
+	second.CreatorDLCs = []string{domain.CreatorDLCGlobalMobilization, domain.CreatorDLCReactionForces}
+	_, firstHash, err := configureRequestIdentity(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, secondHash, err := configureRequestIdentity(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstHash != secondHash {
+		t.Fatalf("semantically equal cDLC selections hashed differently: %q != %q", firstHash, secondHash)
 	}
 }
 

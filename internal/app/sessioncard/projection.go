@@ -92,6 +92,7 @@ type ModsProjection struct {
 	PendingStatus   string
 	PendingSince    time.Time
 	DownloadURL     string
+	CreatorDLCs     []string
 }
 
 type FailureProjection struct {
@@ -153,7 +154,7 @@ func Project(session domain.Session, options Options) Projection {
 		Mods: modProjection(session, options.ModlistURL),
 		Artifacts: ArtifactProjection{
 			Mission: artifactView(session.MissionArtifactStatus, session.MissionObjectKey, session.MissionArtifactIssue, false),
-			Preset:  artifactView(session.PresetArtifactStatus, session.PresetObjectKey, session.PresetArtifactIssue, session.Vanilla),
+			Preset:  presetArtifactView(session),
 		},
 		Freshness: FreshnessProjection{
 			SessionUpdatedAt:         sessionUpdatedAt,
@@ -238,6 +239,13 @@ func Project(session domain.Session, options Options) Projection {
 	}
 	projection.Failure = failureProjection(session, workflow)
 	return projection
+}
+
+func presetArtifactView(session domain.Session) ArtifactView {
+	if !session.Vanilla && len(session.CreatorDLCs) > 0 && session.PresetArtifactStatus == "" && session.PresetObjectKey == "" {
+		return ArtifactView{Status: "Not needed for Creator DLC only"}
+	}
+	return artifactView(session.PresetArtifactStatus, session.PresetObjectKey, session.PresetArtifactIssue, session.Vanilla)
 }
 
 // DiscordMessageURL returns a safe, stable jump link without displaying the
@@ -601,11 +609,14 @@ func modStatus(session domain.Session) string {
 	if session.Vanilla {
 		return "Not required for vanilla"
 	}
+	if len(session.CreatorDLCs) > 0 && session.PresetArtifactStatus == "" && session.PresetObjectKey == "" {
+		return "Creator DLC only"
+	}
 	return artifactView(session.PresetArtifactStatus, session.PresetObjectKey, session.PresetArtifactIssue, false).Status
 }
 
 func modProjection(session domain.Session, modlistURL string) ModsProjection {
-	projection := ModsProjection{Required: !session.Vanilla, Status: modStatus(session), DownloadURL: normalizeModlistURL(modlistURL)}
+	projection := ModsProjection{Required: !session.Vanilla, Status: modStatus(session), DownloadURL: normalizeModlistURL(modlistURL), CreatorDLCs: append([]string(nil), session.CreatorDLCs...)}
 	if session.Vanilla {
 		return projection
 	}

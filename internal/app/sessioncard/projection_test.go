@@ -371,3 +371,14 @@ func TestRenderProjectionIsMentionSafeAndUnicodeBounded(t *testing.T) {
 		t.Fatalf("bounded content = %q", content)
 	}
 }
+
+func TestProjectCreatorDLCOnlySessionDoesNotClaimPresetIsMissing(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 23, 15, 0, 0, 0, time.UTC)
+	session := domain.Session{DisplayName: "cDLC only", Slug: "cdlc-only", GameType: "arma3", CreatorDLCs: []string{domain.CreatorDLCWesternSahara}, LifecycleState: domain.StateNew, HealthStatus: domain.HealthUnknown, UpdatedAt: now}
+	projection := Project(session, Options{Now: now})
+	content := RenderDetailed(projection)
+	if projection.Mods.Status != "Creator DLC only" || projection.Artifacts.Preset.Status != "Not needed for Creator DLC only" || strings.Contains(content, "Preset:** Missing") {
+		t.Fatalf("projection=%#v content=%q", projection, content)
+	}
+}

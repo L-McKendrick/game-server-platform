@@ -12,9 +12,19 @@ import (
 )
 
 const (
-	modsModalCustomIDPrefix = "rb:mods:v1:"
-	modsPresetCustomID      = "mods:preset"
+	modsModalCustomIDPrefix  = "rb:mods:v2:"
+	createModsContinuePrefix = "rb:create-mods:v1:"
+	modsPresetCustomID       = "mods:preset"
+	modsCreatorDLCsCustomID  = "mods:creator-dlcs"
+	modsModeCreate           = "create"
+	modsModeRevision         = "revision"
 )
+
+type modsModalState struct {
+	mode                    string
+	sessionID               string
+	activeRevision, version int64
+}
 
 func (payload interactionPayload) isRBModsCommand() bool {
 	if payload.Type != interactionTypeApplicationCommand {
@@ -24,34 +34,74 @@ func (payload interactionPayload) isRBModsCommand() bool {
 	return err == nil && subcommand.Name == "mods"
 }
 
-func isModsModalCustomID(customID string) bool {
-	_, _, err := parseModsModalCustomID(customID)
+func createModsContinueCustomID(sessionID string, version int64) (string, error) {
+	value := fmt.Sprintf("%s%s:%d", createModsContinuePrefix, strings.TrimSpace(sessionID), version)
+	if strings.TrimSpace(sessionID) == "" || version < 1 || len(value) > 100 {
+		return "", fmt.Errorf("create mod continuation state is invalid")
+	}
+	return value, nil
+}
+
+func parseCreateModsContinueCustomID(value string) (string, int64, error) {
+	remainder := strings.TrimPrefix(strings.TrimSpace(value), createModsContinuePrefix)
+	separator := strings.LastIndexByte(remainder, ':')
+	if remainder == "" || separator < 1 {
+		return "", 0, fmt.Errorf("create mod continuation is invalid")
+	}
+	version, err := strconv.ParseInt(remainder[separator+1:], 10, 64)
+	if err != nil || version < 1 {
+		return "", 0, fmt.Errorf("create mod continuation version is invalid")
+	}
+	return remainder[:separator], version, nil
+}
+
+func isCreateModsContinue(payload interactionPayload) bool {
+	if payload.Type != interactionTypeMessageComponent || payload.Data == nil || payload.Data.ComponentType != componentTypeButton {
+		return false
+	}
+	_, _, err := parseCreateModsContinueCustomID(payload.Data.CustomID)
 	return err == nil
 }
 
-func modsModalCustomID(sessionID string, activeRevision int64) (string, error) {
-	customID := fmt.Sprintf("%s%s:%d", modsModalCustomIDPrefix, strings.TrimSpace(sessionID), activeRevision)
-	if strings.TrimSpace(sessionID) == "" || activeRevision < 1 || len(customID) > 100 {
+func modsModalCustomID(state modsModalState) (string, error) {
+	value := fmt.Sprintf("%s%s:%s:%d:%d", modsModalCustomIDPrefix, state.mode, strings.TrimSpace(state.sessionID), state.activeRevision, state.version)
+	if (state.mode != modsModeCreate && state.mode != modsModeRevision) || strings.TrimSpace(state.sessionID) == "" || state.activeRevision < 0 || state.version < 1 || len(value) > 100 {
 		return "", fmt.Errorf("mods modal state is invalid")
 	}
-	return customID, nil
+	return value, nil
 }
 
-func parseModsModalCustomID(customID string) (string, int64, error) {
-	remainder := strings.TrimPrefix(strings.TrimSpace(customID), modsModalCustomIDPrefix)
-	separator := strings.LastIndexByte(remainder, ':')
-	if remainder == "" || separator < 1 || separator == len(remainder)-1 {
-		return "", 0, fmt.Errorf("mods modal identifier is invalid")
+func parseModsModalCustomID(value string) (modsModalState, error) {
+	parts := strings.Split(strings.TrimPrefix(strings.TrimSpace(value), modsModalCustomIDPrefix), ":")
+	if len(parts) != 4 || (parts[0] != modsModeCreate && parts[0] != modsModeRevision) || strings.TrimSpace(parts[1]) == "" {
+		return modsModalState{}, fmt.Errorf("mods modal identifier is invalid")
 	}
-	revision, err := strconv.ParseInt(remainder[separator+1:], 10, 64)
-	if err != nil || revision < 1 {
-		return "", 0, fmt.Errorf("mods modal revision is invalid")
+	active, activeErr := strconv.ParseInt(parts[2], 10, 64)
+	version, versionErr := strconv.ParseInt(parts[3], 10, 64)
+	if activeErr != nil || versionErr != nil || active < 0 || version < 1 {
+		return modsModalState{}, fmt.Errorf("mods modal revision is invalid")
 	}
-	sessionID := strings.TrimSpace(remainder[:separator])
-	if sessionID == "" {
-		return "", 0, fmt.Errorf("mods modal session is invalid")
+	return modsModalState{mode: parts[0], sessionID: parts[1], activeRevision: active, version: version}, nil
+}
+
+func isModsModalCustomID(customID string) bool {
+	_, err := parseModsModalCustomID(customID)
+	return err == nil
+}
+
+func (handler *Handler) openCreateModsModal(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actor domain.Actor) error {
+	sessionID, version, err := parseCreateModsContinueCustomID(payload.Data.CustomID)
+	if err != nil {
+		return newUserError("This creation step is stale. Use `/rb mods` to continue setup.")
 	}
-	return sessionID, revision, nil
+	session, err := handler.service.Get(ctx, appsession.GetQuery{Actor: actor, SessionID: sessionID, GuildID: payload.GuildID})
+	if err != nil {
+		return err
+	}
+	if session.Version != version || session.Vanilla || session.LifecycleState != domain.StateDraft {
+		return newUserError("This creation step is stale. Use `/rb mods` to continue setup.")
+	}
+	return writeModsModal(writer, session, modsModeCreate)
 }
 
 func (handler *Handler) openModsModal(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actor domain.Actor) error {
@@ -67,60 +117,134 @@ func (handler *Handler) openModsModal(ctx context.Context, writer http.ResponseW
 	if err != nil {
 		return fmt.Errorf("get mods session: %w", err)
 	}
-	active := session.EffectiveActivePresetRevision()
-	if err := session.ValidatePresetRevisionStaging(active.Number); err != nil {
-		return modsStagingUserError(err)
+	if session.Vanilla {
+		return newUserError("This is a vanilla session. Change it to modded in `/rb setup` before configuring mods.")
 	}
-	customID, err := modsModalCustomID(session.ID, active.Number)
+	if session.ActiveWorkflowID != "" {
+		return newUserError("Wait for the active lifecycle operation to finish before changing mods.")
+	}
+	mode := modsModeRevision
+	if session.LifecycleState == domain.StateDraft && session.EffectiveActivePresetRevision().Empty() {
+		mode = modsModeCreate
+	}
+	return writeModsModal(writer, session, mode)
+}
+
+func writeModsModal(writer http.ResponseWriter, session domain.Session, mode string) error {
+	active := session.EffectiveActivePresetRevision()
+	customID, err := modsModalCustomID(modsModalState{mode: mode, sessionID: session.ID, activeRevision: active.Number, version: session.Version})
 	if err != nil {
 		return err
 	}
-	required := true
-	one := 1
-	components := []interactionComponent{{
-		Type: componentTypeLabel, Label: "Launcher preset", Description: "Upload one .html or .htm preset. A running server will not be interrupted.",
-		Component: &interactionComponent{Type: componentTypeFileUpload, CustomID: modsPresetCustomID, Required: &required, MinValues: &one, MaxValues: &one},
-	}}
-	writeJSON(writer, http.StatusOK, interactionResponse{Type: interactionResponseModal, Data: &interactionResponseData{
-		CustomID:   customID,
-		Title:      "Stage Arma 3 mod revision",
-		Components: &components,
-	}})
+	optional, minimumNone, maximumOne, maximumDLCs := false, 0, 1, len(domain.SupportedCreatorDLCs())
+	labels := map[string]string{
+		domain.CreatorDLCGlobalMobilization:  "Global Mobilization – Cold War Germany",
+		domain.CreatorDLCSOGPrairieFire:      "S.O.G. Prairie Fire",
+		domain.CreatorDLCCSLAIronCurtain:     "ČSLA Iron Curtain",
+		domain.CreatorDLCWesternSahara:       "Western Sahara",
+		domain.CreatorDLCSpearhead1944:       "Spearhead 1944",
+		domain.CreatorDLCReactionForces:      "Reaction Forces",
+		domain.CreatorDLCExpeditionaryForces: "Expeditionary Forces",
+	}
+	options := make([]interactionSelectOption, 0, maximumDLCs)
+	for _, value := range domain.SupportedCreatorDLCs() {
+		options = append(options, interactionSelectOption{Label: labels[value], Value: value, Default: containsString(session.CreatorDLCs, value)})
+	}
+	components := []interactionComponent{
+		{Type: componentTypeLabel, Label: "Arma Launcher preset", Description: "Optional here. Upload .html/.htm to add or replace the Workshop modlist.", Component: &interactionComponent{Type: componentTypeFileUpload, CustomID: modsPresetCustomID, Required: &optional, MinValues: &minimumNone, MaxValues: &maximumOne}},
+		{Type: componentTypeLabel, Label: "Creator DLC to load", Description: "Select every official Creator DLC required by the mission.", Component: &interactionComponent{Type: componentTypeCheckboxGroup, CustomID: modsCreatorDLCsCustomID, Required: &optional, MinValues: &minimumNone, MaxValues: &maximumDLCs, Options: options}},
+	}
+	writeJSON(writer, http.StatusOK, interactionResponse{Type: interactionResponseModal, Data: &interactionResponseData{CustomID: customID, Title: "Arma 3 mod options", Components: &components}})
 	return nil
 }
 
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
 func (handler *Handler) submitModsModal(ctx context.Context, payload interactionPayload, actor domain.Actor, correlationID string) (string, error) {
-	sessionID, expectedActiveRevision, err := parseModsModalCustomID(payload.Data.CustomID)
-	if err != nil || len(payload.Data.Components) != 1 {
-		return "", newUserError("The mod revision form is malformed or expired. Run `/rb mods` again.")
+	state, err := parseModsModalCustomID(payload.Data.CustomID)
+	if err != nil || len(payload.Data.Components) != 2 {
+		return "", newUserError("The mod options form is malformed or expired. Run `/rb mods` again.")
 	}
-	label := payload.Data.Components[0]
-	if label.Type != componentTypeLabel || label.Component == nil || label.Component.Type != componentTypeFileUpload || label.Component.CustomID != modsPresetCustomID {
-		return "", newUserError("The mod revision form is malformed or expired. Run `/rb mods` again.")
+	var attachment *interactionAttachment
+	var creatorDLCs []string
+	seen := map[string]bool{}
+	for _, label := range payload.Data.Components {
+		if label.Type != componentTypeLabel || label.Component == nil || seen[label.Component.CustomID] {
+			return "", newUserError("The mod options form is malformed or expired. Run `/rb mods` again.")
+		}
+		seen[label.Component.CustomID] = true
+		switch label.Component.CustomID {
+		case modsPresetCustomID:
+			attachment, err = resolveModalAttachment(payload.Data, label.Component, false)
+		case modsCreatorDLCsCustomID:
+			if label.Component.Type != componentTypeCheckboxGroup {
+				err = fmt.Errorf("invalid Creator DLC control")
+			} else {
+				creatorDLCs, err = domain.NormalizeCreatorDLCs(label.Component.Values)
+			}
+		default:
+			err = fmt.Errorf("unsupported mod options field")
+		}
+		if err != nil {
+			return "", newUserError("Choose only supported Creator DLCs and at most one preset file.")
+		}
 	}
-	attachment, err := resolveModalAttachment(payload.Data, label.Component, true)
-	if err != nil || attachment == nil {
-		return "", newUserError("Choose exactly one Arma Launcher .html or .htm preset no larger than 10 MiB.")
+	if !seen[modsPresetCustomID] || !seen[modsCreatorDLCsCustomID] {
+		return "", newUserError("The mod options form is incomplete. Run `/rb mods` again.")
 	}
-	request := createArtifactRequest(payload, actor, correlationID, sessionID, domain.ArtifactPreset, *attachment, "discord:"+strings.TrimSpace(payload.ID)+":mods", handler.clock.Now().UTC())
-	request.Purpose = domain.ArtifactPurposePresetRevision
-	request.ExpectedActivePresetRevision = expectedActiveRevision
-	if err := request.Validate(); err != nil {
-		return "", newUserError("The preset upload must be an .html or .htm file no larger than 10 MiB from Discord.")
+	keyPrefix := "discord:" + strings.TrimSpace(payload.ID) + ":mod-options"
+	var presetRequest *domain.ArtifactIngestRequest
+	if attachment != nil {
+		request := createArtifactRequest(payload, actor, correlationID, state.sessionID, domain.ArtifactPreset, *attachment, keyPrefix+":preset", handler.clock.Now().UTC())
+		if state.mode == modsModeRevision {
+			request.Purpose = domain.ArtifactPurposePresetRevision
+			request.ExpectedActivePresetRevision = state.activeRevision
+		}
+		if err := request.Validate(); err != nil {
+			return "", newUserError("The preset upload must be an .html or .htm file no larger than 10 MiB from Discord.")
+		}
+		presetRequest = &request
 	}
-	if err := handler.service.RequestArtifactIngest(ctx, actor, request); err != nil {
+	session, err := handler.service.UpdateModOptions(ctx, appsession.UpdateModOptionsCommand{
+		Actor: actor, SessionID: state.sessionID, GuildID: payload.GuildID, CorrelationID: correlationID,
+		IdempotencyKey: keyPrefix + ":configure", ExpectedVersion: state.version, CreatorDLCs: creatorDLCs,
+		PreparePreset: presetRequest != nil && state.mode == modsModeCreate,
+	})
+	if err != nil {
 		return "", modsStagingUserError(err)
 	}
-	return fmt.Sprintf("**Mod revision queued for validation**\n`%s` has not been accepted yet. The running server was not interrupted. If validation succeeds, revision %d will remain pending until the next start, wake, or restore.\n\nNext: use `/rb status` to verify validation; a failed validation does not schedule a retry.", sanitizeCode(attachment.Filename), expectedActiveRevision+1), nil
+	presetStatus := "No preset was uploaded."
+	if presetRequest != nil {
+		if state.mode == modsModeRevision {
+			if err := session.ValidatePresetRevisionStaging(state.activeRevision); err != nil {
+				return "", modsStagingUserError(err)
+			}
+		}
+		if err := handler.service.RequestArtifactIngest(ctx, actor, *presetRequest); err != nil {
+			return "", modsStagingUserError(err)
+		}
+		presetStatus = fmt.Sprintf("Preset `%s` queued for validation.", sanitizeCode(attachment.Filename))
+	}
+	if state.mode == modsModeCreate && attachment == nil {
+		presetStatus = "No preset was uploaded; this modded session remains a recoverable draft."
+	}
+	return fmt.Sprintf("**Mod options saved**\nCreator DLC selected: %d\n%s\nNo running server was changed in place.\n\nNext: use `/rb status` to verify validation and readiness.", len(creatorDLCs), presetStatus), nil
 }
 
 func modsStagingUserError(err error) error {
 	switch {
-	case strings.Contains(err.Error(), "vanilla sessions"):
-		return newUserError("This is a vanilla session and does not have an active mod preset to revise.")
+	case strings.Contains(err.Error(), "vanilla session"):
+		return newUserError("This is a vanilla session. Change it to modded in `/rb setup` before configuring mods.")
 	case strings.Contains(err.Error(), "already") && strings.Contains(err.Error(), "preset revision"):
 		return newUserError("A mod revision is already pending or being applied. Use `/rb status` before uploading another.")
-	case strings.Contains(err.Error(), "active preset revision changed"), strings.Contains(err.Error(), "lifecycle state"), strings.Contains(err.Error(), "active lifecycle operation"):
+	case strings.Contains(err.Error(), "changed while"), strings.Contains(err.Error(), "active preset revision changed"), strings.Contains(err.Error(), "lifecycle state"), strings.Contains(err.Error(), "active lifecycle operation"):
 		return newUserError("The session changed while the form was open. Run `/rb mods` again after the current operation finishes.")
 	default:
 		return err

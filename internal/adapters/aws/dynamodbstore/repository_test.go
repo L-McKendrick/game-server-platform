@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -394,6 +395,23 @@ func TestSessionItemRoundTripPreservesVanillaMode(t *testing.T) {
 	}
 	if !stored.Vanilla {
 		t.Fatal("vanilla mode was not preserved by DynamoDB mapping")
+	}
+}
+
+func TestSessionItemRoundTripPreservesCreatorDLCSelection(t *testing.T) {
+	t.Parallel()
+	session := testSession(t, time.Date(2026, 8, 23, 6, 0, 0, 0, time.UTC))
+	session.CreatorDLCs = []string{domain.CreatorDLCGlobalMobilization, domain.CreatorDLCReactionForces}
+	session.StartWhenReady = true
+	stored, err := fromSessionItem(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(stored.CreatorDLCs, session.CreatorDLCs) {
+		t.Fatalf("CreatorDLCs = %#v; want %#v", stored.CreatorDLCs, session.CreatorDLCs)
+	}
+	if !stored.StartWhenReady {
+		t.Fatal("start-when-ready intent was not preserved")
 	}
 }
 

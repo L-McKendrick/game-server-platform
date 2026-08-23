@@ -18,8 +18,14 @@ type createModalSubmission struct {
 	description string
 	modded      bool
 	teamSpeak   bool
+	autoStart   bool
 	mission     *interactionAttachment
 	preset      *interactionAttachment
+}
+
+type createModalResult struct {
+	content    string
+	components []interactionComponent
 }
 
 func (handler *Handler) submitCreateModal(
@@ -27,12 +33,12 @@ func (handler *Handler) submitCreateModal(
 	payload interactionPayload,
 	actor domain.Actor,
 	correlationID string,
-) (string, error) {
+) (createModalResult, error) {
 	keyPrefix := "discord:" + strings.TrimSpace(payload.ID) + ":create-modal"
 	now := handler.clock.Now().UTC()
 	submission, err := parseCreateModalSubmission(payload, actor, correlationID, keyPrefix, now)
 	if err != nil {
-		return "", err
+		return createModalResult{}, err
 	}
 
 	session, err := handler.service.Create(ctx, appsession.CreateCommand{
@@ -46,7 +52,7 @@ func (handler *Handler) submitCreateModal(
 		ChannelID:      strings.TrimSpace(payload.ChannelID),
 	})
 	if err != nil {
-		return "", fmt.Errorf("create modal draft: %w", err)
+		return createModalResult{}, fmt.Errorf("create modal draft: %w", err)
 	}
 
 	session, err = handler.service.Configure(ctx, appsession.ConfigureCommand{
@@ -60,17 +66,18 @@ func (handler *Handler) submitCreateModal(
 		ArchiveAfterSeconds: defaultArchiveDays * 86400,
 		TeamSpeakEnabled:    submission.teamSpeak,
 		Vanilla:             !submission.modded,
+		StartWhenReady:      submission.autoStart,
 	})
 	if err != nil {
-		return "", fmt.Errorf("configure modal draft: %w", err)
+		return createModalResult{}, fmt.Errorf("configure modal draft: %w", err)
 	}
 	session, err = handler.service.PrepareCreationArtifacts(ctx, appsession.PrepareCreationArtifactsCommand{
 		Actor: actor, SessionID: session.ID, GuildID: payload.GuildID,
 		CorrelationID: correlationID, IdempotencyKey: keyPrefix + ":artifacts",
-		HasPreset: submission.preset != nil,
+		HasPreset: false,
 	})
 	if err != nil {
-		return "", fmt.Errorf("prepare creation artifacts: %w", err)
+		return createModalResult{}, fmt.Errorf("prepare creation artifacts: %w", err)
 	}
 	cardProjection := sessioncard.Project(session, sessioncard.Options{Now: handler.clock.Now().UTC()})
 	if err := handler.service.RequestSessionCard(ctx, appsession.SessionCardCommand{
@@ -78,7 +85,7 @@ func (handler *Handler) submitCreateModal(
 		CorrelationID: correlationID, NotificationID: keyPrefix + ":card",
 		Content: sessioncard.RenderPublic(cardProjection), Embed: sessioncard.RenderPublicEmbed(cardProjection), CardRevision: session.Version,
 	}); err != nil {
-		return "", fmt.Errorf("publish creation session card: %w", err)
+		return createModalResult{}, fmt.Errorf("publish creation session card: %w", err)
 	}
 
 	missionRequest := createArtifactRequest(
@@ -86,21 +93,20 @@ func (handler *Handler) submitCreateModal(
 		*submission.mission, keyPrefix+":mission", now,
 	)
 	if err := handler.service.RequestArtifactIngest(ctx, actor, missionRequest); err != nil {
-		return "", fmt.Errorf("queue creation mission: %w", err)
+		return createModalResult{}, fmt.Errorf("queue creation mission: %w", err)
 	}
 
 	queued := "Mission queued for validation."
-	if submission.preset != nil {
-		presetRequest := createArtifactRequest(
-			payload, actor, correlationID, session.ID, domain.ArtifactPreset,
-			*submission.preset, keyPrefix+":preset", now,
-		)
-		if err := handler.service.RequestArtifactIngest(ctx, actor, presetRequest); err != nil {
-			return "", fmt.Errorf("queue creation preset: %w", err)
+	components := []interactionComponent(nil)
+	if submission.modded {
+		queued += " Continue to mod options to upload a preset and choose Creator DLC."
+		customID, customErr := createModsContinueCustomID(session.ID, session.Version)
+		if customErr != nil {
+			return createModalResult{}, customErr
 		}
-		queued += " Preset queued for validation."
-	} else if submission.modded {
-		queued += " No preset was provided; add one before this modded session can become ready."
+		components = []interactionComponent{{Type: componentTypeActionRow, Components: []interactionComponent{{
+			Type: componentTypeButton, Style: buttonStylePrimary, Label: "Continue to mod options", CustomID: customID,
+		}}}}
 	}
 
 	mode := "Modded"
@@ -111,11 +117,25 @@ func (handler *Handler) submitCreateModal(
 	if submission.teamSpeak {
 		teamSpeak = "On"
 	}
-	return fmt.Sprintf(
-		"**Draft session created**\nName: %s\nSlug: `%s`\nMode: %s\nTeamSpeak: %s\n%s\nUploads have not been validated yet.%s\n\nNext: use `/rb status` while validation finishes. After the required files are accepted, `/rb start` begins the server workflow.",
-		sanitizeInline(session.DisplayName), sanitizeCode(session.Slug), mode, teamSpeak, queued,
-		payload.channelCapabilities().plainTextNotice(),
-	), nil
+	setup := "Manual"
+	if submission.autoStart {
+		setup = "Automatic after required files validate"
+	}
+	return createModalResult{content: fmt.Sprintf(
+		"**Draft session created**\nName: %s\nSlug: `%s`\nMode: %s\nTeamSpeak: %s\nServer setup: %s\n%s\nUploads have not been validated yet.%s\n\nNext: %s",
+		sanitizeInline(session.DisplayName), sanitizeCode(session.Slug), mode, teamSpeak, setup,
+		queued, payload.channelCapabilities().plainTextNotice(), createNextAction(submission.modded, submission.autoStart),
+	), components: components}, nil
+}
+
+func createNextAction(modded, autoStart bool) string {
+	if modded {
+		return "continue to mod options, then use `/rb status` while validation finishes."
+	}
+	if autoStart {
+		return "use `/rb status`; setup will begin automatically after mission validation."
+	}
+	return "use `/rb status` while validation finishes, then `/rb start` when ready."
 }
 
 func parseCreateModalSubmission(
@@ -125,12 +145,12 @@ func parseCreateModalSubmission(
 	keyPrefix string,
 	requestedAt time.Time,
 ) (createModalSubmission, error) {
-	if payload.Data == nil || payload.Data.CustomID != createModalCustomID || len(payload.Data.Components) != 5 {
+	if payload.Data == nil || payload.Data.CustomID != createModalCustomID || len(payload.Data.Components) != 4 {
 		return createModalSubmission{}, newUserError("The creation form is malformed or expired. Run `/rb create` again.")
 	}
 
 	var submission = createModalSubmission{gameType: "arma3"}
-	seen := make(map[string]bool, 5)
+	seen := make(map[string]bool, 4)
 	for _, label := range payload.Data.Components {
 		if label.Type != componentTypeLabel || label.Component == nil {
 			return createModalSubmission{}, newUserError("The creation form is malformed or expired. Run `/rb create` again.")
@@ -157,7 +177,7 @@ func parseCreateModalSubmission(
 			}
 			submission.description = description
 		case createFeaturesCustomID:
-			if component.Type != componentTypeCheckboxGroup || len(component.Values) > 2 {
+			if component.Type != componentTypeCheckboxGroup || len(component.Values) > 3 {
 				return createModalSubmission{}, newUserError("Choose only the supported mode and TeamSpeak options.")
 			}
 			featureSeen := map[string]bool{}
@@ -171,6 +191,8 @@ func parseCreateModalSubmission(
 					submission.modded = true
 				case createFeatureTeamSpeak:
 					submission.teamSpeak = true
+				case createFeatureAutoStart:
+					submission.autoStart = true
 				default:
 					return createModalSubmission{}, newUserError("Choose only the supported mode and TeamSpeak options.")
 				}
@@ -181,12 +203,6 @@ func parseCreateModalSubmission(
 				return createModalSubmission{}, newUserError("A single mission .pbo upload is required.")
 			}
 			submission.mission = attachment
-		case createPresetCustomID:
-			attachment, err := resolveModalAttachment(payload.Data, component, false)
-			if err != nil {
-				return createModalSubmission{}, newUserError("Choose at most one Arma Launcher .html preset.")
-			}
-			submission.preset = attachment
 		default:
 			return createModalSubmission{}, newUserError("The creation form contains an unsupported field. Run `/rb create` again.")
 		}
@@ -194,7 +210,7 @@ func parseCreateModalSubmission(
 
 	for _, customID := range []string{
 		createNameCustomID, createDescriptionCustomID, createFeaturesCustomID,
-		createMissionCustomID, createPresetCustomID,
+		createMissionCustomID,
 	} {
 		if !seen[customID] {
 			return createModalSubmission{}, newUserError("The creation form is incomplete. Run `/rb create` again.")
@@ -210,15 +226,6 @@ func parseCreateModalSubmission(
 	)
 	if err := missionRequest.Validate(); err != nil {
 		return createModalSubmission{}, newUserError("The mission upload must be a .pbo file no larger than 100 MiB from Discord.")
-	}
-	if submission.preset != nil {
-		presetRequest := createArtifactRequest(
-			payload, actor, correlationID, "pending-session", domain.ArtifactPreset,
-			*submission.preset, keyPrefix+":preset", requestedAt,
-		)
-		if err := presetRequest.Validate(); err != nil {
-			return createModalSubmission{}, newUserError("The preset upload must be an .html or .htm file no larger than 10 MiB from Discord.")
-		}
 	}
 	return submission, nil
 }

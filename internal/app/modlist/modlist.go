@@ -39,9 +39,9 @@ type workshopMod struct {
 
 // Generate extracts only Steam Workshop identity and a bounded display name,
 // then rebuilds a deterministic launcher-compatible file from scratch.
-func Generate(source []byte, sessionID, sessionName, sessionSlug string) (Artifact, error) {
+func Generate(source []byte, sessionID, sessionName, sessionSlug string, allowEmpty bool) (Artifact, error) {
 	mods := extractWorkshopMods(string(source))
-	if len(mods) == 0 {
+	if len(mods) == 0 && !allowEmpty {
 		return Artifact{}, fmt.Errorf("launcher preset does not contain a Steam Workshop mod")
 	}
 	if len(mods) > 250 {
@@ -59,7 +59,8 @@ func Generate(source []byte, sessionID, sessionName, sessionSlug string) (Artifa
 }
 
 func extractWorkshopMods(source string) []workshopMod {
-	names := make(map[string]string)
+	mods := make([]workshopMod, 0)
+	seen := make(map[string]struct{})
 	for _, row := range modRowPattern.FindAllStringSubmatch(source, -1) {
 		ids := workshopIDPattern.FindAllStringSubmatch(row[1], -1)
 		if len(ids) == 0 {
@@ -70,25 +71,16 @@ func extractWorkshopMods(source string) []workshopMod {
 			name = normalizedName(display[1])
 		}
 		for _, id := range ids {
-			if _, found := names[id[1]]; !found {
-				names[id[1]] = name
+			if _, found := seen[id[1]]; found {
+				continue
 			}
+			seen[id[1]] = struct{}{}
+			modName := name
+			if modName == "" {
+				modName = "Steam Workshop item " + id[1]
+			}
+			mods = append(mods, workshopMod{ID: id[1], Name: modName})
 		}
-	}
-
-	mods := make([]workshopMod, 0, len(names))
-	seen := make(map[string]struct{})
-	for _, match := range workshopIDPattern.FindAllStringSubmatch(source, -1) {
-		id := match[1]
-		if _, found := seen[id]; found {
-			continue
-		}
-		seen[id] = struct{}{}
-		name := names[id]
-		if name == "" {
-			name = "Steam Workshop item " + id
-		}
-		mods = append(mods, workshopMod{ID: id, Name: name})
 	}
 	return mods
 }

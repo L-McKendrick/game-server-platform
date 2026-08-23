@@ -585,6 +585,8 @@ type ConfigureCommand struct {
 	ArchiveAfterSeconds int64
 	TeamSpeakEnabled    bool
 	Vanilla             bool
+	CreatorDLCs         []string
+	StartWhenReady      bool
 }
 
 type UpdateDraftSetupCommand struct {
@@ -594,7 +596,100 @@ type UpdateDraftSetupCommand struct {
 	GameProfileID                                     string
 	SleepAfterSeconds, ArchiveAfterSeconds            int64
 	TeamSpeakEnabled, Vanilla                         bool
+	CreatorDLCs                                       []string
+	StartWhenReady                                    bool
 	ReplaceMission, ReplacePreset                     bool
+}
+
+type UpdateModOptionsCommand struct {
+	Actor                                             domain.Actor
+	SessionID, GuildID, CorrelationID, IdempotencyKey string
+	ExpectedVersion                                   int64
+	CreatorDLCs                                       []string
+	PreparePreset                                     bool
+}
+
+// UpdateModOptions atomically persists a stale-bound desired Creator DLC set.
+func (service *Service) UpdateModOptions(ctx context.Context, command UpdateModOptionsCommand) (domain.Session, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Session{}, fmt.Errorf("validate actor: %w", err)
+	}
+	creatorDLCs, err := domain.NormalizeCreatorDLCs(command.CreatorDLCs)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	key := strings.TrimSpace(command.IdempotencyKey)
+	if key == "" || command.ExpectedVersion < 1 {
+		return domain.Session{}, fmt.Errorf("mod options idempotency and expected version are required")
+	}
+	hash, err := hashRequest(struct {
+		CommandType, ActorID, SessionID, GuildID string
+		ExpectedVersion                          int64
+		CreatorDLCs                              []string
+		PreparePreset                            bool
+	}{"UpdateModOptions", command.Actor.ID, strings.TrimSpace(command.SessionID), strings.TrimSpace(command.GuildID), command.ExpectedVersion, creatorDLCs, command.PreparePreset})
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("hash mod options: %w", err)
+	}
+	if replayed, found, err := service.replaySession(ctx, key, hash, command.Actor); err != nil || found {
+		if err == nil {
+			err = service.requestAutomaticStart(ctx, replayed, command.CorrelationID)
+		}
+		return replayed, err
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("get mod options session: %w", err)
+	}
+	if err := authorizeOwner(command.Actor, session); err != nil || session.GuildID != strings.TrimSpace(command.GuildID) {
+		return domain.Session{}, domain.ErrForbidden
+	}
+	if session.Version != command.ExpectedVersion {
+		return domain.Session{}, fmt.Errorf("%w: session changed while mod options were open", domain.ErrConflict)
+	}
+	now, expectedVersion := service.clock.Now().UTC(), session.Version
+	if err := session.UpdateCreatorDLCs(creatorDLCs, command.PreparePreset, now); err != nil {
+		return domain.Session{}, err
+	}
+	eventID, err := service.newID(now, "mod options event")
+	if err != nil {
+		return domain.Session{}, err
+	}
+	correlationID, err := service.resolveCorrelationID(command.CorrelationID, now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.NewSessionConfiguredEvent(eventID, correlationID, command.Actor, session, now)
+	record, err := domain.NewCompletedIdempotencyRecord(key, hash, session.ID, now, service.idempotencyRetention)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, record); err != nil {
+		if replayed, found, replayErr := service.replaySession(ctx, key, hash, command.Actor); replayErr != nil || found {
+			if replayErr == nil {
+				replayErr = service.requestAutomaticStart(ctx, replayed, command.CorrelationID)
+			}
+			return replayed, replayErr
+		}
+		return domain.Session{}, fmt.Errorf("persist mod options: %w", err)
+	}
+	if err := service.requestAutomaticStart(ctx, session, correlationID); err != nil {
+		return session, err
+	}
+	return session, nil
+}
+
+func (service *Service) requestAutomaticStart(ctx context.Context, session domain.Session, correlationID string) error {
+	if !session.StartWhenReady || !session.CanStartInfrastructureProvisioning() {
+		return nil
+	}
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", session.ID, session.ConfigurationRevision)))
+	commandID := hex.EncodeToString(digest[:16])
+	return service.RequestStart(ctx, StartCommand{
+		Actor:     domain.Actor{Type: domain.ActorTypeDiscordUser, ID: session.OwnerDiscordUserID},
+		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
+		CommandID: commandID, CorrelationID: strings.TrimSpace(correlationID), IdempotencyKey: "auto-start:" + commandID,
+	})
 }
 
 // UpdateDraftSetup atomically edits the draft fields and marks only selected
@@ -607,11 +702,16 @@ func (service *Service) UpdateDraftSetup(ctx context.Context, command UpdateDraf
 	if key == "" {
 		return domain.Session{}, fmt.Errorf("idempotency key is required")
 	}
+	creatorDLCs, err := domain.NormalizeCreatorDLCs(command.CreatorDLCs)
+	if err != nil {
+		return domain.Session{}, err
+	}
 	hash, err := hashRequest(struct {
-		CommandType                                                          string `json:"command_type"`
-		ActorID, SessionID, GuildID, DisplayName, Description, GameProfileID string
-		SleepAfterSeconds, ArchiveAfterSeconds                               int64
-		TeamSpeakEnabled, Vanilla, ReplaceMission, ReplacePreset             bool
+		CommandType                                                              string `json:"command_type"`
+		ActorID, SessionID, GuildID, DisplayName, Description, GameProfileID     string
+		SleepAfterSeconds, ArchiveAfterSeconds                                   int64
+		TeamSpeakEnabled, Vanilla, StartWhenReady, ReplaceMission, ReplacePreset bool
+		CreatorDLCs                                                              []string
 	}{
 		CommandType: "UpdateDraftSetup", ActorID: command.Actor.ID,
 		SessionID: strings.TrimSpace(command.SessionID), GuildID: strings.TrimSpace(command.GuildID),
@@ -619,6 +719,8 @@ func (service *Service) UpdateDraftSetup(ctx context.Context, command UpdateDraf
 		GameProfileID: strings.TrimSpace(command.GameProfileID), SleepAfterSeconds: command.SleepAfterSeconds,
 		ArchiveAfterSeconds: command.ArchiveAfterSeconds, TeamSpeakEnabled: command.TeamSpeakEnabled,
 		Vanilla: command.Vanilla, ReplaceMission: command.ReplaceMission, ReplacePreset: command.ReplacePreset,
+		CreatorDLCs:    creatorDLCs,
+		StartWhenReady: command.StartWhenReady,
 	})
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("hash draft setup: %w", err)
@@ -640,6 +742,8 @@ func (service *Service) UpdateDraftSetup(ctx context.Context, command UpdateDraf
 	if err := session.ConfigureDraftSetup(command.DisplayName, command.Description, domain.SessionConfiguration{
 		GameProfileID: command.GameProfileID, SleepAfterSeconds: command.SleepAfterSeconds,
 		ArchiveAfterSeconds: command.ArchiveAfterSeconds, TeamSpeakEnabled: command.TeamSpeakEnabled, Vanilla: command.Vanilla,
+		CreatorDLCs:    command.CreatorDLCs,
+		StartWhenReady: command.StartWhenReady,
 	}, command.ReplaceMission, command.ReplacePreset, now); err != nil {
 		return domain.Session{}, err
 	}
@@ -765,6 +869,8 @@ func (service *Service) Configure(ctx context.Context, command ConfigureCommand)
 		ArchiveAfterSeconds: command.ArchiveAfterSeconds,
 		TeamSpeakEnabled:    command.TeamSpeakEnabled,
 		Vanilla:             command.Vanilla,
+		CreatorDLCs:         command.CreatorDLCs,
+		StartWhenReady:      command.StartWhenReady,
 	}, now); err != nil {
 		return domain.Session{}, fmt.Errorf("configure session: %w", err)
 	}
@@ -1280,16 +1386,22 @@ func configureRequestIdentity(command ConfigureCommand) (string, string, error) 
 	if key == "" {
 		return "", "", fmt.Errorf("idempotency key is required")
 	}
+	creatorDLCs, err := domain.NormalizeCreatorDLCs(command.CreatorDLCs)
+	if err != nil {
+		return "", "", err
+	}
 	hash, err := hashRequest(struct {
-		CommandType         string `json:"command_type"`
-		ActorID             string `json:"actor_id"`
-		SessionID           string `json:"session_id"`
-		GuildID             string `json:"guild_id"`
-		GameProfileID       string `json:"game_profile_id"`
-		SleepAfterSeconds   int64  `json:"sleep_after_seconds"`
-		ArchiveAfterSeconds int64  `json:"archive_after_seconds"`
-		TeamSpeakEnabled    bool   `json:"teamspeak_enabled"`
-		Vanilla             bool   `json:"vanilla,omitempty"`
+		CommandType         string   `json:"command_type"`
+		ActorID             string   `json:"actor_id"`
+		SessionID           string   `json:"session_id"`
+		GuildID             string   `json:"guild_id"`
+		GameProfileID       string   `json:"game_profile_id"`
+		SleepAfterSeconds   int64    `json:"sleep_after_seconds"`
+		ArchiveAfterSeconds int64    `json:"archive_after_seconds"`
+		TeamSpeakEnabled    bool     `json:"teamspeak_enabled"`
+		Vanilla             bool     `json:"vanilla,omitempty"`
+		CreatorDLCs         []string `json:"creator_dlcs,omitempty"`
+		StartWhenReady      bool     `json:"start_when_ready,omitempty"`
 	}{
 		CommandType:         "ConfigureSession",
 		ActorID:             strings.TrimSpace(command.Actor.ID),
@@ -1300,6 +1412,8 @@ func configureRequestIdentity(command ConfigureCommand) (string, string, error) 
 		ArchiveAfterSeconds: command.ArchiveAfterSeconds,
 		TeamSpeakEnabled:    command.TeamSpeakEnabled,
 		Vanilla:             command.Vanilla,
+		CreatorDLCs:         creatorDLCs,
+		StartWhenReady:      command.StartWhenReady,
 	})
 	if err != nil {
 		return "", "", fmt.Errorf("hash configure-session request: %w", err)

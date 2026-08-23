@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -308,6 +309,7 @@ type ArchiveManifest struct {
 	ActivePresetRevision   *ArchivePresetRevision `json:"active_preset_revision,omitempty"`
 	PendingPresetRevision  *ArchivePresetRevision `json:"pending_preset_revision,omitempty"`
 	Vanilla                bool                   `json:"vanilla"`
+	CreatorDLCs            []string               `json:"creator_dlcs,omitempty"`
 	SourceInstanceID       string                 `json:"source_instance_id"`
 	SourceDataVolumeID     string                 `json:"source_data_volume_id"`
 }
@@ -377,6 +379,10 @@ func (manifest ArchiveManifest) Validate() error {
 		return fmt.Errorf("manifest game profile is required")
 	case strings.TrimSpace(manifest.SourceInstanceID) == "" || strings.TrimSpace(manifest.SourceDataVolumeID) == "":
 		return fmt.Errorf("manifest source infrastructure is required")
+	}
+	creatorDLCs, err := NormalizeCreatorDLCs(manifest.CreatorDLCs)
+	if err != nil || !slices.Equal(creatorDLCs, manifest.CreatorDLCs) || (manifest.Vanilla && len(creatorDLCs) != 0) {
+		return fmt.Errorf("manifest Creator DLC selection is invalid")
 	}
 	if err := manifest.validatePresetRevisionIntent(); err != nil {
 		return err

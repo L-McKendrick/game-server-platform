@@ -311,6 +311,8 @@ func NewSessionConfiguredEvent(
 			"archive_after_seconds":  fmt.Sprintf("%d", session.ArchiveAfterSeconds),
 			"teamspeak_enabled":      fmt.Sprintf("%t", session.TeamSpeakEnabled),
 			"vanilla":                fmt.Sprintf("%t", session.Vanilla),
+			"creator_dlcs":           strings.Join(session.CreatorDLCs, ","),
+			"start_when_ready":       fmt.Sprintf("%t", session.StartWhenReady),
 		},
 	}
 }

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -237,6 +238,51 @@ func TestVanillaSessionBecomesNewWithoutPreset(t *testing.T) {
 	}
 }
 
+func TestSessionConfigurationPersistsCanonicalCreatorDLCSelection(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 23, 6, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{
+		ID: "session-cdlc", Slug: "creator-dlc", DisplayName: "Creator DLC", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = session.Configure(SessionConfiguration{
+		GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400,
+		CreatorDLCs: []string{CreatorDLCReactionForces, CreatorDLCGlobalMobilization},
+	}, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{CreatorDLCGlobalMobilization, CreatorDLCReactionForces}
+	if !slices.Equal(session.CreatorDLCs, want) {
+		t.Fatalf("CreatorDLCs = %#v; want %#v", session.CreatorDLCs, want)
+	}
+	if err := session.Validate(); err != nil {
+		t.Fatalf("configured session validation failed: %v", err)
+	}
+}
+
+func TestVanillaSessionRejectsCreatorDLCSelection(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 23, 6, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{
+		ID: "session-vanilla-cdlc", Slug: "vanilla-cdlc", DisplayName: "Vanilla cDLC", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = session.Configure(SessionConfiguration{
+		GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400,
+		Vanilla: true, CreatorDLCs: []string{CreatorDLCWesternSahara},
+	}, now.Add(time.Second))
+	if err == nil {
+		t.Fatal("Configure() accepted Creator DLC for a vanilla session")
+	}
+}
+
 func TestVanillaSessionWaitsForSubmittedOptionalPresetOutcome(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
@@ -269,7 +315,7 @@ func TestVanillaSessionWaitsForSubmittedOptionalPresetOutcome(t *testing.T) {
 	}
 }
 
-func TestModdedSessionStillRequiresPreset(t *testing.T) {
+func TestModdedSessionRequiresPresetOrCreatorDLC(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 14, 6, 0, 0, 0, time.UTC)
 	session, err := NewSession(NewSessionInput{
@@ -289,6 +335,39 @@ func TestModdedSessionStillRequiresPreset(t *testing.T) {
 	}
 	if session.LifecycleState != StateDraft {
 		t.Fatalf("modded session state = %s; want DRAFT until preset upload", session.LifecycleState)
+	}
+	if err := session.UpdateCreatorDLCs([]string{CreatorDLCWesternSahara}, false, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateNew {
+		t.Fatalf("cDLC-only modded session state = %s; want NEW", session.LifecycleState)
+	}
+}
+
+func TestCreatorDLCAndPresetSubmissionWaitsForPresetValidation(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 23, 16, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{ID: "session-combined", Slug: "combined", DisplayName: "Combined", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 86400, StartWhenReady: true}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AttachArtifact(ArtifactMission, "sessions/session-combined/input/missions/mission.pbo", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.UpdateCreatorDLCs([]string{CreatorDLCWesternSahara}, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateDraft || session.PresetArtifactStatus != ArtifactPending {
+		t.Fatalf("combined submission session = %#v; want pending draft", session)
+	}
+	if err := session.AttachArtifact(ArtifactPreset, "sessions/session-combined/input/presets/preset.html", now); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateNew {
+		t.Fatalf("validated combined session state = %s; want NEW", session.LifecycleState)
 	}
 }
 

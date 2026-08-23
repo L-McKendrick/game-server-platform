@@ -68,6 +68,7 @@ type SessionService interface {
 	GetActiveModlist(ctx context.Context, query appsession.ActiveModlistQuery) (appsession.ActiveModlist, error)
 	PrepareCreationArtifacts(ctx context.Context, command appsession.PrepareCreationArtifactsCommand) (domain.Session, error)
 	UpdateDraftSetup(ctx context.Context, command appsession.UpdateDraftSetupCommand) (domain.Session, error)
+	UpdateModOptions(ctx context.Context, command appsession.UpdateModOptionsCommand) (domain.Session, error)
 
 	RequestStart(ctx context.Context, command appsession.StartCommand) error
 	RequestLifecycle(ctx context.Context, command appsession.LifecycleCommand) error
@@ -363,6 +364,13 @@ func (handler *Handler) ServeHTTP(
 		return
 	}
 	if payload.Type == interactionTypeMessageComponent {
+		if isCreateModsContinue(payload) {
+			err := handler.openCreateModsModal(request.Context(), writer, payload, domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID})
+			if err != nil {
+				writeInteractionMessage(writer, componentErrorMessage(err))
+			}
+			return
+		}
 		content, err := handler.handleSessionCardControl(request.Context(), payload, domain.Actor{
 			Type: domain.ActorTypeDiscordUser, ID: actorID,
 		})
@@ -455,12 +463,15 @@ func (handler *Handler) ServeHTTP(
 			ID:   actorID,
 		}
 		var content string
+		var components []interactionComponent
 		if isModsModalCustomID(payload.Data.CustomID) {
 			content, err = handler.submitModsModal(request.Context(), payload, actor, correlationID)
 		} else if isSetupModalCustomID(payload.Data.CustomID) {
 			content, err = handler.submitSetupModal(request.Context(), payload, actor, correlationID)
 		} else {
-			content, err = handler.submitCreateModal(request.Context(), payload, actor, correlationID)
+			var result createModalResult
+			result, err = handler.submitCreateModal(request.Context(), payload, actor, correlationID)
+			content, components = result.content, result.components
 		}
 		if err != nil {
 			content = handler.commandErrorMessage(err, correlationID)
@@ -475,7 +486,7 @@ func (handler *Handler) ServeHTTP(
 				slog.String("correlation_id", correlationID),
 			)
 		}
-		writeInteractionMessage(writer, content)
+		writeInteractionMessageWithComponents(writer, content, components)
 		return
 	}
 
@@ -597,7 +608,7 @@ func (handler *Handler) createConfirmation(ctx context.Context, payload interact
 	if action == "terminate" {
 		confirmationAction = domain.ConfirmationTerminate
 	}
-	confirmation, err := handler.service.RequestConfirmation(ctx, appsession.ConfirmationRequest{
+	_, err = handler.service.RequestConfirmation(ctx, appsession.ConfirmationRequest{
 		Actor: actor, SessionID: sessionID, GuildID: payload.GuildID, RequestID: payload.ID, Action: confirmationAction,
 	})
 	if err != nil {
@@ -606,11 +617,10 @@ func (handler *Handler) createConfirmation(ctx context.Context, payload interact
 		}
 		return "", err
 	}
-	deadline := fmt.Sprintf("<t:%d:R>", confirmation.ExpiresAt.UTC().Unix())
 	if action == "archive" {
-		return fmt.Sprintf("**Archive confirmation required**\nNo destructive work has been queued. Archiving stops game services and removes EC2/EBS only after the portable backup is verified. A later restore creates billable replacement resources.\n\nRun `/rb confirm` by %s, or `/rb cancel-confirmation`.", deadline), nil
+		return "**Archive confirmation required**\nNo destructive work has been queued. Archiving stops game services and removes EC2/EBS only after the portable backup is verified. A later restore creates billable replacement resources.\n\nWithin 10 minutes, run `/rb confirm` without any options. To cancel, run `/rb cancel-confirmation`.", nil
 	}
-	return fmt.Sprintf("**Termination confirmation required**\nNo destructive work has been queued. Termination permanently deletes tagged EC2/EBS resources and all stored session artifacts without creating a backup. This is irreversible.\n\nRun `/rb confirm` by %s, or `/rb cancel-confirmation`.", deadline), nil
+	return "**Termination confirmation required**\nNo destructive work has been queued. Termination permanently deletes tagged EC2/EBS resources and all stored session artifacts without creating a backup. This is irreversible.\n\nWithin 10 minutes, run `/rb confirm` without any options. To cancel, run `/rb cancel-confirmation`.", nil
 }
 
 func (handler *Handler) confirmAction(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, correlationID string) (string, error) {
@@ -1473,12 +1483,20 @@ func readBody(
 }
 
 func writeInteractionMessage(writer http.ResponseWriter, content string) {
+	writeInteractionMessageWithComponents(writer, content, nil)
+}
+
+func writeInteractionMessageWithComponents(writer http.ResponseWriter, content string, components []interactionComponent) {
+	data := renderer.messageData(content, messageFlagEphemeral, nil)
+	if len(components) != 0 {
+		data.Components = &components
+	}
 	writeJSON(
 		writer,
 		http.StatusOK,
 		interactionResponse{
 			Type: interactionResponseChannelMessageWithSource,
-			Data: renderer.messageData(content, messageFlagEphemeral, nil),
+			Data: data,
 		},
 	)
 }
