@@ -66,6 +66,14 @@ adding another Phase 12 step.
   same `mods.txt` and `-mod` argument.
 - Archive manifests preserve the canonical cDLC selection and restore rejects
   drift. Public cards and private status show concise product names.
+- Step 12.13 review now makes the form the sole cDLC authority. Preset ingestion
+  accepts only `ModContainer` rows and rebuilds both the private bootstrap input
+  and public download, dropping `DlcContainer`, footer, and unrelated IDs.
+- cDLC-only modded sessions are supported without a placeholder Workshop
+  preset. Combined cDLC+preset submissions remain draft/pending until validation
+  so automatic start cannot race the artifact worker.
+- Bootstrap mod checkpoints include configuration revision, ensuring cDLC-only
+  changes are not skipped when the Workshop preset revision is unchanged.
 
 ## Validation
 
@@ -87,6 +95,10 @@ adding another Phase 12 step.
 - Focused artifact, bootstrap, archive, restore, domain, and session-card tests
   pass for deterministic automatic start, cDLC directory mapping, shared mod
   launch composition, manifest drift checks, and presentation.
+- Post-step review regression covers cDLC rows and unrelated footer IDs in
+  uploaded presets, sanitized server inputs, cDLC-only readiness/bootstrap,
+  combined-form start ordering, configuration-aware checkpoints, and truthful
+  cDLC-only status presentation.
 - The `/rb` command JSON parses, `git diff --check` passes, the bootstrap
   artifact passes its Bash syntax test, and all 13 Lambda archives package.
 - Race coverage was not run locally because this Windows host has no C
@@ -120,10 +132,10 @@ $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-shared-mod-bootstrap.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-12-shared-mod-bootstrap.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-mod-preset-hardening.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-12-mod-preset-hardening.tfplan
 # Apply only after reviewing and approving this exact saved plan.
-terraform -chdir=infra/terraform/environments/dev apply phase-12-shared-mod-bootstrap.tfplan
+terraform -chdir=infra/terraform/environments/dev apply phase-12-mod-preset-hardening.tfplan
 
 ./scripts/verify-bootstrap-worker-deployment.ps1
 

@@ -215,6 +215,7 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 	session, err := handler.service.UpdateModOptions(ctx, appsession.UpdateModOptionsCommand{
 		Actor: actor, SessionID: state.sessionID, GuildID: payload.GuildID, CorrelationID: correlationID,
 		IdempotencyKey: keyPrefix + ":configure", ExpectedVersion: state.version, CreatorDLCs: creatorDLCs,
+		PreparePreset: presetRequest != nil && state.mode == modsModeCreate,
 	})
 	if err != nil {
 		return "", modsStagingUserError(err)

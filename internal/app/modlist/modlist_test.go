@@ -11,8 +11,9 @@ func TestGenerateRebuildsSanitizedLauncherPreset(t *testing.T) {
 <script>sendSecret()</script>
 <tr data-type="ModContainer"><td data-type="DisplayName">CBA &amp; Friends</td><td><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=450814997" data-type="Link">mod</a></td></tr>
 <tr data-type="ModContainer"><td data-type="DisplayName">Duplicate</td><td><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=450814997">mod</a></td></tr>
-<a data-publishedfileid="463939057">ACE</a></body></html>`)
-	artifact, err := Generate(source, "session-1", "Saturday <Ops>", "saturday-ops")
+<tr data-type="ModContainer"><td data-type="DisplayName">ACE</td><td><a data-publishedfileid="463939057">ACE</a></td></tr>
+<tr data-type="DlcContainer"><td data-type="DisplayName">S.O.G. Prairie Fire</td><td><a data-publishedfileid="1227700">DLC</a></td></tr></body></html>`)
+	artifact, err := Generate(source, "session-1", "Saturday <Ops>", "saturday-ops", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,15 +32,39 @@ func TestGenerateRebuildsSanitizedLauncherPreset(t *testing.T) {
 			t.Fatalf("sanitized preset retained %q: %s", forbidden, content)
 		}
 	}
+	if strings.Contains(content, "1227700") || strings.Contains(content, "Prairie Fire") {
+		t.Fatalf("sanitized preset retained Creator DLC section: %s", content)
+	}
 	if artifact.Filename != "saturday-ops-modlist.html" || artifact.WorkshopCount != 2 ||
 		!strings.HasPrefix(artifact.ObjectKey, "sessions/session-1/input/modlists/") || len(artifact.SHA256Hex) != 64 {
 		t.Fatalf("artifact = %#v", artifact)
 	}
 }
 
+func TestGenerateIgnoresWorkshopLookingIDsOutsideModRows(t *testing.T) {
+	t.Parallel()
+	source := []byte(`<html><body>
+<tr data-type="ModContainer"><td data-type="DisplayName">CBA</td><td><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=450814997">mod</a></td></tr>
+<tr data-type="DlcContainer"><td data-type="DisplayName">Creator DLC</td><td><a data-publishedfileid="999999999">dlc</a></td></tr>
+<a href="https://steamcommunity.com/sharedfiles/filedetails/?id=888888888">untrusted footer</a>
+</body></html>`)
+	artifact, err := Generate(source, "session-1", "Session", "session", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(artifact.Body)
+	if artifact.WorkshopCount != 1 || !strings.Contains(content, "450814997") || strings.Contains(content, "999999999") || strings.Contains(content, "888888888") {
+		t.Fatalf("filtered artifact = %#v body=%s", artifact, content)
+	}
+}
+
 func TestGenerateRejectsPresetWithoutWorkshopMods(t *testing.T) {
 	t.Parallel()
-	if _, err := Generate([]byte(`<html><body>empty</body></html>`), "session-1", "Empty", "empty"); err == nil {
+	if _, err := Generate([]byte(`<html><body>empty</body></html>`), "session-1", "Empty", "empty", false); err == nil {
 		t.Fatal("empty preset was accepted")
+	}
+	artifact, err := Generate([]byte(`<html><body><tr data-type="DlcContainer"><td data-type="DisplayName">Creator DLC</td><td data-publishedfileid="1227700"></td></tr></body></html>`), "session-1", "cDLC", "cdlc", true)
+	if err != nil || artifact.WorkshopCount != 0 || strings.Contains(string(artifact.Body), "1227700") {
+		t.Fatalf("cDLC-authorized empty Workshop preset = %#v err=%v", artifact, err)
 	}
 }

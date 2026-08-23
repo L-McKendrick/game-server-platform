@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"path"
-	"regexp"
 	"strings"
 	"time"
 
@@ -18,8 +17,6 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
-
-var workshopIDPattern = regexp.MustCompile(`(?i)(?:[?&]id=|data-publishedfileid=["'])([0-9]{6,20})`)
 
 type Clock interface{ Now() time.Time }
 type IDGenerator interface {
@@ -89,7 +86,7 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 	}
 	var publicModlist *modlist.Artifact
 	if request.Kind == domain.ArtifactPreset && !session.Vanilla {
-		generated, generateErr := modlist.Generate(body, session.ID, session.DisplayName, session.Slug)
+		generated, generateErr := modlist.Generate(body, session.ID, session.DisplayName, session.Slug, len(session.CreatorDLCs) > 0)
 		if generateErr != nil {
 			return service.reject(ctx, session, request, generateErr)
 		}
@@ -134,12 +131,17 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 		directory,
 		objectFilename,
 	)
+	storedBody, storedContentType, storedDigest := body, request.ContentType, digest
+	if publicModlist != nil {
+		storedBody, storedContentType = publicModlist.Body, publicModlist.ContentType
+		storedDigest = sha256.Sum256(storedBody)
+	}
 	if err := service.objects.Put(
 		ctx,
 		objectKey,
-		request.ContentType,
-		body,
-		base64.StdEncoding.EncodeToString(digest[:]),
+		storedContentType,
+		storedBody,
+		base64.StdEncoding.EncodeToString(storedDigest[:]),
 	); err != nil {
 		return fmt.Errorf("store validated artifact: %w", err)
 	}
@@ -429,14 +431,6 @@ func validateContent(request domain.ArtifactIngestRequest, body []byte) error {
 	}
 	if strings.Contains(lower, "file://") || strings.Contains(lower, "local mod") {
 		return fmt.Errorf("launcher preset contains an unsupported local-mod path")
-	}
-	matches := workshopIDPattern.FindAllStringSubmatch(text, -1)
-	seen := make(map[string]struct{}, len(matches))
-	for _, match := range matches {
-		seen[match[1]] = struct{}{}
-	}
-	if len(seen) > 250 {
-		return fmt.Errorf("launcher preset references more than 250 Workshop items")
 	}
 	return nil
 }

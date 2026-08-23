@@ -315,7 +315,7 @@ func TestVanillaSessionWaitsForSubmittedOptionalPresetOutcome(t *testing.T) {
 	}
 }
 
-func TestModdedSessionStillRequiresPreset(t *testing.T) {
+func TestModdedSessionRequiresPresetOrCreatorDLC(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 14, 6, 0, 0, 0, time.UTC)
 	session, err := NewSession(NewSessionInput{
@@ -335,6 +335,39 @@ func TestModdedSessionStillRequiresPreset(t *testing.T) {
 	}
 	if session.LifecycleState != StateDraft {
 		t.Fatalf("modded session state = %s; want DRAFT until preset upload", session.LifecycleState)
+	}
+	if err := session.UpdateCreatorDLCs([]string{CreatorDLCWesternSahara}, false, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateNew {
+		t.Fatalf("cDLC-only modded session state = %s; want NEW", session.LifecycleState)
+	}
+}
+
+func TestCreatorDLCAndPresetSubmissionWaitsForPresetValidation(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 23, 16, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{ID: "session-combined", Slug: "combined", DisplayName: "Combined", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 86400, StartWhenReady: true}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AttachArtifact(ArtifactMission, "sessions/session-combined/input/missions/mission.pbo", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.UpdateCreatorDLCs([]string{CreatorDLCWesternSahara}, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateDraft || session.PresetArtifactStatus != ArtifactPending {
+		t.Fatalf("combined submission session = %#v; want pending draft", session)
+	}
+	if err := session.AttachArtifact(ArtifactPreset, "sessions/session-combined/input/presets/preset.html", now); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateNew {
+		t.Fatalf("validated combined session state = %s; want NEW", session.LifecycleState)
 	}
 }
 

@@ -606,6 +606,7 @@ type UpdateModOptionsCommand struct {
 	SessionID, GuildID, CorrelationID, IdempotencyKey string
 	ExpectedVersion                                   int64
 	CreatorDLCs                                       []string
+	PreparePreset                                     bool
 }
 
 // UpdateModOptions atomically persists a stale-bound desired Creator DLC set.
@@ -625,11 +626,15 @@ func (service *Service) UpdateModOptions(ctx context.Context, command UpdateModO
 		CommandType, ActorID, SessionID, GuildID string
 		ExpectedVersion                          int64
 		CreatorDLCs                              []string
-	}{"UpdateModOptions", command.Actor.ID, strings.TrimSpace(command.SessionID), strings.TrimSpace(command.GuildID), command.ExpectedVersion, creatorDLCs})
+		PreparePreset                            bool
+	}{"UpdateModOptions", command.Actor.ID, strings.TrimSpace(command.SessionID), strings.TrimSpace(command.GuildID), command.ExpectedVersion, creatorDLCs, command.PreparePreset})
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("hash mod options: %w", err)
 	}
 	if replayed, found, err := service.replaySession(ctx, key, hash, command.Actor); err != nil || found {
+		if err == nil {
+			err = service.requestAutomaticStart(ctx, replayed, command.CorrelationID)
+		}
 		return replayed, err
 	}
 	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
@@ -643,7 +648,7 @@ func (service *Service) UpdateModOptions(ctx context.Context, command UpdateModO
 		return domain.Session{}, fmt.Errorf("%w: session changed while mod options were open", domain.ErrConflict)
 	}
 	now, expectedVersion := service.clock.Now().UTC(), session.Version
-	if err := session.UpdateCreatorDLCs(creatorDLCs, now); err != nil {
+	if err := session.UpdateCreatorDLCs(creatorDLCs, command.PreparePreset, now); err != nil {
 		return domain.Session{}, err
 	}
 	eventID, err := service.newID(now, "mod options event")
@@ -661,11 +666,30 @@ func (service *Service) UpdateModOptions(ctx context.Context, command UpdateModO
 	}
 	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, record); err != nil {
 		if replayed, found, replayErr := service.replaySession(ctx, key, hash, command.Actor); replayErr != nil || found {
+			if replayErr == nil {
+				replayErr = service.requestAutomaticStart(ctx, replayed, command.CorrelationID)
+			}
 			return replayed, replayErr
 		}
 		return domain.Session{}, fmt.Errorf("persist mod options: %w", err)
 	}
+	if err := service.requestAutomaticStart(ctx, session, correlationID); err != nil {
+		return session, err
+	}
 	return session, nil
+}
+
+func (service *Service) requestAutomaticStart(ctx context.Context, session domain.Session, correlationID string) error {
+	if !session.StartWhenReady || !session.CanStartInfrastructureProvisioning() {
+		return nil
+	}
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", session.ID, session.ConfigurationRevision)))
+	commandID := hex.EncodeToString(digest[:16])
+	return service.RequestStart(ctx, StartCommand{
+		Actor:     domain.Actor{Type: domain.ActorTypeDiscordUser, ID: session.OwnerDiscordUserID},
+		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
+		CommandID: commandID, CorrelationID: strings.TrimSpace(correlationID), IdempotencyKey: "auto-start:" + commandID,
+	})
 }
 
 // UpdateDraftSetup atomically edits the draft fields and marks only selected

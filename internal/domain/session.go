@@ -535,7 +535,7 @@ func (session *Session) SetDescription(description string, now time.Time) (strin
 // UpdateCreatorDLCs records the desired Creator DLC set without claiming a
 // running process changed in place. Lifecycle workers apply it at the next safe
 // start boundary.
-func (session *Session) UpdateCreatorDLCs(values []string, now time.Time) error {
+func (session *Session) UpdateCreatorDLCs(values []string, preparePreset bool, now time.Time) error {
 	if session.Vanilla {
 		return fmt.Errorf("%w: vanilla sessions cannot load Creator DLC", ErrInvalidTransition)
 	}
@@ -551,7 +551,14 @@ func (session *Session) UpdateCreatorDLCs(values []string, now time.Time) error 
 		return err
 	}
 	session.CreatorDLCs = normalized
+	if preparePreset {
+		if session.LifecycleState != StateDraft || !session.ActivePresetRevision.Empty() {
+			return fmt.Errorf("%w: initial preset preparation requires a draft without an active preset", ErrInvalidTransition)
+		}
+		session.PresetArtifactStatus, session.PresetArtifactIssue = ArtifactPending, ""
+	}
 	session.ConfigurationRevision++
+	session.markReadyWhenComplete()
 	return session.RecordMutation(now)
 }
 
@@ -681,7 +688,8 @@ func (session *Session) markReadyWhenComplete() {
 	if session.LifecycleState == StateDraft && session.ConfigurationRevision > 0 &&
 		artifactAccepted(session.MissionArtifactStatus, session.MissionObjectKey) &&
 		((session.Vanilla && session.PresetArtifactStatus != ArtifactPending) ||
-			artifactAccepted(session.PresetArtifactStatus, session.PresetObjectKey)) {
+			artifactAccepted(session.PresetArtifactStatus, session.PresetObjectKey) ||
+			(!session.Vanilla && len(session.CreatorDLCs) > 0 && session.PresetArtifactStatus == "")) {
 		session.DesiredState = StateNew
 		session.ObservedState = StateNew
 		session.LifecycleState = StateNew

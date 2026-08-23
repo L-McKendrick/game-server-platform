@@ -93,6 +93,20 @@ mod pipeline: bootstrap maps the supported catalog to the server directories
 directory, and writes them before Workshop links in the same `mods.txt` read by
 the existing `-mod` argument. Archive manifests preserve the canonical
 selection, restore rejects drift, and cards show the selected product names.
+Only rows explicitly typed `ModContainer` are accepted from Launcher presets.
+The original HTML is never used for server bootstrap: both the server input and
+downloadable copy are rebuilt from those rows, so `DlcContainer` sections and
+Workshop-looking IDs in footers or unrelated markup cannot override the form.
+A preset that becomes Workshop-empty after filtering is accepted only when the
+form selects at least one supported cDLC. cDLC-only sessions are therefore
+valid, while a content-empty modded session remains a recoverable draft.
+
+Combined submissions mark the initial preset pending in the same stale-bound
+configuration write before automatic-start eligibility is evaluated. This
+prevents the cDLC selection from starting provisioning ahead of its accompanying
+preset validation. Bootstrap checkpoints include the configuration revision so
+a cDLC-only change is applied on the next setup even when the preset revision
+does not change.
 
 Creation uses the platform sleep/archive defaults. Submission creates a draft
 idempotently, publishes the public card, and queues file validation. It does

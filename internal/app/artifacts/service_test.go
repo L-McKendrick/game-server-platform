@@ -219,7 +219,10 @@ func TestProcessAcceptsPresetWithRepeatedWorkshopReferences(t *testing.T) {
 
 	now := time.Date(2026, 8, 8, 21, 0, 0, 0, time.UTC)
 	repository := seededRepository(t, now)
-	downloader := &testDownloader{body: []byte(`<html><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=450814997" data-publishedfileid="450814997">mod</a></html>`)}
+	downloader := &testDownloader{body: []byte(`<html><table>
+<tr data-type="ModContainer"><td data-type="DisplayName">CBA</td><td><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=450814997" data-publishedfileid="450814997">mod</a></td></tr>
+<tr data-type="DlcContainer"><td data-type="DisplayName">Creator DLC</td><td><a data-publishedfileid="1227700">dlc</a></td></tr>
+</table></html>`)}
 	objects := &testObjectStore{}
 	notifications := &testNotifications{}
 	service, err := NewService(repository, downloader, objects, notifications, &testIDs{ids: []string{"preset-event-1"}}, testClock{now}, 7*24*time.Hour)
@@ -235,8 +238,9 @@ func TestProcessAcceptsPresetWithRepeatedWorkshopReferences(t *testing.T) {
 	}
 	if len(objects.objects) != 2 || !strings.HasPrefix(objects.objects[0].key, "sessions/session-1/input/presets/") ||
 		!strings.HasPrefix(objects.objects[1].key, "sessions/session-1/input/modlists/") ||
-		strings.Contains(string(objects.objects[1].contents), "data-publishedfileid") {
-		t.Fatalf("stored objects = %#v; want source preset and sanitized modlist", objects.objects)
+		strings.Contains(string(objects.objects[0].contents), "1227700") || strings.Contains(string(objects.objects[1].contents), "1227700") ||
+		strings.Contains(string(objects.objects[0].contents), "data-publishedfileid") || strings.Contains(string(objects.objects[1].contents), "data-publishedfileid") {
+		t.Fatalf("stored objects = %#v; want cDLC-free sanitized server and download presets", objects.objects)
 	}
 	session, err := repository.Get(context.Background(), "session-1")
 	if err != nil {
@@ -263,7 +267,7 @@ func TestProcessStagesRunningPresetRevisionWithoutPromotingModlist(t *testing.T)
 	t.Parallel()
 	now := time.Date(2026, 8, 17, 22, 0, 0, 0, time.UTC)
 	repository := seededPresetRevisionRepository(t, now)
-	body := []byte(`<html><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=450814997">Mod</a></html>`)
+	body := []byte(`<html><tr data-type="ModContainer"><td data-type="DisplayName">Mod</td><td><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=450814997">Mod</a></td></tr></html>`)
 	downloader := &testDownloader{body: body}
 	objects, notifications := &testObjectStore{}, &testNotifications{}
 	service, err := NewService(repository, downloader, objects, notifications, &testIDs{ids: []string{"revision-event-2"}}, testClock{now.Add(time.Minute)}, time.Hour)
@@ -370,7 +374,7 @@ func TestProcessVanillaPresetDoesNotPublishActiveModlist(t *testing.T) {
 	if err := repository.Create(context.Background(), session, event, record); err != nil {
 		t.Fatal(err)
 	}
-	body := []byte(`<html><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=450814997">mod</a></html>`)
+	body := []byte(`<html><tr data-type="ModContainer"><td data-type="DisplayName">Mod</td><td><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=450814997">mod</a></td></tr></html>`)
 	downloader := &testDownloader{body: body}
 	objects := &testObjectStore{}
 	notifications := &testNotifications{}

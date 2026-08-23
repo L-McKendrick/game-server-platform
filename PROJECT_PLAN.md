@@ -179,7 +179,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **12.13** [x] Add shared mod options to creation and existing-session revision flows.
       - **12.13.1** [x] Define the supported Arma 3 Creator DLC catalog and add validated, deterministic, backward-compatible session configuration persistence and audit data.
       - **12.13.2** [x] Split creation into base setup plus a conditional mod-options continuation, capture a durable `Begin server setup` intent, and make `/rb mods` open the same preset/cDLC page with stale-state, authorization, and idempotency safeguards.
-      - **12.13.3** [x] Honor begin-setup intent after required artifact validation, apply selected cDLCs during bootstrap and preset revisions, preserve them through archive/restore, render concise status/card details, and run proportional regression and deployment documentation.
+      - **12.13.3** [x] Honor begin-setup intent after required artifact validation; treat the form as authoritative for cDLCs by stripping preset DLC/footer sections; support cDLC-only or Workshop+cDLC bootstrap and revisions; preserve selections through archive/restore; and render concise status/card details.
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.
