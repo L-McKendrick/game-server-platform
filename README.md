@@ -118,5 +118,6 @@ Never place the bot token in a `.tfvars` file, command definition, log, or Terra
 
 - Deployment: a persistent game-server configuration and lifecycle record
 - Server: a temporary compute instance
-- Mission: an Arma-specific mission file
+- Missions: optional, immutable Arma `.pbo` uploads managed through
+  `/rb edit`; sessions use `MP_ZGM_m12.Stratis` by default
 - Deployment archive: a long-term backup of a deployment

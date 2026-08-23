@@ -26,14 +26,6 @@ type modsModalState struct {
 	activeRevision, version int64
 }
 
-func (payload interactionPayload) isRBModsCommand() bool {
-	if payload.Type != interactionTypeApplicationCommand {
-		return false
-	}
-	subcommand, err := payload.subcommand()
-	return err == nil && subcommand.Name == "mods"
-}
-
 func createModsContinueCustomID(sessionID string, version int64) (string, error) {
 	value := fmt.Sprintf("%s%s:%d", createModsContinuePrefix, strings.TrimSpace(sessionID), version)
 	if strings.TrimSpace(sessionID) == "" || version < 1 || len(value) > 100 {
@@ -92,14 +84,14 @@ func isModsModalCustomID(customID string) bool {
 func (handler *Handler) openCreateModsModal(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actor domain.Actor) error {
 	sessionID, version, err := parseCreateModsContinueCustomID(payload.Data.CustomID)
 	if err != nil {
-		return newUserError("This creation step is stale. Use `/rb mods` to continue setup.")
+		return newUserError("This creation step is stale. Use `/rb edit` with section `mods` to continue setup.")
 	}
 	session, err := handler.service.Get(ctx, appsession.GetQuery{Actor: actor, SessionID: sessionID, GuildID: payload.GuildID})
 	if err != nil {
 		return err
 	}
 	if session.Version != version || session.Vanilla || session.LifecycleState != domain.StateDraft {
-		return newUserError("This creation step is stale. Use `/rb mods` to continue setup.")
+		return newUserError("This creation step is stale. Use `/rb edit` with section `mods` to continue setup.")
 	}
 	return writeModsModal(writer, session, modsModeCreate)
 }
@@ -170,14 +162,14 @@ func containsString(values []string, wanted string) bool {
 func (handler *Handler) submitModsModal(ctx context.Context, payload interactionPayload, actor domain.Actor, correlationID string) (string, error) {
 	state, err := parseModsModalCustomID(payload.Data.CustomID)
 	if err != nil || len(payload.Data.Components) != 2 {
-		return "", newUserError("The mod options form is malformed or expired. Run `/rb mods` again.")
+		return "", newUserError("The mod options form is malformed or expired. Run `/rb edit` with section `mods` again.")
 	}
 	var attachment *interactionAttachment
 	var creatorDLCs []string
 	seen := map[string]bool{}
 	for _, label := range payload.Data.Components {
 		if label.Type != componentTypeLabel || label.Component == nil || seen[label.Component.CustomID] {
-			return "", newUserError("The mod options form is malformed or expired. Run `/rb mods` again.")
+			return "", newUserError("The mod options form is malformed or expired. Run `/rb edit` with section `mods` again.")
 		}
 		seen[label.Component.CustomID] = true
 		switch label.Component.CustomID {
@@ -197,7 +189,7 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 		}
 	}
 	if !seen[modsPresetCustomID] || !seen[modsCreatorDLCsCustomID] {
-		return "", newUserError("The mod options form is incomplete. Run `/rb mods` again.")
+		return "", newUserError("The mod options form is incomplete. Run `/rb edit` with section `mods` again.")
 	}
 	keyPrefix := "discord:" + strings.TrimSpace(payload.ID) + ":mod-options"
 	var presetRequest *domain.ArtifactIngestRequest
@@ -246,7 +238,7 @@ func modsStagingUserError(err error) error {
 	case strings.Contains(err.Error(), "already") && strings.Contains(err.Error(), "preset revision"):
 		return newUserError("A mod revision is already pending or being applied. Use `/rb status` before uploading another.")
 	case strings.Contains(err.Error(), "changed while"), strings.Contains(err.Error(), "active preset revision changed"), strings.Contains(err.Error(), "lifecycle state"), strings.Contains(err.Error(), "active lifecycle operation"):
-		return newUserError("The session changed while the form was open. Run `/rb mods` again after the current operation finishes.")
+		return newUserError("The session changed while the form was open. Run `/rb edit` with section `mods` again after the current operation finishes.")
 	default:
 		return err
 	}

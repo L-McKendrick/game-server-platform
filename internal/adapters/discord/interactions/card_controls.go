@@ -171,7 +171,7 @@ func sessionNextAction(session domain.Session) string {
 	case domain.StateProvisioning, domain.StateBootstrapping, domain.StateInstalling, domain.StateWaking, domain.StateRestoring:
 		next = "use `/rb status` to follow the current stage. No second operation is needed."
 	case domain.StateRunning, domain.StateIdle:
-		next = "use `/rb status` for live details, `/rb mods` to stage a later revision, or `/rb sleep` when the server is no longer needed."
+		next = "use `/rb status` for live details, `/rb edit` to change mods or mission files, or `/rb sleep` when the server is no longer needed."
 	case domain.StateStopping:
 		next = "use `/rb status` until the stop completes, then `/rb wake` when the retained server is needed again."
 	case domain.StateSleeping, domain.StateWarning1, domain.StateWarning2:

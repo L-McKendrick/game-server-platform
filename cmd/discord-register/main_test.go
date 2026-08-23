@@ -66,7 +66,7 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAdminMenu(t *testing.T
 		t.Fatalf("registered commands = %#v; want rb only", received)
 	}
 	targeting := map[string]bool{
-		"status": true, "setup": true, "mods": true,
+		"status": true, "setup": true, "edit": true,
 		"start": true, "sleep": true, "wake": true, "archive": true, "restore": true, "terminate": true,
 	}
 	for _, subcommand := range received[0].Options {
@@ -96,6 +96,9 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAdminMenu(t *testing.T
 		}
 		if !targeting[subcommand.Name] {
 			continue
+		}
+		if subcommand.Name == "edit" && (len(subcommand.Options) != 2 || subcommand.Options[1].Name != "section" || !subcommand.Options[1].Required || len(subcommand.Options[1].Choices) != 2) {
+			t.Errorf("edit options = %#v; want session and game-aware section choices", subcommand.Options)
 		}
 		if len(subcommand.Options) == 0 || subcommand.Options[0].Name != "session" || !subcommand.Options[0].Autocomplete {
 			t.Errorf("%s session selector = %#v; want autocomplete session option", subcommand.Name, subcommand.Options)

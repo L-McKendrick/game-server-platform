@@ -121,6 +121,7 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 		if err != nil {
 			return fmt.Errorf("normalize mission filename: %w", err)
 		}
+		objectFilename = digestHex + "-" + objectFilename
 	} else {
 		objectFilename = digestHex + "-" + request.Filename
 	}
@@ -238,8 +239,14 @@ func (service *Service) reject(
 		return service.notify(ctx, session, request, nil)
 	}
 	expectedVersion := session.Version
-	if err := session.RejectArtifact(request.Kind, reason.Error(), now); err != nil {
-		return err
+	var rejectErr error
+	if request.Kind == domain.ArtifactMission {
+		rejectErr = session.RejectMissionUpload(request.AttachmentID, request.Filename, reason.Error(), now)
+	} else {
+		rejectErr = session.RejectArtifact(request.Kind, reason.Error(), now)
+	}
+	if rejectErr != nil {
+		return rejectErr
 	}
 	eventID, err := service.ids.New(now)
 	if err != nil {

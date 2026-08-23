@@ -91,6 +91,7 @@ func (session *Session) BeginArchive(workflowID string, lease time.Duration, now
 	session.ArchiveSourceState = sourceState
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateArchiving, StateArchiving, StateArchiving
 	session.HealthStatus = HealthStarting
+	session.SnapshotConfiguredMission()
 	return session.Validate()
 }
 
@@ -304,6 +305,9 @@ type ArchiveManifest struct {
 	GameProfileID          string                 `json:"game_profile_id"`
 	ConfigurationRevision  int64                  `json:"configuration_revision"`
 	MissionObjectKey       string                 `json:"mission_object_key"`
+	MissionFiles           []MissionRecord        `json:"mission_files,omitempty"`
+	ConfiguredMission      MissionSelection       `json:"configured_mission"`
+	CurrentMission         MissionSelection       `json:"current_mission,omitempty"`
 	PresetObjectKey        string                 `json:"preset_object_key"`
 	PresetRevisionSequence int64                  `json:"preset_revision_sequence,omitempty"`
 	ActivePresetRevision   *ArchivePresetRevision `json:"active_preset_revision,omitempty"`

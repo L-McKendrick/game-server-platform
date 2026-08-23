@@ -58,6 +58,7 @@ func (session *Session) BeginWake(workflowID string, lease time.Duration, now ti
 		return err
 	}
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateRunning, StateWaking, StateWaking, HealthStarting
+	session.SnapshotConfiguredMission()
 	session.beginPresetRevisionApplication(workflowID, now)
 	return session.Validate()
 }

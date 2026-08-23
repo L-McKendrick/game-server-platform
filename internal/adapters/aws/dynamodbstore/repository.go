@@ -3,6 +3,7 @@ package dynamodbstore
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -29,6 +30,14 @@ const (
 	schemaVersion         = 3
 	maximumGuildScanItems = int32(1000)
 )
+
+func marshalSessionJSON(value any) string {
+	encoded, _ := json.Marshal(value)
+	if string(encoded) == "null" || string(encoded) == "{}" {
+		return ""
+	}
+	return string(encoded)
+}
 
 // API contains the DynamoDB operations used by the repository.
 type API interface {
@@ -107,6 +116,9 @@ type sessionItem struct {
 	ServerConfigObjectKey            string   `dynamodbav:"server_config_object_key,omitempty"`
 	ServerConfigSHA256               string   `dynamodbav:"server_config_sha256,omitempty"`
 	MissionObjectKey                 string   `dynamodbav:"mission_object_key,omitempty"`
+	MissionFilesJSON                 string   `dynamodbav:"mission_files_json,omitempty"`
+	ConfiguredMissionJSON            string   `dynamodbav:"configured_mission_json,omitempty"`
+	CurrentMissionJSON               string   `dynamodbav:"current_mission_json,omitempty"`
 	PresetObjectKey                  string   `dynamodbav:"preset_object_key,omitempty"`
 	PresetRevisionSequence           int64    `dynamodbav:"preset_revision_sequence,omitempty"`
 	ActivePresetRevision             int64    `dynamodbav:"active_preset_revision,omitempty"`
@@ -1049,6 +1061,9 @@ func toSessionItem(session domain.Session) sessionItem {
 		ServerConfigObjectKey:            session.ServerConfigObjectKey,
 		ServerConfigSHA256:               session.ServerConfigSHA256,
 		MissionObjectKey:                 session.MissionObjectKey,
+		MissionFilesJSON:                 marshalSessionJSON(session.MissionFiles),
+		ConfiguredMissionJSON:            marshalSessionJSON(session.ConfiguredMission),
+		CurrentMissionJSON:               marshalSessionJSON(session.CurrentMission),
 		PresetObjectKey:                  session.PresetObjectKey,
 		PresetRevisionSequence:           presetSequence,
 		ActivePresetRevision:             activePreset.Number,
@@ -1237,6 +1252,33 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if missionStatus == "" && strings.TrimSpace(item.MissionObjectKey) != "" {
 		missionStatus = domain.ArtifactAccepted
 	}
+	var missionFiles []domain.MissionRecord
+	var configuredMission, currentMission domain.MissionSelection
+	if item.MissionFilesJSON != "" {
+		if err := json.Unmarshal([]byte(item.MissionFilesJSON), &missionFiles); err != nil {
+			return domain.Session{}, fmt.Errorf("decode mission files: %w", err)
+		}
+	}
+	if item.ConfiguredMissionJSON != "" {
+		if err := json.Unmarshal([]byte(item.ConfiguredMissionJSON), &configuredMission); err != nil {
+			return domain.Session{}, fmt.Errorf("decode configured mission: %w", err)
+		}
+	}
+	if item.CurrentMissionJSON != "" {
+		if err := json.Unmarshal([]byte(item.CurrentMissionJSON), &currentMission); err != nil {
+			return domain.Session{}, fmt.Errorf("decode current mission: %w", err)
+		}
+	}
+	if configuredMission.Template == "" {
+		if item.MissionObjectKey == "" {
+			configuredMission = domain.DefaultMissionSelection()
+		} else {
+			configuredMission = domain.UploadedMissionSelection(item.MissionObjectKey)
+		}
+	}
+	if len(missionFiles) == 0 && item.MissionObjectKey != "" {
+		missionFiles = []domain.MissionRecord{{ObjectKey: item.MissionObjectKey, Filename: domain.UploadedMissionSelection(item.MissionObjectKey).Template + ".pbo", Status: missionStatus, AddedAt: createdAt}}
+	}
 	presetStatus := domain.ArtifactStatus(item.PresetArtifactStatus)
 	if presetStatus == "" && strings.TrimSpace(item.PresetObjectKey) != "" {
 		presetStatus = domain.ArtifactAccepted
@@ -1268,6 +1310,9 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		ServerConfigObjectKey:  item.ServerConfigObjectKey,
 		ServerConfigSHA256:     item.ServerConfigSHA256,
 		MissionObjectKey:       item.MissionObjectKey,
+		MissionFiles:           missionFiles,
+		ConfiguredMission:      configuredMission,
+		CurrentMission:         currentMission,
 		PresetObjectKey:        item.PresetObjectKey,
 		PresetRevisionSequence: item.PresetRevisionSequence,
 		PendingPresetRevision: domain.PresetRevision{

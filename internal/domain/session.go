@@ -39,6 +39,9 @@ type Session struct {
 	ServerConfigObjectKey string
 	ServerConfigSHA256    string
 	MissionObjectKey      string
+	MissionFiles          []MissionRecord
+	ConfiguredMission     MissionSelection
+	CurrentMission        MissionSelection
 	// PresetObjectKey remains a write-through compatibility projection of the
 	// active preset revision for older workers and persisted rows.
 	PresetObjectKey        string
@@ -75,7 +78,8 @@ type Session struct {
 // AttachArtifact records a validated durable object and advances a complete
 // draft to NEW without tying session identity to the source attachment URL.
 func (session *Session) AttachArtifact(kind ArtifactKind, objectKey string, now time.Time) error {
-	if session.LifecycleState != StateDraft {
+	missionEditable := kind == ArtifactMission && session.ActiveWorkflowID == "" && session.LifecycleState != StateDeleting && session.LifecycleState != StateDeleted && session.LifecycleState != StateArchiving && session.LifecycleState != StateDestroying
+	if session.LifecycleState != StateDraft && session.LifecycleState != StateNew && !missionEditable {
 		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
 	}
 	objectKey = strings.TrimSpace(objectKey)
@@ -85,6 +89,18 @@ func (session *Session) AttachArtifact(kind ArtifactKind, objectKey string, now 
 	switch kind {
 	case ArtifactMission:
 		session.MissionObjectKey = objectKey
+		session.ConfiguredMission = MissionSelection{Template: missionTemplateFromObjectKey(objectKey), ObjectKey: objectKey}
+		found := false
+		for index := range session.MissionFiles {
+			if session.MissionFiles[index].ObjectKey == objectKey {
+				session.MissionFiles[index].Status, session.MissionFiles[index].Issue = ArtifactAccepted, ""
+				found = true
+				break
+			}
+		}
+		if !found {
+			session.MissionFiles = append(session.MissionFiles, MissionRecord{ObjectKey: objectKey, Filename: missionFilenameFromObjectKey(objectKey), Status: ArtifactAccepted, AddedAt: now.UTC()})
+		}
 		session.MissionArtifactStatus = ArtifactAccepted
 		session.MissionArtifactIssue = ""
 	case ArtifactPreset:
@@ -112,7 +128,8 @@ func (session *Session) AttachArtifact(kind ArtifactKind, objectKey string, now 
 // RejectArtifact records the latest validation outcome while leaving the
 // draft editable and any independently accepted artifact intact.
 func (session *Session) RejectArtifact(kind ArtifactKind, issue string, now time.Time) error {
-	if session.LifecycleState != StateDraft {
+	missionEditable := kind == ArtifactMission && session.ActiveWorkflowID == "" && session.LifecycleState != StateDeleting && session.LifecycleState != StateDeleted && session.LifecycleState != StateArchiving && session.LifecycleState != StateDestroying
+	if session.LifecycleState != StateDraft && session.LifecycleState != StateNew && !missionEditable {
 		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
 	}
 	issue = sanitizeFailureDetail(issue)
@@ -139,11 +156,23 @@ func (session *Session) RejectArtifact(kind ArtifactKind, issue string, now time
 
 // PrepareCreationArtifacts records which uploads must finish before readiness.
 func (session *Session) PrepareCreationArtifacts(hasPreset bool, now time.Time) error {
-	if session.LifecycleState != StateDraft {
+	return session.PrepareOptionalCreationArtifacts(true, hasPreset, now)
+}
+
+// PrepareOptionalCreationArtifacts records only the uploads supplied by the
+// creation form. An omitted mission retains the built-in configured default.
+func (session *Session) PrepareOptionalCreationArtifacts(hasMission, hasPreset bool, now time.Time) error {
+	if session.LifecycleState != StateDraft && session.LifecycleState != StateNew {
 		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
 	}
-	session.MissionArtifactStatus, session.MissionArtifactIssue = ArtifactPending, ""
+	if hasMission {
+		session.DesiredState, session.ObservedState, session.LifecycleState = StateDraft, StateDraft, StateDraft
+		session.MissionArtifactStatus, session.MissionArtifactIssue = ArtifactPending, ""
+	} else {
+		session.MissionArtifactStatus, session.MissionArtifactIssue = "", ""
+	}
 	if hasPreset {
+		session.DesiredState, session.ObservedState, session.LifecycleState = StateDraft, StateDraft, StateDraft
 		session.PresetArtifactStatus, session.PresetArtifactIssue = ArtifactPending, ""
 	} else {
 		session.PresetArtifactStatus, session.PresetArtifactIssue = "", ""
@@ -272,6 +301,7 @@ func NewSession(input NewSessionInput, now time.Time) (Session, error) {
 		SleepAfterSeconds:     1800,
 		ArchiveAfterSeconds:   7 * 24 * 60 * 60,
 		ConfigurationRevision: 0,
+		ConfiguredMission:     DefaultMissionSelection(),
 
 		DesiredState:   StateDraft,
 		ObservedState:  StateDraft,
@@ -350,6 +380,14 @@ func (session Session) Validate() error {
 	}
 	if err := session.PendingPresetRevision.Validate(); err != nil {
 		return fmt.Errorf("pending preset revision: %w", err)
+	}
+	if err := session.ConfiguredMission.Validate(); err != nil {
+		return fmt.Errorf("configured mission: %w", err)
+	}
+	if session.CurrentMission.Template != "" {
+		if err := session.CurrentMission.Validate(); err != nil {
+			return fmt.Errorf("current mission: %w", err)
+		}
 	}
 	switch {
 	case session.ID == "":
@@ -686,7 +724,7 @@ func (session *Session) applyConfiguration(configuration SessionConfiguration) e
 
 func (session *Session) markReadyWhenComplete() {
 	if session.LifecycleState == StateDraft && session.ConfigurationRevision > 0 &&
-		artifactAccepted(session.MissionArtifactStatus, session.MissionObjectKey) &&
+		(session.ConfiguredMission.IsDefault() || artifactAccepted(session.MissionArtifactStatus, session.MissionObjectKey)) &&
 		((session.Vanilla && session.PresetArtifactStatus != ArtifactPending) ||
 			artifactAccepted(session.PresetArtifactStatus, session.PresetObjectKey) ||
 			(!session.Vanilla && len(session.CreatorDLCs) > 0 && session.PresetArtifactStatus == "")) {

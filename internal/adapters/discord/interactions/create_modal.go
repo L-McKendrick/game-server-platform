@@ -62,7 +62,7 @@ func writeCreateModal(writer http.ResponseWriter, gameType string) {
 		writeInteractionMessage(writer, "That game is not supported yet.")
 		return
 	}
-	writeSessionSetupModal(writer, createModalCustomID, "Create Arma 3 session", domain.Session{}, true, true)
+	writeSessionSetupModal(writer, createModalCustomID, "Create Arma 3 session", domain.Session{}, false, true)
 }
 
 func writeSessionSetupModal(writer http.ResponseWriter, customID, title string, session domain.Session, missionRequired, creation bool) {
@@ -145,7 +145,7 @@ func writeSessionSetupModal(writer http.ResponseWriter, customID, title string, 
 
 func setupArtifactDescription(kind string, status domain.ArtifactStatus, objectKey string, creation bool) string {
 	if creation && kind == "mission" {
-		return "Required Arma mission .pbo file (maximum 100 MiB)."
+		return "Optional Arma mission .pbo (maximum 100 MiB). Default: MP_ZGM_m12.Stratis."
 	}
 	if status == domain.ArtifactAccepted || status == domain.ArtifactPending || strings.TrimSpace(objectKey) != "" {
 		return "Already accepted or validating; leave empty because it cannot be replaced here."

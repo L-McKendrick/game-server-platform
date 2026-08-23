@@ -173,6 +173,7 @@ func (service *Service) verify(ctx context.Context, session domain.Session, work
 		ObjectKey: request.ObjectKey, SHA256: request.SHA256, SizeBytes: request.SizeBytes,
 		ContentRoots: archiveRoots(session), GameProfileID: session.GameProfileID,
 		ConfigurationRevision: session.ConfigurationRevision, MissionObjectKey: session.MissionObjectKey,
+		MissionFiles: append([]domain.MissionRecord(nil), session.MissionFiles...), ConfiguredMission: session.ConfiguredMission, CurrentMission: session.CurrentMission,
 		PresetObjectKey: session.PresetObjectKey, SourceInstanceID: session.Infrastructure.InstanceID,
 		PresetRevisionSequence: session.EffectivePresetRevisionSequence(),
 		ActivePresetRevision:   domain.ArchivePresetRevisionSnapshot(session.EffectiveActivePresetRevision()),

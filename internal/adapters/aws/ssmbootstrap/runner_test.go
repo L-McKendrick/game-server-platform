@@ -84,6 +84,15 @@ func TestStartBuildsSecretSafeResumableCommand(t *testing.T) {
 	}
 }
 
+func TestCommandSupportsBuiltInDefaultMissionWithoutS3Object(t *testing.T) {
+	t.Parallel()
+	runner, err := New(&fakeSSM{}, testConfig()); if err != nil { t.Fatal(err) }
+	session := domain.Session{ID: "session-default", DisplayName: "Default", Vanilla: true, ConfiguredMission: domain.DefaultMissionSelection(), CurrentMission: domain.DefaultMissionSelection(), LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}}
+	script, err := runner.command(session); if err != nil { t.Fatal(err) }
+	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(domain.DefaultArma3MissionTemplate))) { t.Fatal("command omitted built-in mission template") }
+	if !strings.Contains(script, "MISSION_KEY_B64=''") { t.Fatal("built-in mission unexpectedly required an object key") }
+}
+
 func TestCommandPassesCreatorDLCsThroughExistingModPath(t *testing.T) {
 	t.Parallel()
 	runner, err := New(&fakeSSM{}, testConfig())

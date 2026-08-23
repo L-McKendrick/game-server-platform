@@ -114,6 +114,7 @@ func (session *Session) AcquireProvisioningWorkflowLock(workflowID string, lease
 	session.ObservedState = StateValidating
 	session.LifecycleState = StateValidating
 	session.HealthStatus = HealthStarting
+	session.SnapshotConfiguredMission()
 	session.Version++
 	session.UpdatedAt = now
 	return session.Validate()
