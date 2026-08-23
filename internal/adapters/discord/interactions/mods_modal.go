@@ -216,6 +216,7 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 		Actor: actor, SessionID: state.sessionID, GuildID: payload.GuildID, CorrelationID: correlationID,
 		IdempotencyKey: keyPrefix + ":configure", ExpectedVersion: state.version, CreatorDLCs: creatorDLCs,
 		PreparePreset: presetRequest != nil && state.mode == modsModeCreate,
+		Roles:         interactionRoles(payload),
 	})
 	if err != nil {
 		return "", modsStagingUserError(err)

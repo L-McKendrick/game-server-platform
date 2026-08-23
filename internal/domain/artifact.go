@@ -90,6 +90,7 @@ type ArtifactIngestRequest struct {
 	SizeBytes                    int64                 `json:"size_bytes"`
 	SourceURL                    string                `json:"source_url"`
 	ActorID                      string                `json:"actor_id"`
+	Roles                        []string              `json:"roles,omitempty"`
 	GuildID                      string                `json:"guild_id"`
 	ChannelID                    string                `json:"channel_id"`
 	CorrelationID                string                `json:"correlation_id"`
@@ -113,6 +114,12 @@ func (request ArtifactIngestRequest) Validate() error {
 	var missionFilenameError error
 	if request.Kind == ArtifactMission {
 		_, missionFilenameError = NormalizeMissionFilename(request.Filename)
+	}
+	for _, roleID := range request.Roles {
+		roleID = strings.TrimSpace(roleID)
+		if len(roleID) < 1 || len(roleID) > 32 {
+			return fmt.Errorf("artifact actor role ID is invalid")
+		}
 	}
 
 	switch {
@@ -150,6 +157,8 @@ func (request ArtifactIngestRequest) Validate() error {
 		return fmt.Errorf("attachment URL must use an approved Discord CDN host")
 	case strings.TrimSpace(request.ActorID) == "":
 		return fmt.Errorf("actor ID is required")
+	case len(request.Roles) > 250:
+		return fmt.Errorf("artifact actor roles exceed 250")
 	case strings.TrimSpace(request.GuildID) == "":
 		return fmt.Errorf("guild ID is required")
 	case strings.TrimSpace(request.ChannelID) == "":

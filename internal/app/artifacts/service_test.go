@@ -93,6 +93,7 @@ func TestProcessAutomaticallyStartsReadyOptInSessionAndReplaysSafely(t *testing.
 		t.Fatal(err)
 	}
 	request := missionRequest(now, int64(len(downloader.body)))
+	request.Roles = []string{"role-allowed"}
 	if err := service.Process(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
@@ -104,6 +105,10 @@ func TestProcessAutomaticallyStartsReadyOptInSessionAndReplaysSafely(t *testing.
 	}
 	if starter.commands[0].Actor.ID != session.OwnerDiscordUserID || starter.commands[0].GuildID != session.GuildID {
 		t.Fatalf("automatic start authority = %#v", starter.commands[0])
+	}
+	if len(starter.commands[0].Roles) != 1 || starter.commands[0].Roles[0] != "role-allowed" ||
+		len(starter.commands[1].Roles) != 1 || starter.commands[1].Roles[0] != "role-allowed" {
+		t.Fatalf("automatic start roles = %#v; want signed interaction roles on every replay", starter.commands)
 	}
 }
 

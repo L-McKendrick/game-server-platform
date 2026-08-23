@@ -65,7 +65,7 @@ func TestUpdateModOptionsAutomaticallyStartsCreatorDLCOnlyReadySession(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := UpdateModOptionsCommand{Actor: testActor("owner-1"), SessionID: session.ID, GuildID: session.GuildID, CorrelationID: "mods-correlation", IdempotencyKey: "mods-idempotency", ExpectedVersion: session.Version, CreatorDLCs: []string{domain.CreatorDLCWesternSahara}}
+	command := UpdateModOptionsCommand{Actor: testActor("owner-1"), SessionID: session.ID, GuildID: session.GuildID, CorrelationID: "mods-correlation", IdempotencyKey: "mods-idempotency", ExpectedVersion: session.Version, CreatorDLCs: []string{domain.CreatorDLCWesternSahara}, Roles: []string{"role-allowed"}}
 	first, err := service.UpdateModOptions(ctx, command)
 	if err != nil {
 		t.Fatal(err)
@@ -76,6 +76,10 @@ func TestUpdateModOptionsAutomaticallyStartsCreatorDLCOnlyReadySession(t *testin
 	}
 	if first.LifecycleState != domain.StateNew || second.LifecycleState != domain.StateNew || len(queue.commands) != 2 || queue.commands[0].CommandID != queue.commands[1].CommandID || queue.commands[0].IdempotencyKey != queue.commands[1].IdempotencyKey {
 		t.Fatalf("sessions=(%s,%s) commands=%#v", first.LifecycleState, second.LifecycleState, queue.commands)
+	}
+	if len(queue.commands[0].Actor.Roles) != 1 || queue.commands[0].Actor.Roles[0] != "role-allowed" ||
+		len(queue.commands[1].Actor.Roles) != 1 || queue.commands[1].Actor.Roles[0] != "role-allowed" {
+		t.Fatalf("automatic start roles = %#v; want signed interaction roles on every replay", queue.commands)
 	}
 }
 
