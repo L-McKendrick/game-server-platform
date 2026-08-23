@@ -7,6 +7,9 @@ SESSION_ID="$(decode "$SESSION_ID_B64")"
 DISPLAY_NAME="$(decode "$DISPLAY_NAME_B64")"
 DATA_VOLUME_ID="$(decode "$DATA_VOLUME_ID_B64")"
 MISSION_KEY="$(decode "$MISSION_KEY_B64")"
+SERVER_CONFIG_KEY="$(decode "$SERVER_CONFIG_KEY_B64")"
+SERVER_CONFIG_SHA256="$(decode "$SERVER_CONFIG_SHA_B64")"
+SERVER_CONFIG_REVISION="$(decode "$SERVER_CONFIG_REV_B64")"
 PRESET_KEY="$(decode "$PRESET_KEY_B64")"
 PRESET_REVISION="$(decode "$PRESET_REVISION_B64")"
 PRESET_ROLLBACK="$(decode "$PRESET_ROLLBACK_B64")"
@@ -408,7 +411,13 @@ deploy_content() {
   aws s3 cp "s3://$ASSETS_BUCKET/$MISSION_KEY" "$ROOT/arma3/mpmissions/$mission_file" --region "$AWS_REGION" --only-show-errors
   safe_name="$(sqf_escape "$DISPLAY_NAME")"
   safe_mission_template="$(sqf_escape "$mission_template")"
-  cat > "$ROOT/config/server.cfg" <<EOF
+  if [ -n "$SERVER_CONFIG_KEY" ]; then
+    [ "$SERVER_CONFIG_REVISION" -ge 1 ] && [ "${#SERVER_CONFIG_SHA256}" -eq 64 ] || { log "custom server configuration snapshot is invalid"; return 1; }
+    aws s3 cp "s3://$ASSETS_BUCKET/$SERVER_CONFIG_KEY" "$ROOT/config/server.cfg.pending" --region "$AWS_REGION" --only-show-errors
+    printf '%s  %s\n' "$SERVER_CONFIG_SHA256" "$ROOT/config/server.cfg.pending" | sha256sum --check --status || { log "custom server configuration checksum mismatch"; return 1; }
+    mv -f "$ROOT/config/server.cfg.pending" "$ROOT/config/server.cfg"
+  else
+    cat > "$ROOT/config/server.cfg" <<EOF
 hostname = "$safe_name";
 maxPlayers = 32;
 verifySignatures = 2;
@@ -422,6 +431,7 @@ class Missions {
   };
 };
 EOF
+  fi
   cat > "$ROOT/config/launch-arma.sh" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail

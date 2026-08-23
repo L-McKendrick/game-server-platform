@@ -13,9 +13,15 @@ import (
 )
 
 type fakeAPI struct {
-	putInput *s3.PutObjectInput
-	getInput *s3.GetObjectInput
-	body     []byte
+	putInput    *s3.PutObjectInput
+	getInput    *s3.GetObjectInput
+	deleteInput *s3.DeleteObjectInput
+	body        []byte
+}
+
+func (fake *fakeAPI) DeleteObject(_ context.Context, input *s3.DeleteObjectInput, _ ...func(*s3.Options)) (*s3.DeleteObjectOutput, error) {
+	fake.deleteInput = input
+	return &s3.DeleteObjectOutput{}, nil
 }
 
 func (fake *fakeAPI) PutObject(_ context.Context, input *s3.PutObjectInput, _ ...func(*s3.Options)) (*s3.PutObjectOutput, error) {

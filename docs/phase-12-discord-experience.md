@@ -176,11 +176,11 @@ Successful recovery clears the active visible failure but does not delete its
 audit event.
 
 Archive and terminate first create a durable confirmation and perform no
-destructive work. `/rb confirm code:<code>` atomically consumes a matching
-owner/guild/session/action/state-bound record within ten minutes.
-`/rb cancel-confirmation` cancels it. Replays, stale state, mismatched users,
-and expired codes fail closed. Future buttons may call the same application
-service but may not weaken this contract.
+destructive work. Each user has one pending confirmation slot per guild;
+`/rb confirm` atomically consumes its owner/guild/session/action/state-bound
+record within ten minutes, and `/rb cancel-confirmation` cancels it. Replays,
+stale state, mismatched users, and expired confirmations fail closed. Future
+buttons may call the same application service but may not weaken this contract.
 
 ### Milestone progress
 
@@ -219,6 +219,40 @@ Explorer requests and the Lambda role needs no Billing permissions. Existing
 AWS budget alerts remain an operator concern outside Discord. Later scheduling
 and duration features can attach to the same menu only after their policies
 exist.
+
+The danger area adds one full runtime reset visible only to members whose
+current signed interaction carries Discord Administrator. Manage Server is
+enough for access and card repair but never for reset. Reset uses an exact
+ten-minute typed phrase, atomically consumes it while acquiring one
+environment-wide lock, and freezes new session mutations until cleanup records
+a terminal result. The deployment gate defaults off.
+
+Reset deletes only discovered platform runtime state: active workflow
+executions, exactly tagged game instances and disposable volumes, known
+bot-authored session messages, every version below `sessions/`, runtime queue
+contents, reset-scoped metadata, and eligible pre-reset application log
+streams. It preserves the Terraform control plane and state, guild access,
+secrets, guild configuration artifacts, budgets, CloudTrail, billing records,
+AWS-retained service history, and the latest bounded reset result. Incomplete
+cleanup fails closed, displays a possible-cost warning, and schedules no
+automatic cleanup retry. An unacknowledged first worker attempt is isolated in
+the reset DLQ rather than replaying destructive cleanup.
+
+The Administrator-only configuration area accepts one guild-level Arma 3
+`server.cfg`. Uploads use Discord's private modal file control, accept only a
+non-empty UTF-8 `.cfg` file up to 64 KiB, and are downloaded by the artifact
+worker into a private revisioned `guilds/<guild>/server-config/` S3 prefix.
+Only filename, size, revision, and update time are rendered; contents and object
+keys are never shown because the file may contain server passwords.
+
+Start captures either the active object key/revision/SHA-256 or an explicit
+generated-default selection in its internal command. Workflow lock acquisition
+persists that snapshot atomically, and bootstrap downloads and verifies the
+exact object before installing it as `server.cfg`. Replacement affects future
+sessions only. Removal is revision-confirmed and returns future sessions to the
+generated safe default; existing sessions retain their snapshot for replay,
+wake, and restore determinism. Private prior artifacts remain available for
+those existing snapshots and are preserved by platform reset.
 
 Public cards retain stacked plain-text fallbacks and pair explicit state
 labels/icons with embed color. Their only default buttons are `Show players`

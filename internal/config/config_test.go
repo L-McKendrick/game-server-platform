@@ -11,6 +11,7 @@ func TestLoadUsesDefaults(t *testing.T) {
 	t.Setenv("AWS_REGION", "")
 	t.Setenv("LOG_LEVEL", "")
 	t.Setenv("IDEMPOTENCY_RETENTION_HOURS", "")
+	t.Setenv("RESET_ENABLED", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -64,6 +65,8 @@ func TestLoadReadsEnvironmentVariables(t *testing.T) {
 	t.Setenv("METADATA_TABLE_NAME", "test-metadata")
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("IDEMPOTENCY_RETENTION_HOURS", "336")
+	t.Setenv("RESET_ENABLED", "true")
+	t.Setenv("RESET_QUEUE_URL", "https://sqs.example/reset.fifo")
 
 	cfg, err := Load()
 	if err != nil {
@@ -96,6 +99,16 @@ func TestLoadReadsEnvironmentVariables(t *testing.T) {
 
 	if cfg.LogLevel != slog.LevelDebug {
 		t.Errorf("LogLevel = %v; want %v", cfg.LogLevel, slog.LevelDebug)
+	}
+	if !cfg.ResetEnabled || cfg.ResetQueueURL != "https://sqs.example/reset.fifo" {
+		t.Errorf("reset config = enabled:%v queue:%q", cfg.ResetEnabled, cfg.ResetQueueURL)
+	}
+}
+
+func TestLoadRejectsInvalidResetGate(t *testing.T) {
+	t.Setenv("RESET_ENABLED", "sometimes")
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() returned nil error for invalid RESET_ENABLED")
 	}
 }
 

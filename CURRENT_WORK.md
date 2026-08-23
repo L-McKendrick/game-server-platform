@@ -1,56 +1,58 @@
 # Current Work
 
-## Active Branch and Scope
+## State and Objective
 
-- Branch: `codex/fix-bootstrap-worker-drift`.
-- Phase 12.8 is complete through task 12.8.15. This branch contains the Discord
-  admin/start orchestration, bootstrap drift correction, confirmation IAM and
-  role-context fixes, shared Steam authorization, mission/card polish, required
-  `/rb create arma-3` selection, and the final security/reliability review.
-- The user-owned untracked `infra/terraform/environments/dev/tfplan` remains
-  untouched and must not be reused for this release.
+Phases 1-10 are complete. Phase 11 remains pending under the approved Phase 12
+reorder. Phase 12 is complete on `codex/phase-12-discord-experience`, including
+the final cross-step review, and is ready for a pull request.
 
-## Review Hardening
+## Final Review Hardening
 
-- Provisioning now validates that a replayed bootstrap continuation is still
-  pending/running and still owns the session lock. A terminal or detached
-  continuation fails closed instead of returning a stale command.
-- If the provisioning state machine cannot enqueue its reserved bootstrap
-  continuation after bounded retries, it invokes the bootstrap failure path.
-  This records a stable failure and releases the session workflow lock instead
-  of leaving `/rb status` stuck in startup for the eight-hour lease.
-- Steam authorization now uses a renewable 15-minute DynamoDB lease with a
-  five-minute heartbeat. Loss of lease ownership stops bootstrap; a forcibly
-  killed host can block a retry for at most 15 minutes rather than seven hours.
-- Mission uploads preserve conventional names such as `test.Stratis.pbo`,
-  normalize unsafe characters before S3/host storage, enforce a 255-byte name
-  bound, and escape the mission template when rendering `server.cfg`.
-- Command-registration coverage binds the user-facing `Arma 3` choice to the
-  internal `arma-3` value so future game expansion cannot silently drift.
+- Merged the bootstrap handoff/input fixes already on `main`, preserving
+  renewable Steam authorization leases, recoverable continuation delivery,
+  mission/config escaping, explicit game selection, and deployment checks.
+- Reset cleanup now validates every configured cleanup scope, walks bounded
+  EC2/DynamoDB/S3/Step Functions/log pagination, preserves guild access,
+  guild `server.cfg`, Steam authorization state, and the current reset audit,
+  and fails closed on unknown metadata instead of deleting it.
+- An unacknowledged reset attempt goes to the reset DLQ without automatic
+  destructive replay. Discord receives reset queue permission only when the
+  disabled-by-default reset gate is enabled.
+- Reset confirmation replays validate environment, guild, actor, expiry, use,
+  and the phrase derived from the immutable confirmation ID.
+- Guild `server.cfg` snapshots require an exact guild/revision/SHA-256 object
+  path. Transport errors cannot log signed Discord attachment URLs, deterministic
+  invalid requests are not retried, transient failures retain bounded retries,
+  and definitively superseded upload objects receive compensating deletion.
+- Artifact-worker delete permission is limited to superseded guild
+  configuration objects and does not permit deletion of session inputs.
+- Archive/terminate confirmation retains current Discord role context while
+  remaining optionless, atomic, state-bound, single-use, and replay-safe.
 
 ## Validation
 
-- `go test ./...`, `go vet ./...`, and `go build ./cmd/...` pass with
-  workspace-local Go caches.
-- Focused artifact, provisioning, bootstrap-script, domain, and command
-  registration tests pass; the bootstrap artifact passes `bash -n`.
+- `go test ./...`, `go test -cover ./...`, `go vet ./...`, and
+  `go build ./cmd/...` pass with workspace-local Go caches.
+- Focused reset, server-config, confirmation, session/workflow, S3, bootstrap,
+  Discord interaction, and registration suites pass.
 - `terraform fmt -check -recursive infra/terraform` and
   `terraform -chdir=infra/terraform/environments/dev validate` pass.
-- The `/rb` command JSON parses and `git diff --check` passes.
+- The `/rb` command JSON parses, `git diff --check` passes, the bootstrap
+  artifact passes its Bash syntax test, and all 13 Lambda archives package.
 - Race coverage was not run locally because this Windows host has no C
   compiler; CI remains authoritative for `go test -race -cover ./...`.
 
-## Deployment Disposition
+## Deployment Disposition and Attention
 
-- These review changes are not deployed. They change the provisioning Step
-  Functions definition/IAM, bootstrap script object, artifact worker,
-  provisioning and bootstrap workers, Discord interaction package, and `/rb`
-  command definition.
-- Create and inspect a new Terraform plan after packaging. Do not apply if it
-  contains unrelated deletions or changes outside the expected release scope.
-- Known development targets are Discord application `1533676701354299402`,
-  guild `1192304488351019008`, AWS profile `game-server-dev`, and Region
-  `us-west-2`.
+- No deployment, Discord registration, live reset, billable acceptance, or
+  deferred Phase 10 retry was run during this review.
+- Never reuse `phase-12-8-6-scoped.tfplan` or another older saved plan.
+- Reset remains disabled by default. The default action is to keep
+  `reset_enabled = false`; enabling it and executing a live reset are separate
+  explicit decisions.
+- Re-register `/rb` after deployment so Discord removes the former confirmation
+  `code` options. Pre-deployment code confirmations expire and must be requested
+  again after release.
 
 ## Commands to Apply Current Changes
 
@@ -63,10 +65,10 @@ $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-review-hardening.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-12-review-hardening.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-final-review.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-12-final-review.tfplan
 # Apply only after reviewing and approving this exact saved plan.
-terraform -chdir=infra/terraform/environments/dev apply phase-12-review-hardening.tfplan
+terraform -chdir=infra/terraform/environments/dev apply phase-12-final-review.tfplan
 
 ./scripts/verify-bootstrap-worker-deployment.ps1
 

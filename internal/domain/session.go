@@ -32,6 +32,9 @@ type Session struct {
 	TeamSpeakEnabled      bool
 	Vanilla               bool
 	ConfigurationRevision int64
+	ServerConfigRevision  int64
+	ServerConfigObjectKey string
+	ServerConfigSHA256    string
 	MissionObjectKey      string
 	// PresetObjectKey remains a write-through compatibility projection of the
 	// active preset revision for older workers and persisted rows.
@@ -376,6 +379,8 @@ func (session Session) Validate() error {
 		return fmt.Errorf("archive policy must be at least 86400 seconds")
 	case session.ConfigurationRevision < 0:
 		return fmt.Errorf("configuration revision cannot be negative")
+	case session.ServerConfigRevision < 0 || (session.ServerConfigObjectKey == "" && session.ServerConfigSHA256 != "") || (session.ServerConfigObjectKey != "" && (session.ServerConfigRevision < 1 || len(session.ServerConfigSHA256) != 64)):
+		return fmt.Errorf("server configuration snapshot is invalid")
 	case session.PresetRevisionSequence < 0:
 		return fmt.Errorf("preset revision sequence cannot be negative")
 	case !session.ActivePresetRevision.Empty() && session.ActivePresetRevision.Status != PresetRevisionActive:

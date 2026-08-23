@@ -19,6 +19,7 @@ $packages = @(
     @{ Command = "./cmd/restore-worker"; Archive = "restore-worker.zip" }
     @{ Command = "./cmd/termination-worker"; Archive = "termination-worker.zip" }
     @{ Command = "./cmd/reliability-worker"; Archive = "reliability-worker.zip" }
+    @{ Command = "./cmd/reset-worker"; Archive = "reset-worker.zip" }
 )
 
 New-Item -ItemType Directory -Force -Path $distDirectory | Out-Null

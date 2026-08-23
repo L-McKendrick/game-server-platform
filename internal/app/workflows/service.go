@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
@@ -97,6 +99,11 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 	now := service.clock.Now().UTC()
 	workflowID := command.CommandID
 	expectedVersion := session.Version
+	if !trustedContinuation && (workflowType == domain.ProvisionWorkflowType || workflowType == domain.BootstrapWorkflowType) {
+		if err := applyServerConfigSnapshot(&session, command); err != nil {
+			return domain.Workflow{}, err
+		}
+	}
 	if err := acquireWorkflowLock(&session, workflowID, workflowType, service.lease, now); err != nil {
 		return domain.Workflow{}, err
 	}
@@ -119,10 +126,39 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 		eventType = domain.EventTerminationStarted
 	}
 	event := domain.NewWorkflowEvent(eventID, eventType, command.CorrelationID, actor, session, workflow, now)
+	if workflow.Type == domain.ProvisionWorkflowType || workflow.Type == domain.BootstrapWorkflowType {
+		event.Data["server_config_revision"] = strconv.FormatInt(session.ServerConfigRevision, 10)
+	}
 	if err := service.workflows.AcquireWorkflow(ctx, session, expectedVersion, workflow, event); err != nil {
 		return domain.Workflow{}, err
 	}
 	return service.startExecution(ctx, session, workflow, actor)
+}
+
+func applyServerConfigSnapshot(session *domain.Session, command domain.CommandEnvelope) error {
+	mode := strings.TrimSpace(command.Parameters[domain.ServerConfigModeParameter])
+	switch mode {
+	case "":
+		// Backward compatibility for commands already queued before snapshots
+		// were introduced: retain the persisted session selection.
+		return nil
+	case domain.ServerConfigModeGenerated:
+		if command.Parameters[domain.ServerConfigRevisionParameter] != "" || command.Parameters[domain.ServerConfigObjectParameter] != "" || command.Parameters[domain.ServerConfigSHAParameter] != "" {
+			return domain.ErrForbidden
+		}
+		return session.SelectGeneratedServerConfig()
+	case domain.ServerConfigModeCustom:
+		revision, err := strconv.ParseInt(strings.TrimSpace(command.Parameters[domain.ServerConfigRevisionParameter]), 10, 64)
+		objectKey := strings.TrimSpace(command.Parameters[domain.ServerConfigObjectParameter])
+		sha256 := strings.TrimSpace(command.Parameters[domain.ServerConfigSHAParameter])
+		expectedPrefix := "guilds/" + command.Actor.GuildID + "/server-config/revisions/"
+		if err != nil || revision < 1 || !strings.HasPrefix(objectKey, expectedPrefix) || len(sha256) != 64 {
+			return domain.ErrForbidden
+		}
+		return session.SelectServerConfigSnapshot(revision, objectKey, sha256)
+	default:
+		return domain.ErrForbidden
+	}
 }
 
 func (service *Service) validateBootstrapContinuation(ctx context.Context, command domain.CommandEnvelope, workflowType string) (bool, error) {

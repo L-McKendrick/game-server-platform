@@ -101,6 +101,9 @@ type sessionItem struct {
 	TeamSpeakEnabled                 bool     `dynamodbav:"teamspeak_enabled"`
 	Vanilla                          bool     `dynamodbav:"vanilla"`
 	ConfigurationRevision            int64    `dynamodbav:"configuration_revision"`
+	ServerConfigRevision             int64    `dynamodbav:"server_config_revision,omitempty"`
+	ServerConfigObjectKey            string   `dynamodbav:"server_config_object_key,omitempty"`
+	ServerConfigSHA256               string   `dynamodbav:"server_config_sha256,omitempty"`
 	MissionObjectKey                 string   `dynamodbav:"mission_object_key,omitempty"`
 	PresetObjectKey                  string   `dynamodbav:"preset_object_key,omitempty"`
 	PresetRevisionSequence           int64    `dynamodbav:"preset_revision_sequence,omitempty"`
@@ -1038,6 +1041,9 @@ func toSessionItem(session domain.Session) sessionItem {
 		TeamSpeakEnabled:                 session.TeamSpeakEnabled,
 		Vanilla:                          session.Vanilla,
 		ConfigurationRevision:            session.ConfigurationRevision,
+		ServerConfigRevision:             session.ServerConfigRevision,
+		ServerConfigObjectKey:            session.ServerConfigObjectKey,
+		ServerConfigSHA256:               session.ServerConfigSHA256,
 		MissionObjectKey:                 session.MissionObjectKey,
 		PresetObjectKey:                  session.PresetObjectKey,
 		PresetRevisionSequence:           presetSequence,
@@ -1252,6 +1258,9 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		TeamSpeakEnabled:       item.TeamSpeakEnabled,
 		Vanilla:                item.Vanilla,
 		ConfigurationRevision:  item.ConfigurationRevision,
+		ServerConfigRevision:   item.ServerConfigRevision,
+		ServerConfigObjectKey:  item.ServerConfigObjectKey,
+		ServerConfigSHA256:     item.ServerConfigSHA256,
 		MissionObjectKey:       item.MissionObjectKey,
 		PresetObjectKey:        item.PresetObjectKey,
 		PresetRevisionSequence: item.PresetRevisionSequence,

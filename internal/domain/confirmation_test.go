@@ -6,6 +6,17 @@ import (
 	"time"
 )
 
+func TestPendingConfirmationCodeIsStableAndActorGuildScoped(t *testing.T) {
+	t.Parallel()
+	code := PendingConfirmationCode("guild-1", "owner-1")
+	if code != PendingConfirmationCode(" guild-1 ", " owner-1 ") || !confirmationCodePattern.MatchString(code) {
+		t.Fatalf("pending confirmation code = %q", code)
+	}
+	if code == PendingConfirmationCode("guild-1", "owner-2") || code == PendingConfirmationCode("guild-2", "owner-1") {
+		t.Fatal("pending confirmation slot is not actor/guild scoped")
+	}
+}
+
 func TestConfirmationIsBoundAndExpiresWithinTenMinutes(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 17, 14, 0, 0, 0, time.UTC)

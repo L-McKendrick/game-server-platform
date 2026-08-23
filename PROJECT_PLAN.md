@@ -82,7 +82,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **11.2** [ ] Add OIDC deployment, staging, dashboards, and tested runbooks.
     - **11.3** [ ] Verify costs and operational readiness.
 
-12. **Discord Experience and Session UX — In Progress (approved reorder; Phase 11 remains pending)**
+12. **Discord Experience and Session UX — Done (approved reorder; Phase 11 remains pending)**
     - Proceeded before Phases 10 and 11 by explicit user approval because of
       current limitations. Phase 10 is now complete; the reorder does not waive Phase 11.
     - Detailed design and execution guidance: `docs/phase-12-discord-experience.md`.
@@ -122,7 +122,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.5.2** [x] Maintain a user-facing error catalog that renders what happened, likely reason, platform action, exact user action, and billing implications without leaking raw AWS/SSM data or IDs.
       - **12.5.3** [x] Make workers populate retry truthfully and make duplicate in-progress requests return the existing operation and progress instead of a generic conflict.
       - **12.5.4** [x] Add owner-bound, guild-bound, action-bound, state-bound, single-use confirmation records with atomic consumption and a 10-minute expiry.
-      - **12.5.5** [x] Replace archive/terminate `confirm:true` with `/rb confirm code:<code>` and `/rb cancel-confirmation`, revalidating authorization and lifecycle state before queueing work.
+      - **12.5.5** [x] Replace archive/terminate `confirm:true` with a durable `/rb confirm` and `/rb cancel-confirmation` follow-up, revalidating authorization and lifecycle state before queueing work.
       - **12.5.6** [x] Test every known error category, safe unknown-error fallback, redaction, retry wording, cost warnings, confirmation expiry, replay, mismatch, cancellation, and state drift.
     - **12.6** [x] Support safe post-creation modlist revisions.
       - **12.6.1** [x] Replace the single preset pointer with backward-compatible active and pending preset revision metadata plus immutable change events.
@@ -154,6 +154,25 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.8.13** [x] Require an explicit supported game when opening `/rb create` and preserve that selection through submission.
       - **12.8.14** [x] Require change-specific operator application commands in every state-changing development handoff.
       - **12.8.15** [x] Review and harden the release branch with recoverable bootstrap continuation delivery, renewable Steam authorization leases, mission filename/config sanitization, and command-schema drift coverage.
+    - **12.9** [x] Add an Administrator-only full runtime reset that returns the installed platform to an empty, ready-to-use state without destroying its control plane.
+      - **12.9.1** [x] Define and implement one durable, idempotent reset operation with an environment-wide mutation lock, current Discord Administrator authorization, a ten-minute typed confirmation, and a minimal retained audit result. Preserve Terraform-managed infrastructure, guild access, secrets, configuration, and AWS-retained billing/audit history.
+      - **12.9.2** [x] Implement bounded cleanup of all platform-owned runtime state: stop active executions, terminate exactly tagged game instances, delete exactly tagged disposable volumes, delete bot-owned session messages, remove every version under the session S3 prefix, purge runtime queues/DLQs, clear reset-scoped DynamoDB records, and remove eligible pre-reset application log streams. Fail closed on incomplete discovery or ownership ambiguity.
+      - **12.9.3** [x] Add a streamlined `/rb admin` danger-area flow with an impact preview, typed reset modal, progress/result view, stale/replay protection, truthful partial-failure and billing warnings, and a disabled-by-default deployment gate.
+      - **12.9.4** [x] Add focused authorization, confirmation, locking, idempotency, pagination, ownership-boundary, partial-failure, redaction, and preserved-state tests; wire least-privilege Terraform/packaging, update the reset runbook and handoffs, run proportional regression, then commit and push without executing a live reset.
+    - **12.10** [x] Let Administrators provide the Arma 3 `server.cfg` used by game-server sessions.
+      - **12.10.1** [x] Add a durable guild-level `server.cfg` revision and bounded private artifact-ingest path that accepts only an Administrator-uploaded UTF-8 `.cfg` file, stores it outside session prefixes, and never renders its contents because it may contain server passwords.
+      - **12.10.2** [x] Add a streamlined `/rb admin` configuration area to upload, replace, inspect metadata for, or remove the active file with fresh Administrator checks, confirmation for removal, idempotency, stale-revision protection, and safe errors.
+      - **12.10.3** [x] Capture the active configuration revision when start/bootstrap begins and deploy that exact object as Arma `server.cfg`; retain the existing generated safe default when no admin file is configured and preserve deterministic replay for in-progress sessions.
+      - **12.10.4** [x] Add focused authorization, validation, redaction, persistence, bootstrap/default, replacement/removal, and replay tests; wire least-privilege S3 access, update documentation and handoffs, run proportional regression, then commit and push.
+    - **12.11** [x] Simplify destructive follow-up confirmation without weakening its safety contract.
+      - **12.11.1** [x] Replace user-entered codes with one durable pending archive/terminate confirmation slot per user and guild; resolve `/rb confirm` and `/rb cancel-confirmation` server-side while retaining owner/guild/action/state binding, ten-minute expiry, atomic consumption, idempotency, and replay protection.
+      - **12.11.2** [x] Remove code options and code text from the Discord contract, responses, errors, documentation, and raw-payload tests; give clear guidance when no matching pending action exists or another action is already pending.
+      - **12.11.3** [x] Run focused and proportional regression, update handoffs, then create and push one scoped Conventional Commit.
+    - **12.12** [x] Complete the final cross-step release review and prepare the Phase 12 pull request.
+      - **12.12.1** [x] Integrate the current `main` bootstrap hardening without regressing Phase 12 reset, configuration, or confirmation behavior.
+      - **12.12.2** [x] Review and fix authorization, destructive atomicity, replay/idempotency, pagination, metadata preservation, private-artifact integrity/redaction, retry disposition, least privilege, and Discord UX findings.
+      - **12.12.3** [x] Run focused and full proportional Go, Terraform, command-contract, Bash-artifact, packaging, and diff validation.
+      - **12.12.4** [x] Refresh the release handoff, create and push the scoped review commit, and provide the proposed pull-request name and description without deploying or opening the PR.
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.

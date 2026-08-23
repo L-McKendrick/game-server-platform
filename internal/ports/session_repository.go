@@ -12,8 +12,36 @@ type ArtifactQueue interface {
 	Enqueue(ctx context.Context, request domain.ArtifactIngestRequest) error
 }
 
+type GuildServerConfigRepository interface {
+	GetGuildServerConfig(ctx context.Context, guildID string) (domain.GuildServerConfig, error)
+	SaveGuildServerConfig(ctx context.Context, config domain.GuildServerConfig, expectedRevision int64) (domain.GuildServerConfig, error)
+}
+
 type CommandQueue interface {
 	Enqueue(ctx context.Context, command domain.CommandEnvelope) error
+}
+
+type ResetQueue interface {
+	Enqueue(ctx context.Context, request domain.ResetRequest) error
+}
+
+type ResetRepository interface {
+	CreateResetConfirmation(ctx context.Context, confirmation domain.ResetConfirmation) error
+	GetResetConfirmation(ctx context.Context, confirmationID string) (domain.ResetConfirmation, error)
+	ConsumeResetConfirmation(ctx context.Context, confirmationID, actorID, guildID, phrase string, operation domain.ResetOperation, now time.Time) (domain.ResetOperation, error)
+	GetResetOperation(ctx context.Context, operationID string) (domain.ResetOperation, error)
+	GetActiveReset(ctx context.Context, environment string) (domain.ResetOperation, error)
+	GetLatestReset(ctx context.Context, environment string) (domain.ResetOperation, error)
+	SaveResetOperation(ctx context.Context, operation domain.ResetOperation, expectedVersion int64) error
+}
+
+type ResetCleanupResult struct {
+	DeletedSessions int
+	DeletedObjects  int
+}
+
+type ResetCleaner interface {
+	Cleanup(ctx context.Context, operation domain.ResetOperation) (ResetCleanupResult, error)
 }
 
 type NotificationQueue interface {
@@ -41,6 +69,13 @@ type SessionCardRepository interface {
 
 type ObjectStore interface {
 	Put(ctx context.Context, key string, contentType string, body []byte, sha256Base64 string) error
+}
+
+// PrivateObjectStore supports compensating deletion when a conditional
+// metadata write definitively loses a race after a private object was stored.
+type PrivateObjectStore interface {
+	ObjectStore
+	Delete(ctx context.Context, key string) error
 }
 
 type ObjectReader interface {

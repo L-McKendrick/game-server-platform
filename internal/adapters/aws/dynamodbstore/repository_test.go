@@ -17,6 +17,8 @@ import (
 
 type fakeAPI struct {
 	getItemOutput      *dynamodb.GetItemOutput
+	getItemOutputs     []*dynamodb.GetItemOutput
+	getItemIndex       int
 	getItemErr         error
 	queryOutput        *dynamodb.QueryOutput
 	queryErr           error
@@ -137,6 +139,11 @@ func (fake *fakeAPI) GetItem(
 	_ *dynamodb.GetItemInput,
 	_ ...func(*dynamodb.Options),
 ) (*dynamodb.GetItemOutput, error) {
+	if fake.getItemIndex < len(fake.getItemOutputs) {
+		output := fake.getItemOutputs[fake.getItemIndex]
+		fake.getItemIndex++
+		return output, fake.getItemErr
+	}
 	return fake.getItemOutput, fake.getItemErr
 }
 
@@ -387,6 +394,18 @@ func TestSessionItemRoundTripPreservesVanillaMode(t *testing.T) {
 	}
 	if !stored.Vanilla {
 		t.Fatal("vanilla mode was not preserved by DynamoDB mapping")
+	}
+}
+
+func TestSessionItemRoundTripPreservesServerConfigSnapshot(t *testing.T) {
+	t.Parallel()
+	session := testSession(t, time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
+	session.ServerConfigRevision = 3
+	session.ServerConfigObjectKey = "guilds/guild-1/server-config/revisions/000003-a/server.cfg"
+	session.ServerConfigSHA256 = strings.Repeat("a", 64)
+	stored, err := fromSessionItem(toSessionItem(session))
+	if err != nil || stored.ServerConfigRevision != 3 || stored.ServerConfigObjectKey != session.ServerConfigObjectKey || stored.ServerConfigSHA256 != session.ServerConfigSHA256 {
+		t.Fatalf("stored=%#v err=%v", stored, err)
 	}
 }
 

@@ -22,10 +22,12 @@ type ArtifactIngestPurpose string
 const (
 	ArtifactMission               ArtifactKind          = "MISSION"
 	ArtifactPreset                ArtifactKind          = "PRESET"
+	ArtifactServerConfig          ArtifactKind          = "SERVER_CONFIG"
 	ArtifactPending               ArtifactStatus        = "PENDING"
 	ArtifactAccepted              ArtifactStatus        = "ACCEPTED"
 	ArtifactRejected              ArtifactStatus        = "REJECTED"
 	ArtifactPurposePresetRevision ArtifactIngestPurpose = "PRESET_REVISION"
+	ArtifactPurposeServerConfig   ArtifactIngestPurpose = "GUILD_SERVER_CONFIG"
 )
 
 const maxArtifactFilenameBytes = 255
@@ -95,6 +97,7 @@ type ArtifactIngestRequest struct {
 	RequestedAt                  time.Time             `json:"requested_at"`
 	Purpose                      ArtifactIngestPurpose `json:"purpose,omitempty"`
 	ExpectedActivePresetRevision int64                 `json:"expected_active_preset_revision,omitempty"`
+	ExpectedServerConfigRevision int64                 `json:"expected_server_config_revision,omitempty"`
 }
 
 // Validate verifies that a queued ingest request is bounded and Discord-hosted.
@@ -115,9 +118,11 @@ func (request ArtifactIngestRequest) Validate() error {
 	switch {
 	case request.SchemaVersion != 1:
 		return fmt.Errorf("unsupported artifact ingest schema version %d", request.SchemaVersion)
-	case strings.TrimSpace(request.SessionID) == "":
+	case request.Purpose != ArtifactPurposeServerConfig && strings.TrimSpace(request.SessionID) == "":
 		return fmt.Errorf("session ID is required")
-	case request.Kind != ArtifactMission && request.Kind != ArtifactPreset:
+	case request.Purpose == ArtifactPurposeServerConfig && strings.TrimSpace(request.SessionID) != "":
+		return fmt.Errorf("guild server configuration must not be session-bound")
+	case request.Kind != ArtifactMission && request.Kind != ArtifactPreset && request.Kind != ArtifactServerConfig:
 		return fmt.Errorf("unsupported artifact kind %q", request.Kind)
 	case strings.TrimSpace(request.AttachmentID) == "":
 		return fmt.Errorf("attachment ID is required")
@@ -131,12 +136,16 @@ func (request ArtifactIngestRequest) Validate() error {
 		return missionFilenameError
 	case request.Kind == ArtifactPreset && extension != ".html" && extension != ".htm":
 		return fmt.Errorf("preset attachment must use the .html or .htm extension")
+	case request.Kind == ArtifactServerConfig && extension != ".cfg":
+		return fmt.Errorf("server configuration attachment must use the .cfg extension")
 	case request.SizeBytes <= 0:
 		return fmt.Errorf("attachment size must be positive")
 	case request.Kind == ArtifactMission && request.SizeBytes > 100*1024*1024:
 		return fmt.Errorf("mission attachment exceeds 100 MiB")
 	case request.Kind == ArtifactPreset && request.SizeBytes > 10*1024*1024:
 		return fmt.Errorf("preset attachment exceeds 10 MiB")
+	case request.Kind == ArtifactServerConfig && request.SizeBytes > MaximumServerConfigBytes:
+		return fmt.Errorf("server configuration attachment exceeds 64 KiB")
 	case parsed.Scheme != "https" || !allowedHost:
 		return fmt.Errorf("attachment URL must use an approved Discord CDN host")
 	case strings.TrimSpace(request.ActorID) == "":
@@ -151,17 +160,29 @@ func (request ArtifactIngestRequest) Validate() error {
 		return fmt.Errorf("idempotency key is required")
 	case request.RequestedAt.IsZero():
 		return fmt.Errorf("requested timestamp is required")
-	case request.Purpose != "" && request.Purpose != ArtifactPurposePresetRevision:
+	case request.Purpose != "" && request.Purpose != ArtifactPurposePresetRevision && request.Purpose != ArtifactPurposeServerConfig:
 		return fmt.Errorf("unsupported artifact ingest purpose %q", request.Purpose)
 	case request.Purpose == ArtifactPurposePresetRevision && request.Kind != ArtifactPreset:
 		return fmt.Errorf("preset revision ingestion requires a preset artifact")
 	case request.Purpose == ArtifactPurposePresetRevision && request.ExpectedActivePresetRevision < 1:
 		return fmt.Errorf("preset revision ingestion requires the expected active revision")
-	case request.Purpose == "" && request.ExpectedActivePresetRevision != 0:
+	case request.Purpose == ArtifactPurposeServerConfig && request.Kind != ArtifactServerConfig:
+		return fmt.Errorf("guild server configuration ingestion requires a server configuration artifact")
+	case request.Kind == ArtifactServerConfig && request.Purpose != ArtifactPurposeServerConfig:
+		return fmt.Errorf("server configuration artifact requires guild configuration ingestion")
+	case request.Purpose != ArtifactPurposeServerConfig && request.ExpectedServerConfigRevision != 0:
+		return fmt.Errorf("expected server configuration revision requires configuration ingestion")
+	case request.ExpectedServerConfigRevision < 0:
+		return fmt.Errorf("expected server configuration revision cannot be negative")
+	case request.Purpose != ArtifactPurposePresetRevision && request.ExpectedActivePresetRevision != 0:
 		return fmt.Errorf("expected active preset revision requires revision ingestion")
 	default:
 		return nil
 	}
+}
+
+func (request ArtifactIngestRequest) IsServerConfig() bool {
+	return request.Purpose == ArtifactPurposeServerConfig
 }
 
 func (request ArtifactIngestRequest) IsPresetRevision() bool {

@@ -55,7 +55,19 @@ func (repository *Repository) CreateConfirmation(ctx context.Context, confirmati
 		return err
 	}
 	_, err = repository.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: []types.TransactWriteItem{
-		{Put: &types.Put{TableName: aws.String(repository.tableName), Item: attributes, ConditionExpression: aws.String("attribute_not_exists(pk) AND attribute_not_exists(sk)")}},
+		{Put: &types.Put{
+			TableName: aws.String(repository.tableName), Item: attributes,
+			ConditionExpression:      aws.String("attribute_not_exists(pk) OR (confirmation_id <> :id AND (#status = :cancelled OR expires_at_epoch <= :created OR (#status = :consumed AND (session_id <> :session OR bound_version <> :version))))"),
+			ExpressionAttributeNames: map[string]string{"#status": "status"},
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":id":        &types.AttributeValueMemberS{Value: confirmation.ID},
+				":cancelled": &types.AttributeValueMemberS{Value: string(domain.ConfirmationCancelled)},
+				":consumed":  &types.AttributeValueMemberS{Value: string(domain.ConfirmationConsumed)},
+				":created":   &types.AttributeValueMemberN{Value: strconv.FormatInt(confirmation.CreatedAt.UTC().Unix(), 10)},
+				":session":   &types.AttributeValueMemberS{Value: confirmation.SessionID},
+				":version":   &types.AttributeValueMemberN{Value: strconv.FormatInt(confirmation.BoundVersion, 10)},
+			},
+		}},
 		{ConditionCheck: confirmationSessionCheck(repository.tableName, confirmation)},
 	}})
 	if err != nil {

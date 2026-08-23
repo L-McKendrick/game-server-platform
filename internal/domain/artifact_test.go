@@ -22,6 +22,29 @@ func TestArtifactIngestRequestRejectsUnapprovedSourceAndPaths(t *testing.T) {
 	}
 }
 
+func TestServerConfigIngestRequestIsGuildBoundAndSmall(t *testing.T) {
+	t.Parallel()
+	request := validArtifactRequest()
+	request.SessionID = ""
+	request.Kind = ArtifactServerConfig
+	request.Filename = "server.cfg"
+	request.SizeBytes = MaximumServerConfigBytes
+	request.SourceURL = "https://cdn.discordapp.com/attachments/1/2/server.cfg"
+	request.Purpose = ArtifactPurposeServerConfig
+	if err := request.Validate(); err != nil {
+		t.Fatalf("valid server config request: %v", err)
+	}
+	request.SizeBytes++
+	if err := request.Validate(); err == nil || !strings.Contains(err.Error(), "64 KiB") {
+		t.Fatalf("oversized request error = %v", err)
+	}
+	request.SizeBytes = 10
+	request.Filename = "server.txt"
+	if err := request.Validate(); err == nil || !strings.Contains(err.Error(), ".cfg") {
+		t.Fatalf("wrong extension error = %v", err)
+	}
+}
+
 func TestNormalizeMissionFilenamePreservesSafeNamesAndSanitizesConfigSyntax(t *testing.T) {
 	t.Parallel()
 

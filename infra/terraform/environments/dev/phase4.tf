@@ -104,9 +104,18 @@ data "aws_iam_policy_document" "artifact_worker" {
   }
 
   statement {
-    sid       = "ValidatedArtifactWrite"
-    actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.session_assets.arn}/sessions/*/input/*"]
+    sid     = "ValidatedArtifactWrite"
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.session_assets.arn}/sessions/*/input/*",
+      "${aws_s3_bucket.session_assets.arn}/guilds/*/server-config/revisions/*/server.cfg",
+    ]
+  }
+
+  statement {
+    sid       = "SupersededServerConfigDelete"
+    actions   = ["s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.session_assets.arn}/guilds/*/server-config/revisions/*/server.cfg"]
   }
 
   statement {

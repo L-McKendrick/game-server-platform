@@ -550,7 +550,19 @@ func TestRequestStartRoutesProvisionedSessionToBootstrap(t *testing.T) {
 	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour, WithCommandQueue(queue))
+	serverConfig := domain.GuildServerConfig{GuildID: "guild-1", Revision: 1, ObjectKey: "guilds/guild-1/server-config/revisions/000001-" + strings.Repeat("a", 64) + "/server.cfg", Filename: "server.cfg", SHA256: strings.Repeat("a", 64), SizeBytes: 20, UploadedBy: "admin-1", UpdatedAt: now}
+	if _, err := repository.SaveGuildServerConfig(context.Background(), serverConfig, 0); err != nil {
+		t.Fatal(err)
+	}
+	// Advance directly to revision 4 to model prior replacement/removal history.
+	for revision := int64(1); revision < 4; revision++ {
+		serverConfig.Revision = revision + 1
+		serverConfig.ObjectKey = fmt.Sprintf("guilds/guild-1/server-config/revisions/%06d-%s/server.cfg", serverConfig.Revision, serverConfig.SHA256)
+		if _, err := repository.SaveGuildServerConfig(context.Background(), serverConfig, revision); err != nil {
+			t.Fatal(err)
+		}
+	}
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour, WithCommandQueue(queue), WithServerConfigRepository(repository))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +573,7 @@ func TestRequestStartRoutesProvisionedSessionToBootstrap(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(queue.commands) != 1 || queue.commands[0].CommandType != domain.CommandBootstrapServer {
+	if len(queue.commands) != 1 || queue.commands[0].CommandType != domain.CommandBootstrapServer || queue.commands[0].Parameters[domain.ServerConfigRevisionParameter] != "4" || queue.commands[0].Parameters[domain.ServerConfigObjectParameter] != serverConfig.ObjectKey {
 		t.Fatalf("commands = %#v", queue.commands)
 	}
 }
@@ -785,8 +797,13 @@ func TestDestructiveConfirmationQueuesOnlyAfterAtomicConsumption(t *testing.T) {
 	if len(queue.commands) != 0 || confirmation.Status != domain.ConfirmationPending {
 		t.Fatalf("premature commands = %#v; confirmation = %#v", queue.commands, confirmation)
 	}
+	if _, err := service.RequestConfirmation(context.Background(), ConfirmationRequest{
+		Actor: actor, SessionID: "running-session", GuildID: "guild-1", RequestID: "interaction-terminate", Action: domain.ConfirmationTerminate,
+	}); !errors.Is(err, domain.ErrIdempotencyConflict) {
+		t.Fatalf("second pending confirmation error = %v; want idempotency conflict", err)
+	}
 	consumed, err := service.Confirm(context.Background(), ConfirmCommand{
-		Actor: actor, Roles: []string{"role-1", "role-2"}, GuildID: "guild-1", ChannelID: "channel-1", Code: confirmation.Code,
+		Actor: actor, Roles: []string{"role-1", "role-2"}, GuildID: "guild-1", ChannelID: "channel-1",
 		CommandID: "interaction-confirm", CorrelationID: "correlation-confirm", IdempotencyKey: "discord:interaction-confirm",
 	})
 	if err != nil {
@@ -798,7 +815,7 @@ func TestDestructiveConfirmationQueuesOnlyAfterAtomicConsumption(t *testing.T) {
 	if roles := queue.commands[0].Actor.Roles; !slices.Equal(roles, []string{"role-1", "role-2"}) {
 		t.Fatalf("queued command roles = %#v", roles)
 	}
-	if _, err := service.Confirm(context.Background(), ConfirmCommand{Actor: actor, GuildID: "guild-1", ChannelID: "channel-1", Code: confirmation.Code, CommandID: "replay", CorrelationID: "correlation-replay", IdempotencyKey: "discord:replay"}); !errors.Is(err, domain.ErrConfirmationConsumed) {
+	if _, err := service.Confirm(context.Background(), ConfirmCommand{Actor: actor, GuildID: "guild-1", ChannelID: "channel-1", CommandID: "replay", CorrelationID: "correlation-replay", IdempotencyKey: "discord:replay"}); !errors.Is(err, domain.ErrConfirmationConsumed) {
 		t.Fatalf("confirmation replay error = %v", err)
 	}
 	if len(queue.commands) != 1 {
@@ -806,6 +823,9 @@ func TestDestructiveConfirmationQueuesOnlyAfterAtomicConsumption(t *testing.T) {
 	}
 	if _, err := service.RequestConfirmation(context.Background(), ConfirmationRequest{Actor: actor, SessionID: "running-session", GuildID: "guild-1", RequestID: "interaction-archive", Action: domain.ConfirmationArchive}); !errors.Is(err, domain.ErrConfirmationConsumed) {
 		t.Fatalf("creation replay after consumption error = %v", err)
+	}
+	if _, err := service.RequestConfirmation(context.Background(), ConfirmationRequest{Actor: actor, SessionID: "running-session", GuildID: "guild-1", RequestID: "new-interaction", Action: domain.ConfirmationTerminate}); !errors.Is(err, domain.ErrConfirmationConsumed) {
+		t.Fatalf("same-state replacement after consumption error = %v", err)
 	}
 }
 
@@ -824,7 +844,7 @@ func TestConfirmedQueueFailureIsTruthfulAndNeverReusesCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = service.Confirm(context.Background(), ConfirmCommand{Actor: actor, GuildID: "guild-1", ChannelID: "channel-1", Code: confirmation.Code, CommandID: "confirm-fail", CorrelationID: "correlation-fail", IdempotencyKey: "discord:confirm-fail"})
+	_, err = service.Confirm(context.Background(), ConfirmCommand{Actor: actor, GuildID: "guild-1", ChannelID: "channel-1", CommandID: "confirm-fail", CorrelationID: "correlation-fail", IdempotencyKey: "discord:confirm-fail"})
 	if !errors.Is(err, domain.ErrConfirmationDispatchUncertain) {
 		t.Fatalf("queue failure = %v", err)
 	}
