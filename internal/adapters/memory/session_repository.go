@@ -28,6 +28,7 @@ type SessionRepository struct {
 	resetOperations    map[string]domain.ResetOperation
 	activeResets       map[string]string
 	latestResets       map[string]domain.ResetOperation
+	serverConfigs      map[string]domain.GuildServerConfig
 }
 
 var _ ports.SessionRepository = (*SessionRepository)(nil)
@@ -51,6 +52,7 @@ func NewSessionRepository() *SessionRepository {
 		resetOperations:    make(map[string]domain.ResetOperation),
 		activeResets:       make(map[string]string),
 		latestResets:       make(map[string]domain.ResetOperation),
+		serverConfigs:      make(map[string]domain.GuildServerConfig),
 	}
 }
 

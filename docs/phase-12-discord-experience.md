@@ -237,6 +237,22 @@ AWS-retained service history, and the latest bounded reset result. Incomplete
 cleanup fails closed, displays a possible-cost warning, and schedules no
 automatic retry.
 
+The Administrator-only configuration area accepts one guild-level Arma 3
+`server.cfg`. Uploads use Discord's private modal file control, accept only a
+non-empty UTF-8 `.cfg` file up to 64 KiB, and are downloaded by the artifact
+worker into a private revisioned `guilds/<guild>/server-config/` S3 prefix.
+Only filename, size, revision, and update time are rendered; contents and object
+keys are never shown because the file may contain server passwords.
+
+Start captures either the active object key/revision/SHA-256 or an explicit
+generated-default selection in its internal command. Workflow lock acquisition
+persists that snapshot atomically, and bootstrap downloads and verifies the
+exact object before installing it as `server.cfg`. Replacement affects future
+sessions only. Removal is revision-confirmed and returns future sessions to the
+generated safe default; existing sessions retain their snapshot for replay,
+wake, and restore determinism. Private prior artifacts remain available for
+those existing snapshots and are preserved by platform reset.
+
 Public cards retain stacked plain-text fallbacks and pair explicit state
 labels/icons with embed color. Their only default buttons are `Show players`
 and `Refresh`. Unknown, expired, revision-drifted, and deleted-state controls

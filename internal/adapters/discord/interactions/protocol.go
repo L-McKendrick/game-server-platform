@@ -72,19 +72,25 @@ const (
 	componentCustomIDPrefix     = componentid.Prefix
 	maximumComponentCustomIDLen = componentid.MaximumCustomIDLength
 
-	adminMenuCustomID             = "rb:admin:menu:v1"
-	adminRoleSelectCustomID       = "rb:admin:access:roles:v1"
-	adminRoleClearPromptCustomID  = "rb:admin:access:clear:v1"
-	adminRoleClearConfirmCustomID = "rb:admin:access:clear-confirm:v1"
-	adminRoleClearCancelCustomID  = "rb:admin:access:clear-cancel:v1"
-	adminRepairSelectCustomID     = "rb:admin:repair:session:v1"
-	adminResetPrepareCustomID     = "rb:admin:reset:prepare:v1"
-	adminResetModalPrefix         = "rb:admin:reset:confirm:v1:"
-	adminResetPhraseCustomID      = "reset:phrase"
+	adminMenuCustomID              = "rb:admin:menu:v1"
+	adminRoleSelectCustomID        = "rb:admin:access:roles:v1"
+	adminRoleClearPromptCustomID   = "rb:admin:access:clear:v1"
+	adminRoleClearConfirmCustomID  = "rb:admin:access:clear-confirm:v1"
+	adminRoleClearCancelCustomID   = "rb:admin:access:clear-cancel:v1"
+	adminRepairSelectCustomID      = "rb:admin:repair:session:v1"
+	adminResetPrepareCustomID      = "rb:admin:reset:prepare:v1"
+	adminResetModalPrefix          = "rb:admin:reset:confirm:v1:"
+	adminResetPhraseCustomID       = "reset:phrase"
+	adminServerConfigUploadPrefix  = "rb:admin:servercfg:upload:v1:"
+	adminServerConfigFileCustomID  = "servercfg:file"
+	adminServerConfigRemovePrefix  = "rb:admin:servercfg:remove:v1:"
+	adminServerConfigConfirmPrefix = "rb:admin:servercfg:confirm:v1:"
+	adminServerConfigCancelID      = "rb:admin:servercfg:cancel:v1"
 
-	adminMenuAccess = "access"
-	adminMenuRepair = "repair-card"
-	adminMenuReset  = "reset-platform"
+	adminMenuAccess       = "access"
+	adminMenuRepair       = "repair-card"
+	adminMenuReset        = "reset-platform"
+	adminMenuServerConfig = "server-config"
 )
 
 type interactionPayload struct {

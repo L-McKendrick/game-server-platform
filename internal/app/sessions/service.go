@@ -43,6 +43,7 @@ type Service struct {
 	artifactQueue        ports.ArtifactQueue
 	commandQueue         ports.CommandQueue
 	confirmations        ports.ConfirmationRepository
+	serverConfigs        ports.GuildServerConfigRepository
 	notificationQueue    ports.NotificationQueue
 	reliability          *appreliability.Service
 	ids                  IDGenerator
@@ -66,6 +67,10 @@ func WithCommandQueue(queue ports.CommandQueue) Option {
 // WithConfirmationRepository enables durable destructive-action confirmation.
 func WithConfirmationRepository(repository ports.ConfirmationRepository) Option {
 	return func(service *Service) { service.confirmations = repository }
+}
+
+func WithServerConfigRepository(repository ports.GuildServerConfigRepository) Option {
+	return func(service *Service) { service.serverConfigs = repository }
 }
 
 // WithNotificationQueue enables durable public session-card delivery.
@@ -521,6 +526,21 @@ func (service *Service) RequestStart(ctx context.Context, command StartCommand) 
 	default:
 		return fmt.Errorf("session is not ready for provisioning or bootstrap: %w", domain.ErrInvalidTransition)
 	}
+	parameters := map[string]string{}
+	if service.serverConfigs != nil {
+		config, configErr := service.serverConfigs.GetGuildServerConfig(ctx, session.GuildID)
+		switch {
+		case errors.Is(configErr, domain.ErrNotFound), configErr == nil && !config.Active():
+			parameters[domain.ServerConfigModeParameter] = domain.ServerConfigModeGenerated
+		case configErr != nil:
+			return fmt.Errorf("read guild server configuration: %w", configErr)
+		default:
+			parameters[domain.ServerConfigModeParameter] = domain.ServerConfigModeCustom
+			parameters[domain.ServerConfigRevisionParameter] = strconv.FormatInt(config.Revision, 10)
+			parameters[domain.ServerConfigObjectParameter] = config.ObjectKey
+			parameters[domain.ServerConfigSHAParameter] = config.SHA256
+		}
+	}
 	envelope := domain.CommandEnvelope{
 		SchemaVersion: 1,
 		CommandID:     strings.TrimSpace(command.CommandID), CommandType: commandType,
@@ -530,7 +550,7 @@ func (service *Service) RequestStart(ctx context.Context, command StartCommand) 
 			ChannelID: strings.TrimSpace(command.ChannelID), Roles: append([]string(nil), command.Roles...),
 		},
 		SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey),
-		CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: map[string]string{},
+		CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: parameters,
 	}
 	if err := service.commandQueue.Enqueue(ctx, envelope); err != nil {
 		return fmt.Errorf("enqueue start command: %w", err)

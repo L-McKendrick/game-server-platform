@@ -40,13 +40,13 @@ func TestStartBuildsSecretSafeResumableCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := domain.Session{ID: "session-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: "sessions/session-1/input/preset.html", LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{CapacitySlotID: "slot-0", InstanceID: "i-1", DataVolumeID: "vol-1"}}
+	session := domain.Session{ID: "session-1", GuildID: "guild-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: "sessions/session-1/input/preset.html", ServerConfigRevision: 2, ServerConfigObjectKey: "guilds/guild-1/server-config/revisions/000002-a/server.cfg", ServerConfigSHA256: strings.Repeat("a", 64), LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{CapacitySlotID: "slot-0", InstanceID: "i-1", DataVolumeID: "vol-1"}}
 	commandID, err := runner.Start(context.Background(), session)
 	if err != nil || commandID != "command-1" {
 		t.Fatalf("command = %q, err = %v", commandID, err)
 	}
 	script := client.sent.Parameters["commands"][0]
-	for _, required := range []string{"aws s3 cp", "gsp-bootstrap", base64.StdEncoding.EncodeToString([]byte(session.MissionObjectKey))} {
+	for _, required := range []string{"aws s3 cp", "gsp-bootstrap", base64.StdEncoding.EncodeToString([]byte(session.MissionObjectKey)), base64.StdEncoding.EncodeToString([]byte(session.ServerConfigObjectKey)), base64.StdEncoding.EncodeToString([]byte(session.ServerConfigSHA256))} {
 		if !strings.Contains(script, required) {
 			t.Errorf("command missing %q", required)
 		}
@@ -160,7 +160,7 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"get-secret-value", "put-secret-value", "AWSCURRENT", "source_version_id", "config_sha256", "STEAM_AUTH#CACHE", "lease_expires_at < :now", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "login anonymous", "VANILLA_MODE", "PRESET_REVISION", "PRESET_ROLLBACK", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "revision-$PRESET_REVISION.complete", "mod-revisions/revision-", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
+	for _, required := range []string{"get-secret-value", "put-secret-value", "AWSCURRENT", "source_version_id", "config_sha256", "STEAM_AUTH#CACHE", "lease_expires_at < :now", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "login anonymous", "VANILLA_MODE", "PRESET_REVISION", "PRESET_ROLLBACK", "SERVER_CONFIG_KEY", "SERVER_CONFIG_SHA256", "server.cfg.pending", "sha256sum --check --status", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "revision-$PRESET_REVISION.complete", "mod-revisions/revision-", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
 		if !strings.Contains(string(script), required) {
 			t.Errorf("script missing %q", required)
 		}

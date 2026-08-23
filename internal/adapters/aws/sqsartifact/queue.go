@@ -42,10 +42,14 @@ func (queue *Queue) Enqueue(ctx context.Context, request domain.ArtifactIngestRe
 	if err != nil {
 		return fmt.Errorf("marshal artifact request: %w", err)
 	}
+	messageGroupID := request.SessionID
+	if request.IsServerConfig() {
+		messageGroupID = "guild-config:" + request.GuildID
+	}
 	_, err = queue.client.SendMessage(ctx, &sqs.SendMessageInput{
 		QueueUrl:               aws.String(queue.queueURL),
 		MessageBody:            aws.String(string(body)),
-		MessageGroupId:         aws.String(request.SessionID),
+		MessageGroupId:         aws.String(messageGroupID),
 		MessageDeduplicationId: aws.String(request.IdempotencyKey),
 	})
 	if err != nil {

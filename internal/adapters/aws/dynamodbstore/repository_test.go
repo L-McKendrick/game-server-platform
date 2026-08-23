@@ -397,6 +397,18 @@ func TestSessionItemRoundTripPreservesVanillaMode(t *testing.T) {
 	}
 }
 
+func TestSessionItemRoundTripPreservesServerConfigSnapshot(t *testing.T) {
+	t.Parallel()
+	session := testSession(t, time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC))
+	session.ServerConfigRevision = 3
+	session.ServerConfigObjectKey = "guilds/guild-1/server-config/revisions/000003-a/server.cfg"
+	session.ServerConfigSHA256 = strings.Repeat("a", 64)
+	stored, err := fromSessionItem(toSessionItem(session))
+	if err != nil || stored.ServerConfigRevision != 3 || stored.ServerConfigObjectKey != session.ServerConfigObjectKey || stored.ServerConfigSHA256 != session.ServerConfigSHA256 {
+		t.Fatalf("stored=%#v err=%v", stored, err)
+	}
+}
+
 func TestSessionItemRoundTripPreservesPresetRevisions(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 17, 20, 0, 0, 0, time.UTC)

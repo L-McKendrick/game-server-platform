@@ -93,6 +93,12 @@ type ResetService interface {
 	Status(ctx context.Context, operationID, guildID string, isAdministrator bool) (domain.ResetOperation, error)
 }
 
+type ServerConfigService interface {
+	Current(ctx context.Context, guildID string, isAdministrator bool) (domain.GuildServerConfig, bool, error)
+	RequestUpload(ctx context.Context, request domain.ArtifactIngestRequest, isAdministrator bool) error
+	Remove(ctx context.Context, guildID, actorID string, expectedRevision int64, isAdministrator bool) (domain.GuildServerConfig, error)
+}
+
 // Clock supplies current UTC time for signature validation and tests.
 type Clock interface {
 	Now() time.Time
@@ -112,6 +118,7 @@ type Config struct {
 	SignatureMaxAge time.Duration
 	PlayerQuery     ports.PlayerQuery
 	ResetService    ResetService
+	ServerConfig    ServerConfigService
 }
 
 // Handler verifies and routes Discord HTTP interactions.
@@ -123,6 +130,7 @@ type Handler struct {
 	logger          *slog.Logger
 	playerQuery     ports.PlayerQuery
 	reset           ResetService
+	serverConfig    ServerConfigService
 	publicKey       ed25519.PublicKey
 	applicationID   string
 	allowedGuildIDs map[string]struct{}
@@ -185,6 +193,7 @@ func NewHandler(
 		logger:          logger,
 		playerQuery:     config.PlayerQuery,
 		reset:           config.ResetService,
+		serverConfig:    config.ServerConfig,
 		publicKey:       append(ed25519.PublicKey(nil), config.PublicKey...),
 		applicationID:   strings.TrimSpace(config.ApplicationID),
 		allowedGuildIDs: allowedGuildIDs,
@@ -379,7 +388,7 @@ func (handler *Handler) ServeHTTP(
 		writeAutocompleteChoices(writer, choices)
 		return
 	}
-	if payload.Type == interactionTypeModalSubmit && (payload.Data == nil || (payload.Data.CustomID != createModalCustomID && !isSetupModalCustomID(payload.Data.CustomID) && !isModsModalCustomID(payload.Data.CustomID) && !strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix))) {
+	if payload.Type == interactionTypeModalSubmit && (payload.Data == nil || (payload.Data.CustomID != createModalCustomID && !isSetupModalCustomID(payload.Data.CustomID) && !isModsModalCustomID(payload.Data.CustomID) && !strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix) && !strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix))) {
 		writeInteractionMessage(writer, "This modal is not supported or has expired.")
 		return
 	}
@@ -719,12 +728,15 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 	if payload.Data == nil {
 		return newUserError("This administration control is invalid or has expired.")
 	}
-	if handler.reset != nil && (payload.Data.CustomID == adminRoleSelectCustomID || payload.Data.CustomID == adminRepairSelectCustomID || strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":")) {
+	if handler.reset != nil && (payload.Data.CustomID == adminRoleSelectCustomID || payload.Data.CustomID == adminRepairSelectCustomID || strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix)) {
 		if operation, active, err := handler.reset.Active(ctx); err != nil {
 			return fmt.Errorf("check reset mutation lock: %w", err)
 		} else if active {
 			return newUserError(fmt.Sprintf("Platform reset is in progress at **%s**. This administration change was not applied.", sanitizeInline(operation.Stage)))
 		}
+	}
+	if strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) && payload.Type == interactionTypeModalSubmit {
+		return handler.submitServerConfigModal(ctx, writer, payload, actorID, correlationID)
 	}
 	if strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") {
 		if payload.Data.ComponentType != componentTypeButton {
@@ -777,6 +789,11 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 				return domain.ErrForbidden
 			}
 			return handler.writeAdminResetView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID)
+		case adminMenuServerConfig:
+			if !payload.memberIsAdministrator() {
+				return domain.ErrForbidden
+			}
+			return handler.writeAdminServerConfigView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "")
 		default:
 			return newUserError("That administration area is not available.")
 		}
@@ -850,7 +867,21 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 		}
 		writeResetConfirmationModal(writer, confirmation)
 		return nil
+	case adminServerConfigCancelID:
+		if !payload.memberIsAdministrator() {
+			return domain.ErrForbidden
+		}
+		return handler.writeAdminServerConfigView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "No server configuration was removed.")
 	default:
+		if strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) {
+			return handler.openServerConfigModal(writer, payload)
+		}
+		if strings.HasPrefix(payload.Data.CustomID, adminServerConfigRemovePrefix) {
+			return handler.writeServerConfigRemovePrompt(writer, payload)
+		}
+		if strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix) {
+			return handler.removeServerConfig(ctx, writer, payload, actorID)
+		}
 		return newUserError("This administration control is invalid or has expired.")
 	}
 }
@@ -944,6 +975,7 @@ func (handler *Handler) writeAdminView(writer http.ResponseWriter, responseType 
 		}},
 	}
 	if showReset {
+		menu.Components[0].Options = append(menu.Components[0].Options, interactionSelectOption{Label: "Server config", Value: adminMenuServerConfig, Description: "Set the Arma server.cfg for future sessions", Default: selected == adminMenuServerConfig})
 		menu.Components[0].Options = append(menu.Components[0].Options, interactionSelectOption{Label: "Reset platform", Value: adminMenuReset, Description: "Permanently clear runtime state", Default: selected == adminMenuReset})
 	}
 	components := append([]interactionComponent{menu}, controls...)
@@ -1049,16 +1081,16 @@ func (payload interactionPayload) isAdminComponent() bool {
 		return false
 	}
 	if payload.Type == interactionTypeModalSubmit {
-		return strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix)
+		return strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix)
 	}
 	if payload.Type != interactionTypeMessageComponent {
 		return false
 	}
 	switch payload.Data.CustomID {
-	case adminMenuCustomID, adminRoleSelectCustomID, adminRoleClearPromptCustomID, adminRoleClearCancelCustomID, adminRepairSelectCustomID, adminResetPrepareCustomID:
+	case adminMenuCustomID, adminRoleSelectCustomID, adminRoleClearPromptCustomID, adminRoleClearCancelCustomID, adminRepairSelectCustomID, adminResetPrepareCustomID, adminServerConfigCancelID:
 		return true
 	default:
-		return strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":")
+		return strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigRemovePrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix)
 	}
 }
 

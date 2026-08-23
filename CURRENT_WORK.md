@@ -4,8 +4,9 @@
 
 Phases 1-10 are complete. Phase 11 remains pending under the approved Phase 12
 reorder. Phase 12 Steps 12.1-12.7 are merged. Step 12.8 is complete on
-`codex/phase-12-discord-experience`. Step 12.9 is complete locally; Step 12.10
-is next and adds the Administrator-managed Arma `server.cfg`.
+`codex/phase-12-discord-experience`. Steps 12.9 and 12.10 are complete locally.
+The next scoped UX change removes user-entered confirmation codes in favor of
+one server-resolved `/rb confirm` follow-up.
 
 ## Delivered
 
@@ -54,6 +55,23 @@ is next and adds the Administrator-managed Arma `server.cfg`.
   starts; contents are never rendered, and sessions retain the generated safe
   default when no custom file is active.
 
+## Step 12.10 Delivered
+
+- Current Discord Administrators can upload, inspect metadata for, replace, or
+  remove one guild-level Arma `server.cfg` through `/rb admin`; Manage Server
+  and configured access roles cannot use the controls.
+- The artifact path accepts only non-empty UTF-8 `.cfg` files up to 64 KiB,
+  stores immutable private revisions outside session prefixes, and never
+  renders file contents, digests, or object keys.
+- Start commands capture the active revision/object/digest or an explicit
+  generated-default selection. Workflow acquisition persists the snapshot,
+  and bootstrap downloads and verifies that exact object without state drift.
+- Replacement affects future starts only. Revision-confirmed removal returns
+  future starts to the generated safe default while retaining private prior
+  revisions for deterministic existing-session replay.
+- Deterministic invalid or stale uploads are acknowledged without retry;
+  transient and unknown worker failures retain the existing bounded SQS retry.
+
 ## Validation
 
 - `go test ./...`, `go test -cover ./...`, `go vet ./...`, and
@@ -67,6 +85,9 @@ is next and adds the Administrator-managed Arma `server.cfg`.
   `terraform -chdir=infra/terraform/environments/dev validate` pass.
 - The `/rb` JSON parses, `git diff --check` passes, Terraform formatting and
   validation pass, and all 13 Lambda archives package successfully.
+- Focused server-config tests pass for authorization, validation, DynamoDB and
+  memory persistence, Discord raw payloads, start/workflow snapshots, checksum
+  bootstrap, replacement/removal, replay, redaction, and no-retry rejection.
 
 ## Deployment Disposition
 
@@ -82,9 +103,9 @@ is next and adds the Administrator-managed Arma `server.cfg`.
   `aws_iam_role_policy.provision_workflow`. A full plan may time out here while
   refreshing the unchanged AWS Budgets endpoint; any scoped alternative still
   requires exact review and approval.
-- Step 12.9 has not been deployed. Local Terraform inputs and saved plans remain
-  outside Git; enabling reset requires a fresh exact plan review and a separate
-  live-reset decision.
+- Steps 12.9-12.10 have not been deployed. Local Terraform inputs and saved
+  plans remain outside Git; enabling reset requires a fresh exact plan review
+  and a separate live-reset decision.
 - Discord application `1533676701354299402`, guild `1192304488351019008`, and
   endpoint `https://ujg7q9fubf.execute-api.us-west-2.amazonaws.com/discord/interactions`
   are the known development targets. No bot token was retrieved and no final

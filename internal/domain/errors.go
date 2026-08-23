@@ -25,6 +25,7 @@ var (
 	ErrConfirmationStateDrift        = errors.New("session changed after confirmation")
 	ErrConfirmationRequired          = errors.New("durable confirmation is required")
 	ErrConfirmationDispatchUncertain = errors.New("confirmed action queue delivery is uncertain")
+	ErrPermanentArtifactRejection    = errors.New("artifact permanently rejected")
 )
 
 // OperationInProgressError returns safe progress for a repeated lifecycle

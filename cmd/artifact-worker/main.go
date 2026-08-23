@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/httpartifact"
 	"github.com/L-McKendrick/game-server-platform/internal/app/artifacts"
+	"github.com/L-McKendrick/game-server-platform/internal/app/serverconfig"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
@@ -28,8 +30,9 @@ import (
 )
 
 type handler struct {
-	service *artifacts.Service
-	logger  *slog.Logger
+	service      *artifacts.Service
+	serverConfig *serverconfig.Processor
+	logger       *slog.Logger
 }
 
 func main() {
@@ -54,17 +57,23 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	repository := dynamodbstore.New(dynamodb.NewFromConfig(awsCfg), cfg.MetadataTable)
+	downloader := httpartifact.New()
+	objects := s3objects.New(s3.NewFromConfig(awsCfg), cfg.SessionAssetsBucket)
+	clock := appsession.SystemClock{}
 	service, err := artifacts.NewService(
-		dynamodbstore.New(dynamodb.NewFromConfig(awsCfg), cfg.MetadataTable),
-		httpartifact.New(),
-		s3objects.New(s3.NewFromConfig(awsCfg), cfg.SessionAssetsBucket),
+		repository, downloader, objects,
 		sqsnotification.New(sqs.NewFromConfig(awsCfg), cfg.NotificationQueueURL),
-		identity.Generator{}, appsession.SystemClock{}, cfg.IdempotencyRetention,
+		identity.Generator{}, clock, cfg.IdempotencyRetention,
 	)
 	if err != nil {
 		return nil, err
 	}
-	return &handler{service: service, logger: logger}, nil
+	serverConfig, err := serverconfig.NewProcessor(repository, downloader, objects, clock)
+	if err != nil {
+		return nil, err
+	}
+	return &handler{service: service, serverConfig: serverConfig, logger: logger}, nil
 }
 
 func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (events.SQSEventResponse, error) {
@@ -76,13 +85,23 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 			response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
 			continue
 		}
-		if err := handler.service.Process(ctx, request); err != nil {
+		var processErr error
+		if request.IsServerConfig() {
+			processErr = handler.serverConfig.Process(ctx, request)
+		} else {
+			processErr = handler.service.Process(ctx, request)
+		}
+		if processErr != nil {
+			if request.IsServerConfig() && (errors.Is(processErr, domain.ErrPermanentArtifactRejection) || errors.Is(processErr, domain.ErrConflict)) {
+				handler.logger.Warn("server configuration upload rejected without retry", slog.String("message_id", message.MessageId), slog.String("guild_id", request.GuildID), slog.String("correlation_id", request.CorrelationID))
+				continue
+			}
 			handler.logger.Error(
 				"artifact processing failed",
 				slog.String("message_id", message.MessageId),
 				slog.String("session_id", request.SessionID),
 				slog.String("correlation_id", request.CorrelationID),
-				slog.Any("error", err),
+				slog.Any("error", processErr),
 			)
 			response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
 			continue

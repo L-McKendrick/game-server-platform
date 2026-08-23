@@ -22,6 +22,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
 	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
 	appreset "github.com/L-McKendrick/game-server-platform/internal/app/reset"
+	appserverconfig "github.com/L-McKendrick/game-server-platform/internal/app/serverconfig"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
@@ -2006,7 +2007,7 @@ func TestHandlerRBAdminMenuNavigatesOnlyImplementedPolicyAreas(t *testing.T) {
 	for _, option := range navigation.Options {
 		values[option.Value] = true
 	}
-	if !values[adminMenuAccess] || !values[adminMenuRepair] || values[adminMenuReset] || values["costs"] || values["schedule"] || values["duration"] {
+	if !values[adminMenuAccess] || !values[adminMenuRepair] || values[adminMenuReset] || values[adminMenuServerConfig] || values["costs"] || values["schedule"] || values["duration"] {
 		t.Fatalf("admin menu options = %#v", navigation.Options)
 	}
 
@@ -2052,7 +2053,7 @@ func TestHandlerAdministratorResetFlowIsTypedReplaySafeAndFreezesSessionCommands
 	menuResponse := executeSignedRequest(t, handler, privateKey, adminMenuCommandBody("reset-menu", "admin-1", "8"), testNow)
 	var menu interactionResponse
 	decodeResponse(t, menuResponse, &menu)
-	if menu.Data == nil || menu.Data.Components == nil || len((*menu.Data.Components)[0].Components[0].Options) != 3 {
+	if menu.Data == nil || menu.Data.Components == nil || len((*menu.Data.Components)[0].Components[0].Options) != 4 {
 		t.Fatalf("Administrator menu = %#v", menu)
 	}
 
@@ -2106,6 +2107,75 @@ func TestHandlerAdministratorResetIsDisabledByDefault(t *testing.T) {
 	decodeResponse(t, response, &decoded)
 	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "disabled in this deployment") {
 		t.Fatalf("disabled reset response = %#v", decoded)
+	}
+}
+
+func TestHandlerAdministratorCanUploadInspectAndRemovePrivateServerConfig(t *testing.T) {
+	t.Parallel()
+	handler, repository, privateKey := newTestHandler(t, []string{"view-correlation", "open-correlation", "submit-correlation", "active-correlation", "prompt-correlation", "remove-correlation", "replay-correlation"}, nil)
+	queue := memory.NewArtifactQueue()
+	service, err := appserverconfig.NewService(repository, queue, fixedClock{now: testNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.serverConfig = service
+
+	viewResponse := executeSignedRequest(t, handler, privateKey, adminComponentBody("config-view", "admin-1", "8", adminMenuCustomID, componentTypeStringSelect, []string{adminMenuServerConfig}), testNow)
+	var view interactionResponse
+	decodeResponse(t, viewResponse, &view)
+	if view.Data == nil || !strings.Contains(view.Data.Content, "generated safe default") || view.Data.Components == nil {
+		t.Fatalf("default config view = %#v", view)
+	}
+
+	openResponse := executeSignedRequest(t, handler, privateKey, adminComponentBody("config-open", "admin-1", "8", adminServerConfigUploadPrefix+"0", componentTypeButton, nil), testNow)
+	var modal interactionResponse
+	decodeResponse(t, openResponse, &modal)
+	if modal.Type != interactionResponseModal || modal.Data == nil || modal.Data.CustomID != adminServerConfigUploadPrefix+"0" || modal.Data.Components == nil {
+		t.Fatalf("config modal = %#v", modal)
+	}
+	submitBody := marshalPayload(map[string]any{
+		"id": "config-submit", "application_id": "app-1", "type": interactionTypeModalSubmit,
+		"guild_id": "guild-1", "channel_id": "channel-other",
+		"member": map[string]any{"user": map[string]any{"id": "admin-1"}, "roles": []string{}, "permissions": "8"},
+		"data": map[string]any{
+			"custom_id":  modal.Data.CustomID,
+			"resolved":   map[string]any{"attachments": map[string]any{"config-attachment": map[string]any{"id": "config-attachment", "filename": "private.cfg", "content_type": "text/plain", "size": 32, "url": "https://cdn.discordapp.com/attachments/1/2/private.cfg"}}},
+			"components": []any{map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": adminServerConfigFileCustomID, "values": []string{"config-attachment"}}}},
+		},
+	})
+	submitResponse := executeSignedRequest(t, handler, privateKey, submitBody, testNow)
+	var submitted interactionResponse
+	decodeResponse(t, submitResponse, &submitted)
+	requests := queue.Requests()
+	if submitted.Data == nil || !strings.Contains(submitted.Data.Content, "queued for private validation") || strings.Contains(submitted.Data.Content, "cdn.discordapp.com") || len(requests) != 1 || !requests[0].IsServerConfig() {
+		t.Fatalf("submitted=%#v requests=%#v", submitted, requests)
+	}
+
+	active := domain.GuildServerConfig{GuildID: "guild-1", Revision: 1, ObjectKey: "guilds/guild-1/server-config/revisions/000001-a/server.cfg", Filename: "private.cfg", SHA256: strings.Repeat("a", 64), SizeBytes: 32, UploadedBy: "admin-1", UpdatedAt: testNow}
+	if _, err := repository.SaveGuildServerConfig(context.Background(), active, 0); err != nil {
+		t.Fatal(err)
+	}
+	activeResponse := executeSignedRequest(t, handler, privateKey, adminComponentBody("config-active", "admin-1", "8", adminMenuCustomID, componentTypeStringSelect, []string{adminMenuServerConfig}), testNow)
+	var activeView interactionResponse
+	decodeResponse(t, activeResponse, &activeView)
+	if activeView.Data == nil || !strings.Contains(activeView.Data.Content, "private.cfg") || strings.Contains(activeView.Data.Content, active.ObjectKey) || activeView.Data.Components == nil {
+		t.Fatalf("active config view = %#v", activeView)
+	}
+
+	promptResponse := executeSignedRequest(t, handler, privateKey, adminComponentBody("config-prompt", "admin-1", "8", adminServerConfigRemovePrefix+"1", componentTypeButton, nil), testNow)
+	var prompt interactionResponse
+	decodeResponse(t, promptResponse, &prompt)
+	if prompt.Data == nil || !strings.Contains(prompt.Data.Content, "Remove the active") || prompt.Data.Components == nil {
+		t.Fatalf("remove prompt = %#v", prompt)
+	}
+	confirmID := adminServerConfigConfirmPrefix + "1"
+	for attempt := 1; attempt <= 2; attempt++ {
+		removedResponse := executeSignedRequest(t, handler, privateKey, adminComponentBody("config-remove", "admin-1", "8", confirmID, componentTypeButton, nil), testNow)
+		var removed interactionResponse
+		decodeResponse(t, removedResponse, &removed)
+		if removed.Data == nil || !strings.Contains(removed.Data.Content, "future sessions use the generated default") {
+			t.Fatalf("attempt %d removed = %#v", attempt, removed)
+		}
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
 	appreliability "github.com/L-McKendrick/game-server-platform/internal/app/reliability"
 	appreset "github.com/L-McKendrick/game-server-platform/internal/app/reset"
+	appserverconfig "github.com/L-McKendrick/game-server-platform/internal/app/serverconfig"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
 	"github.com/L-McKendrick/game-server-platform/internal/identity"
@@ -75,6 +76,7 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 	serviceOptions := []appsession.Option{
 		appsession.WithArtifactQueue(artifactQueue),
 		appsession.WithNotificationQueue(sqsnotification.New(sqs.NewFromConfig(awsConfiguration), baseConfig.NotificationQueueURL)),
+		appsession.WithServerConfigRepository(repository),
 	}
 	reliabilityService, err := appreliability.NewService(repository, repository, repository, ids, clock)
 	if err != nil {
@@ -112,6 +114,10 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create reset service: %w", err)
 	}
+	serverConfigService, err := appserverconfig.NewService(repository, artifactQueue, clock)
+	if err != nil {
+		return nil, fmt.Errorf("create server configuration service: %w", err)
+	}
 	playerQuery, err := steamquery.New(2303, 1500*time.Millisecond)
 	if err != nil {
 		return nil, fmt.Errorf("create Steam player query: %w", err)
@@ -124,6 +130,7 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 		SignatureMaxAge: discordConfig.SignatureMaxAge,
 		PlayerQuery:     playerQuery,
 		ResetService:    resetService,
+		ServerConfig:    serverConfigService,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create Discord interaction handler: %w", err)

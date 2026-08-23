@@ -12,6 +12,11 @@ type ArtifactQueue interface {
 	Enqueue(ctx context.Context, request domain.ArtifactIngestRequest) error
 }
 
+type GuildServerConfigRepository interface {
+	GetGuildServerConfig(ctx context.Context, guildID string) (domain.GuildServerConfig, error)
+	SaveGuildServerConfig(ctx context.Context, config domain.GuildServerConfig, expectedRevision int64) (domain.GuildServerConfig, error)
+}
+
 type CommandQueue interface {
 	Enqueue(ctx context.Context, command domain.CommandEnvelope) error
 }
