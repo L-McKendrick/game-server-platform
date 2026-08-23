@@ -223,7 +223,6 @@ resource "aws_lambda_function" "reset_worker" {
   environment {
     variables = {
       APP_ENV                  = var.environment
-      AWS_REGION               = var.aws_region
       LOG_LEVEL                = "info"
       PROJECT_NAME             = var.project_name
       METADATA_TABLE_NAME      = aws_dynamodb_table.metadata.name
