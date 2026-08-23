@@ -1271,7 +1271,7 @@ func TestHandlerArchiveCreatesThenConsumesDurableConfirmation(t *testing.T) {
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
 	code := domain.PendingConfirmationCode("guild-1", "owner-1")
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "No destructive work has been queued") || !strings.Contains(decoded.Data.Content, "`/rb confirm`") || strings.Contains(decoded.Data.Content, code) {
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "No destructive work has been queued") || !strings.Contains(decoded.Data.Content, "Within 10 minutes") || !strings.Contains(decoded.Data.Content, "`/rb confirm` without any options") || strings.Contains(decoded.Data.Content, code) || strings.Contains(decoded.Data.Content, "by in") {
 		t.Fatalf("response = %#v", decoded.Data)
 	}
 	confirmation, err := repository.GetConfirmation(context.Background(), code)
@@ -1302,7 +1302,7 @@ func TestHandlerTerminateConfirmationCanBeCancelled(t *testing.T) {
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
 	code := domain.PendingConfirmationCode("guild-1", "owner-1")
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "irreversible") || !strings.Contains(decoded.Data.Content, "`/rb confirm`") || strings.Contains(decoded.Data.Content, code) {
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "irreversible") || !strings.Contains(decoded.Data.Content, "Within 10 minutes") || !strings.Contains(decoded.Data.Content, "`/rb confirm` without any options") || strings.Contains(decoded.Data.Content, code) || strings.Contains(decoded.Data.Content, "by in") {
 		t.Fatalf("response = %#v", decoded.Data)
 	}
 	cancelBody := commandBody("interaction-cancel", "owner-1", "guild-1", "channel-1", "cancel-confirmation", nil)

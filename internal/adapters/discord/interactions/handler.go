@@ -597,7 +597,7 @@ func (handler *Handler) createConfirmation(ctx context.Context, payload interact
 	if action == "terminate" {
 		confirmationAction = domain.ConfirmationTerminate
 	}
-	confirmation, err := handler.service.RequestConfirmation(ctx, appsession.ConfirmationRequest{
+	_, err = handler.service.RequestConfirmation(ctx, appsession.ConfirmationRequest{
 		Actor: actor, SessionID: sessionID, GuildID: payload.GuildID, RequestID: payload.ID, Action: confirmationAction,
 	})
 	if err != nil {
@@ -606,11 +606,10 @@ func (handler *Handler) createConfirmation(ctx context.Context, payload interact
 		}
 		return "", err
 	}
-	deadline := fmt.Sprintf("<t:%d:R>", confirmation.ExpiresAt.UTC().Unix())
 	if action == "archive" {
-		return fmt.Sprintf("**Archive confirmation required**\nNo destructive work has been queued. Archiving stops game services and removes EC2/EBS only after the portable backup is verified. A later restore creates billable replacement resources.\n\nRun `/rb confirm` by %s, or `/rb cancel-confirmation`.", deadline), nil
+		return "**Archive confirmation required**\nNo destructive work has been queued. Archiving stops game services and removes EC2/EBS only after the portable backup is verified. A later restore creates billable replacement resources.\n\nWithin 10 minutes, run `/rb confirm` without any options. To cancel, run `/rb cancel-confirmation`.", nil
 	}
-	return fmt.Sprintf("**Termination confirmation required**\nNo destructive work has been queued. Termination permanently deletes tagged EC2/EBS resources and all stored session artifacts without creating a backup. This is irreversible.\n\nRun `/rb confirm` by %s, or `/rb cancel-confirmation`.", deadline), nil
+	return "**Termination confirmation required**\nNo destructive work has been queued. Termination permanently deletes tagged EC2/EBS resources and all stored session artifacts without creating a backup. This is irreversible.\n\nWithin 10 minutes, run `/rb confirm` without any options. To cancel, run `/rb cancel-confirmation`.", nil
 }
 
 func (handler *Handler) confirmAction(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, correlationID string) (string, error) {

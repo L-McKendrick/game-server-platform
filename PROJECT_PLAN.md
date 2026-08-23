@@ -175,6 +175,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.12.4** [x] Refresh the release handoff, create and push the scoped review commit, and provide the proposed pull-request name and description without deploying or opening the PR.
       - **12.12.5** [x] Fix reset workflow ARN collection for the `for_each` lifecycle state machines and validate the Terraform configuration before replanning.
       - **12.12.6** [x] Remove the reserved `AWS_REGION` override from the reset worker Lambda configuration and rely on Lambda's runtime-provided region.
+      - **12.12.7** [x] Remove stale confirmation-code deployment guidance and make archive/terminate responses explicitly direct optionless `/rb confirm` within ten minutes.
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.

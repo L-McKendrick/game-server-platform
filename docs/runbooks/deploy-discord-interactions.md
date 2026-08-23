@@ -178,7 +178,9 @@ session:
 3. Verify playable health and connection details, then test sleep/wake.
 4. Exercise archive/restore only when replacement-resource cost is approved.
    Exercise terminate only when permanent deletion of the disposable session
-   is approved. Confirmation codes are private, single-use, ten-minute values.
+   is approved. `/rb confirm` and `/rb cancel-confirmation` take no options;
+   the pending action is resolved privately from the invoking user and guild,
+   expires after ten minutes, and remains single-use.
 5. On any unknown or uncertain failure, stop. The response must provide a safe
    reference and truthful resource/billing warning; no unscheduled retry may be
    implied or performed.

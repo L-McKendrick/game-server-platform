@@ -34,6 +34,10 @@ the final cross-step review, and is ready for a pull request.
 - Reset-worker deployment no longer attempts to set Lambda's reserved
   `AWS_REGION` environment key. The worker continues to read the region that
   Lambda supplies automatically at runtime.
+- Archive and termination prompts now say to run optionless `/rb confirm`
+  within ten minutes, without the awkward relative-time wording. The command
+  definition remains optionless; any visible `code` field is stale Discord
+  registration and is removed by re-registering `/rb`.
 
 ## Validation
 
@@ -45,6 +49,8 @@ the final cross-step review, and is ready for a pull request.
   `terraform -chdir=infra/terraform/environments/dev validate` pass.
 - Focused `go test ./internal/config` passes with the workspace-local Go cache,
   confirming the worker can continue using the runtime-provided region.
+- Focused interaction and command-registration tests pass, and the parsed
+  `/rb` JSON confirms confirm/cancel-confirmation remain optionless.
 - The `/rb` command JSON parses, `git diff --check` passes, the bootstrap
   artifact passes its Bash syntax test, and all 13 Lambda archives package.
 - Race coverage was not run locally because this Windows host has no C
@@ -61,9 +67,9 @@ the final cross-step review, and is ready for a pull request.
 - Reset remains disabled by default. The default action is to keep
   `reset_enabled = false`; enabling it and executing a live reset are separate
   explicit decisions.
-- Re-register `/rb` after deployment so Discord removes the former confirmation
-  `code` options. Pre-deployment code confirmations expire and must be requested
-  again after release.
+- Re-register `/rb` so Discord removes the former confirmation `code` options.
+  Pre-deployment code confirmations expire and must be requested again after
+  release.
 
 ## Commands to Apply Current Changes
 
@@ -76,10 +82,10 @@ $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-reset-lambda-region-fix.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-12-reset-lambda-region-fix.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-confirmation-ux-fix.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-12-confirmation-ux-fix.tfplan
 # Apply only after reviewing and approving this exact saved plan.
-terraform -chdir=infra/terraform/environments/dev apply phase-12-reset-lambda-region-fix.tfplan
+terraform -chdir=infra/terraform/environments/dev apply phase-12-confirmation-ux-fix.tfplan
 
 ./scripts/verify-bootstrap-worker-deployment.ps1
 
