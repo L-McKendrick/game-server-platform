@@ -45,6 +45,40 @@ func TestServerConfigIngestRequestIsGuildBoundAndSmall(t *testing.T) {
 	}
 }
 
+func TestNormalizeMissionFilenamePreservesSafeNamesAndSanitizesConfigSyntax(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "test.Stratis.pbo", want: "test.Stratis.pbo"},
+		{name: `operation";passwordAdmin="unsafe.Stratis.pbo`, want: "operation_passwordAdmin_unsafe.Stratis.pbo"},
+		{name: "co op  night.Stratis.PBO", want: "co_op_night.Stratis.pbo"},
+		{name: "---.pbo", want: "mission.pbo"},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := NormalizeMissionFilename(test.name)
+			if err != nil || got != test.want {
+				t.Fatalf("NormalizeMissionFilename() = %q, %v; want %q", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestArtifactIngestRequestRejectsOversizedFilename(t *testing.T) {
+	t.Parallel()
+
+	request := validArtifactRequest()
+	request.Filename = strings.Repeat("a", maxArtifactFilenameBytes) + ".pbo"
+	if err := request.Validate(); err == nil || !strings.Contains(err.Error(), "255 bytes") {
+		t.Fatalf("Validate() error = %v; want bounded filename rejection", err)
+	}
+}
+
 func validArtifactRequest() ArtifactIngestRequest {
 	return ArtifactIngestRequest{
 		SchemaVersion: 1, SessionID: "session-1", Kind: ArtifactMission,

@@ -286,6 +286,10 @@ func (service *Service) ensureBootstrapContinuation(ctx context.Context, session
 		if bootstrap.Type != domain.BootstrapWorkflowType || bootstrap.RequestedBy != provision.RequestedBy || bootstrap.CorrelationID != provision.CorrelationID {
 			return TaskResult{}, domain.ErrIdempotencyConflict
 		}
+		if (bootstrap.Status != domain.WorkflowPending && bootstrap.Status != domain.WorkflowRunning) ||
+			session.ActiveWorkflowID != bootstrap.ID || session.ActiveWorkflowType != domain.BootstrapWorkflowType {
+			return TaskResult{}, domain.ErrConflict
+		}
 		response := result(session, provision)
 		response.Warning = warning
 		response.Continuation = bootstrapContinuationCommand(session, provision, bootstrap)

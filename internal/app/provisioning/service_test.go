@@ -2,6 +2,7 @@ package provisioning
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -147,6 +148,14 @@ func TestProvisioningStagesCreateInfrastructureAndAcquireBootstrapContinuation(t
 	}
 	if replayed.Continuation == nil || replayed.Continuation.CommandID != continuationID {
 		t.Fatalf("replayed continuation = %#v", replayed.Continuation)
+	}
+
+	bootstrap.Status = domain.WorkflowFailed
+	if err := repository.SetWorkflowExecution(context.Background(), bootstrap, domain.WorkflowPending); err != nil {
+		t.Fatalf("mark bootstrap workflow failed: %v", err)
+	}
+	if _, err := service.Handle(context.Background(), request); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("replay with terminal continuation error = %v; want conflict", err)
 	}
 }
 

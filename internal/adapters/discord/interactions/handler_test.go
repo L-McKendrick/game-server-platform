@@ -1745,6 +1745,9 @@ func createCommandBody(interactionID, ownerID, guildID, channelID string) []byte
 				map[string]any{
 					"type": applicationCommandOptionSubcommand,
 					"name": "create",
+					"options": []any{
+						map[string]any{"type": applicationCommandOptionString, "name": createGameOption, "value": createGameArma3},
+					},
 				},
 			},
 		},

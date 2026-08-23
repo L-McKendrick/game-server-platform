@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -802,7 +803,7 @@ func TestDestructiveConfirmationQueuesOnlyAfterAtomicConsumption(t *testing.T) {
 		t.Fatalf("second pending confirmation error = %v; want idempotency conflict", err)
 	}
 	consumed, err := service.Confirm(context.Background(), ConfirmCommand{
-		Actor: actor, GuildID: "guild-1", ChannelID: "channel-1",
+		Actor: actor, Roles: []string{"role-1", "role-2"}, GuildID: "guild-1", ChannelID: "channel-1",
 		CommandID: "interaction-confirm", CorrelationID: "correlation-confirm", IdempotencyKey: "discord:interaction-confirm",
 	})
 	if err != nil {
@@ -810,6 +811,9 @@ func TestDestructiveConfirmationQueuesOnlyAfterAtomicConsumption(t *testing.T) {
 	}
 	if consumed.Status != domain.ConfirmationConsumed || len(queue.commands) != 1 || queue.commands[0].CommandType != domain.CommandArchiveSession || queue.commands[0].SessionID != "running-session" {
 		t.Fatalf("consumed = %#v; commands = %#v", consumed, queue.commands)
+	}
+	if roles := queue.commands[0].Actor.Roles; !slices.Equal(roles, []string{"role-1", "role-2"}) {
+		t.Fatalf("queued command roles = %#v", roles)
 	}
 	if _, err := service.Confirm(context.Background(), ConfirmCommand{Actor: actor, GuildID: "guild-1", ChannelID: "channel-1", CommandID: "replay", CorrelationID: "correlation-replay", IdempotencyKey: "discord:replay"}); !errors.Is(err, domain.ErrConfirmationConsumed) {
 		t.Fatalf("confirmation replay error = %v", err)

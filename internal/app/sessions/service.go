@@ -148,6 +148,7 @@ type ConfirmationRequest struct {
 
 type ConfirmCommand struct {
 	Actor          domain.Actor
+	Roles          []string
 	GuildID        string
 	ChannelID      string
 	CommandID      string
@@ -441,7 +442,7 @@ func (service *Service) Confirm(ctx context.Context, command ConfirmCommand) (do
 	}
 	envelope := domain.CommandEnvelope{
 		SchemaVersion: 1, CommandID: strings.TrimSpace(command.CommandID), CommandType: commandType,
-		RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID)},
+		RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID), Roles: append([]string(nil), command.Roles...)},
 		SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: map[string]string{},
 	}
 	if err := service.commandQueue.Enqueue(ctx, envelope); err != nil {

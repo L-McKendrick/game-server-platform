@@ -54,7 +54,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
    - **9.4** [x] Support explicitly configured vanilla Arma sessions without a mod preset or Steam account.
      - **9.4.1** [x] Add a persisted, backward-compatible vanilla-session configuration flag and expose it through Discord configuration/status output.
      - **9.4.2** [x] Make a configured mission sufficient for vanilla-session readiness while retaining the preset requirement for modded sessions.
-     - **9.4.3** [x] Bootstrap vanilla sessions with anonymous SteamCMD and skip all preset, Workshop, and Steam-secret access.
+     - **9.4.3** [x] Bootstrap vanilla sessions with the shared cached Steam authorization while skipping all preset and Workshop processing.
      - **9.4.4** [x] Preserve vanilla intent through archive manifests and restore validation.
      - **9.4.5** [x] Add focused domain, application, Discord, persistence, bootstrap, and archive/restore regression coverage.
 
@@ -74,7 +74,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **10.3.1** [x] Define and store the encrypted, versioned Steam authorization-cache contract with least-privilege access, serialized mutation, rollback, redaction, and explicit reauthorization state.
       - **10.3.2** [x] Add a short-lived operator enrollment and reauthorization procedure that never carries passwords or Guard codes through Discord, workflows, Lambda configuration, SSM command text, or persistent logs.
       - **10.3.3** [x] Inject cached `config.vdf` only during authenticated downloads, use username-only login, preserve valid updates, and remove authentication material before launch on every exit path.
-      - **10.3.4** [x] Fail closed on renewed Steam Guard challenges, provide operator-safe guidance, and preserve anonymous vanilla behavior.
+      - **10.3.4** [x] Fail closed on renewed Steam Guard challenges, provide operator-safe guidance, and preserve Workshop-free vanilla behavior.
       - **10.3.5** [x] Add replacement-host reuse, invalidation, concurrency, cleanup, redaction, archive/restore, and vanilla regression coverage plus the operating runbook.
 
 11. **Production Hardening — Pending**
@@ -146,6 +146,14 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.8.5** [x] Apply guild-only contexts, least-visible admin command defaults, mobile-safe layouts, concise controls, text-plus-color states, and graceful stale-interaction handling.
       - **12.8.6** [x] Update deployment/runbook documentation.
       - **12.8.7** [x] Make one `/rb start` orchestrate ready-session infrastructure provisioning through bootstrap and playable health acceptance; keep `/rb create` non-billable and return existing progress for repeated starts instead of requiring a second command.
+      - **12.8.8** [x] Prevent bootstrap worker package/configuration drift, report the exact startup mismatch, and add a non-mutating deployment verification path before workflow retry.
+      - **12.8.9** [x] Grant the Discord interaction role the DynamoDB condition-check permission required by atomic archive and termination confirmations.
+      - **12.8.10** [x] Preserve Discord role context when confirmed archive and termination commands cross the asynchronous command boundary.
+      - **12.8.11** [x] Use the cached Steam authorization for the Arma server package in both vanilla and modded bootstrap while keeping vanilla Workshop-free.
+      - **12.8.12** [x] Preserve uploaded mission basenames and polish public-card heading order and section spacing.
+      - **12.8.13** [x] Require an explicit supported game when opening `/rb create` and preserve that selection through submission.
+      - **12.8.14** [x] Require change-specific operator application commands in every state-changing development handoff.
+      - **12.8.15** [x] Review and harden the release branch with recoverable bootstrap continuation delivery, renewable Steam authorization leases, mission filename/config sanitization, and command-schema drift coverage.
     - **12.9** [x] Add an Administrator-only full runtime reset that returns the installed platform to an empty, ready-to-use state without destroying its control plane.
       - **12.9.1** [x] Define and implement one durable, idempotent reset operation with an environment-wide mutation lock, current Discord Administrator authorization, a ten-minute typed confirmation, and a minimal retained audit result. Preserve Terraform-managed infrastructure, guild access, secrets, configuration, and AWS-retained billing/audit history.
       - **12.9.2** [x] Implement bounded cleanup of all platform-owned runtime state: stop active executions, terminate exactly tagged game instances, delete exactly tagged disposable volumes, delete bot-owned session messages, remove every version under the session S3 prefix, purge runtime queues/DLQs, clear reset-scoped DynamoDB records, and remove eligible pre-reset application log streams. Fail closed on incomplete discovery or ownership ambiguity.
@@ -166,5 +174,5 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **13.2** [ ] Add multiple mission uploads and safe in-game mission rotation with artifact history and authorization.
     - **13.3** [ ] Add an admin-configurable maximum session duration, owner warnings, and auditable admin extension.
     - **13.4** [ ] Evaluate scheduling and operational analytics using the Phase 12 admin and presentation contracts.
-    - **13.5** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; add an autocomplete game field to `/rb create` and route the selected supported game into its game-specific setup contract.
+    - **13.5** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; extend `/rb create` beyond its required Arma 3 choice and route each supported game into its game-specific setup contract.
     - **13.6** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.

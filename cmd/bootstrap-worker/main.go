@@ -43,6 +43,9 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := validateRuntimeConfigurationVersion(); err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(baseConfig.NotificationQueueURL) == "" {
 		return nil, fmt.Errorf("NOTIFICATION_QUEUE_URL is required")
 	}
@@ -76,6 +79,14 @@ func build(ctx context.Context) (*handler, error) {
 		return nil, err
 	}
 	return &handler{service: service, logger: logger}, nil
+}
+
+func validateRuntimeConfigurationVersion() error {
+	value := strings.TrimSpace(os.Getenv("BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION"))
+	if value != ssmbootstrap.RuntimeConfigurationVersion {
+		return fmt.Errorf("BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION must be %q, got %q", ssmbootstrap.RuntimeConfigurationVersion, value)
+	}
+	return nil
 }
 
 func (handler *handler) Handle(ctx context.Context, request bootstrap.TaskRequest) (bootstrap.TaskResult, error) {

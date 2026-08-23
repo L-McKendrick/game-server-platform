@@ -40,7 +40,8 @@ func TestEnqueueProgressUsesMilestoneIdempotencyAndCardRevision(t *testing.T) {
 	if request.NotificationID != "card-progress-workflow-1-infrastructure-ready" || request.Kind != domain.NotificationSessionCard || request.CardRevision != session.Version {
 		t.Fatalf("request = %#v", request)
 	}
-	if request.Embed == nil || request.Embed.Title != "ARMA 3 | Saturday Arma" || request.Embed.Color != embedColorSetup {
+	if request.Embed == nil || !strings.Contains(request.Embed.Title, "SETTING UP") ||
+		!strings.HasPrefix(request.Embed.Description, "**ARMA 3 | Saturday Arma**") || request.Embed.Color != embedColorSetup {
 		t.Fatalf("progress embed = %#v", request.Embed)
 	}
 }

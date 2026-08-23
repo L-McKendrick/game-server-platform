@@ -397,7 +397,12 @@ func (handler *Handler) ServeHTTP(
 			writeInteractionMessage(writer, message)
 			return
 		}
-		writeCreateModal(writer)
+		gameType, err := createGameType(payload)
+		if err != nil {
+			writeInteractionMessage(writer, err.Error())
+			return
+		}
+		writeCreateModal(writer, gameType)
 		return
 	}
 	if payload.isRBSetupCommand() {
@@ -612,8 +617,12 @@ func (handler *Handler) confirmAction(ctx context.Context, payload interactionPa
 	if len(options) != 0 {
 		return "", newUserError("Run `/rb confirm` without any options.")
 	}
+	roles := []string{}
+	if payload.Member != nil {
+		roles = append(roles, payload.Member.Roles...)
+	}
 	confirmation, err := handler.service.Confirm(ctx, appsession.ConfirmCommand{
-		Actor: actor, GuildID: payload.GuildID, ChannelID: payload.ChannelID,
+		Actor: actor, Roles: roles, GuildID: payload.GuildID, ChannelID: payload.ChannelID,
 		CommandID: payload.ID, CorrelationID: correlationID, IdempotencyKey: "discord:" + payload.ID,
 	})
 	if err != nil {

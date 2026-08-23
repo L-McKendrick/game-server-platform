@@ -19,27 +19,27 @@ const (
 // their progressive disclosure.
 func RenderPublicEmbed(card Projection) *domain.NotificationEmbed {
 	status, color := publicEmbedStatus(card)
-	description := "**" + status + "**"
+	description := "**" + strings.ToUpper(safe(card.Game)) + " | " + safe(card.Name) + "**"
 	if strings.TrimSpace(card.Description) != "" {
 		description += "\n" + safe(card.Description)
 	}
 	embed := &domain.NotificationEmbed{
-		Title:       strings.ToUpper(safe(card.Game)) + " | " + safe(card.Name),
+		Title:       status,
 		Description: description,
 		Color:       color,
 		Fields: []domain.NotificationEmbedField{{
-			Name: "CURRENT MISSION", Value: publicMissionValue(card),
+			Name: "\u200b\nCURRENT MISSION", Value: publicMissionValue(card),
 		}},
 	}
 	if value := publicProgressValue(card); value != "" {
-		embed.Fields = append(embed.Fields, domain.NotificationEmbedField{Name: "PROGRESS", Value: value})
+		embed.Fields = append(embed.Fields, domain.NotificationEmbedField{Name: "\u200b\nPROGRESS", Value: value})
 	}
 	if value := publicFailureValue(card); value != "" {
 		embed.Fields = append(embed.Fields, domain.NotificationEmbedField{Name: "ACTION REQUIRED", Value: value})
 	}
 	if card.Endpoints.Game.Available {
 		embed.Fields = append(embed.Fields, domain.NotificationEmbedField{
-			Name: "Game server", Value: publicGameConnectionValue(card), Inline: true,
+			Name: "\u200b\nGame server", Value: publicGameConnectionValue(card), Inline: true,
 		})
 	}
 	if card.Endpoints.TeamSpeak.Available {
@@ -154,7 +154,7 @@ func WithModlistLinkEmbed(embed *domain.NotificationEmbed, sessionName, messageU
 	copyEmbed := *embed
 	copyEmbed.Fields = append([]domain.NotificationEmbedField(nil), embed.Fields...)
 	for index := range copyEmbed.Fields {
-		if copyEmbed.Fields[index].Name != "Game server" {
+		if strings.TrimSpace(strings.TrimPrefix(copyEmbed.Fields[index].Name, "\u200b")) != "Game server" {
 			continue
 		}
 		base := strings.Split(copyEmbed.Fields[index].Value, "\n\n**Modlist:**")[0]

@@ -91,6 +91,21 @@ Only after separate approval of that exact saved plan:
 terraform -chdir=infra/terraform/environments/dev apply phase-12.tfplan
 ```
 
+Before retrying any failed bootstrap workflow, verify that the deployed worker
+matches the freshly packaged archive and the Steam authorization-cache runtime
+contract:
+
+```powershell
+./scripts/verify-bootstrap-worker-deployment.ps1
+```
+
+Stop if verification reports a code-hash or configuration mismatch. Do not
+restore the retired `STEAM_SECRET_ID` password configuration to make an older
+worker start. Repackage and deploy the current worker through a newly reviewed
+Terraform plan instead. If the package and configuration match, reconcile any
+expired workflow lease before retrying `/rb start`; retained EC2/EBS resources
+and durable bootstrap markers must be reused rather than recreated.
+
 ## 6. Verify the signed interaction boundary
 
 Read the endpoint after an approved apply:
