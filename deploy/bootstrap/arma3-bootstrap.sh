@@ -410,6 +410,7 @@ install_workshop() (
 	if [ -n "$PRESET_KEY" ]; then ln -sfn "presets/revision-$PRESET_REVISION.html" "$ROOT/config/preset.html"; fi
 	ln -sfn "mod-revisions/revision-$PRESET_REVISION.txt" "$ROOT/config/mods.txt"
 	printf '%s' "$PRESET_REVISION" > "$ROOT/config/active-preset-revision"
+  mkdir -p "$ROOT/home/Steam/steamapps/workshop"
   chown -R steam:steam "$ROOT/config" "$ROOT/home/Steam/steamapps/workshop" "$ROOT/arma3"
 )
 

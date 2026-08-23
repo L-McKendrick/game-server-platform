@@ -235,6 +235,21 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 	assertBashSyntax(t, script)
 }
 
+func TestBootstrapArtifactCreatesWorkshopDirectoryForCreatorDLCOnlySessions(t *testing.T) {
+	path := filepath.Clean(filepath.Join("..", "..", "..", "..", "deploy", "bootstrap", "arma3-bootstrap.sh"))
+	script, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(script)
+	create := `mkdir -p "$ROOT/home/Steam/steamapps/workshop"`
+	ownership := `chown -R steam:steam "$ROOT/config" "$ROOT/home/Steam/steamapps/workshop" "$ROOT/arma3"`
+	createAt, ownershipAt := strings.Index(text, create), strings.Index(text, ownership)
+	if createAt < 0 || ownershipAt < 0 || createAt > ownershipAt {
+		t.Fatalf("bootstrap must create the optional Workshop path before applying ownership: create=%d chown=%d", createAt, ownershipAt)
+	}
+}
+
 func TestOperatorEnrollmentScriptIsLocalMFAAndCacheOnly(t *testing.T) {
 	path := filepath.Clean(filepath.Join("..", "..", "..", "..", "scripts", "steam-auth-cache.ps1"))
 	script, err := os.ReadFile(path)

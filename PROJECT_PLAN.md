@@ -181,6 +181,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.13.2** [x] Split creation into base setup plus a conditional mod-options continuation, capture a durable `Begin server setup` intent, and make `/rb mods` open the same preset/cDLC page with stale-state, authorization, and idempotency safeguards.
       - **12.13.3** [x] Honor begin-setup intent after required artifact validation; treat the form as authoritative for cDLCs by stripping preset DLC/footer sections; support cDLC-only or Workshop+cDLC bootstrap and revisions; preserve selections through archive/restore; and render concise status/card details.
       - **12.13.4** [x] Preserve verified Discord role context through immediate and artifact-delayed automatic starts so the existing worker access policy authorizes them without an owner bypass.
+      - **12.13.5** [x] Make cDLC-only bootstrap tolerate Steam's absent optional Workshop directory while retaining resumable checkpoints and the shared mod path.
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.
