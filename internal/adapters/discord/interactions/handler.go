@@ -84,6 +84,15 @@ type AccessService interface {
 	ClearRoles(ctx context.Context, guildID string, userID string, canManageGuild bool, expectedVersion int64) (domain.GuildAccessPolicy, error)
 }
 
+type ResetService interface {
+	Enabled() bool
+	Active(ctx context.Context) (domain.ResetOperation, bool, error)
+	Latest(ctx context.Context) (domain.ResetOperation, bool, error)
+	Prepare(ctx context.Context, confirmationID, guildID, actorID string, isAdministrator bool) (domain.ResetConfirmation, error)
+	Start(ctx context.Context, confirmationID, operationID, correlationID, guildID, actorID, phrase string, isAdministrator bool) (domain.ResetOperation, error)
+	Status(ctx context.Context, operationID, guildID string, isAdministrator bool) (domain.ResetOperation, error)
+}
+
 // Clock supplies current UTC time for signature validation and tests.
 type Clock interface {
 	Now() time.Time
@@ -102,6 +111,7 @@ type Config struct {
 	MaxRequestBytes int64
 	SignatureMaxAge time.Duration
 	PlayerQuery     ports.PlayerQuery
+	ResetService    ResetService
 }
 
 // Handler verifies and routes Discord HTTP interactions.
@@ -112,6 +122,7 @@ type Handler struct {
 	clock           Clock
 	logger          *slog.Logger
 	playerQuery     ports.PlayerQuery
+	reset           ResetService
 	publicKey       ed25519.PublicKey
 	applicationID   string
 	allowedGuildIDs map[string]struct{}
@@ -173,6 +184,7 @@ func NewHandler(
 		clock:           clock,
 		logger:          logger,
 		playerQuery:     config.PlayerQuery,
+		reset:           config.ResetService,
 		publicKey:       append(ed25519.PublicKey(nil), config.PublicKey...),
 		applicationID:   strings.TrimSpace(config.ApplicationID),
 		allowedGuildIDs: allowedGuildIDs,
@@ -322,6 +334,16 @@ func (handler *Handler) ServeHTTP(
 		handler.logger.Info("Discord administration completed", slog.String("correlation_id", correlationID), slog.String("guild_id", payload.GuildID))
 		return
 	}
+	if handler.reset != nil {
+		if operation, active, err := handler.reset.Active(request.Context()); err != nil {
+			handler.logger.Error("failed to check platform reset lock", slog.Any("error", err))
+			writeInteractionMessage(writer, "The platform state could not be checked safely. No operation was queued. Please try again later.")
+			return
+		} else if active {
+			writeInteractionMessage(writer, fmt.Sprintf("A platform reset is in progress at **%s**. No session operation was queued.", sanitizeInline(operation.Stage)))
+			return
+		}
+	}
 	if err := handler.access.Authorize(request.Context(), payload.GuildID, payload.ChannelID, actorID, roles); err != nil && !payload.memberCanManageGuild() {
 		handler.logger.Warn("rejected unauthorized Discord interaction", slog.String("guild_id", payload.GuildID), slog.String("channel_id", payload.ChannelID))
 		if payload.Type == interactionTypeApplicationCommandAutocomplete {
@@ -357,7 +379,7 @@ func (handler *Handler) ServeHTTP(
 		writeAutocompleteChoices(writer, choices)
 		return
 	}
-	if payload.Type == interactionTypeModalSubmit && (payload.Data == nil || (payload.Data.CustomID != createModalCustomID && !isSetupModalCustomID(payload.Data.CustomID) && !isModsModalCustomID(payload.Data.CustomID))) {
+	if payload.Type == interactionTypeModalSubmit && (payload.Data == nil || (payload.Data.CustomID != createModalCustomID && !isSetupModalCustomID(payload.Data.CustomID) && !isModsModalCustomID(payload.Data.CustomID) && !strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix))) {
 		writeInteractionMessage(writer, "This modal is not supported or has expired.")
 		return
 	}
@@ -691,11 +713,18 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 	if payload.isAdminCommand() {
 		handler.writeAdminView(writer, interactionResponseChannelMessageWithSource,
 			"**Server administration**\nChoose an administration area. Normal access is role-based; every control here rechecks Administrator or Manage Server.",
-			"", nil)
+			"", nil, payload.memberIsAdministrator())
 		return nil
 	}
 	if payload.Data == nil {
 		return newUserError("This administration control is invalid or has expired.")
+	}
+	if handler.reset != nil && (payload.Data.CustomID == adminRoleSelectCustomID || payload.Data.CustomID == adminRepairSelectCustomID || strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":")) {
+		if operation, active, err := handler.reset.Active(ctx); err != nil {
+			return fmt.Errorf("check reset mutation lock: %w", err)
+		} else if active {
+			return newUserError(fmt.Sprintf("Platform reset is in progress at **%s**. This administration change was not applied.", sanitizeInline(operation.Stage)))
+		}
 	}
 	if strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") {
 		if payload.Data.ComponentType != componentTypeButton {
@@ -710,7 +739,28 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 			return fmt.Errorf("remove guild role access: %w", err)
 		}
 		return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID,
-			fmt.Sprintf("All normal role access was removed at revision `%d`.", policy.Version))
+			fmt.Sprintf("All normal role access was removed at revision `%d`.", policy.Version), payload.memberIsAdministrator())
+	}
+	if strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix) {
+		if !payload.memberIsAdministrator() {
+			return domain.ErrForbidden
+		}
+		confirmationID := strings.TrimSpace(strings.TrimPrefix(payload.Data.CustomID, adminResetModalPrefix))
+		phrase, err := resetModalPhrase(payload)
+		if err != nil {
+			return err
+		}
+		if handler.reset == nil {
+			return domain.ErrFeatureDisabled
+		}
+		operation, err := handler.reset.Start(ctx, confirmationID, "reset-"+strings.TrimSpace(payload.ID), correlationID, payload.GuildID, actorID, phrase, true)
+		if err != nil {
+			return fmt.Errorf("start platform reset: %w", err)
+		}
+		handler.writeAdminView(writer, interactionResponseChannelMessageWithSource,
+			fmt.Sprintf("**Platform reset queued**\nStage: %s\nNew session operations are frozen until cleanup finishes. No automatic retry is scheduled if cleanup becomes incomplete.", sanitizeInline(operation.Stage)),
+			adminMenuReset, nil, true)
+		return nil
 	}
 	switch payload.Data.CustomID {
 	case adminMenuCustomID:
@@ -719,9 +769,14 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 		}
 		switch payload.Data.Values[0] {
 		case adminMenuAccess:
-			return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "")
+			return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "", payload.memberIsAdministrator())
 		case adminMenuRepair:
 			return handler.writeAdminRepairView(ctx, writer, payload, actorID)
+		case adminMenuReset:
+			if !payload.memberIsAdministrator() {
+				return domain.ErrForbidden
+			}
+			return handler.writeAdminResetView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID)
 		default:
 			return newUserError("That administration area is not available.")
 		}
@@ -741,7 +796,7 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 			mentions = append(mentions, "<@&"+roleID+">")
 		}
 		return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID,
-			fmt.Sprintf("Access settings updated to revision `%d`: %s.", policy.Version, strings.Join(mentions, ", ")))
+			fmt.Sprintf("Access settings updated to revision `%d`: %s.", policy.Version, strings.Join(mentions, ", ")), payload.memberIsAdministrator())
 	case adminRoleClearPromptCustomID:
 		if payload.Data.ComponentType != componentTypeButton {
 			return newUserError("This administration control is invalid or has expired.")
@@ -751,7 +806,7 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 			return fmt.Errorf("read guild access roles: %w", err)
 		}
 		if len(roleIDs) == 0 {
-			return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "Normal role access is already disabled.")
+			return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "Normal role access is already disabled.", payload.memberIsAdministrator())
 		}
 		controls := []interactionComponent{{Type: componentTypeActionRow, Components: []interactionComponent{
 			{Type: componentTypeButton, Style: buttonStyleDanger, Label: "Remove role access", CustomID: fmt.Sprintf("%s:%d", adminRoleClearConfirmCustomID, version)},
@@ -759,13 +814,13 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 		}}}
 		handler.writeAdminView(writer, interactionResponseUpdateMessage,
 			"**Remove all normal role access?**\nMembers will no longer be able to use normal `/rb` commands. Administrators and members with Manage Server can still reopen `/rb admin` and restore access.",
-			adminMenuAccess, controls)
+			adminMenuAccess, controls, payload.memberIsAdministrator())
 		return nil
 	case adminRoleClearCancelCustomID:
 		if payload.Data.ComponentType != componentTypeButton {
 			return newUserError("This administration control is invalid or has expired.")
 		}
-		return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "No access roles were changed.")
+		return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "No access roles were changed.", payload.memberIsAdministrator())
 	case adminRepairSelectCustomID:
 		if payload.Data.ComponentType != componentTypeStringSelect || len(payload.Data.Values) != 1 {
 			return newUserError("Choose one session card to repair.")
@@ -780,14 +835,27 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 		if err != nil {
 			return err
 		}
-		handler.writeAdminView(writer, interactionResponseUpdateMessage, content, adminMenuRepair, nil)
+		handler.writeAdminView(writer, interactionResponseUpdateMessage, content, adminMenuRepair, nil, payload.memberIsAdministrator())
+		return nil
+	case adminResetPrepareCustomID:
+		if payload.Data.ComponentType != componentTypeButton || !payload.memberIsAdministrator() {
+			return domain.ErrForbidden
+		}
+		if handler.reset == nil {
+			return domain.ErrFeatureDisabled
+		}
+		confirmation, err := handler.reset.Prepare(ctx, "reset-confirm-"+strings.TrimSpace(payload.ID), payload.GuildID, actorID, true)
+		if err != nil {
+			return fmt.Errorf("prepare platform reset: %w", err)
+		}
+		writeResetConfirmationModal(writer, confirmation)
 		return nil
 	default:
 		return newUserError("This administration control is invalid or has expired.")
 	}
 }
 
-func (handler *Handler) writeAdminAccessView(ctx context.Context, writer http.ResponseWriter, responseType int, guildID, status string) error {
+func (handler *Handler) writeAdminAccessView(ctx context.Context, writer http.ResponseWriter, responseType int, guildID, status string, showReset bool) error {
 	roleIDs, _, err := handler.access.AllowedRoles(ctx, guildID)
 	if err != nil {
 		return fmt.Errorf("read guild access roles: %w", err)
@@ -824,7 +892,7 @@ func (handler *Handler) writeAdminAccessView(ctx context.Context, writer http.Re
 	}
 	handler.writeAdminView(writer, responseType,
 		content,
-		adminMenuAccess, controls)
+		adminMenuAccess, controls, showReset)
 	return nil
 }
 
@@ -838,7 +906,7 @@ func (handler *Handler) writeAdminRepairView(ctx context.Context, writer http.Re
 	}
 	if len(selections) == 0 {
 		handler.writeAdminView(writer, interactionResponseUpdateMessage,
-			"**Repair a session card**\nNo non-terminated session cards are available in this server.", adminMenuRepair, nil)
+			"**Repair a session card**\nNo non-terminated session cards are available in this server.", adminMenuRepair, nil, payload.memberIsAdministrator())
 		return nil
 	}
 	options := make([]interactionSelectOption, 0, len(selections))
@@ -858,11 +926,11 @@ func (handler *Handler) writeAdminRepairView(ctx context.Context, writer http.Re
 	}}
 	handler.writeAdminView(writer, interactionResponseUpdateMessage,
 		"**Repair a session card**\nChoose one session. The bot will refresh its authoritative card or recreate a deleted card in the original channel.",
-		adminMenuRepair, controls)
+		adminMenuRepair, controls, payload.memberIsAdministrator())
 	return nil
 }
 
-func (handler *Handler) writeAdminView(writer http.ResponseWriter, responseType int, content, selected string, controls []interactionComponent) {
+func (handler *Handler) writeAdminView(writer http.ResponseWriter, responseType int, content, selected string, controls []interactionComponent, showReset bool) {
 	minimum, maximum := 1, 1
 	menu := interactionComponent{
 		Type: componentTypeActionRow,
@@ -875,6 +943,9 @@ func (handler *Handler) writeAdminView(writer http.ResponseWriter, responseType 
 			},
 		}},
 	}
+	if showReset {
+		menu.Components[0].Options = append(menu.Components[0].Options, interactionSelectOption{Label: "Reset platform", Value: adminMenuReset, Description: "Permanently clear runtime state", Default: selected == adminMenuReset})
+	}
 	components := append([]interactionComponent{menu}, controls...)
 	flags := 0
 	if responseType == interactionResponseChannelMessageWithSource {
@@ -884,6 +955,57 @@ func (handler *Handler) writeAdminView(writer http.ResponseWriter, responseType 
 		Type: responseType,
 		Data: renderer.messageData(content, flags, &components),
 	})
+}
+
+func (handler *Handler) writeAdminResetView(ctx context.Context, writer http.ResponseWriter, responseType int, guildID string) error {
+	if handler.reset == nil || !handler.reset.Enabled() {
+		handler.writeAdminView(writer, responseType, "**Reset platform**\nThis destructive feature is disabled in this deployment.", adminMenuReset, nil, true)
+		return nil
+	}
+	if operation, active, err := handler.reset.Active(ctx); err != nil {
+		return fmt.Errorf("read reset status: %w", err)
+	} else if active {
+		handler.writeAdminView(writer, responseType, fmt.Sprintf("**Platform reset in progress**\nStage: %s\nNo session operation can start until this finishes.", sanitizeInline(operation.Stage)), adminMenuReset, nil, true)
+		return nil
+	}
+	latest, hasLatest, err := handler.reset.Latest(ctx)
+	if err != nil {
+		return fmt.Errorf("read latest reset result: %w", err)
+	}
+	controls := []interactionComponent{{Type: componentTypeActionRow, Components: []interactionComponent{{Type: componentTypeButton, Style: buttonStyleDanger, Label: "Prepare full reset", CustomID: adminResetPrepareCustomID}}}}
+	content := "**Reset platform**\nPermanently removes all sessions, exactly tagged game instances and disposable volumes, session archives/files, bot session messages, queued runtime work, runtime metadata, and eligible pre-reset application logs.\n\nTerraform infrastructure, guild access, secrets, configuration, budgets, CloudTrail, billing records, and AWS-retained execution history remain. Resources may incur cost until deletion is verified."
+	if hasLatest {
+		if latest.Status == domain.ResetSucceeded {
+			content += fmt.Sprintf("\n\n**Last reset:** complete at %s — %d sessions and %d stored object versions removed.", latest.CompletedAt.UTC().Format(time.RFC3339), latest.DeletedSessions, latest.DeletedObjects)
+		} else {
+			content += "\n\n**Last reset:** incomplete. Some runtime state may remain and incur cost. No automatic retry is scheduled; inspect the reset worker logs before preparing another reset."
+		}
+	}
+	handler.writeAdminView(writer, responseType, content, adminMenuReset, controls, true)
+	return nil
+}
+
+func writeResetConfirmationModal(writer http.ResponseWriter, confirmation domain.ResetConfirmation) {
+	required := true
+	minimum, maximum := len(confirmation.Phrase()), len(confirmation.Phrase())
+	components := []interactionComponent{{Type: componentTypeActionRow, Components: []interactionComponent{{
+		Type: componentTypeTextInput, CustomID: adminResetPhraseCustomID, Style: textInputStyleShort,
+		Label: "Type the exact reset phrase", Placeholder: confirmation.Phrase(), Required: &required, MinLength: &minimum, MaxLength: &maximum,
+	}}}}
+	writeJSON(writer, http.StatusOK, interactionResponse{Type: interactionResponseModal, Data: &interactionResponseData{
+		CustomID: adminResetModalPrefix + confirmation.ID, Title: "Confirm full platform reset", Components: &components,
+	}})
+}
+
+func resetModalPhrase(payload interactionPayload) (string, error) {
+	if payload.Type != interactionTypeModalSubmit || payload.Data == nil || len(payload.Data.Components) != 1 {
+		return "", newUserError("This reset confirmation is malformed or expired. Reopen `/rb admin`.")
+	}
+	row := payload.Data.Components[0]
+	if row.Type != componentTypeActionRow || len(row.Components) != 1 || row.Components[0].Type != componentTypeTextInput || row.Components[0].CustomID != adminResetPhraseCustomID {
+		return "", newUserError("This reset confirmation is malformed or expired. Reopen `/rb admin`.")
+	}
+	return row.Components[0].Value, nil
 }
 
 func (handler *Handler) repairSessionCard(
@@ -923,15 +1045,29 @@ func (payload interactionPayload) isAdminCommand() bool {
 }
 
 func (payload interactionPayload) isAdminComponent() bool {
-	if payload.Type != interactionTypeMessageComponent || payload.Data == nil {
+	if payload.Data == nil {
+		return false
+	}
+	if payload.Type == interactionTypeModalSubmit {
+		return strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix)
+	}
+	if payload.Type != interactionTypeMessageComponent {
 		return false
 	}
 	switch payload.Data.CustomID {
-	case adminMenuCustomID, adminRoleSelectCustomID, adminRoleClearPromptCustomID, adminRoleClearCancelCustomID, adminRepairSelectCustomID:
+	case adminMenuCustomID, adminRoleSelectCustomID, adminRoleClearPromptCustomID, adminRoleClearCancelCustomID, adminRepairSelectCustomID, adminResetPrepareCustomID:
 		return true
 	default:
 		return strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":")
 	}
+}
+
+func (payload interactionPayload) memberIsAdministrator() bool {
+	if payload.Member == nil {
+		return false
+	}
+	permissions, ok := new(big.Int).SetString(strings.TrimSpace(payload.Member.Permissions), 10)
+	return ok && permissions.Sign() >= 0 && permissions.Bit(3) == 1
 }
 
 func (payload interactionPayload) memberCanManageGuild() bool {
@@ -1217,8 +1353,22 @@ func (handler *Handler) adminErrorMessage(err error, correlationID string) strin
 	if errors.As(err, &userErr) {
 		return userErr.message
 	}
-	if errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrConflict) || errors.Is(err, domain.ErrInvalidTransition) {
+	if errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrConflict) || errors.Is(err, domain.ErrInvalidTransition) || errors.Is(err, domain.ErrConfirmationStateDrift) {
 		return "This administration control is stale because the underlying state changed. Reopen `/rb admin` and try again."
+	}
+	switch {
+	case errors.Is(err, domain.ErrConfirmationMismatch):
+		return "The reset phrase, server, or requesting Administrator did not match. Reopen `/rb admin` and prepare a new reset."
+	case errors.Is(err, domain.ErrConfirmationExpired):
+		return "The reset confirmation expired. Reopen `/rb admin` and prepare a new reset."
+	case errors.Is(err, domain.ErrConfirmationConsumed):
+		return "That reset confirmation was already used. Reopen `/rb admin` to see the current result."
+	case errors.Is(err, domain.ErrCommandInProgress):
+		return "A platform reset is already in progress. Reopen `/rb admin` to see its current stage."
+	case errors.Is(err, domain.ErrFeatureDisabled):
+		return "Platform reset is disabled in this deployment."
+	case errors.Is(err, domain.ErrConfirmationDispatchUncertain):
+		return fmt.Sprintf("The reset was confirmed, but queue delivery could not be verified. Reference: `%s`\nDo not prepare another reset. Check the reset operation and worker logs; no automatic retry is scheduled.", sanitizeInline(correlationID))
 	}
 	return handler.commandErrorMessage(err, correlationID)
 }

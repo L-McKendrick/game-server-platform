@@ -12,18 +12,22 @@ import (
 
 // SessionRepository is an in-memory implementation for tests and local tools.
 type SessionRepository struct {
-	mu             sync.RWMutex
-	sessions       map[string]domain.Session
-	events         map[string][]domain.SessionEvent
-	idempotency    map[string]domain.IdempotencyRecord
-	workflows      map[string]domain.Workflow
-	capacity       map[string]string
-	cards          map[string]domain.SessionCardReference
-	modlists       map[string]domain.SessionModlistReference
-	confirmations  map[string]domain.Confirmation
-	reconciliation map[string][]domain.ReconciliationFinding
-	deadLetters    map[string]domain.DeadLetterOperation
-	orphans        map[string]domain.OrphanFinding
+	mu                 sync.RWMutex
+	sessions           map[string]domain.Session
+	events             map[string][]domain.SessionEvent
+	idempotency        map[string]domain.IdempotencyRecord
+	workflows          map[string]domain.Workflow
+	capacity           map[string]string
+	cards              map[string]domain.SessionCardReference
+	modlists           map[string]domain.SessionModlistReference
+	confirmations      map[string]domain.Confirmation
+	reconciliation     map[string][]domain.ReconciliationFinding
+	deadLetters        map[string]domain.DeadLetterOperation
+	orphans            map[string]domain.OrphanFinding
+	resetConfirmations map[string]domain.ResetConfirmation
+	resetOperations    map[string]domain.ResetOperation
+	activeResets       map[string]string
+	latestResets       map[string]domain.ResetOperation
 }
 
 var _ ports.SessionRepository = (*SessionRepository)(nil)
@@ -32,17 +36,21 @@ var _ ports.SessionCardRepository = (*SessionRepository)(nil)
 // NewSessionRepository creates an empty repository.
 func NewSessionRepository() *SessionRepository {
 	return &SessionRepository{
-		sessions:       make(map[string]domain.Session),
-		events:         make(map[string][]domain.SessionEvent),
-		idempotency:    make(map[string]domain.IdempotencyRecord),
-		workflows:      make(map[string]domain.Workflow),
-		capacity:       make(map[string]string),
-		cards:          make(map[string]domain.SessionCardReference),
-		modlists:       make(map[string]domain.SessionModlistReference),
-		confirmations:  make(map[string]domain.Confirmation),
-		reconciliation: make(map[string][]domain.ReconciliationFinding),
-		deadLetters:    make(map[string]domain.DeadLetterOperation),
-		orphans:        make(map[string]domain.OrphanFinding),
+		sessions:           make(map[string]domain.Session),
+		events:             make(map[string][]domain.SessionEvent),
+		idempotency:        make(map[string]domain.IdempotencyRecord),
+		workflows:          make(map[string]domain.Workflow),
+		capacity:           make(map[string]string),
+		cards:              make(map[string]domain.SessionCardReference),
+		modlists:           make(map[string]domain.SessionModlistReference),
+		confirmations:      make(map[string]domain.Confirmation),
+		reconciliation:     make(map[string][]domain.ReconciliationFinding),
+		deadLetters:        make(map[string]domain.DeadLetterOperation),
+		orphans:            make(map[string]domain.OrphanFinding),
+		resetConfirmations: make(map[string]domain.ResetConfirmation),
+		resetOperations:    make(map[string]domain.ResetOperation),
+		activeResets:       make(map[string]string),
+		latestResets:       make(map[string]domain.ResetOperation),
 	}
 }
 

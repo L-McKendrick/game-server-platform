@@ -16,6 +16,29 @@ type CommandQueue interface {
 	Enqueue(ctx context.Context, command domain.CommandEnvelope) error
 }
 
+type ResetQueue interface {
+	Enqueue(ctx context.Context, request domain.ResetRequest) error
+}
+
+type ResetRepository interface {
+	CreateResetConfirmation(ctx context.Context, confirmation domain.ResetConfirmation) error
+	GetResetConfirmation(ctx context.Context, confirmationID string) (domain.ResetConfirmation, error)
+	ConsumeResetConfirmation(ctx context.Context, confirmationID, actorID, guildID, phrase string, operation domain.ResetOperation, now time.Time) (domain.ResetOperation, error)
+	GetResetOperation(ctx context.Context, operationID string) (domain.ResetOperation, error)
+	GetActiveReset(ctx context.Context, environment string) (domain.ResetOperation, error)
+	GetLatestReset(ctx context.Context, environment string) (domain.ResetOperation, error)
+	SaveResetOperation(ctx context.Context, operation domain.ResetOperation, expectedVersion int64) error
+}
+
+type ResetCleanupResult struct {
+	DeletedSessions int
+	DeletedObjects  int
+}
+
+type ResetCleaner interface {
+	Cleanup(ctx context.Context, operation domain.ResetOperation) (ResetCleanupResult, error)
+}
+
 type NotificationQueue interface {
 	Enqueue(ctx context.Context, request domain.NotificationRequest) error
 }

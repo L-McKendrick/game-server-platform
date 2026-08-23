@@ -283,6 +283,12 @@ data "aws_iam_policy_document" "discord_lambda" {
   }
 
   statement {
+    sid       = "ResetQueueSend"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.reset.arn]
+  }
+
+  statement {
     sid = "RuntimeLogDelivery"
     actions = [
       "logs:CreateLogStream",
@@ -326,6 +332,8 @@ resource "aws_lambda_function" "discord_interactions" {
       NOTIFICATION_QUEUE_URL            = aws_sqs_queue.notifications.url
       COMMAND_QUEUE_URL                 = aws_sqs_queue.commands.url
       PROVISIONING_ENABLED              = tostring(var.provisioning_enabled)
+      RESET_ENABLED                     = tostring(var.reset_enabled)
+      RESET_QUEUE_URL                   = aws_sqs_queue.reset.url
       DISCORD_PUBLIC_KEY                = var.discord_public_key
       DISCORD_APPLICATION_ID            = var.discord_application_id
       DISCORD_ALLOWED_GUILD_IDS         = join(",", sort(tolist(var.discord_allowed_guild_ids)))

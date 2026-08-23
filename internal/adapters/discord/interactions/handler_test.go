@@ -21,6 +21,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/discord/componentid"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
 	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
+	appreset "github.com/L-McKendrick/game-server-platform/internal/app/reset"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
@@ -2005,7 +2006,7 @@ func TestHandlerRBAdminMenuNavigatesOnlyImplementedPolicyAreas(t *testing.T) {
 	for _, option := range navigation.Options {
 		values[option.Value] = true
 	}
-	if !values[adminMenuAccess] || !values[adminMenuRepair] || values["costs"] || values["schedule"] || values["duration"] {
+	if !values[adminMenuAccess] || !values[adminMenuRepair] || values[adminMenuReset] || values["costs"] || values["schedule"] || values["duration"] {
 		t.Fatalf("admin menu options = %#v", navigation.Options)
 	}
 
@@ -2035,6 +2036,76 @@ func TestHandlerRBAdminMenuNavigatesOnlyImplementedPolicyAreas(t *testing.T) {
 	if queuedResponse.Type != interactionResponseUpdateMessage || queuedResponse.Data == nil ||
 		!strings.Contains(queuedResponse.Data.Content, "repair queued") || len(notifications.Requests()) != 1 {
 		t.Fatalf("queued repair = %#v notifications=%#v", queuedResponse, notifications.Requests())
+	}
+}
+
+func TestHandlerAdministratorResetFlowIsTypedReplaySafeAndFreezesSessionCommands(t *testing.T) {
+	t.Parallel()
+	handler, repository, privateKey := newTestHandler(t, []string{"menu-correlation", "view-correlation", "prepare-correlation", "start-correlation", "replay-correlation", "list-correlation"}, nil)
+	queue := &memory.ResetQueue{}
+	resetService, err := appreset.NewService(repository, queue, fixedClock{now: testNow}, "dev", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.reset = resetService
+
+	menuResponse := executeSignedRequest(t, handler, privateKey, adminMenuCommandBody("reset-menu", "admin-1", "8"), testNow)
+	var menu interactionResponse
+	decodeResponse(t, menuResponse, &menu)
+	if menu.Data == nil || menu.Data.Components == nil || len((*menu.Data.Components)[0].Components[0].Options) != 3 {
+		t.Fatalf("Administrator menu = %#v", menu)
+	}
+
+	viewResponse := executeSignedRequest(t, handler, privateKey, adminComponentBody("reset-view", "admin-1", "8", adminMenuCustomID, componentTypeStringSelect, []string{adminMenuReset}), testNow)
+	var view interactionResponse
+	decodeResponse(t, viewResponse, &view)
+	if view.Data == nil || !strings.Contains(view.Data.Content, "Permanently removes") || !strings.Contains(view.Data.Content, "billing records") || view.Data.Components == nil {
+		t.Fatalf("reset view = %#v", view)
+	}
+
+	prepareResponse := executeSignedRequest(t, handler, privateKey, adminComponentBody("reset-prepare", "admin-1", "8", adminResetPrepareCustomID, componentTypeButton, nil), testNow)
+	var modal interactionResponse
+	decodeResponse(t, prepareResponse, &modal)
+	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, adminResetModalPrefix) || modal.Data.Components == nil {
+		t.Fatalf("reset modal = %#v", modal)
+	}
+	phrase := (*modal.Data.Components)[0].Components[0].Placeholder
+	submitBody := marshalPayload(map[string]any{
+		"id": "reset-submit", "application_id": "app-1", "type": interactionTypeModalSubmit,
+		"guild_id": "guild-1", "channel_id": "channel-other",
+		"member": map[string]any{"user": map[string]any{"id": "admin-1"}, "roles": []string{}, "permissions": "8"},
+		"data": map[string]any{"custom_id": modal.Data.CustomID, "components": []any{map[string]any{
+			"type": componentTypeActionRow, "components": []any{map[string]any{"type": componentTypeTextInput, "custom_id": adminResetPhraseCustomID, "value": phrase}},
+		}}},
+	})
+	for attempt := 1; attempt <= 2; attempt++ {
+		response := executeSignedRequest(t, handler, privateKey, submitBody, testNow)
+		var submitted interactionResponse
+		decodeResponse(t, response, &submitted)
+		if submitted.Data == nil || !strings.Contains(submitted.Data.Content, "reset queued") || strings.Contains(submitted.Data.Content, phrase) {
+			t.Fatalf("attempt %d submit = %#v", attempt, submitted)
+		}
+	}
+	if len(queue.Requests) != 1 {
+		t.Fatalf("reset queue requests = %d; want one", len(queue.Requests))
+	}
+
+	listResponse := executeSignedRequest(t, handler, privateKey, commandBody("list-while-reset", "admin-1", "guild-1", "channel-1", "list", nil), testNow)
+	var list interactionResponse
+	decodeResponse(t, listResponse, &list)
+	if list.Data == nil || !strings.Contains(list.Data.Content, "reset is in progress") || !strings.Contains(list.Data.Content, "No session operation was queued") {
+		t.Fatalf("command during reset = %#v", list)
+	}
+}
+
+func TestHandlerAdministratorResetIsDisabledByDefault(t *testing.T) {
+	t.Parallel()
+	handler, _, privateKey := newTestHandler(t, []string{"menu-correlation", "view-correlation"}, nil)
+	response := executeSignedRequest(t, handler, privateKey, adminComponentBody("reset-view", "admin-1", "8", adminMenuCustomID, componentTypeStringSelect, []string{adminMenuReset}), testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "disabled in this deployment") {
+		t.Fatalf("disabled reset response = %#v", decoded)
 	}
 }
 

@@ -41,6 +41,37 @@ func New(secrets SecretsAPI, secretName string) *Sender {
 	}
 }
 
+// DeleteMessage removes a known bot-owned session message. Discord's not-found
+// response is idempotent success; no channel history is enumerated.
+func (sender *Sender) DeleteMessage(ctx context.Context, channelID, messageID string) error {
+	channelID, messageID = strings.TrimSpace(channelID), strings.TrimSpace(messageID)
+	if channelID == "" || messageID == "" {
+		return fmt.Errorf("Discord channel and message IDs are required")
+	}
+	token, err := sender.botToken(ctx)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, sender.apiBase+"/channels/"+channelID+"/messages/"+messageID, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Authorization", "Bot "+token)
+	request.Header.Set("User-Agent", "game-server-platform-reset/1")
+	response, err := sender.client.Do(request)
+	if err != nil {
+		return fmt.Errorf("delete Discord session message: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("delete Discord session message returned %s", response.Status)
+	}
+	return nil
+}
+
 func (sender *Sender) Send(ctx context.Context, request domain.NotificationRequest) error {
 	if err := request.Validate(); err != nil {
 		return err

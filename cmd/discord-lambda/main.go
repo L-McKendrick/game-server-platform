@@ -18,14 +18,17 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsartifact"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqscommand"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsreset"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/discord/interactions"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/steamquery"
 	appaccess "github.com/L-McKendrick/game-server-platform/internal/app/access"
 	appreliability "github.com/L-McKendrick/game-server-platform/internal/app/reliability"
+	appreset "github.com/L-McKendrick/game-server-platform/internal/app/reset"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
 	"github.com/L-McKendrick/game-server-platform/internal/identity"
 	"github.com/L-McKendrick/game-server-platform/internal/logging"
+	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
 func main() {
@@ -47,6 +50,9 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 	}
 	if baseConfig.ProvisioningEnabled && strings.TrimSpace(baseConfig.CommandQueueURL) == "" {
 		return nil, fmt.Errorf("COMMAND_QUEUE_URL is required when provisioning is enabled")
+	}
+	if baseConfig.ResetEnabled && strings.TrimSpace(baseConfig.ResetQueueURL) == "" {
+		return nil, fmt.Errorf("RESET_QUEUE_URL is required when reset is enabled")
 	}
 	discordConfig, err := config.LoadDiscord()
 	if err != nil {
@@ -98,6 +104,14 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create access service: %w", err)
 	}
+	var resetQueue ports.ResetQueue
+	if baseConfig.ResetEnabled {
+		resetQueue = sqsreset.New(sqs.NewFromConfig(awsConfiguration), baseConfig.ResetQueueURL)
+	}
+	resetService, err := appreset.NewService(repository, resetQueue, clock, baseConfig.Environment, baseConfig.ResetEnabled)
+	if err != nil {
+		return nil, fmt.Errorf("create reset service: %w", err)
+	}
 	playerQuery, err := steamquery.New(2303, 1500*time.Millisecond)
 	if err != nil {
 		return nil, fmt.Errorf("create Steam player query: %w", err)
@@ -109,6 +123,7 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 		MaxRequestBytes: discordConfig.MaxRequestBytes,
 		SignatureMaxAge: discordConfig.SignatureMaxAge,
 		PlayerQuery:     playerQuery,
+		ResetService:    resetService,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create Discord interaction handler: %w", err)

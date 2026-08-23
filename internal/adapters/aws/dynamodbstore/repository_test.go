@@ -17,6 +17,8 @@ import (
 
 type fakeAPI struct {
 	getItemOutput      *dynamodb.GetItemOutput
+	getItemOutputs     []*dynamodb.GetItemOutput
+	getItemIndex       int
 	getItemErr         error
 	queryOutput        *dynamodb.QueryOutput
 	queryErr           error
@@ -137,6 +139,11 @@ func (fake *fakeAPI) GetItem(
 	_ *dynamodb.GetItemInput,
 	_ ...func(*dynamodb.Options),
 ) (*dynamodb.GetItemOutput, error) {
+	if fake.getItemIndex < len(fake.getItemOutputs) {
+		output := fake.getItemOutputs[fake.getItemIndex]
+		fake.getItemIndex++
+		return output, fake.getItemErr
+	}
 	return fake.getItemOutput, fake.getItemErr
 }
 

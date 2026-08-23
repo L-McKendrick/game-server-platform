@@ -4,7 +4,8 @@
 
 Phases 1-10 are complete. Phase 11 remains pending under the approved Phase 12
 reorder. Phase 12 Steps 12.1-12.7 are merged. Step 12.8 is complete on
-`codex/phase-12-discord-experience`; stop before Phase 13.
+`codex/phase-12-discord-experience`. Step 12.9 is complete locally; Step 12.10
+is next and adds the Administrator-managed Arma `server.cfg`.
 
 ## Delivered
 
@@ -28,8 +29,30 @@ reorder. Phase 12 Steps 12.1-12.7 are merged. Step 12.8 is complete on
   only when its provision workflow, requester, correlation, guild/channel,
   deterministic identity, idempotency key, and active bootstrap lock all match.
   Repeated starts return existing progress and queue no duplicate work.
-- `DEV_SETUP.local.md` is gitignored and contains a non-secret session startup,
-  authentication, deployment-gate, and Git checklist.
+
+## Step 12.9 Delivered
+
+- `/rb admin` now exposes one disabled-by-default full reset only to current
+  Discord Administrators; Manage Server and normal access roles are
+  insufficient. An exact ten-minute phrase and atomic environment lock protect
+  the action, and the menu reports active or latest terminal state.
+- The reset worker cleans platform-owned runtime state only: sessions, active
+  executions, tagged game instances/disposable volumes, Discord session
+  messages, session S3 versions, runtime queues/DLQs, runtime metadata, and
+  eligible pre-reset logs.
+- It preserves the installed control plane, Terraform state/resources, guild access,
+  secrets, configuration, budget, and one minimal reset audit result. AWS
+  billing, CloudTrail, and retained service execution history are not erasable
+  runtime state and must be reported truthfully.
+- Cleanup uses bounded pagination, exact ownership checks, idempotent absent
+  outcomes, a final drift check, safe terminal errors, and explicit
+  partial-failure/billing warnings. No automatic cleanup retry is scheduled.
+- Terraform adds a reset FIFO queue/DLQ, worker, least-privilege runtime policy,
+  packaging, and `reset_enabled = false`. No live reset was executed.
+- Step 12.10 follows the reset with an Administrator-managed guild-level Arma
+  `server.cfg`. Its private revisioned artifact is captured when bootstrap
+  starts; contents are never rendered, and sessions retain the generated safe
+  default when no custom file is active.
 
 ## Validation
 
@@ -42,8 +65,8 @@ reorder. Phase 12 Steps 12.1-12.7 are merged. Step 12.8 is complete on
   CI remains authoritative for `go test -race -cover ./...`.
 - `terraform fmt -check -recursive infra/terraform` and
   `terraform -chdir=infra/terraform/environments/dev validate` pass.
-- The `/rb` JSON parses, the retired command definition is absent,
-  `git diff --check` passes, and all 12 Lambda archives package successfully.
+- The `/rb` JSON parses, `git diff --check` passes, Terraform formatting and
+  validation pass, and all 13 Lambda archives package successfully.
 
 ## Deployment Disposition
 
@@ -59,8 +82,9 @@ reorder. Phase 12 Steps 12.1-12.7 are merged. Step 12.8 is complete on
   `aws_iam_role_policy.provision_workflow`. A full plan may time out here while
   refreshing the unchanged AWS Budgets endpoint; any scoped alternative still
   requires exact review and approval.
-- The populated local Terraform inputs, all saved plans, and the user-owned
-  untracked `infra/terraform/environments/dev/tfplan` remain untouched.
+- Step 12.9 has not been deployed. Local Terraform inputs and saved plans remain
+  outside Git; enabling reset requires a fresh exact plan review and a separate
+  live-reset decision.
 - Discord application `1533676701354299402`, guild `1192304488351019008`, and
   endpoint `https://ujg7q9fubf.execute-api.us-west-2.amazonaws.com/discord/interactions`
   are the known development targets. No bot token was retrieved and no final
@@ -77,8 +101,8 @@ $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-8-final.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-12-8-final.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-9.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-12-9.tfplan
 # Apply only after separate approval of that exact saved plan.
 
 ./scripts/register-discord-command.ps1 `

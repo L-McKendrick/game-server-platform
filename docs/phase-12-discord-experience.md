@@ -220,6 +220,23 @@ AWS budget alerts remain an operator concern outside Discord. Later scheduling
 and duration features can attach to the same menu only after their policies
 exist.
 
+The danger area adds one full runtime reset visible only to members whose
+current signed interaction carries Discord Administrator. Manage Server is
+enough for access and card repair but never for reset. Reset uses an exact
+ten-minute typed phrase, atomically consumes it while acquiring one
+environment-wide lock, and freezes new session mutations until cleanup records
+a terminal result. The deployment gate defaults off.
+
+Reset deletes only discovered platform runtime state: active workflow
+executions, exactly tagged game instances and disposable volumes, known
+bot-authored session messages, every version below `sessions/`, runtime queue
+contents, reset-scoped metadata, and eligible pre-reset application log
+streams. It preserves the Terraform control plane and state, guild access,
+secrets, guild configuration artifacts, budgets, CloudTrail, billing records,
+AWS-retained service history, and the latest bounded reset result. Incomplete
+cleanup fails closed, displays a possible-cost warning, and schedules no
+automatic retry.
+
 Public cards retain stacked plain-text fallbacks and pair explicit state
 labels/icons with embed color. Their only default buttons are `Show players`
 and `Refresh`. Unknown, expired, revision-drifted, and deleted-state controls

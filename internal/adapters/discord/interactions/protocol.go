@@ -78,9 +78,13 @@ const (
 	adminRoleClearConfirmCustomID = "rb:admin:access:clear-confirm:v1"
 	adminRoleClearCancelCustomID  = "rb:admin:access:clear-cancel:v1"
 	adminRepairSelectCustomID     = "rb:admin:repair:session:v1"
+	adminResetPrepareCustomID     = "rb:admin:reset:prepare:v1"
+	adminResetModalPrefix         = "rb:admin:reset:confirm:v1:"
+	adminResetPhraseCustomID      = "reset:phrase"
 
 	adminMenuAccess = "access"
 	adminMenuRepair = "repair-card"
+	adminMenuReset  = "reset-platform"
 )
 
 type interactionPayload struct {
