@@ -275,10 +275,18 @@ func createArtifactRequest(
 		SizeBytes:      attachment.Size,
 		SourceURL:      strings.TrimSpace(attachment.URL),
 		ActorID:        actor.ID,
+		Roles:          interactionRoles(payload),
 		GuildID:        strings.TrimSpace(payload.GuildID),
 		ChannelID:      strings.TrimSpace(payload.ChannelID),
 		CorrelationID:  strings.TrimSpace(correlationID),
 		IdempotencyKey: strings.TrimSpace(idempotencyKey),
 		RequestedAt:    requestedAt.UTC(),
 	}
+}
+
+func interactionRoles(payload interactionPayload) []string {
+	if payload.Member == nil {
+		return nil
+	}
+	return append([]string(nil), payload.Member.Roles...)
 }

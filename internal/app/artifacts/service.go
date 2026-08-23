@@ -210,7 +210,7 @@ func (service *Service) autoStart(ctx context.Context, session domain.Session, r
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", session.ID, session.ConfigurationRevision)))
 	commandID := hex.EncodeToString(digest[:16])
 	if err := service.autoStarter.RequestStart(ctx, appsession.StartCommand{
-		Actor:     domain.Actor{Type: domain.ActorTypeDiscordUser, ID: session.OwnerDiscordUserID},
+		Actor: domain.Actor{Type: domain.ActorTypeDiscordUser, ID: session.OwnerDiscordUserID}, Roles: append([]string(nil), request.Roles...),
 		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
 		CommandID: commandID, CorrelationID: request.CorrelationID,
 		IdempotencyKey: "auto-start:" + commandID,

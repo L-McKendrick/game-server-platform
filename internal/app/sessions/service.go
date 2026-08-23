@@ -606,6 +606,7 @@ type UpdateModOptionsCommand struct {
 	SessionID, GuildID, CorrelationID, IdempotencyKey string
 	ExpectedVersion                                   int64
 	CreatorDLCs                                       []string
+	Roles                                             []string
 	PreparePreset                                     bool
 }
 
@@ -626,14 +627,15 @@ func (service *Service) UpdateModOptions(ctx context.Context, command UpdateModO
 		CommandType, ActorID, SessionID, GuildID string
 		ExpectedVersion                          int64
 		CreatorDLCs                              []string
+		Roles                                    []string
 		PreparePreset                            bool
-	}{"UpdateModOptions", command.Actor.ID, strings.TrimSpace(command.SessionID), strings.TrimSpace(command.GuildID), command.ExpectedVersion, creatorDLCs, command.PreparePreset})
+	}{"UpdateModOptions", command.Actor.ID, strings.TrimSpace(command.SessionID), strings.TrimSpace(command.GuildID), command.ExpectedVersion, creatorDLCs, command.Roles, command.PreparePreset})
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("hash mod options: %w", err)
 	}
 	if replayed, found, err := service.replaySession(ctx, key, hash, command.Actor); err != nil || found {
 		if err == nil {
-			err = service.requestAutomaticStart(ctx, replayed, command.CorrelationID)
+			err = service.requestAutomaticStart(ctx, replayed, command.CorrelationID, command.Roles)
 		}
 		return replayed, err
 	}
@@ -667,26 +669,26 @@ func (service *Service) UpdateModOptions(ctx context.Context, command UpdateModO
 	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, record); err != nil {
 		if replayed, found, replayErr := service.replaySession(ctx, key, hash, command.Actor); replayErr != nil || found {
 			if replayErr == nil {
-				replayErr = service.requestAutomaticStart(ctx, replayed, command.CorrelationID)
+				replayErr = service.requestAutomaticStart(ctx, replayed, command.CorrelationID, command.Roles)
 			}
 			return replayed, replayErr
 		}
 		return domain.Session{}, fmt.Errorf("persist mod options: %w", err)
 	}
-	if err := service.requestAutomaticStart(ctx, session, correlationID); err != nil {
+	if err := service.requestAutomaticStart(ctx, session, correlationID, command.Roles); err != nil {
 		return session, err
 	}
 	return session, nil
 }
 
-func (service *Service) requestAutomaticStart(ctx context.Context, session domain.Session, correlationID string) error {
+func (service *Service) requestAutomaticStart(ctx context.Context, session domain.Session, correlationID string, roles []string) error {
 	if !session.StartWhenReady || !session.CanStartInfrastructureProvisioning() {
 		return nil
 	}
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", session.ID, session.ConfigurationRevision)))
 	commandID := hex.EncodeToString(digest[:16])
 	return service.RequestStart(ctx, StartCommand{
-		Actor:     domain.Actor{Type: domain.ActorTypeDiscordUser, ID: session.OwnerDiscordUserID},
+		Actor: domain.Actor{Type: domain.ActorTypeDiscordUser, ID: session.OwnerDiscordUserID}, Roles: append([]string(nil), roles...),
 		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
 		CommandID: commandID, CorrelationID: strings.TrimSpace(correlationID), IdempotencyKey: "auto-start:" + commandID,
 	})
