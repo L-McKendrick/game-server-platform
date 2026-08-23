@@ -596,22 +596,24 @@ func (handler *Handler) createConfirmation(ctx context.Context, payload interact
 		Actor: actor, SessionID: sessionID, GuildID: payload.GuildID, RequestID: payload.ID, Action: confirmationAction,
 	})
 	if err != nil {
+		if errors.Is(err, domain.ErrIdempotencyConflict) {
+			return "", newUserError("You already have a pending archive or termination in this server. Run `/rb confirm` or `/rb cancel-confirmation` before requesting another one.")
+		}
 		return "", err
 	}
 	deadline := fmt.Sprintf("<t:%d:R>", confirmation.ExpiresAt.UTC().Unix())
 	if action == "archive" {
-		return fmt.Sprintf("**Archive confirmation required**\nNo destructive work has been queued. Archiving stops game services and removes EC2/EBS only after the portable backup is verified. A later restore creates billable replacement resources.\n\nRun `/rb confirm code:%s` by %s, or `/rb cancel-confirmation code:%s`.", confirmation.Code, deadline, confirmation.Code), nil
+		return fmt.Sprintf("**Archive confirmation required**\nNo destructive work has been queued. Archiving stops game services and removes EC2/EBS only after the portable backup is verified. A later restore creates billable replacement resources.\n\nRun `/rb confirm` by %s, or `/rb cancel-confirmation`.", deadline), nil
 	}
-	return fmt.Sprintf("**Termination confirmation required**\nNo destructive work has been queued. Termination permanently deletes tagged EC2/EBS resources and all stored session artifacts without creating a backup. This is irreversible.\n\nRun `/rb confirm code:%s` by %s, or `/rb cancel-confirmation code:%s`.", confirmation.Code, deadline, confirmation.Code), nil
+	return fmt.Sprintf("**Termination confirmation required**\nNo destructive work has been queued. Termination permanently deletes tagged EC2/EBS resources and all stored session artifacts without creating a backup. This is irreversible.\n\nRun `/rb confirm` by %s, or `/rb cancel-confirmation`.", deadline), nil
 }
 
 func (handler *Handler) confirmAction(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, correlationID string) (string, error) {
-	code, err := stringOption(options, "code", true)
-	if err != nil {
-		return "", newUserError("Enter the confirmation code exactly as shown.")
+	if len(options) != 0 {
+		return "", newUserError("Run `/rb confirm` without any options.")
 	}
 	confirmation, err := handler.service.Confirm(ctx, appsession.ConfirmCommand{
-		Actor: actor, GuildID: payload.GuildID, ChannelID: payload.ChannelID, Code: code,
+		Actor: actor, GuildID: payload.GuildID, ChannelID: payload.ChannelID,
 		CommandID: payload.ID, CorrelationID: correlationID, IdempotencyKey: "discord:" + payload.ID,
 	})
 	if err != nil {
@@ -625,23 +627,22 @@ func (handler *Handler) confirmAction(ctx context.Context, payload interactionPa
 }
 
 func (handler *Handler) cancelConfirmation(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor) (string, error) {
-	code, err := stringOption(options, "code", true)
-	if err != nil {
-		return "", newUserError("Enter the confirmation code exactly as shown.")
+	if len(options) != 0 {
+		return "", newUserError("Run `/rb cancel-confirmation` without any options.")
 	}
-	confirmation, err := handler.service.CancelConfirmation(ctx, appsession.CancelConfirmationCommand{Actor: actor, GuildID: payload.GuildID, Code: code})
+	confirmation, err := handler.service.CancelConfirmation(ctx, appsession.CancelConfirmationCommand{Actor: actor, GuildID: payload.GuildID})
 	if err != nil {
 		return "", confirmationUserError(err)
 	}
-	return fmt.Sprintf("**%s confirmation cancelled**\nNo destructive work was queued. The code cannot be used again.\n\nNext: use `/rb status` or request a new action if it is still appropriate.", strings.ToUpper(string(confirmation.Action[:1]))+strings.ToLower(string(confirmation.Action[1:]))), nil
+	return fmt.Sprintf("**%s confirmation cancelled**\nNo destructive work was queued. The pending action cannot be confirmed.\n\nNext: use `/rb status` or request a new action if it is still appropriate.", strings.ToUpper(string(confirmation.Action[:1]))+strings.ToLower(string(confirmation.Action[1:]))), nil
 }
 
 func confirmationUserError(err error) error {
 	switch {
 	case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrConfirmationMismatch):
-		return newUserError("That confirmation code was not found or is not valid for you in this server.")
+		return newUserError("You have no pending archive or termination to confirm in this server. Run the destructive command again if it is still appropriate.")
 	case errors.Is(err, domain.ErrConfirmationExpired):
-		return newUserError("That confirmation expired. Run the archive or terminate command again to create a new ten-minute code.")
+		return newUserError("That confirmation expired. Run the archive or terminate command again to create a new ten-minute confirmation.")
 	case errors.Is(err, domain.ErrConfirmationConsumed):
 		return newUserError("That confirmation was already used and cannot be replayed.")
 	case errors.Is(err, domain.ErrConfirmationCancelled):
@@ -649,7 +650,7 @@ func confirmationUserError(err error) error {
 	case errors.Is(err, domain.ErrConfirmationStateDrift):
 		return newUserError("The session changed after this confirmation was created. Run `/rb status`, then request a new confirmation if the action is still appropriate.")
 	case errors.Is(err, domain.ErrConfirmationDispatchUncertain):
-		return newUserError("The confirmation was consumed, but queue delivery could not be confirmed. No automatic retry is scheduled. Check `/rb status`; if no operation appears, run archive or terminate again for a new code. Resources may remain and incur cost.")
+		return newUserError("The confirmation was consumed, but queue delivery could not be confirmed. No automatic retry is scheduled. Check `/rb status`; if no operation appears, run archive or terminate again. Resources may remain and incur cost.")
 	default:
 		return err
 	}

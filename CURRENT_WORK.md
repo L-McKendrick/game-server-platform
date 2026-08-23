@@ -4,9 +4,9 @@
 
 Phases 1-10 are complete. Phase 11 remains pending under the approved Phase 12
 reorder. Phase 12 Steps 12.1-12.7 are merged. Step 12.8 is complete on
-`codex/phase-12-discord-experience`. Steps 12.9 and 12.10 are complete locally.
-The next scoped UX change removes user-entered confirmation codes in favor of
-one server-resolved `/rb confirm` follow-up.
+`codex/phase-12-discord-experience`. Steps 12.9-12.11 are complete locally.
+Phase implementation is ready for the intentionally deferred final cross-step
+review and pull request.
 
 ## Delivered
 
@@ -72,6 +72,20 @@ one server-resolved `/rb confirm` follow-up.
 - Deterministic invalid or stale uploads are acknowledged without retry;
   transient and unknown worker failures retain the existing bounded SQS retry.
 
+## Step 12.11 Delivered
+
+- Archive and terminate now create one pending destructive confirmation per
+  user per guild. Users follow with optionless `/rb confirm` or
+  `/rb cancel-confirmation`; no code is displayed, copied, or entered.
+- The slot is resolved only from the current signed actor and guild. The stored
+  record remains owner-, guild-, session-, action-, lifecycle-, and
+  version-bound with a ten-minute expiry and atomic single-use consumption.
+- A second pending action fails clearly instead of becoming ambiguous. A
+  consumed action cannot be replaced while the same session version remains
+  current, preserving dispatch-uncertainty and replay protection.
+- The Administrator full-reset phrase and server-config removal buttons are
+  unchanged because neither used the archive/terminate confirmation code.
+
 ## Validation
 
 - `go test ./...`, `go test -cover ./...`, `go vet ./...`, and
@@ -88,6 +102,9 @@ one server-resolved `/rb confirm` follow-up.
 - Focused server-config tests pass for authorization, validation, DynamoDB and
   memory persistence, Discord raw payloads, start/workflow snapshots, checksum
   bootstrap, replacement/removal, replay, redaction, and no-retry rejection.
+- Focused code-free confirmation tests pass for actor/guild slot isolation,
+  ambiguity rejection, expiry, cancellation, state drift, atomic consumption,
+  same-state replay, raw Discord payloads, and optionless registration.
 
 ## Deployment Disposition
 
@@ -103,9 +120,14 @@ one server-resolved `/rb confirm` follow-up.
   `aws_iam_role_policy.provision_workflow`. A full plan may time out here while
   refreshing the unchanged AWS Budgets endpoint; any scoped alternative still
   requires exact review and approval.
-- Steps 12.9-12.10 have not been deployed. Local Terraform inputs and saved
+- Steps 12.9-12.11 have not been deployed. Local Terraform inputs and saved
   plans remain outside Git; enabling reset requires a fresh exact plan review
-  and a separate live-reset decision.
+  and a separate live-reset decision. Step 12.11 also requires re-registering
+  `/rb` so Discord removes the old `code` options.
+- Any code-based confirmation created before a 12.11 deployment will simply
+  expire and cannot be consumed through the new optionless command. Request
+  archive or terminate again after deployment; no destructive work was queued
+  by the expired request.
 - Discord application `1533676701354299402`, guild `1192304488351019008`, and
   endpoint `https://ujg7q9fubf.execute-api.us-west-2.amazonaws.com/discord/interactions`
   are the known development targets. No bot token was retrieved and no final
@@ -122,8 +144,8 @@ $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-9.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-12-9.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-release.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-12-release.tfplan
 # Apply only after separate approval of that exact saved plan.
 
 ./scripts/register-discord-command.ps1 `

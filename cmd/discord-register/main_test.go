@@ -83,8 +83,8 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAdminMenu(t *testing.T
 			}
 		}
 		if subcommand.Name == "confirm" || subcommand.Name == "cancel-confirmation" {
-			if len(subcommand.Options) != 1 || subcommand.Options[0].Name != "code" || subcommand.Options[0].Type != 3 {
-				t.Errorf("%s options = %#v; want one required string code", subcommand.Name, subcommand.Options)
+			if len(subcommand.Options) != 0 {
+				t.Errorf("%s options = %#v; want optionless server-resolved confirmation", subcommand.Name, subcommand.Options)
 			}
 		}
 		if (subcommand.Name == "archive" || subcommand.Name == "terminate") && len(subcommand.Options) != 1 {

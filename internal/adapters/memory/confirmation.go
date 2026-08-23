@@ -21,8 +21,12 @@ func (repository *SessionRepository) CreateConfirmation(ctx context.Context, con
 	}
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
-	if _, found := repository.confirmations[confirmation.Code]; found {
-		return domain.ErrAlreadyExists
+	if existing, found := repository.confirmations[confirmation.Code]; found {
+		if existing.ID == confirmation.ID ||
+			(existing.Status == domain.ConfirmationPending && confirmation.CreatedAt.Before(existing.ExpiresAt)) ||
+			(existing.Status == domain.ConfirmationConsumed && existing.SessionID == confirmation.SessionID && existing.BoundVersion == confirmation.BoundVersion) {
+			return domain.ErrAlreadyExists
+		}
 	}
 	session, found := repository.sessions[confirmation.SessionID]
 	if !found {

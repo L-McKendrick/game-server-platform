@@ -122,7 +122,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.5.2** [x] Maintain a user-facing error catalog that renders what happened, likely reason, platform action, exact user action, and billing implications without leaking raw AWS/SSM data or IDs.
       - **12.5.3** [x] Make workers populate retry truthfully and make duplicate in-progress requests return the existing operation and progress instead of a generic conflict.
       - **12.5.4** [x] Add owner-bound, guild-bound, action-bound, state-bound, single-use confirmation records with atomic consumption and a 10-minute expiry.
-      - **12.5.5** [x] Replace archive/terminate `confirm:true` with `/rb confirm code:<code>` and `/rb cancel-confirmation`, revalidating authorization and lifecycle state before queueing work.
+      - **12.5.5** [x] Replace archive/terminate `confirm:true` with a durable `/rb confirm` and `/rb cancel-confirmation` follow-up, revalidating authorization and lifecycle state before queueing work.
       - **12.5.6** [x] Test every known error category, safe unknown-error fallback, redaction, retry wording, cost warnings, confirmation expiry, replay, mismatch, cancellation, and state drift.
     - **12.6** [x] Support safe post-creation modlist revisions.
       - **12.6.1** [x] Replace the single preset pointer with backward-compatible active and pending preset revision metadata plus immutable change events.
@@ -156,6 +156,10 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.10.2** [x] Add a streamlined `/rb admin` configuration area to upload, replace, inspect metadata for, or remove the active file with fresh Administrator checks, confirmation for removal, idempotency, stale-revision protection, and safe errors.
       - **12.10.3** [x] Capture the active configuration revision when start/bootstrap begins and deploy that exact object as Arma `server.cfg`; retain the existing generated safe default when no admin file is configured and preserve deterministic replay for in-progress sessions.
       - **12.10.4** [x] Add focused authorization, validation, redaction, persistence, bootstrap/default, replacement/removal, and replay tests; wire least-privilege S3 access, update documentation and handoffs, run proportional regression, then commit and push.
+    - **12.11** [x] Simplify destructive follow-up confirmation without weakening its safety contract.
+      - **12.11.1** [x] Replace user-entered codes with one durable pending archive/terminate confirmation slot per user and guild; resolve `/rb confirm` and `/rb cancel-confirmation` server-side while retaining owner/guild/action/state binding, ten-minute expiry, atomic consumption, idempotency, and replay protection.
+      - **12.11.2** [x] Remove code options and code text from the Discord contract, responses, errors, documentation, and raw-payload tests; give clear guidance when no matching pending action exists or another action is already pending.
+      - **12.11.3** [x] Run focused and proportional regression, update handoffs, then create and push one scoped Conventional Commit.
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.

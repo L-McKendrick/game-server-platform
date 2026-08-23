@@ -150,7 +150,6 @@ type ConfirmCommand struct {
 	Actor          domain.Actor
 	GuildID        string
 	ChannelID      string
-	Code           string
 	CommandID      string
 	CorrelationID  string
 	IdempotencyKey string
@@ -183,7 +182,6 @@ func (service *Service) RequestWorkflowCancellation(ctx context.Context, command
 type CancelConfirmationCommand struct {
 	Actor   domain.Actor
 	GuildID string
-	Code    string
 }
 
 // SessionCardCommand requests an idempotent create-or-edit of the one public
@@ -382,7 +380,7 @@ func (service *Service) RequestConfirmation(ctx context.Context, command Confirm
 	if requestID == "" {
 		return domain.Confirmation{}, fmt.Errorf("confirmation request ID is required")
 	}
-	confirmation, err := domain.NewConfirmation(requestID, domain.ConfirmationCode(requestID), session, command.Action, service.clock.Now().UTC())
+	confirmation, err := domain.NewConfirmation(requestID, domain.PendingConfirmationCode(command.GuildID, command.Actor.ID), session, command.Action, service.clock.Now().UTC())
 	if err != nil {
 		return domain.Confirmation{}, err
 	}
@@ -394,7 +392,13 @@ func (service *Service) RequestConfirmation(ctx context.Context, command Confirm
 		if getErr != nil {
 			return domain.Confirmation{}, getErr
 		}
-		if existing.ID != confirmation.ID || existing.SessionID != confirmation.SessionID || existing.Action != confirmation.Action || existing.OwnerDiscordUserID != confirmation.OwnerDiscordUserID || existing.GuildID != confirmation.GuildID {
+		if existing.ID != confirmation.ID {
+			if pendingErr := existing.CheckPending(service.clock.Now().UTC()); pendingErr != nil {
+				return domain.Confirmation{}, pendingErr
+			}
+			return domain.Confirmation{}, domain.ErrIdempotencyConflict
+		}
+		if existing.SessionID != confirmation.SessionID || existing.Action != confirmation.Action || existing.OwnerDiscordUserID != confirmation.OwnerDiscordUserID || existing.GuildID != confirmation.GuildID {
 			return domain.Confirmation{}, domain.ErrIdempotencyConflict
 		}
 		if existing.BoundState != session.LifecycleState || existing.BoundVersion != session.Version {
@@ -416,7 +420,7 @@ func (service *Service) Confirm(ctx context.Context, command ConfirmCommand) (do
 		return domain.Confirmation{}, fmt.Errorf("%w: destructive confirmations", domain.ErrFeatureDisabled)
 	}
 	now := service.clock.Now().UTC()
-	confirmation, session, err := service.confirmations.ConsumeConfirmation(ctx, command.Code, command.Actor.ID, command.GuildID, now)
+	confirmation, session, err := service.confirmations.ConsumeConfirmation(ctx, domain.PendingConfirmationCode(command.GuildID, command.Actor.ID), command.Actor.ID, command.GuildID, now)
 	if err != nil {
 		return domain.Confirmation{}, err
 	}
@@ -453,7 +457,7 @@ func (service *Service) CancelConfirmation(ctx context.Context, command CancelCo
 	if service.confirmations == nil {
 		return domain.Confirmation{}, fmt.Errorf("%w: destructive confirmations", domain.ErrFeatureDisabled)
 	}
-	return service.confirmations.CancelConfirmation(ctx, command.Code, command.Actor.ID, command.GuildID, service.clock.Now().UTC())
+	return service.confirmations.CancelConfirmation(ctx, domain.PendingConfirmationCode(command.GuildID, command.Actor.ID), command.Actor.ID, command.GuildID, service.clock.Now().UTC())
 }
 
 func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleCommand) error {

@@ -176,11 +176,11 @@ Successful recovery clears the active visible failure but does not delete its
 audit event.
 
 Archive and terminate first create a durable confirmation and perform no
-destructive work. `/rb confirm code:<code>` atomically consumes a matching
-owner/guild/session/action/state-bound record within ten minutes.
-`/rb cancel-confirmation` cancels it. Replays, stale state, mismatched users,
-and expired codes fail closed. Future buttons may call the same application
-service but may not weaken this contract.
+destructive work. Each user has one pending confirmation slot per guild;
+`/rb confirm` atomically consumes its owner/guild/session/action/state-bound
+record within ten minutes, and `/rb cancel-confirmation` cancels it. Replays,
+stale state, mismatched users, and expired confirmations fail closed. Future
+buttons may call the same application service but may not weaken this contract.
 
 ### Milestone progress
 

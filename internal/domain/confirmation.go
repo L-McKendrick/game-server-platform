@@ -71,6 +71,13 @@ func ConfirmationCode(value string) string {
 	return strings.ToUpper(hex.EncodeToString(digest[:6]))
 }
 
+// PendingConfirmationCode identifies the single server-side confirmation slot
+// for a Discord user in a guild. It is an internal persistence key, not a
+// secret or a value users need to enter.
+func PendingConfirmationCode(guildID, ownerDiscordUserID string) string {
+	return ConfirmationCode(strings.TrimSpace(guildID) + "\x00" + strings.TrimSpace(ownerDiscordUserID))
+}
+
 func (confirmation Confirmation) Validate() error {
 	switch {
 	case strings.TrimSpace(confirmation.ID) == "":

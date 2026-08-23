@@ -1270,8 +1270,8 @@ func TestHandlerArchiveCreatesThenConsumesDurableConfirmation(t *testing.T) {
 	response := executeSignedRequest(t, handler, privateKey, body, testNow)
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
-	code := domain.ConfirmationCode("interaction-archive")
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "No destructive work has been queued") || !strings.Contains(decoded.Data.Content, code) {
+	code := domain.PendingConfirmationCode("guild-1", "owner-1")
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "No destructive work has been queued") || !strings.Contains(decoded.Data.Content, "`/rb confirm`") || strings.Contains(decoded.Data.Content, code) {
 		t.Fatalf("response = %#v", decoded.Data)
 	}
 	confirmation, err := repository.GetConfirmation(context.Background(), code)
@@ -1279,9 +1279,7 @@ func TestHandlerArchiveCreatesThenConsumesDurableConfirmation(t *testing.T) {
 		t.Fatalf("confirmation = %#v, err %v", confirmation, err)
 	}
 
-	confirmBody := commandBody("interaction-confirm", "owner-1", "guild-1", "channel-1", "confirm", []any{
-		map[string]any{"type": applicationCommandOptionString, "name": "code", "value": code},
-	})
+	confirmBody := commandBody("interaction-confirm", "owner-1", "guild-1", "channel-1", "confirm", nil)
 	response = executeSignedRequest(t, handler, privateKey, confirmBody, testNow)
 	decodeResponse(t, response, &decoded)
 	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Archive request accepted") || !strings.Contains(decoded.Data.Content, "cannot be replayed") {
@@ -1303,13 +1301,11 @@ func TestHandlerTerminateConfirmationCanBeCancelled(t *testing.T) {
 	response := executeSignedRequest(t, handler, privateKey, body, testNow)
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
-	code := domain.ConfirmationCode("interaction-terminate")
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "irreversible") || !strings.Contains(decoded.Data.Content, code) {
+	code := domain.PendingConfirmationCode("guild-1", "owner-1")
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "irreversible") || !strings.Contains(decoded.Data.Content, "`/rb confirm`") || strings.Contains(decoded.Data.Content, code) {
 		t.Fatalf("response = %#v", decoded.Data)
 	}
-	cancelBody := commandBody("interaction-cancel", "owner-1", "guild-1", "channel-1", "cancel-confirmation", []any{
-		map[string]any{"type": applicationCommandOptionString, "name": "code", "value": code},
-	})
+	cancelBody := commandBody("interaction-cancel", "owner-1", "guild-1", "channel-1", "cancel-confirmation", nil)
 	response = executeSignedRequest(t, handler, privateKey, cancelBody, testNow)
 	decodeResponse(t, response, &decoded)
 	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "confirmation cancelled") || !strings.Contains(decoded.Data.Content, "No destructive work was queued") {
