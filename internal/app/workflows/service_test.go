@@ -59,7 +59,7 @@ func TestStartAcquiresLockStartsExecutionAndReplaysSameWorkflow(t *testing.T) {
 	command := workflowCommand(now)
 	command.Parameters = map[string]string{
 		domain.ServerConfigModeParameter: domain.ServerConfigModeCustom, domain.ServerConfigRevisionParameter: "2",
-		domain.ServerConfigObjectParameter: "guilds/guild-1/server-config/revisions/000002-a/server.cfg", domain.ServerConfigSHAParameter: strings.Repeat("a", 64),
+		domain.ServerConfigObjectParameter: "guilds/guild-1/server-config/revisions/000002-" + strings.Repeat("a", 64) + "/server.cfg", domain.ServerConfigSHAParameter: strings.Repeat("a", 64),
 	}
 
 	workflow, err := service.Start(context.Background(), command)

@@ -235,7 +235,8 @@ streams. It preserves the Terraform control plane and state, guild access,
 secrets, guild configuration artifacts, budgets, CloudTrail, billing records,
 AWS-retained service history, and the latest bounded reset result. Incomplete
 cleanup fails closed, displays a possible-cost warning, and schedules no
-automatic retry.
+automatic cleanup retry. An unacknowledged first worker attempt is isolated in
+the reset DLQ rather than replaying destructive cleanup.
 
 The Administrator-only configuration area accepts one guild-level Arma 3
 `server.cfg`. Uploads use Discord's private modal file control, accept only a

@@ -64,7 +64,10 @@ resource "aws_sqs_queue" "reset" {
   sqs_managed_sse_enabled    = true
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.reset_dlq.arn
-    maxReceiveCount     = 3
+    # A reset may already have made destructive progress before a worker
+    # timeout. Send any unacknowledged first attempt directly to the DLQ so
+    # cleanup is never repeated without a new Administrator decision.
+    maxReceiveCount = 1
   })
 }
 

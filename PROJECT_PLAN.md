@@ -82,7 +82,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **11.2** [ ] Add OIDC deployment, staging, dashboards, and tested runbooks.
     - **11.3** [ ] Verify costs and operational readiness.
 
-12. **Discord Experience and Session UX — In Progress (approved reorder; Phase 11 remains pending)**
+12. **Discord Experience and Session UX — Done (approved reorder; Phase 11 remains pending)**
     - Proceeded before Phases 10 and 11 by explicit user approval because of
       current limitations. Phase 10 is now complete; the reorder does not waive Phase 11.
     - Detailed design and execution guidance: `docs/phase-12-discord-experience.md`.
@@ -168,6 +168,11 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.11.1** [x] Replace user-entered codes with one durable pending archive/terminate confirmation slot per user and guild; resolve `/rb confirm` and `/rb cancel-confirmation` server-side while retaining owner/guild/action/state binding, ten-minute expiry, atomic consumption, idempotency, and replay protection.
       - **12.11.2** [x] Remove code options and code text from the Discord contract, responses, errors, documentation, and raw-payload tests; give clear guidance when no matching pending action exists or another action is already pending.
       - **12.11.3** [x] Run focused and proportional regression, update handoffs, then create and push one scoped Conventional Commit.
+    - **12.12** [x] Complete the final cross-step release review and prepare the Phase 12 pull request.
+      - **12.12.1** [x] Integrate the current `main` bootstrap hardening without regressing Phase 12 reset, configuration, or confirmation behavior.
+      - **12.12.2** [x] Review and fix authorization, destructive atomicity, replay/idempotency, pagination, metadata preservation, private-artifact integrity/redaction, retry disposition, least privilege, and Discord UX findings.
+      - **12.12.3** [x] Run focused and full proportional Go, Terraform, command-contract, Bash-artifact, packaging, and diff validation.
+      - **12.12.4** [x] Refresh the release handoff, create and push the scoped review commit, and provide the proposed pull-request name and description without deploying or opening the PR.
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.

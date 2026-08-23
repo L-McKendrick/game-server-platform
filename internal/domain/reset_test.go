@@ -29,6 +29,10 @@ func TestResetConfirmationIsExactBoundedAndSingleUse(t *testing.T) {
 	if !errors.Is(confirmation.Check("admin-1", "guild-1", confirmation.Phrase(), now.Add(ResetConfirmationLifetime)), ErrConfirmationExpired) {
 		t.Fatal("expired confirmation was accepted")
 	}
+	confirmation.Code = "AAAAAAAA"
+	if confirmation.Validate() == nil {
+		t.Fatal("confirmation code not derived from immutable ID was accepted")
+	}
 }
 
 func TestResetOperationRequiresTerminalAuditTimestamp(t *testing.T) {

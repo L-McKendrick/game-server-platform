@@ -550,14 +550,14 @@ func TestRequestStartRoutesProvisionedSessionToBootstrap(t *testing.T) {
 	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
 		t.Fatal(err)
 	}
-	serverConfig := domain.GuildServerConfig{GuildID: "guild-1", Revision: 1, ObjectKey: "guilds/guild-1/server-config/revisions/000001-a/server.cfg", Filename: "server.cfg", SHA256: strings.Repeat("a", 64), SizeBytes: 20, UploadedBy: "admin-1", UpdatedAt: now}
+	serverConfig := domain.GuildServerConfig{GuildID: "guild-1", Revision: 1, ObjectKey: "guilds/guild-1/server-config/revisions/000001-" + strings.Repeat("a", 64) + "/server.cfg", Filename: "server.cfg", SHA256: strings.Repeat("a", 64), SizeBytes: 20, UploadedBy: "admin-1", UpdatedAt: now}
 	if _, err := repository.SaveGuildServerConfig(context.Background(), serverConfig, 0); err != nil {
 		t.Fatal(err)
 	}
 	// Advance directly to revision 4 to model prior replacement/removal history.
 	for revision := int64(1); revision < 4; revision++ {
 		serverConfig.Revision = revision + 1
-		serverConfig.ObjectKey = fmt.Sprintf("guilds/guild-1/server-config/revisions/%06d-a/server.cfg", serverConfig.Revision)
+		serverConfig.ObjectKey = fmt.Sprintf("guilds/guild-1/server-config/revisions/%06d-%s/server.cfg", serverConfig.Revision, serverConfig.SHA256)
 		if _, err := repository.SaveGuildServerConfig(context.Background(), serverConfig, revision); err != nil {
 			t.Fatal(err)
 		}

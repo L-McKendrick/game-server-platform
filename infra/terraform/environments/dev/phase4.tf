@@ -113,6 +113,12 @@ data "aws_iam_policy_document" "artifact_worker" {
   }
 
   statement {
+    sid       = "SupersededServerConfigDelete"
+    actions   = ["s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.session_assets.arn}/guilds/*/server-config/revisions/*/server.cfg"]
+  }
+
+  statement {
     sid       = "NotificationSend"
     actions   = ["sqs:SendMessage"]
     resources = [aws_sqs_queue.notifications.arn]

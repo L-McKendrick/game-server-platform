@@ -58,6 +58,8 @@ type Config struct {
 	PollInterval, PollTimeout              time.Duration
 }
 
+const maxDiscoveryPages = 1000
+
 type Cleaner struct {
 	ec2      EC2API
 	s3       S3API
@@ -71,8 +73,15 @@ type Cleaner struct {
 
 func New(ec2Client EC2API, s3Client S3API, sqsClient SQSAPI, dynamoClient DynamoAPI, sfnClient SFNAPI, logsClient LogsAPI, messages MessageDeleter, config Config) (*Cleaner, error) {
 	config.Project, config.Environment, config.Bucket, config.Table = strings.TrimSpace(config.Project), strings.TrimSpace(config.Environment), strings.TrimSpace(config.Bucket), strings.TrimSpace(config.Table)
-	if ec2Client == nil || s3Client == nil || sqsClient == nil || dynamoClient == nil || sfnClient == nil || logsClient == nil || messages == nil || config.Project == "" || config.Environment == "" || config.Bucket == "" || config.Table == "" {
+	if ec2Client == nil || s3Client == nil || sqsClient == nil || dynamoClient == nil || sfnClient == nil || logsClient == nil || messages == nil || config.Project == "" || config.Environment == "" || config.Bucket == "" || config.Table == "" || len(config.QueueURLs) == 0 || len(config.StateMachineARNs) == 0 || len(config.LogGroups) == 0 {
 		return nil, fmt.Errorf("reset cleanup clients and scope are required")
+	}
+	for _, values := range [][]string{config.QueueURLs, config.StateMachineARNs, config.LogGroups} {
+		for _, value := range values {
+			if strings.TrimSpace(value) == "" {
+				return nil, fmt.Errorf("reset cleanup scope cannot contain empty values")
+			}
+		}
 	}
 	if config.PollInterval <= 0 {
 		config.PollInterval = 5 * time.Second
@@ -132,25 +141,23 @@ func (cleaner *Cleaner) verifyNoRuntimeDrift(ctx context.Context, currentResetOp
 	if len(items) != 0 {
 		return fmt.Errorf("runtime metadata reappeared during reset")
 	}
-	instances, err := cleaner.ec2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{Filters: cleaner.filters()})
+	instances, err := cleaner.listOwnedInstances(ctx)
 	if err != nil {
 		return err
 	}
-	for _, reservation := range instances.Reservations {
-		for _, instance := range reservation.Instances {
-			if !exactTags(instance.Tags, cleaner.config.Project, cleaner.config.Environment) {
-				return fmt.Errorf("reset verification found instance with incomplete immutable tags")
-			}
-			if instance.State.Name != ec2types.InstanceStateNameTerminated {
-				return fmt.Errorf("owned instance reappeared during reset")
-			}
+	for _, instance := range instances {
+		if !exactTags(instance.Tags, cleaner.config.Project, cleaner.config.Environment) {
+			return fmt.Errorf("reset verification found instance with incomplete immutable tags")
+		}
+		if instance.State.Name != ec2types.InstanceStateNameTerminated {
+			return fmt.Errorf("owned instance reappeared during reset")
 		}
 	}
-	volumes, err := cleaner.ec2.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{Filters: cleaner.filters()})
+	volumes, err := cleaner.listOwnedVolumes(ctx)
 	if err != nil {
 		return err
 	}
-	if len(volumes.Volumes) != 0 {
+	if len(volumes) != 0 {
 		return fmt.Errorf("owned volume remained after reset")
 	}
 	objects, err := cleaner.s3.ListObjectVersions(ctx, &s3.ListObjectVersionsInput{Bucket: aws.String(cleaner.config.Bucket), Prefix: aws.String("sessions/")})
@@ -162,7 +169,10 @@ func (cleaner *Cleaner) verifyNoRuntimeDrift(ctx context.Context, currentResetOp
 	}
 	for _, arn := range cleaner.config.StateMachineARNs {
 		var token *string
-		for {
+		for page := 0; ; page++ {
+			if page >= maxDiscoveryPages {
+				return fmt.Errorf("workflow verification exceeded the page limit")
+			}
 			executions, err := cleaner.sfn.ListExecutions(ctx, &sfn.ListExecutionsInput{StateMachineArn: aws.String(arn), StatusFilter: sfntypes.ExecutionStatusRunning, NextToken: token})
 			if err != nil {
 				return err
@@ -191,19 +201,17 @@ func exactTags(tags []ec2types.Tag, project, environment string) bool {
 }
 
 func (cleaner *Cleaner) terminateInstances(ctx context.Context) error {
-	output, err := cleaner.ec2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{Filters: cleaner.filters()})
+	instances, err := cleaner.listOwnedInstances(ctx)
 	if err != nil {
 		return err
 	}
 	ids := []string{}
-	for _, reservation := range output.Reservations {
-		for _, instance := range reservation.Instances {
-			if !exactTags(instance.Tags, cleaner.config.Project, cleaner.config.Environment) {
-				return fmt.Errorf("reset refused instance with incomplete immutable tags")
-			}
-			if instance.State.Name != ec2types.InstanceStateNameTerminated {
-				ids = append(ids, aws.ToString(instance.InstanceId))
-			}
+	for _, instance := range instances {
+		if !exactTags(instance.Tags, cleaner.config.Project, cleaner.config.Environment) {
+			return fmt.Errorf("reset refused instance with incomplete immutable tags")
+		}
+		if instance.State.Name != ec2types.InstanceStateNameTerminated {
+			ids = append(ids, aws.ToString(instance.InstanceId))
 		}
 	}
 	if len(ids) == 0 {
@@ -242,11 +250,11 @@ func (cleaner *Cleaner) terminateInstances(ctx context.Context) error {
 }
 
 func (cleaner *Cleaner) deleteVolumes(ctx context.Context) error {
-	output, err := cleaner.ec2.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{Filters: cleaner.filters()})
+	volumes, err := cleaner.listOwnedVolumes(ctx)
 	if err != nil {
 		return err
 	}
-	for _, volume := range output.Volumes {
+	for _, volume := range volumes {
 		if !exactTags(volume.Tags, cleaner.config.Project, cleaner.config.Environment) {
 			return fmt.Errorf("reset refused volume with incomplete immutable tags")
 		}
@@ -260,10 +268,59 @@ func (cleaner *Cleaner) deleteVolumes(ctx context.Context) error {
 	return nil
 }
 
+func (cleaner *Cleaner) listOwnedInstances(ctx context.Context) ([]ec2types.Instance, error) {
+	instances := []ec2types.Instance{}
+	var token *string
+	for page := 0; ; page++ {
+		if page >= maxDiscoveryPages {
+			return nil, fmt.Errorf("instance discovery exceeded the page limit")
+		}
+		output, err := cleaner.ec2.DescribeInstances(ctx, &ec2.DescribeInstancesInput{Filters: cleaner.filters(), NextToken: token})
+		if err != nil {
+			return nil, err
+		}
+		for _, reservation := range output.Reservations {
+			instances = append(instances, reservation.Instances...)
+		}
+		if output.NextToken == nil || strings.TrimSpace(aws.ToString(output.NextToken)) == "" {
+			return instances, nil
+		}
+		if token != nil && aws.ToString(token) == aws.ToString(output.NextToken) {
+			return nil, fmt.Errorf("instance discovery returned a repeated continuation token")
+		}
+		token = output.NextToken
+	}
+}
+
+func (cleaner *Cleaner) listOwnedVolumes(ctx context.Context) ([]ec2types.Volume, error) {
+	volumes := []ec2types.Volume{}
+	var token *string
+	for page := 0; ; page++ {
+		if page >= maxDiscoveryPages {
+			return nil, fmt.Errorf("volume discovery exceeded the page limit")
+		}
+		output, err := cleaner.ec2.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{Filters: cleaner.filters(), NextToken: token})
+		if err != nil {
+			return nil, err
+		}
+		volumes = append(volumes, output.Volumes...)
+		if output.NextToken == nil || strings.TrimSpace(aws.ToString(output.NextToken)) == "" {
+			return volumes, nil
+		}
+		if token != nil && aws.ToString(token) == aws.ToString(output.NextToken) {
+			return nil, fmt.Errorf("volume discovery returned a repeated continuation token")
+		}
+		token = output.NextToken
+	}
+}
+
 func (cleaner *Cleaner) deleteSessionObjects(ctx context.Context) (int, error) {
 	var keyMarker, versionMarker *string
 	deleted := 0
-	for {
+	for page := 0; ; page++ {
+		if page >= maxDiscoveryPages {
+			return deleted, fmt.Errorf("session object discovery exceeded the page limit")
+		}
 		output, err := cleaner.s3.ListObjectVersions(ctx, &s3.ListObjectVersionsInput{Bucket: aws.String(cleaner.config.Bucket), Prefix: aws.String("sessions/"), KeyMarker: keyMarker, VersionIdMarker: versionMarker})
 		if err != nil {
 			return deleted, err
@@ -303,20 +360,25 @@ func (cleaner *Cleaner) inventoryMetadata(ctx context.Context, currentResetOpera
 	sessions := 0
 	refs := [][2]string{}
 	var start map[string]ddbtypes.AttributeValue
-	for {
+	for page := 0; ; page++ {
+		if page >= maxDiscoveryPages {
+			return nil, 0, nil, fmt.Errorf("metadata discovery exceeded the page limit")
+		}
 		output, err := cleaner.dynamo.Scan(ctx, &dynamodb.ScanInput{TableName: aws.String(cleaner.config.Table), ExclusiveStartKey: start})
 		if err != nil {
 			return nil, 0, nil, err
 		}
 		for _, item := range output.Items {
 			entity := attributeString(item, "entity_type")
-			if entity == "GuildAccessPolicy" || entity == "ResetLock" || entity == "ResetAudit" || entity == "GuildServerConfig" ||
-				(entity == "ResetOperation" && attributeString(item, "operation_id") == strings.TrimSpace(currentResetOperationID)) {
-				continue
-			}
 			pk, sk := attributeString(item, "pk"), attributeString(item, "sk")
 			if pk == "" || sk == "" {
 				return nil, 0, nil, fmt.Errorf("metadata item missing key")
+			}
+			if preserveMetadataItem(entity, pk, sk, attributeString(item, "operation_id"), currentResetOperationID) {
+				continue
+			}
+			if !runtimeMetadataEntity(entity) {
+				return nil, 0, nil, fmt.Errorf("reset refused unknown metadata entity %q", entity)
 			}
 			keys = append(keys, metadataKey{pk, sk})
 			if entity == "Session" {
@@ -335,6 +397,28 @@ func (cleaner *Cleaner) inventoryMetadata(ctx context.Context, currentResetOpera
 		start = output.LastEvaluatedKey
 	}
 	return keys, sessions, refs, nil
+}
+
+func preserveMetadataItem(entity, pk, sk, operationID, currentResetOperationID string) bool {
+	if pk == "STEAM_AUTH#CACHE" && sk == "STATE" {
+		return true
+	}
+	if entity == "GuildAccessPolicy" || entity == "GuildServerConfig" || entity == "ResetAudit" {
+		return true
+	}
+	if entity == "ResetLock" {
+		return strings.TrimSpace(operationID) == strings.TrimSpace(currentResetOperationID)
+	}
+	return entity == "ResetOperation" && strings.TrimSpace(operationID) == strings.TrimSpace(currentResetOperationID)
+}
+
+func runtimeMetadataEntity(entity string) bool {
+	switch entity {
+	case "Session", "SessionEvent", "SessionSlugClaim", "IdempotencyRecord", "SessionCard", "SessionModlist", "Workflow", "CapacitySlot", "Confirmation", "OrphanFinding", "ReconciliationFinding", "DeadLetterOperation", "ResetConfirmation", "ResetOperation":
+		return true
+	default:
+		return false
+	}
 }
 func attributeString(item map[string]ddbtypes.AttributeValue, name string) string {
 	if value, ok := item[name].(*ddbtypes.AttributeValueMemberS); ok {
@@ -364,7 +448,10 @@ func (cleaner *Cleaner) purgeQueues(ctx context.Context) error {
 func (cleaner *Cleaner) stopExecutions(ctx context.Context) error {
 	for _, arn := range cleaner.config.StateMachineARNs {
 		var token *string
-		for {
+		for page := 0; ; page++ {
+			if page >= maxDiscoveryPages {
+				return fmt.Errorf("workflow discovery exceeded the page limit")
+			}
 			output, err := cleaner.sfn.ListExecutions(ctx, &sfn.ListExecutionsInput{StateMachineArn: aws.String(arn), StatusFilter: sfntypes.ExecutionStatusRunning, NextToken: token})
 			if err != nil {
 				return err
@@ -386,7 +473,10 @@ func (cleaner *Cleaner) deleteOldLogStreams(ctx context.Context, cutoff time.Tim
 	cutoffMillis := cutoff.UTC().UnixMilli()
 	for _, group := range cleaner.config.LogGroups {
 		var token *string
-		for {
+		for page := 0; ; page++ {
+			if page >= maxDiscoveryPages {
+				return fmt.Errorf("log stream discovery exceeded the page limit")
+			}
 			output, err := cleaner.logs.DescribeLogStreams(ctx, &cloudwatchlogs.DescribeLogStreamsInput{LogGroupName: aws.String(group), NextToken: token})
 			if err != nil {
 				return err

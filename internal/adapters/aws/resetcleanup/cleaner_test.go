@@ -8,6 +8,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -105,10 +106,66 @@ func TestInventoryMetadataPreservesControlPlaneAndResetAudit(t *testing.T) {
 		{"pk": stringAttribute("RESET_OPERATION#old"), "sk": stringAttribute("METADATA"), "entity_type": stringAttribute("ResetOperation"), "operation_id": stringAttribute("old-reset")},
 		{"pk": stringAttribute("RESET_OPERATION#current"), "sk": stringAttribute("METADATA"), "entity_type": stringAttribute("ResetOperation"), "operation_id": stringAttribute("current-reset")},
 		{"pk": stringAttribute("GUILD#1"), "sk": stringAttribute("SERVER_CFG"), "entity_type": stringAttribute("GuildServerConfig")},
+		{"pk": stringAttribute("STEAM_AUTH#CACHE"), "sk": stringAttribute("STATE")},
 	}}}}
 	cleaner := &Cleaner{dynamo: client}
 	items, sessions, _, err := cleaner.inventoryMetadata(context.Background(), "current-reset")
 	if err != nil || sessions != 1 || len(items) != 2 || items[0].pk != "SESSION#1" || items[1].pk != "RESET_OPERATION#old" {
 		t.Fatalf("items=%#v sessions=%d err=%v", items, sessions, err)
+	}
+}
+
+func TestInventoryMetadataFailsClosedOnUnknownEntity(t *testing.T) {
+	t.Parallel()
+	client := &fakeDynamo{pages: []*dynamodb.ScanOutput{{Items: []map[string]ddbtypes.AttributeValue{
+		{"pk": stringAttribute("FUTURE#1"), "sk": stringAttribute("STATE"), "entity_type": stringAttribute("FutureControlRecord")},
+	}}}}
+	cleaner := &Cleaner{dynamo: client}
+	if _, _, _, err := cleaner.inventoryMetadata(context.Background(), "current-reset"); err == nil {
+		t.Fatal("unknown metadata entity was selected for deletion")
+	}
+}
+
+type fakeEC2 struct {
+	instancePages []*ec2.DescribeInstancesOutput
+	volumePages   []*ec2.DescribeVolumesOutput
+	instanceIndex int
+	volumeIndex   int
+}
+
+func (fake *fakeEC2) DescribeInstances(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error) {
+	page := fake.instancePages[fake.instanceIndex]
+	fake.instanceIndex++
+	return page, nil
+}
+func (*fakeEC2) TerminateInstances(context.Context, *ec2.TerminateInstancesInput, ...func(*ec2.Options)) (*ec2.TerminateInstancesOutput, error) {
+	return &ec2.TerminateInstancesOutput{}, nil
+}
+func (fake *fakeEC2) DescribeVolumes(context.Context, *ec2.DescribeVolumesInput, ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error) {
+	page := fake.volumePages[fake.volumeIndex]
+	fake.volumeIndex++
+	return page, nil
+}
+func (*fakeEC2) DeleteVolume(context.Context, *ec2.DeleteVolumeInput, ...func(*ec2.Options)) (*ec2.DeleteVolumeOutput, error) {
+	return &ec2.DeleteVolumeOutput{}, nil
+}
+
+func TestOwnedComputeDiscoveryReadsEveryPage(t *testing.T) {
+	t.Parallel()
+	client := &fakeEC2{
+		instancePages: []*ec2.DescribeInstancesOutput{
+			{Reservations: []types.Reservation{{Instances: []types.Instance{{InstanceId: aws.String("i-1")}}}}, NextToken: aws.String("instances-2")},
+			{Reservations: []types.Reservation{{Instances: []types.Instance{{InstanceId: aws.String("i-2")}}}}},
+		},
+		volumePages: []*ec2.DescribeVolumesOutput{
+			{Volumes: []types.Volume{{VolumeId: aws.String("vol-1")}}, NextToken: aws.String("volumes-2")},
+			{Volumes: []types.Volume{{VolumeId: aws.String("vol-2")}}},
+		},
+	}
+	cleaner := &Cleaner{ec2: client}
+	instances, instanceErr := cleaner.listOwnedInstances(context.Background())
+	volumes, volumeErr := cleaner.listOwnedVolumes(context.Background())
+	if instanceErr != nil || volumeErr != nil || len(instances) != 2 || len(volumes) != 2 {
+		t.Fatalf("instances=%d instanceErr=%v volumes=%d volumeErr=%v", len(instances), instanceErr, len(volumes), volumeErr)
 	}
 }

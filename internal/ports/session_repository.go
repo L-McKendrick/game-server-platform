@@ -71,6 +71,13 @@ type ObjectStore interface {
 	Put(ctx context.Context, key string, contentType string, body []byte, sha256Base64 string) error
 }
 
+// PrivateObjectStore supports compensating deletion when a conditional
+// metadata write definitively loses a race after a private object was stored.
+type PrivateObjectStore interface {
+	ObjectStore
+	Delete(ctx context.Context, key string) error
+}
+
 type ObjectReader interface {
 	Get(ctx context.Context, key string) ([]byte, error)
 }

@@ -2150,7 +2150,7 @@ func TestHandlerAdministratorCanUploadInspectAndRemovePrivateServerConfig(t *tes
 		t.Fatalf("submitted=%#v requests=%#v", submitted, requests)
 	}
 
-	active := domain.GuildServerConfig{GuildID: "guild-1", Revision: 1, ObjectKey: "guilds/guild-1/server-config/revisions/000001-a/server.cfg", Filename: "private.cfg", SHA256: strings.Repeat("a", 64), SizeBytes: 32, UploadedBy: "admin-1", UpdatedAt: testNow}
+	active := domain.GuildServerConfig{GuildID: "guild-1", Revision: 1, ObjectKey: "guilds/guild-1/server-config/revisions/000001-" + strings.Repeat("a", 64) + "/server.cfg", Filename: "private.cfg", SHA256: strings.Repeat("a", 64), SizeBytes: 32, UploadedBy: "admin-1", UpdatedAt: testNow}
 	if _, err := repository.SaveGuildServerConfig(context.Background(), active, 0); err != nil {
 		t.Fatal(err)
 	}

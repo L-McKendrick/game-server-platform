@@ -3,35 +3,58 @@
 ## State and Objective
 
 Phases 1-10 are complete. Phase 11 remains pending under the approved Phase 12
-reorder. Phase 12 Steps 12.1-12.8 are merged. Steps 12.9-12.11 are complete on
-`codex/phase-12-discord-experience`. The branch is undergoing its final
-cross-step security, integrity, reliability, edge-case, efficiency, and UX
-review before a pull request.
+reorder. Phase 12 is complete on `codex/phase-12-discord-experience`, including
+the final cross-step review, and is ready for a pull request.
 
-## Current Review Scope
+## Final Review Hardening
 
-- Integrate the bootstrap handoff/input hardening already merged to `main`.
-- Review the Administrator-only runtime reset, private guild `server.cfg`, and
-  code-free archive/terminate confirmations as one release unit.
-- Preserve current Administrator checks, atomic confirmation/state binding,
-  reset ownership boundaries, private configuration redaction, and truthful
-  retry and billing language.
-- Run focused and full proportional validation, then commit and push the review
-  hardening. No deployment, command registration, live reset, or deferred
-  Phase 10 retry is authorized by this review.
+- Merged the bootstrap handoff/input fixes already on `main`, preserving
+  renewable Steam authorization leases, recoverable continuation delivery,
+  mission/config escaping, explicit game selection, and deployment checks.
+- Reset cleanup now validates every configured cleanup scope, walks bounded
+  EC2/DynamoDB/S3/Step Functions/log pagination, preserves guild access,
+  guild `server.cfg`, Steam authorization state, and the current reset audit,
+  and fails closed on unknown metadata instead of deleting it.
+- An unacknowledged reset attempt goes to the reset DLQ without automatic
+  destructive replay. Discord receives reset queue permission only when the
+  disabled-by-default reset gate is enabled.
+- Reset confirmation replays validate environment, guild, actor, expiry, use,
+  and the phrase derived from the immutable confirmation ID.
+- Guild `server.cfg` snapshots require an exact guild/revision/SHA-256 object
+  path. Transport errors cannot log signed Discord attachment URLs, deterministic
+  invalid requests are not retried, transient failures retain bounded retries,
+  and definitively superseded upload objects receive compensating deletion.
+- Artifact-worker delete permission is limited to superseded guild
+  configuration objects and does not permit deletion of session inputs.
+- Archive/terminate confirmation retains current Discord role context while
+  remaining optionless, atomic, state-bound, single-use, and replay-safe.
 
-## Deployment Disposition
+## Validation
 
-- The previously applied `phase-12-8-6-scoped.tfplan` predates the completed
-  Phase 12 work and must not be reused.
-- Steps 12.9-12.11 are not deployed. The user will run credential-bearing
-  deployment and Discord registration after reviewing a fresh exact plan.
-- Reset remains disabled by default. Enabling it and executing a live reset
-  require separate explicit decisions.
-- Step 12.11 requires re-registering `/rb` so Discord removes the old `code`
-  options. Pre-deployment code confirmations expire and must be requested again.
+- `go test ./...`, `go test -cover ./...`, `go vet ./...`, and
+  `go build ./cmd/...` pass with workspace-local Go caches.
+- Focused reset, server-config, confirmation, session/workflow, S3, bootstrap,
+  Discord interaction, and registration suites pass.
+- `terraform fmt -check -recursive infra/terraform` and
+  `terraform -chdir=infra/terraform/environments/dev validate` pass.
+- The `/rb` command JSON parses, `git diff --check` passes, the bootstrap
+  artifact passes its Bash syntax test, and all 13 Lambda archives package.
+- Race coverage was not run locally because this Windows host has no C
+  compiler; CI remains authoritative for `go test -race -cover ./...`.
 
-## Operator Commands
+## Deployment Disposition and Attention
+
+- No deployment, Discord registration, live reset, billable acceptance, or
+  deferred Phase 10 retry was run during this review.
+- Never reuse `phase-12-8-6-scoped.tfplan` or another older saved plan.
+- Reset remains disabled by default. The default action is to keep
+  `reset_enabled = false`; enabling it and executing a live reset are separate
+  explicit decisions.
+- Re-register `/rb` after deployment so Discord removes the former confirmation
+  `code` options. Pre-deployment code confirmations expire and must be requested
+  again after release.
+
+## Commands to Apply Current Changes
 
 From the repository root in PowerShell:
 
@@ -42,10 +65,10 @@ $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-release.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-12-release.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-final-review.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-12-final-review.tfplan
 # Apply only after reviewing and approving this exact saved plan.
-terraform -chdir=infra/terraform/environments/dev apply phase-12-release.tfplan
+terraform -chdir=infra/terraform/environments/dev apply phase-12-final-review.tfplan
 
 ./scripts/verify-bootstrap-worker-deployment.ps1
 
@@ -53,8 +76,3 @@ terraform -chdir=infra/terraform/environments/dev apply phase-12-release.tfplan
   -ApplicationId "1533676701354299402" `
   -GuildId "1192304488351019008"
 ```
-
-After deployment, run the runbook's non-billable acceptance with a configured
-role member and a manager. Billable/destructive checks remain **not run —
-approval required** unless separately authorized. Phase 10 retries remain
-deferred: no retry was scheduled, performed, or implied.

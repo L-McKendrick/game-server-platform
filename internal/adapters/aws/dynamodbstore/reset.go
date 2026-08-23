@@ -182,7 +182,14 @@ func (repository *Repository) GetActiveReset(ctx context.Context, environment st
 	if len(output.Item) == 0 {
 		return domain.ResetOperation{}, domain.ErrConflict
 	}
-	return unmarshalResetOperation(output.Item)
+	operation, err := unmarshalResetOperation(output.Item)
+	if err != nil {
+		return domain.ResetOperation{}, err
+	}
+	if !operation.Active() {
+		return domain.ResetOperation{}, domain.ErrConflict
+	}
+	return operation, nil
 }
 
 func (repository *Repository) GetLatestReset(ctx context.Context, environment string) (domain.ResetOperation, error) {

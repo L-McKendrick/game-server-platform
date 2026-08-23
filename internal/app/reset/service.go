@@ -67,7 +67,20 @@ func (service *Service) Prepare(ctx context.Context, confirmationID, guildID, ac
 	}
 	if err := service.repository.CreateResetConfirmation(ctx, confirmation); err != nil {
 		if errors.Is(err, domain.ErrAlreadyExists) {
-			return service.repository.GetResetConfirmation(ctx, confirmation.ID)
+			existing, getErr := service.repository.GetResetConfirmation(ctx, confirmation.ID)
+			if getErr != nil {
+				return domain.ResetConfirmation{}, getErr
+			}
+			if existing.Environment != confirmation.Environment || existing.GuildID != confirmation.GuildID || existing.RequestedBy != confirmation.RequestedBy {
+				return domain.ResetConfirmation{}, domain.ErrConfirmationMismatch
+			}
+			if !existing.ConsumedAt.IsZero() {
+				return domain.ResetConfirmation{}, domain.ErrConfirmationConsumed
+			}
+			if !service.clock.Now().UTC().Before(existing.ExpiresAt) {
+				return domain.ResetConfirmation{}, domain.ErrConfirmationExpired
+			}
+			return existing, nil
 		}
 		return domain.ResetConfirmation{}, err
 	}

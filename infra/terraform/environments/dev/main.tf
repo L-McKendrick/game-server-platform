@@ -283,10 +283,13 @@ data "aws_iam_policy_document" "discord_lambda" {
     resources = [aws_sqs_queue.notifications.arn]
   }
 
-  statement {
-    sid       = "ResetQueueSend"
-    actions   = ["sqs:SendMessage"]
-    resources = [aws_sqs_queue.reset.arn]
+  dynamic "statement" {
+    for_each = var.reset_enabled ? [1] : []
+    content {
+      sid       = "ResetQueueSend"
+      actions   = ["sqs:SendMessage"]
+      resources = [aws_sqs_queue.reset.arn]
+    }
   }
 
   statement {

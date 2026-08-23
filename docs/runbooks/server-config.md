@@ -14,7 +14,8 @@ not have this permission.
 
 The response means queued for private validation, not active. If the revision
 does not change, correct the file and upload again. Validation rejection or a
-stale revision schedules no automatic retry.
+stale revision schedules no automatic retry; transient processing failures use
+the artifact worker's existing bounded retry and DLQ policy.
 
 The platform never displays file contents or its private S3 object key. Treat
 the file as secret-bearing: it may include Arma server/admin passwords. The S3
@@ -44,12 +45,13 @@ does not drift.
 
 Package the Lambdas and review a fresh Terraform plan. It should update the
 Discord and artifact workers, the bootstrap artifact, and only the scoped S3
-permissions allowing the artifact worker to write and game instances to read
+permissions allowing the artifact worker to write configuration revisions,
+delete only a definitively superseded race loser, and let game instances read
 `guilds/*/server-config/revisions/*/server.cfg`.
 
 ```powershell
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-10-server-config.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-12-10-server-config.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-final-review.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-12-final-review.tfplan
 # Apply only after separate approval of this exact saved plan.
 ```

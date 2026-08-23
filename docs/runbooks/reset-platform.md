@@ -48,7 +48,9 @@ history, and the latest reset audit result remain. Billing history cannot be
 reset, and resources may incur cost until absence is verified.
 
 If the result is **incomplete**, do not assume the environment is empty and do
-not immediately run another reset. No automatic retry is scheduled. Inspect
+not immediately run another reset. No automatic cleanup retry is scheduled; an
+unacknowledged first worker attempt is sent to the reset DLQ instead of being
+run again. Inspect
 the reset worker logs, current Step Functions executions, tagged EC2/EBS
 inventory, session S3 versions, queues, and DynamoDB runtime records. Resolve
 the specific cause, review remaining cost-bearing resources, then prepare a

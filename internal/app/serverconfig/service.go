@@ -91,11 +91,11 @@ func (service *Service) Remove(ctx context.Context, guildID, actorID string, exp
 type Processor struct {
 	repository ports.GuildServerConfigRepository
 	downloader ports.ArtifactDownloader
-	objects    ports.ObjectStore
+	objects    ports.PrivateObjectStore
 	clock      Clock
 }
 
-func NewProcessor(repository ports.GuildServerConfigRepository, downloader ports.ArtifactDownloader, objects ports.ObjectStore, clock Clock) (*Processor, error) {
+func NewProcessor(repository ports.GuildServerConfigRepository, downloader ports.ArtifactDownloader, objects ports.PrivateObjectStore, clock Clock) (*Processor, error) {
 	if repository == nil || downloader == nil || objects == nil || clock == nil {
 		return nil, fmt.Errorf("server configuration processor dependencies are required")
 	}
@@ -104,13 +104,10 @@ func NewProcessor(repository ports.GuildServerConfigRepository, downloader ports
 
 func (processor *Processor) Process(ctx context.Context, request domain.ArtifactIngestRequest) error {
 	if err := request.Validate(); err != nil || !request.IsServerConfig() {
-		if err != nil {
-			return err
-		}
-		return fmt.Errorf("server configuration upload purpose is required")
+		return fmt.Errorf("%w: server configuration request is invalid", domain.ErrPermanentArtifactRejection)
 	}
 	if strings.ContainsAny(request.GuildID, `/\\`) || strings.Contains(request.GuildID, "..") {
-		return fmt.Errorf("guild ID is invalid")
+		return fmt.Errorf("%w: guild scope is invalid", domain.ErrPermanentArtifactRejection)
 	}
 	current, err := processor.repository.GetGuildServerConfig(ctx, request.GuildID)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
@@ -125,7 +122,9 @@ func (processor *Processor) Process(ctx context.Context, request domain.Artifact
 	}
 	body, err := processor.downloader.Download(ctx, request)
 	if err != nil {
-		return fmt.Errorf("download Discord server configuration: %w", err)
+		// Discord attachment URLs contain expiring credentials. Do not wrap the
+		// transport error because it may reproduce the full signed URL in logs.
+		return fmt.Errorf("download private server configuration: transient attachment failure")
 	}
 	if int64(len(body)) != request.SizeBytes || len(body) == 0 || !utf8.Valid(body) || bytes.IndexByte(body, 0) >= 0 {
 		return fmt.Errorf("%w: server configuration must be non-empty UTF-8 text matching its declared size", domain.ErrPermanentArtifactRejection)
@@ -138,6 +137,9 @@ func (processor *Processor) Process(ctx context.Context, request domain.Artifact
 		if current.Active() && current.SHA256 == digestHex && current.ObjectKey == objectKey {
 			return nil
 		}
+		if err := processor.objects.Delete(ctx, objectKey); err != nil {
+			return fmt.Errorf("remove superseded private server configuration: %w", err)
+		}
 		return domain.ErrConflict
 	}
 	if err := processor.objects.Put(ctx, objectKey, "text/plain; charset=utf-8", body, base64.StdEncoding.EncodeToString(digest[:])); err != nil {
@@ -148,5 +150,10 @@ func (processor *Processor) Process(ctx context.Context, request domain.Artifact
 		SHA256: digestHex, SizeBytes: int64(len(body)), UploadedBy: request.ActorID, UpdatedAt: processor.clock.Now().UTC(),
 	}
 	_, err = processor.repository.SaveGuildServerConfig(ctx, config, request.ExpectedServerConfigRevision)
+	if errors.Is(err, domain.ErrConflict) {
+		if deleteErr := processor.objects.Delete(ctx, objectKey); deleteErr != nil {
+			return fmt.Errorf("remove superseded private server configuration: %w", deleteErr)
+		}
+	}
 	return err
 }

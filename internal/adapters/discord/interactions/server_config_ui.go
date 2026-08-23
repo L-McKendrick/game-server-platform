@@ -34,7 +34,7 @@ func (handler *Handler) writeAdminServerConfigView(ctx context.Context, writer h
 	if found {
 		revision = config.Revision
 	}
-	content := "**Arma server config**\nFuture sessions use the platform-generated safe default. Upload one UTF-8 `.cfg` file up to 64 KiB to replace it. File contents are private and are never displayed. If a queued upload does not produce a new revision, correct the file and upload it again; no automatic retry is scheduled."
+	content := "**Arma server config**\nFuture sessions use the platform-generated safe default. Upload one UTF-8 `.cfg` file up to 64 KiB to replace it. File contents are private and are never displayed. Invalid files and stale revisions are not retried; transient processing failures use the worker's bounded retry policy."
 	controls := []interactionComponent{{Type: componentTypeActionRow, Components: []interactionComponent{{Type: componentTypeButton, Style: buttonStylePrimary, Label: "Upload server.cfg", CustomID: fmt.Sprintf("%s%d", adminServerConfigUploadPrefix, revision)}}}}
 	if found && config.Active() {
 		content = fmt.Sprintf("**Arma server config**\nActive: `%s`\nRevision: `%d`\nSize: %d bytes\nUpdated: <t:%d:F>\n\nContents are private and are never displayed. New sessions snapshot this exact revision when start begins; existing session replays retain their snapshot.", sanitizeCode(config.Filename), config.Revision, config.SizeBytes, config.UpdatedAt.UTC().Unix())
@@ -92,7 +92,7 @@ func (handler *Handler) submitServerConfigModal(ctx context.Context, writer http
 		return fmt.Errorf("queue guild server configuration: %w", err)
 	}
 	handler.writeAdminView(writer, interactionResponseChannelMessageWithSource,
-		fmt.Sprintf("**Server configuration queued for private validation**\n`%s` is not active yet. Reopen `/rb admin` to verify the new revision after processing. A failed upload schedules no automatic retry.", sanitizeCode(attachment.Filename)),
+		fmt.Sprintf("**Server configuration queued for private validation**\n`%s` is not active yet. Reopen `/rb admin` to verify the new revision after processing. Invalid files and stale revisions are not retried; transient processing failures use bounded retries.", sanitizeCode(attachment.Filename)),
 		adminMenuServerConfig, nil, true)
 	return nil
 }

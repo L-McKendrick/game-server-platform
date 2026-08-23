@@ -55,7 +55,7 @@ func (confirmation ResetConfirmation) Phrase() string {
 
 func (confirmation ResetConfirmation) Validate() error {
 	switch {
-	case strings.TrimSpace(confirmation.ID) == "", len(confirmation.Code) != 8:
+	case strings.TrimSpace(confirmation.ID) == "", len(confirmation.Code) != 8, confirmation.Code != ResetCode(confirmation.ID):
 		return fmt.Errorf("reset confirmation identity is invalid")
 	case strings.TrimSpace(confirmation.Environment) == "", strings.TrimSpace(confirmation.GuildID) == "", strings.TrimSpace(confirmation.RequestedBy) == "":
 		return fmt.Errorf("reset confirmation scope is required")
