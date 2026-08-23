@@ -109,6 +109,9 @@ func render(card Projection, detailed bool) string {
 			fmt.Fprintf(&builder, " — active %s", timestamp(card.Mods.ActiveSince))
 		}
 	}
+	if len(card.Mods.CreatorDLCs) > 0 {
+		fmt.Fprintf(&builder, "\n**Creator DLC:** %s", safe(strings.Join(creatorDLCLabels(card.Mods.CreatorDLCs), ", ")))
+	}
 	if card.Mods.PendingRevision > 0 {
 		fmt.Fprintf(&builder, "\n**Pending mod revision:** `%d` — %s", card.Mods.PendingRevision, safe(card.Mods.PendingStatus))
 		if !card.Mods.PendingSince.IsZero() {
@@ -140,6 +143,22 @@ func render(card Projection, detailed bool) string {
 		fmt.Fprintf(&builder, "\nPlayers observed %s.", timestamp(card.Freshness.PlayersObservedAt))
 	}
 	return bound(builder.String())
+}
+
+func creatorDLCLabels(values []string) []string {
+	labels := map[string]string{
+		domain.CreatorDLCGlobalMobilization: "Global Mobilization", domain.CreatorDLCSOGPrairieFire: "S.O.G. Prairie Fire",
+		domain.CreatorDLCCSLAIronCurtain: "CSLA Iron Curtain", domain.CreatorDLCWesternSahara: "Western Sahara",
+		domain.CreatorDLCSpearhead1944: "Spearhead 1944", domain.CreatorDLCReactionForces: "Reaction Forces",
+		domain.CreatorDLCExpeditionaryForces: "Expeditionary Forces",
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if label := labels[value]; label != "" {
+			result = append(result, label)
+		}
+	}
+	return result
 }
 
 func renderFailure(builder *strings.Builder, failure FailureProjection, detailed bool) {

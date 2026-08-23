@@ -129,6 +129,9 @@ func publicFailureValue(card Projection) string {
 func publicGameConnectionValue(card Projection) string {
 	value := connectionAddress(card.Endpoints.Game)
 	value += "\n\n**Modlist:** "
+	if len(card.Mods.CreatorDLCs) > 0 {
+		value += safe(strings.Join(creatorDLCLabels(card.Mods.CreatorDLCs), ", ")) + "\n**Workshop preset:** "
+	}
 	if !card.Mods.Required {
 		return value + "None"
 	}

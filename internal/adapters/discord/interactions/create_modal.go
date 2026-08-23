@@ -21,6 +21,7 @@ const (
 
 	createFeatureModded    = "modded"
 	createFeatureTeamSpeak = "teamspeak"
+	createFeatureAutoStart = "auto-start"
 
 	defaultGameProfileID = "arma3-default"
 	defaultSleepMinutes  = int64(30)
@@ -61,20 +62,34 @@ func writeCreateModal(writer http.ResponseWriter, gameType string) {
 		writeInteractionMessage(writer, "That game is not supported yet.")
 		return
 	}
-	writeSessionSetupModal(writer, createModalCustomID, "Create Arma 3 session", domain.Session{}, true)
+	writeSessionSetupModal(writer, createModalCustomID, "Create Arma 3 session", domain.Session{}, true, true)
 }
 
-func writeSessionSetupModal(writer http.ResponseWriter, customID, title string, session domain.Session, missionRequired bool) {
+func writeSessionSetupModal(writer http.ResponseWriter, customID, title string, session domain.Session, missionRequired, creation bool) {
 	required, optional := true, false
 	minimumName, maximumName := 1, 100
 	maximumDescription := 64
 	minimumNone, minimumOne, maximumOne, maximumFeatures := 0, 1, 1, 2
+	if creation {
+		maximumFeatures = 3
+	}
 	missionMinimum := minimumNone
 	if missionRequired {
 		missionMinimum = minimumOne
 	}
 	moddedDefault := session.ID == "" || !session.Vanilla
 
+	featureOptions := []interactionSelectOption{
+		{Label: "Modded", Value: createFeatureModded, Description: "Use a preset and optional Creator DLC", Default: moddedDefault},
+		{Label: "TeamSpeak", Value: createFeatureTeamSpeak, Description: "Run a TeamSpeak server", Default: session.TeamSpeakEnabled},
+	}
+	if creation {
+		featureOptions = append(featureOptions, interactionSelectOption{Label: "Begin server setup", Value: createFeatureAutoStart, Description: "Start after required files validate", Default: session.StartWhenReady})
+	}
+	featureDescription := "Modded is the platform default; clear it for vanilla. TeamSpeak is optional."
+	if creation {
+		featureDescription = "Choose modded/vanilla, optional TeamSpeak, and automatic setup after validation."
+	}
 	components := []interactionComponent{
 		{
 			Type: componentTypeLabel, Label: "Session name",
@@ -94,14 +109,11 @@ func writeSessionSetupModal(writer http.ResponseWriter, customID, title string, 
 		},
 		{
 			Type: componentTypeLabel, Label: "Mode and features",
-			Description: "Modded is the platform default; clear it for vanilla. TeamSpeak is optional.",
+			Description: featureDescription,
 			Component: &interactionComponent{
 				Type: componentTypeCheckboxGroup, CustomID: createFeaturesCustomID,
 				MinValues: &minimumNone, MaxValues: &maximumFeatures, Required: &optional,
-				Options: []interactionSelectOption{
-					{Label: "Modded", Value: createFeatureModded, Description: "Use an Arma Launcher preset", Default: moddedDefault},
-					{Label: "TeamSpeak", Value: createFeatureTeamSpeak, Description: "Run a TeamSpeak server", Default: session.TeamSpeakEnabled},
-				},
+				Options: featureOptions,
 			},
 		},
 		{
@@ -112,14 +124,13 @@ func writeSessionSetupModal(writer http.ResponseWriter, customID, title string, 
 				MinValues: &missionMinimum, MaxValues: &maximumOne, Required: &missionRequired,
 			},
 		},
-		{
+	}
+	if !creation {
+		components = append(components, interactionComponent{
 			Type: componentTypeLabel, Label: "Launcher preset",
 			Description: setupArtifactDescription("preset", session.PresetArtifactStatus, session.PresetObjectKey, false),
-			Component: &interactionComponent{
-				Type: componentTypeFileUpload, CustomID: createPresetCustomID,
-				MinValues: &minimumNone, MaxValues: &maximumOne, Required: &optional,
-			},
-		},
+			Component:   &interactionComponent{Type: componentTypeFileUpload, CustomID: createPresetCustomID, MinValues: &minimumNone, MaxValues: &maximumOne, Required: &optional},
+		})
 	}
 
 	writeJSON(writer, http.StatusOK, interactionResponse{

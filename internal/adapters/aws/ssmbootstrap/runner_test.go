@@ -84,6 +84,22 @@ func TestStartBuildsSecretSafeResumableCommand(t *testing.T) {
 	}
 }
 
+func TestCommandPassesCreatorDLCsThroughExistingModPath(t *testing.T) {
+	t.Parallel()
+	runner, err := New(&fakeSSM{}, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := domain.Session{ID: "session-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: "sessions/session-1/input/preset.html", CreatorDLCs: []string{domain.CreatorDLCGlobalMobilization, domain.CreatorDLCReactionForces}, LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}}
+	script, err := runner.command(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte("gm;rf"))) {
+		t.Fatal("command omitted canonical Creator DLC mod directories")
+	}
+}
+
 func TestCommandInstallsApplyingPendingRevisionWithoutChangingActivePointer(t *testing.T) {
 	t.Parallel()
 	runner, err := New(&fakeSSM{}, testConfig())

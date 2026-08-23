@@ -14,6 +14,7 @@ import (
 
 	"github.com/L-McKendrick/game-server-platform/internal/app/modlist"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
+	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -24,6 +25,14 @@ type Clock interface{ Now() time.Time }
 type IDGenerator interface {
 	New(time.Time) (string, error)
 }
+type AutoStarter interface {
+	RequestStart(context.Context, appsession.StartCommand) error
+}
+type Option func(*Service)
+
+func WithAutoStarter(starter AutoStarter) Option {
+	return func(service *Service) { service.autoStarter = starter }
+}
 
 type Service struct {
 	repository    ports.SessionRepository
@@ -33,6 +42,7 @@ type Service struct {
 	ids           IDGenerator
 	clock         Clock
 	retention     time.Duration
+	autoStarter   AutoStarter
 }
 
 func NewService(
@@ -43,6 +53,7 @@ func NewService(
 	ids IDGenerator,
 	clock Clock,
 	retention time.Duration,
+	options ...Option,
 ) (*Service, error) {
 	if repository == nil || downloader == nil || objects == nil || notifications == nil || ids == nil || clock == nil {
 		return nil, fmt.Errorf("artifact service dependencies are required")
@@ -50,7 +61,11 @@ func NewService(
 	if retention <= 0 {
 		return nil, fmt.Errorf("idempotency retention must be positive")
 	}
-	return &Service{repository, downloader, objects, notifications, ids, clock, retention}, nil
+	service := &Service{repository: repository, downloader: downloader, objects: objects, notifications: notifications, ids: ids, clock: clock, retention: retention}
+	for _, option := range options {
+		option(service)
+	}
+	return service, nil
 }
 
 func (service *Service) Process(ctx context.Context, request domain.ArtifactIngestRequest) error {
@@ -90,7 +105,14 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 		if err := service.storePublicModlist(ctx, publicModlist); err != nil {
 			return err
 		}
-		return service.notify(ctx, session, request, publicModlist)
+		persisted, getErr := service.repository.Get(ctx, request.SessionID)
+		if getErr != nil {
+			return getErr
+		}
+		if err := service.autoStart(ctx, persisted, request); err != nil {
+			return err
+		}
+		return service.notify(ctx, persisted, request, publicModlist)
 	}
 	directory := "missions"
 	if request.Kind == domain.ArtifactPreset {
@@ -166,11 +188,34 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 			if getErr != nil {
 				return getErr
 			}
+			if err := service.autoStart(ctx, persisted, request); err != nil {
+				return err
+			}
 			return service.notify(ctx, persisted, request, publicModlist)
 		}
 		return fmt.Errorf("persist artifact metadata: %w", err)
 	}
+	if err := service.autoStart(ctx, session, request); err != nil {
+		return err
+	}
 	return service.notify(ctx, session, request, publicModlist)
+}
+
+func (service *Service) autoStart(ctx context.Context, session domain.Session, request domain.ArtifactIngestRequest) error {
+	if service.autoStarter == nil || !session.StartWhenReady || request.IsPresetRevision() || !session.CanStartInfrastructureProvisioning() {
+		return nil
+	}
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", session.ID, session.ConfigurationRevision)))
+	commandID := hex.EncodeToString(digest[:16])
+	if err := service.autoStarter.RequestStart(ctx, appsession.StartCommand{
+		Actor:     domain.Actor{Type: domain.ActorTypeDiscordUser, ID: session.OwnerDiscordUserID},
+		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
+		CommandID: commandID, CorrelationID: request.CorrelationID,
+		IdempotencyKey: "auto-start:" + commandID,
+	}); err != nil {
+		return fmt.Errorf("automatically request session start: %w", err)
+	}
+	return nil
 }
 
 func (service *Service) reject(

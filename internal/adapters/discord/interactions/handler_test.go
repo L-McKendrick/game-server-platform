@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -254,7 +255,7 @@ func TestHandlerRecognizesModalSubmission(t *testing.T) {
 
 func TestHandlerOpensAndSubmitsPrivateModsModalForRunningSession(t *testing.T) {
 	t.Parallel()
-	handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(t, []string{"correlation-mods-open", "correlation-mods-submit"}, nil)
+	handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(t, []string{"correlation-mods-open", "correlation-mods-submit"}, []string{"event-mod-options"})
 	seedHandlerPresetRevisionSession(t, repository)
 	openBody := marshalPayload(map[string]any{
 		"id": "mods-open", "application_id": "app-1", "type": interactionTypeApplicationCommand, "guild_id": "guild-1", "channel_id": "channel-1",
@@ -264,22 +265,25 @@ func TestHandlerOpensAndSubmitsPrivateModsModalForRunningSession(t *testing.T) {
 	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
 	var modal interactionResponse
 	decodeResponse(t, opened, &modal)
-	if modal.Type != interactionResponseModal || modal.Data == nil || modal.Data.CustomID != "rb:mods:v1:session-mods:1" || modal.Data.Components == nil || len(*modal.Data.Components) != 1 {
+	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, modsModalCustomIDPrefix+modsModeRevision+":session-mods:1:") || modal.Data.Components == nil || len(*modal.Data.Components) != 2 {
 		t.Fatalf("mods modal response = %#v body=%s", modal, opened.Body.String())
 	}
 	submitBody := marshalPayload(map[string]any{
 		"id": "mods-submit", "application_id": "app-1", "type": interactionTypeModalSubmit, "guild_id": "guild-1", "channel_id": "channel-1",
 		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
 		"data": map[string]any{
-			"custom_id":  modal.Data.CustomID,
-			"resolved":   map[string]any{"attachments": map[string]any{"attachment-mods": map[string]any{"id": "attachment-mods", "filename": "revision.html", "content_type": "text/html", "size": 2048, "url": "https://cdn.discordapp.com/attachments/1/2/revision.html"}}},
-			"components": []any{map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsPresetCustomID, "values": []string{"attachment-mods"}}}},
+			"custom_id": modal.Data.CustomID,
+			"resolved":  map[string]any{"attachments": map[string]any{"attachment-mods": map[string]any{"id": "attachment-mods", "filename": "revision.html", "content_type": "text/html", "size": 2048, "url": "https://cdn.discordapp.com/attachments/1/2/revision.html"}}},
+			"components": []any{
+				map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsPresetCustomID, "values": []string{"attachment-mods"}}},
+				map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeCheckboxGroup, "custom_id": modsCreatorDLCsCustomID, "values": []string{domain.CreatorDLCReactionForces}}},
+			},
 		},
 	})
 	submitted := executeSignedRequest(t, handler, privateKey, submitBody, testNow)
 	var response interactionResponse
 	decodeResponse(t, submitted, &response)
-	if response.Data == nil || !strings.Contains(response.Data.Content, "queued for validation") || !strings.Contains(response.Data.Content, "not interrupted") {
+	if response.Data == nil || !strings.Contains(response.Data.Content, "queued for validation") || !strings.Contains(response.Data.Content, "No running server was changed") {
 		t.Fatalf("mods submit response = %#v body=%s", response, submitted.Body.String())
 	}
 	requests := queue.Requests()
@@ -297,7 +301,7 @@ func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testi
 		[]string{"session-modal", "event-created", "event-configured", "event-artifacts"},
 	)
 	body := createModalSubmissionBody(
-		"interaction-modal", "Saturday Arma", []string{createFeatureModded, createFeatureTeamSpeak}, true, "mission.pbo",
+		"interaction-modal", "Saturday Arma", []string{createFeatureModded, createFeatureTeamSpeak, createFeatureAutoStart}, true, "mission.pbo",
 	)
 
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -307,8 +311,8 @@ func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testi
 		if response.Code != http.StatusOK || decoded.Data == nil ||
 			!strings.Contains(decoded.Data.Content, "Draft session created") ||
 			!strings.Contains(decoded.Data.Content, "Mission queued for validation") ||
-			!strings.Contains(decoded.Data.Content, "Preset queued for validation") ||
-			!strings.Contains(decoded.Data.Content, "have not been validated yet") {
+			!strings.Contains(decoded.Data.Content, "Continue to mod options") ||
+			!strings.Contains(decoded.Data.Content, "have not been validated yet") || decoded.Data.Components == nil {
 			t.Fatalf("attempt %d response = %#v", attempt, decoded)
 		}
 	}
@@ -322,7 +326,7 @@ func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testi
 	}
 	session := sessions[0]
 	if session.ID != "session-modal" || session.Description != "Weekly co-op" ||
-		session.ConfigurationRevision != 1 || session.Vanilla || !session.TeamSpeakEnabled ||
+		session.ConfigurationRevision != 1 || session.Vanilla || !session.TeamSpeakEnabled || !session.StartWhenReady ||
 		session.SleepAfterSeconds != defaultSleepMinutes*60 || session.ArchiveAfterSeconds != defaultArchiveDays*86400 {
 		t.Fatalf("configured draft = %#v", session)
 	}
@@ -330,10 +334,8 @@ func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testi
 		t.Fatalf("events = %#v; want creation, configuration, and artifact preparation", events)
 	}
 	requests := queue.Requests()
-	if len(requests) != 2 || requests[0].Kind != domain.ArtifactMission || requests[1].Kind != domain.ArtifactPreset ||
-		requests[0].SessionID != session.ID || requests[1].SessionID != session.ID ||
-		requests[0].IdempotencyKey == requests[1].IdempotencyKey {
-		t.Fatalf("queued requests = %#v", requests)
+	if len(requests) != 1 || requests[0].Kind != domain.ArtifactMission || requests[0].SessionID != session.ID {
+		t.Fatalf("queued requests = %#v; want mission only before page two", requests)
 	}
 	cardRequests := cards.Requests()
 	if len(cardRequests) != 1 || cardRequests[0].Kind != domain.NotificationSessionCard ||
@@ -371,8 +373,8 @@ func TestHandlerKeepsModdedCreationWithoutPresetRecoverable(t *testing.T) {
 
 	handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(
 		t,
-		[]string{"correlation-modded-missing"},
-		[]string{"session-modded-missing", "event-created", "event-configured", "event-artifacts"},
+		[]string{"correlation-modded-missing", "correlation-mod-options"},
+		[]string{"session-modded-missing", "event-created", "event-configured", "event-artifacts", "event-mod-options"},
 	)
 	response := executeSignedRequest(t, handler, privateKey, createModalSubmissionBody(
 		"interaction-modded-missing", "Modded Missing Preset", []string{createFeatureModded}, false, "mission.pbo",
@@ -380,7 +382,7 @@ func TestHandlerKeepsModdedCreationWithoutPresetRecoverable(t *testing.T) {
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
 	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Mode: Modded") ||
-		!strings.Contains(decoded.Data.Content, "add one before this modded session can become ready") {
+		!strings.Contains(decoded.Data.Content, "Continue to mod options") || decoded.Data.Components == nil {
 		t.Fatalf("modded response = %#v", decoded.Data)
 	}
 	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
@@ -393,6 +395,52 @@ func TestHandlerKeepsModdedCreationWithoutPresetRecoverable(t *testing.T) {
 	}
 	if requests := queue.Requests(); len(requests) != 1 || requests[0].Kind != domain.ArtifactMission {
 		t.Fatalf("modded queued requests = %#v; want mission only", requests)
+	}
+	button := (*decoded.Data.Components)[0].Components[0]
+	staleID, err := createModsContinueCustomID("session-modded-missing", sessions[0].Version-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleBody := marshalPayload(map[string]any{
+		"id": "create-mod-options-stale", "application_id": "app-1", "type": interactionTypeMessageComponent,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data":   map[string]any{"custom_id": staleID, "component_type": componentTypeButton},
+	})
+	stale := executeSignedRequest(t, handler, privateKey, staleBody, testNow)
+	decodeResponse(t, stale, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "stale") {
+		t.Fatalf("stale continuation response = %#v", decoded.Data)
+	}
+	openBody := marshalPayload(map[string]any{
+		"id": "create-mod-options-open", "application_id": "app-1", "type": interactionTypeMessageComponent,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data":   map[string]any{"custom_id": button.CustomID, "component_type": componentTypeButton},
+	})
+	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
+	var modal interactionResponse
+	decodeResponse(t, opened, &modal)
+	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, modsModalCustomIDPrefix+modsModeCreate) || modal.Data.Components == nil || len(*modal.Data.Components) != 2 {
+		t.Fatalf("creation mod options modal = %#v", modal)
+	}
+	submitBody := marshalPayload(map[string]any{
+		"id": "create-mod-options-submit", "application_id": "app-1", "type": interactionTypeModalSubmit,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{"custom_id": modal.Data.CustomID, "components": []any{
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsPresetCustomID, "values": []string{}}},
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeCheckboxGroup, "custom_id": modsCreatorDLCsCustomID, "values": []string{domain.CreatorDLCWesternSahara, domain.CreatorDLCReactionForces}}},
+		}},
+	})
+	submitted := executeSignedRequest(t, handler, privateKey, submitBody, testNow)
+	decodeResponse(t, submitted, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Creator DLC selected: 2") || !strings.Contains(decoded.Data.Content, "recoverable draft") {
+		t.Fatalf("creation mod options response = %#v", decoded.Data)
+	}
+	stored, err := repository.Get(context.Background(), "session-modded-missing")
+	if err != nil || !slices.Equal(stored.CreatorDLCs, []string{domain.CreatorDLCWesternSahara, domain.CreatorDLCReactionForces}) {
+		t.Fatalf("stored Creator DLCs = %#v err=%v", stored.CreatorDLCs, err)
 	}
 }
 
@@ -423,9 +471,6 @@ func TestParseCreateModalSubmissionEnforcesServerSideLimits(t *testing.T) {
 	mission := attachment(&maximum, "attachment-mission")
 	mission.Size = 100 * 1024 * 1024
 	setAttachment(&maximum, "attachment-mission", mission)
-	preset := attachment(&maximum, "attachment-preset")
-	preset.Size = 10 * 1024 * 1024
-	setAttachment(&maximum, "attachment-preset", preset)
 	if _, err := parseCreateModalSubmission(maximum, testActorForInteraction("owner-1"), "correlation-limits", "discord:limits", testNow); err != nil {
 		t.Fatalf("maximum permitted modal values returned error: %v", err)
 	}
@@ -446,16 +491,8 @@ func TestParseCreateModalSubmissionEnforcesServerSideLimits(t *testing.T) {
 			value.Size = 100*1024*1024 + 1
 			setAttachment(payload, "attachment-mission", value)
 		}},
-		{name: "preset over 10 MiB", want: "no larger than 10 MiB", mutate: func(payload *interactionPayload) {
-			value := attachment(payload, "attachment-preset")
-			value.Size = 10*1024*1024 + 1
-			setAttachment(payload, "attachment-preset", value)
-		}},
 		{name: "missing required mission", want: "single mission .pbo", mutate: func(payload *interactionPayload) {
 			payload.Data.Components[3].Component.Values = nil
-		}},
-		{name: "more than one preset", want: "at most one Arma Launcher", mutate: func(payload *interactionPayload) {
-			payload.Data.Components[4].Component.Values = []string{"attachment-preset", "attachment-preset-2"}
 		}},
 	}
 	for _, test := range tests {
@@ -747,11 +784,11 @@ func TestHandlerOpensCreateModalWithoutPersistingSession(t *testing.T) {
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
 	if decoded.Type != interactionResponseModal || decoded.Data == nil || decoded.Data.CustomID != createModalCustomID ||
-		decoded.Data.Title != "Create Arma 3 session" || decoded.Data.Components == nil || len(*decoded.Data.Components) != 5 {
+		decoded.Data.Title != "Create Arma 3 session" || decoded.Data.Components == nil || len(*decoded.Data.Components) != 4 {
 		t.Fatalf("create modal response = %#v", decoded)
 	}
 	components := *decoded.Data.Components
-	wantTypes := []int{componentTypeTextInput, componentTypeTextInput, componentTypeCheckboxGroup, componentTypeFileUpload, componentTypeFileUpload}
+	wantTypes := []int{componentTypeTextInput, componentTypeTextInput, componentTypeCheckboxGroup, componentTypeFileUpload}
 	for index, component := range components {
 		if component.Type != componentTypeLabel || component.Component == nil || component.Component.Type != wantTypes[index] {
 			t.Fatalf("modal component %d = %#v; want label wrapping type %d", index, component, wantTypes[index])
@@ -768,17 +805,16 @@ func TestHandlerOpensCreateModalWithoutPersistingSession(t *testing.T) {
 	}
 	features := components[2].Component
 	if features.CustomID != createFeaturesCustomID || features.MinValues == nil || *features.MinValues != 0 ||
-		features.MaxValues == nil || *features.MaxValues != 2 || len(features.Options) != 2 ||
+		features.MaxValues == nil || *features.MaxValues != 3 || len(features.Options) != 3 ||
 		features.Options[0].Value != createFeatureModded || !features.Options[0].Default ||
-		features.Options[1].Value != createFeatureTeamSpeak || features.Options[1].Default {
+		features.Options[1].Value != createFeatureTeamSpeak || features.Options[1].Default ||
+		features.Options[2].Value != createFeatureAutoStart || features.Options[2].Default {
 		t.Fatalf("feature defaults = %#v; want modded on and TeamSpeak off", features.Options)
 	}
-	mission, preset := components[3].Component, components[4].Component
+	mission := components[3].Component
 	if mission.CustomID != createMissionCustomID || mission.Required == nil || !*mission.Required ||
-		mission.MinValues == nil || *mission.MinValues != 1 || mission.MaxValues == nil || *mission.MaxValues != 1 ||
-		preset.CustomID != createPresetCustomID || preset.Required == nil || *preset.Required ||
-		preset.MinValues == nil || *preset.MinValues != 0 || preset.MaxValues == nil || *preset.MaxValues != 1 {
-		t.Fatalf("file requirements mission=%#v preset=%#v", mission.Required, preset.Required)
+		mission.MinValues == nil || *mission.MinValues != 1 || mission.MaxValues == nil || *mission.MaxValues != 1 {
+		t.Fatalf("mission file requirements = %#v", mission)
 	}
 
 	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
@@ -1847,7 +1883,7 @@ func createModalSubmissionBody(
 	interactionID string,
 	displayName string,
 	features []string,
-	includePreset bool,
+	_ bool,
 	missionFilename string,
 ) []byte {
 	attachments := map[string]any{
@@ -1855,14 +1891,6 @@ func createModalSubmissionBody(
 			"id": "attachment-mission", "filename": missionFilename, "size": 1024,
 			"url": "https://cdn.discordapp.com/attachments/1/2/" + missionFilename,
 		},
-	}
-	presetValues := []string{}
-	if includePreset {
-		presetValues = []string{"attachment-preset"}
-		attachments["attachment-preset"] = map[string]any{
-			"id": "attachment-preset", "filename": "preset.html", "size": 2048,
-			"url": "https://cdn.discordapp.com/attachments/1/2/preset.html",
-		}
 	}
 	label := func(component map[string]any) map[string]any {
 		return map[string]any{"type": componentTypeLabel, "component": component}
@@ -1878,7 +1906,6 @@ func createModalSubmissionBody(
 				label(map[string]any{"type": componentTypeTextInput, "custom_id": createDescriptionCustomID, "value": " Weekly   co-op\n"}),
 				label(map[string]any{"type": componentTypeCheckboxGroup, "custom_id": createFeaturesCustomID, "values": features}),
 				label(map[string]any{"type": componentTypeFileUpload, "custom_id": createMissionCustomID, "values": []string{"attachment-mission"}}),
-				label(map[string]any{"type": componentTypeFileUpload, "custom_id": createPresetCustomID, "values": presetValues}),
 			},
 			"resolved": map[string]any{"attachments": attachments},
 		},

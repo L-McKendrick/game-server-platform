@@ -2,6 +2,7 @@ package domain
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -234,6 +235,51 @@ func TestVanillaSessionBecomesNewWithoutPreset(t *testing.T) {
 	}
 	if session.LifecycleState != StateNew || session.PresetObjectKey != "" || !session.Vanilla {
 		t.Fatalf("vanilla session = %#v; want NEW without preset", session)
+	}
+}
+
+func TestSessionConfigurationPersistsCanonicalCreatorDLCSelection(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 23, 6, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{
+		ID: "session-cdlc", Slug: "creator-dlc", DisplayName: "Creator DLC", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = session.Configure(SessionConfiguration{
+		GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400,
+		CreatorDLCs: []string{CreatorDLCReactionForces, CreatorDLCGlobalMobilization},
+	}, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{CreatorDLCGlobalMobilization, CreatorDLCReactionForces}
+	if !slices.Equal(session.CreatorDLCs, want) {
+		t.Fatalf("CreatorDLCs = %#v; want %#v", session.CreatorDLCs, want)
+	}
+	if err := session.Validate(); err != nil {
+		t.Fatalf("configured session validation failed: %v", err)
+	}
+}
+
+func TestVanillaSessionRejectsCreatorDLCSelection(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 23, 6, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{
+		ID: "session-vanilla-cdlc", Slug: "vanilla-cdlc", DisplayName: "Vanilla cDLC", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = session.Configure(SessionConfiguration{
+		GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400,
+		Vanilla: true, CreatorDLCs: []string{CreatorDLCWesternSahara},
+	}, now.Add(time.Second))
+	if err == nil {
+		t.Fatal("Configure() accepted Creator DLC for a vanilla session")
 	}
 }
 

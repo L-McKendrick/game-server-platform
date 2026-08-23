@@ -13,6 +13,7 @@ SERVER_CONFIG_REVISION="$(decode "$SERVER_CONFIG_REV_B64")"
 PRESET_KEY="$(decode "$PRESET_KEY_B64")"
 PRESET_REVISION="$(decode "$PRESET_REVISION_B64")"
 PRESET_ROLLBACK="$(decode "$PRESET_ROLLBACK_B64")"
+CREATOR_DLC_MODS="$(decode "$CREATOR_DLC_MODS_B64")"
 ASSETS_BUCKET="$(decode "$ASSETS_BUCKET_B64")"
 METADATA_TABLE="$(decode "$METADATA_TABLE_B64")"
 STEAM_AUTH_SECRET_ID="$(decode "$STEAM_AUTH_SECRET_B64")"
@@ -368,15 +369,22 @@ install_workshop() (
     chown steam:steam "$ROOT/config/mods.txt"
     return 0
   fi
-	local preset_file mods_file
+	local preset_file mods_file mods="" dlc
 	mkdir -p "$ROOT/config/presets" "$ROOT/config/mod-revisions"
 	preset_file="$ROOT/config/presets/revision-$PRESET_REVISION.html"
 	mods_file="$ROOT/config/mod-revisions/revision-$PRESET_REVISION.txt"
 	aws s3 cp "s3://$ASSETS_BUCKET/$PRESET_KEY" "$preset_file" --region "$AWS_REGION" --only-show-errors
 	mapfile -t ids < <(grep -Eio "id=[0-9]+|data-publishedfileid=[\"'][0-9]+" "$preset_file" | grep -Eo '[0-9]+' | awk '!seen[$0]++')
 	: > "$mods_file"
-  [ "${#ids[@]}" -gt 0 ] || return 0
-  local runfile id source link mods=""
+  IFS=';' read -r -a creator_dlcs <<< "$CREATOR_DLC_MODS"
+  for dlc in "${creator_dlcs[@]}"; do
+    [ -z "$dlc" ] && continue
+    [[ "$dlc" =~ ^[a-z0-9_-]+$ ]] || { log "Creator DLC directory name is invalid"; return 1; }
+    [ -d "$ROOT/arma3/$dlc" ] || { log "Selected Creator DLC $dlc was not installed"; return 1; }
+    mods="${mods:+$mods;}$dlc"
+  done
+  local runfile id source link
+  if [ "${#ids[@]}" -gt 0 ]; then
   runfile="$(mktemp /run/gsp-steam.XXXXXX)"
   trap 'rm -f "$runfile"' EXIT
   steam_login_file "$runfile"
@@ -391,6 +399,7 @@ install_workshop() (
     ln -sfn "$source" "$link"
     mods="${mods:+$mods;}@workshop_$id"
   done
+	fi
 	printf '%s' "$mods" > "$mods_file"
 	ln -sfn "presets/revision-$PRESET_REVISION.html" "$ROOT/config/preset.html"
 	ln -sfn "mod-revisions/revision-$PRESET_REVISION.txt" "$ROOT/config/mods.txt"

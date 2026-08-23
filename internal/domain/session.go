@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -31,6 +32,8 @@ type Session struct {
 	ArchiveAfterSeconds   int64
 	TeamSpeakEnabled      bool
 	Vanilla               bool
+	CreatorDLCs           []string
+	StartWhenReady        bool
 	ConfigurationRevision int64
 	ServerConfigRevision  int64
 	ServerConfigObjectKey string
@@ -232,6 +235,8 @@ type SessionConfiguration struct {
 	ArchiveAfterSeconds int64
 	TeamSpeakEnabled    bool
 	Vanilla             bool
+	CreatorDLCs         []string
+	StartWhenReady      bool
 }
 
 // NewSessionInput contains the required information for a new draft session.
@@ -319,6 +324,13 @@ func GenerateSessionSlug(displayName string) string {
 
 // Validate verifies the session's domain invariants.
 func (session Session) Validate() error {
+	creatorDLCs, creatorDLCErr := NormalizeCreatorDLCs(session.CreatorDLCs)
+	if creatorDLCErr != nil {
+		return creatorDLCErr
+	}
+	if !slices.Equal(creatorDLCs, session.CreatorDLCs) {
+		return fmt.Errorf("Creator DLC selection must use canonical catalog order")
+	}
 	if err := session.Infrastructure.Validate(); err != nil {
 		return err
 	}
@@ -379,6 +391,8 @@ func (session Session) Validate() error {
 		return fmt.Errorf("archive policy must be at least 86400 seconds")
 	case session.ConfigurationRevision < 0:
 		return fmt.Errorf("configuration revision cannot be negative")
+	case session.Vanilla && len(session.CreatorDLCs) != 0:
+		return fmt.Errorf("vanilla session cannot load Creator DLC")
 	case session.ServerConfigRevision < 0 || (session.ServerConfigObjectKey == "" && session.ServerConfigSHA256 != "") || (session.ServerConfigObjectKey != "" && (session.ServerConfigRevision < 1 || len(session.ServerConfigSHA256) != 64)):
 		return fmt.Errorf("server configuration snapshot is invalid")
 	case session.PresetRevisionSequence < 0:
@@ -518,6 +532,29 @@ func (session *Session) SetDescription(description string, now time.Time) (strin
 	return previous, nil
 }
 
+// UpdateCreatorDLCs records the desired Creator DLC set without claiming a
+// running process changed in place. Lifecycle workers apply it at the next safe
+// start boundary.
+func (session *Session) UpdateCreatorDLCs(values []string, now time.Time) error {
+	if session.Vanilla {
+		return fmt.Errorf("%w: vanilla sessions cannot load Creator DLC", ErrInvalidTransition)
+	}
+	if session.ActiveWorkflowID != "" {
+		return fmt.Errorf("%w: wait for the active lifecycle operation before changing mods", ErrWorkflowLocked)
+	}
+	switch session.LifecycleState {
+	case StateDeleting, StateDeleted, StateArchiving, StateDestroying, StateRestoring, StateWaking, StateStopping:
+		return fmt.Errorf("%w: mods cannot be changed in lifecycle state %s", ErrInvalidTransition, session.LifecycleState)
+	}
+	normalized, err := NormalizeCreatorDLCs(values)
+	if err != nil {
+		return err
+	}
+	session.CreatorDLCs = normalized
+	session.ConfigurationRevision++
+	return session.RecordMutation(now)
+}
+
 // BeginMonitoring records a short, read-only Systems Manager probe. Monitoring
 // never changes the session lifecycle and may only run for a live server.
 func (session *Session) BeginMonitoring(commandID string, now time.Time) error {
@@ -621,12 +658,21 @@ func (session *Session) applyConfiguration(configuration SessionConfiguration) e
 	if configuration.ArchiveAfterSeconds < 86400 || configuration.ArchiveAfterSeconds > 90*86400 {
 		return fmt.Errorf("archive policy must be between 1 and 90 days")
 	}
+	creatorDLCs, err := NormalizeCreatorDLCs(configuration.CreatorDLCs)
+	if err != nil {
+		return err
+	}
+	if configuration.Vanilla && len(creatorDLCs) != 0 {
+		return fmt.Errorf("vanilla session cannot load Creator DLC")
+	}
 
 	session.GameProfileID = configuration.GameProfileID
 	session.SleepAfterSeconds = configuration.SleepAfterSeconds
 	session.ArchiveAfterSeconds = configuration.ArchiveAfterSeconds
 	session.TeamSpeakEnabled = configuration.TeamSpeakEnabled
 	session.Vanilla = configuration.Vanilla
+	session.CreatorDLCs = creatorDLCs
+	session.StartWhenReady = configuration.StartWhenReady
 	session.ConfigurationRevision++
 	return nil
 }

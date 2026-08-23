@@ -1070,6 +1070,29 @@ func TestTransitionRejectsInvalidStateChange(t *testing.T) {
 	}
 }
 
+func TestConfigureRequestIdentityCanonicalizesCreatorDLCOrder(t *testing.T) {
+	t.Parallel()
+	base := ConfigureCommand{
+		Actor: testActor("owner-1"), SessionID: "session-1", GuildID: "guild-1", IdempotencyKey: "configure-1",
+		GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 7 * 86400,
+	}
+	first := base
+	first.CreatorDLCs = []string{domain.CreatorDLCReactionForces, domain.CreatorDLCGlobalMobilization}
+	second := base
+	second.CreatorDLCs = []string{domain.CreatorDLCGlobalMobilization, domain.CreatorDLCReactionForces}
+	_, firstHash, err := configureRequestIdentity(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, secondHash, err := configureRequestIdentity(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstHash != secondHash {
+		t.Fatalf("semantically equal cDLC selections hashed differently: %q != %q", firstHash, secondHash)
+	}
+}
+
 func TestConfigurePersistsRevisionAndEvent(t *testing.T) {
 	t.Parallel()
 

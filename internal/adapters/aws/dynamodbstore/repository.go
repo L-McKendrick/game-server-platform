@@ -100,6 +100,8 @@ type sessionItem struct {
 	ArchiveAfterSeconds              int64    `dynamodbav:"archive_after_seconds"`
 	TeamSpeakEnabled                 bool     `dynamodbav:"teamspeak_enabled"`
 	Vanilla                          bool     `dynamodbav:"vanilla"`
+	CreatorDLCs                      []string `dynamodbav:"creator_dlcs,omitempty"`
+	StartWhenReady                   bool     `dynamodbav:"start_when_ready,omitempty"`
 	ConfigurationRevision            int64    `dynamodbav:"configuration_revision"`
 	ServerConfigRevision             int64    `dynamodbav:"server_config_revision,omitempty"`
 	ServerConfigObjectKey            string   `dynamodbav:"server_config_object_key,omitempty"`
@@ -1040,6 +1042,8 @@ func toSessionItem(session domain.Session) sessionItem {
 		ArchiveAfterSeconds:              session.ArchiveAfterSeconds,
 		TeamSpeakEnabled:                 session.TeamSpeakEnabled,
 		Vanilla:                          session.Vanilla,
+		CreatorDLCs:                      append([]string(nil), session.CreatorDLCs...),
+		StartWhenReady:                   session.StartWhenReady,
 		ConfigurationRevision:            session.ConfigurationRevision,
 		ServerConfigRevision:             session.ServerConfigRevision,
 		ServerConfigObjectKey:            session.ServerConfigObjectKey,
@@ -1257,6 +1261,8 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		ArchiveAfterSeconds:    item.ArchiveAfterSeconds,
 		TeamSpeakEnabled:       item.TeamSpeakEnabled,
 		Vanilla:                item.Vanilla,
+		CreatorDLCs:            append([]string(nil), item.CreatorDLCs...),
+		StartWhenReady:         item.StartWhenReady,
 		ConfigurationRevision:  item.ConfigurationRevision,
 		ServerConfigRevision:   item.ServerConfigRevision,
 		ServerConfigObjectKey:  item.ServerConfigObjectKey,

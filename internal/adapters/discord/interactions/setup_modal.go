@@ -48,7 +48,7 @@ func (handler *Handler) openSetupModal(ctx context.Context, writer http.Response
 	if len(customID) > 100 {
 		return fmt.Errorf("setup modal identifier exceeds Discord limit")
 	}
-	writeSessionSetupModal(writer, customID, "Repair Arma 3 setup", session, false)
+	writeSessionSetupModal(writer, customID, "Repair Arma 3 setup", session, false, false)
 	return nil
 }
 
@@ -68,12 +68,17 @@ func (handler *Handler) submitSetupModal(ctx context.Context, payload interactio
 		return "", newUserError("This session is no longer a draft, so its setup cannot be edited.")
 	}
 	existing := session
+	creatorDLCs := session.CreatorDLCs
+	if !submission.modded {
+		creatorDLCs = nil
+	}
 	session, err = handler.service.UpdateDraftSetup(ctx, appsession.UpdateDraftSetupCommand{
 		Actor: actor, SessionID: session.ID, GuildID: payload.GuildID,
 		CorrelationID: correlationID, IdempotencyKey: keyPrefix + ":update",
 		GameProfileID: defaultGameProfileID, SleepAfterSeconds: session.SleepAfterSeconds,
 		ArchiveAfterSeconds: session.ArchiveAfterSeconds, TeamSpeakEnabled: submission.teamSpeak,
 		Vanilla: !submission.modded, DisplayName: submission.name, Description: submission.description,
+		CreatorDLCs: creatorDLCs, StartWhenReady: session.StartWhenReady,
 		ReplaceMission: submission.mission != nil, ReplacePreset: submission.preset != nil,
 	})
 	if err != nil {

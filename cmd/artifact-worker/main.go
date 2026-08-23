@@ -18,6 +18,7 @@ import (
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3objects"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqscommand"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/httpartifact"
 	"github.com/L-McKendrick/game-server-platform/internal/app/artifacts"
@@ -49,8 +50,8 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(cfg.SessionAssetsBucket) == "" || strings.TrimSpace(cfg.NotificationQueueURL) == "" {
-		return nil, fmt.Errorf("SESSION_ASSETS_BUCKET and NOTIFICATION_QUEUE_URL are required")
+	if strings.TrimSpace(cfg.SessionAssetsBucket) == "" || strings.TrimSpace(cfg.NotificationQueueURL) == "" || strings.TrimSpace(cfg.CommandQueueURL) == "" {
+		return nil, fmt.Errorf("SESSION_ASSETS_BUCKET, NOTIFICATION_QUEUE_URL, and COMMAND_QUEUE_URL are required")
 	}
 	logger := logging.New(cfg.LogLevel)
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.AWSRegion))
@@ -61,10 +62,18 @@ func build(ctx context.Context) (*handler, error) {
 	downloader := httpartifact.New()
 	objects := s3objects.New(s3.NewFromConfig(awsCfg), cfg.SessionAssetsBucket)
 	clock := appsession.SystemClock{}
+	queueClient := sqs.NewFromConfig(awsCfg)
+	startService, err := appsession.NewService(repository, identity.Generator{}, clock, cfg.IdempotencyRetention,
+		appsession.WithCommandQueue(sqscommand.New(queueClient, cfg.CommandQueueURL)),
+		appsession.WithServerConfigRepository(repository))
+	if err != nil {
+		return nil, err
+	}
 	service, err := artifacts.NewService(
 		repository, downloader, objects,
-		sqsnotification.New(sqs.NewFromConfig(awsCfg), cfg.NotificationQueueURL),
+		sqsnotification.New(queueClient, cfg.NotificationQueueURL),
 		identity.Generator{}, clock, cfg.IdempotencyRetention,
+		artifacts.WithAutoStarter(startService),
 	)
 	if err != nil {
 		return nil, err

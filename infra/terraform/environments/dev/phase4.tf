@@ -125,6 +125,12 @@ data "aws_iam_policy_document" "artifact_worker" {
   }
 
   statement {
+    sid       = "CommandSend"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.commands.arn]
+  }
+
+  statement {
     sid = "ArtifactQueueConsume"
     actions = [
       "sqs:ReceiveMessage",
@@ -179,6 +185,7 @@ resource "aws_lambda_function" "artifact_worker" {
       METADATA_TABLE_NAME         = aws_dynamodb_table.metadata.name
       SESSION_ASSETS_BUCKET       = aws_s3_bucket.session_assets.id
       NOTIFICATION_QUEUE_URL      = aws_sqs_queue.notifications.url
+      COMMAND_QUEUE_URL           = aws_sqs_queue.commands.url
       IDEMPOTENCY_RETENTION_HOURS = "168"
     }
   }

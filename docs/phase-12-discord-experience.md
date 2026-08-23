@@ -64,14 +64,35 @@ Administrator or Manage Server permission.
 
 ### Creation and setup
 
-`/rb create` opens one private modal with at most five top-level components:
+`/rb create` opens a private base-setup modal:
 
 1. session name;
 2. optional description;
 3. combined mode/features control, with vanilla implied when modded is not
-   selected and TeamSpeak independently selectable;
-4. required mission upload;
-5. optional preset upload, which is logically required for modded readiness.
+   selected, TeamSpeak independently selectable, and an optional durable
+   `Begin server setup` intent;
+4. required mission upload.
+
+After a modded base submission, an ephemeral `Continue to mod options` button
+opens a second modal containing an optional Launcher preset upload and a
+checkbox group for the seven supported Creator DLCs. Discord does not permit a
+modal-submit response to open another modal, so the explicit button is the
+native continuation boundary. Vanilla creation skips it. `/rb mods` opens this
+same mod-options modal for an existing modded session and allows a preset
+upload, a cDLC-only change, or both. Every submission is owner/guild/version
+bound and stale forms fail closed. Discord modals do not support arbitrary
+images or media galleries; cDLCs therefore use their official accessible names
+without unsupported icon placeholders.
+
+The artifact worker honors `Begin server setup` only after the authoritative
+session reaches `NEW`, then calls the existing start use case with a stable
+idempotency identity. Artifact replay can retry a failed queue handoff without
+creating a parallel lifecycle path. Creator DLCs likewise reuse the revisioned
+mod pipeline: bootstrap maps the supported catalog to the server directories
+`gm`, `vn`, `csla`, `ws`, `spe`, `rf`, and `ef`, verifies each selected
+directory, and writes them before Workshop links in the same `mods.txt` read by
+the existing `-mod` argument. Archive manifests preserve the canonical
+selection, restore rejects drift, and cards show the selected product names.
 
 Creation uses the platform sleep/archive defaults. Submission creates a draft
 idempotently, publishes the public card, and queues file validation. It does
@@ -79,8 +100,10 @@ not claim that uploads are valid before workers accept them. A partial failure
 retains the draft and successful artifact. `/rb setup` reuses the same
 contracts to edit allowed draft fields or replace only missing/rejected input.
 
-Creation must not allocate billable game infrastructure automatically. Once a
-draft is ready, one `/rb start` request owns the full user-visible transition
+Creation does not allocate billable infrastructure before required uploads are
+accepted. When `Begin server setup` is selected, the platform durably waits for
+required validation and then performs the equivalent of one `/rb start`;
+otherwise the owner starts manually. One start request owns the transition
 through infrastructure provisioning, game/content bootstrap, health checks,
 and playable readiness. Users must not issue a second start merely to advance
 from provisioned infrastructure into bootstrap. A repeated start while that
@@ -150,8 +173,9 @@ validated preset, use a slug-based filename, and strip irrelevant local or
 sensitive metadata. Recreate the message from the durable S3 object if it is
 deleted.
 
-Post-creation `/rb mods` uploads and validates a pending preset revision. A
-running session is not interrupted. Apply pending revisions on the next start,
+Post-creation `/rb mods` updates the desired Creator DLC set and optionally
+uploads and validates a pending preset revision. A running session is not
+interrupted. Apply pending mod options on the next start,
 wake, or restore. The previous revision remains active until installation and
 health verification pass; promote the public attachment only after success.
 On failure, retain diagnostic history and attempt to return to the previous

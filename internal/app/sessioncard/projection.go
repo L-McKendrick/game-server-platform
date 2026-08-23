@@ -92,6 +92,7 @@ type ModsProjection struct {
 	PendingStatus   string
 	PendingSince    time.Time
 	DownloadURL     string
+	CreatorDLCs     []string
 }
 
 type FailureProjection struct {
@@ -605,7 +606,7 @@ func modStatus(session domain.Session) string {
 }
 
 func modProjection(session domain.Session, modlistURL string) ModsProjection {
-	projection := ModsProjection{Required: !session.Vanilla, Status: modStatus(session), DownloadURL: normalizeModlistURL(modlistURL)}
+	projection := ModsProjection{Required: !session.Vanilla, Status: modStatus(session), DownloadURL: normalizeModlistURL(modlistURL), CreatorDLCs: append([]string(nil), session.CreatorDLCs...)}
 	if session.Vanilla {
 		return projection
 	}

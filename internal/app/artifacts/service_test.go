@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
+	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
 
@@ -57,6 +58,53 @@ type testNotifications struct{ requests []domain.NotificationRequest }
 func (queue *testNotifications) Enqueue(_ context.Context, request domain.NotificationRequest) error {
 	queue.requests = append(queue.requests, request)
 	return nil
+}
+
+type testAutoStarter struct {
+	commands []appsession.StartCommand
+	err      error
+}
+
+func (starter *testAutoStarter) RequestStart(_ context.Context, command appsession.StartCommand) error {
+	starter.commands = append(starter.commands, command)
+	return starter.err
+}
+
+func TestProcessAutomaticallyStartsReadyOptInSessionAndReplaysSafely(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "vanilla", DisplayName: "Vanilla", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(domain.SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 3600, ArchiveAfterSeconds: 86400, Vanilla: true, StartWhenReady: true}, now); err != nil {
+		t.Fatal(err)
+	}
+	event := domain.NewSessionCreatedEvent("create-event", "create-correlation", domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}, session, now)
+	record, _ := domain.NewCompletedIdempotencyRecord("create", "hash", session.ID, now, time.Hour)
+	if err := repository.Create(context.Background(), session, event, record); err != nil {
+		t.Fatal(err)
+	}
+	downloader := &testDownloader{body: []byte("0123456789abcdef")}
+	starter := &testAutoStarter{}
+	service, err := NewService(repository, downloader, &testObjectStore{}, &testNotifications{}, &testIDs{ids: []string{"artifact-event"}}, testClock{now}, time.Hour, WithAutoStarter(starter))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := missionRequest(now, int64(len(downloader.body)))
+	if err := service.Process(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Process(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(starter.commands) != 2 || starter.commands[0].CommandID != starter.commands[1].CommandID || starter.commands[0].IdempotencyKey != starter.commands[1].IdempotencyKey {
+		t.Fatalf("automatic start commands = %#v; want deterministic replay", starter.commands)
+	}
+	if starter.commands[0].Actor.ID != session.OwnerDiscordUserID || starter.commands[0].GuildID != session.GuildID {
+		t.Fatalf("automatic start authority = %#v", starter.commands[0])
+	}
 }
 
 func TestProcessStoresValidatedMissionAndPersistsMetadata(t *testing.T) {
