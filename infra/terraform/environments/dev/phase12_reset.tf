@@ -28,11 +28,13 @@ locals {
     aws_sqs_queue.notifications,
     aws_sqs_queue.notification_dlq,
   ]
-  reset_state_machines = [
-    aws_sfn_state_machine.workflow,
-    aws_sfn_state_machine.provision_session,
-    aws_sfn_state_machine.bootstrap_game_server,
-  ]
+  reset_state_machine_arns = concat(
+    [for machine in values(aws_sfn_state_machine.workflow) : machine.arn],
+    [
+      aws_sfn_state_machine.provision_session.arn,
+      aws_sfn_state_machine.bootstrap_game_server.arn,
+    ],
+  )
   reset_application_log_groups = [
     aws_cloudwatch_log_group.discord_lambda,
     aws_cloudwatch_log_group.artifact_worker,
@@ -167,13 +169,13 @@ data "aws_iam_policy_document" "reset_worker" {
   statement {
     sid       = "InspectWorkflows"
     actions   = ["states:ListExecutions"]
-    resources = [for machine in local.reset_state_machines : machine.arn]
+    resources = local.reset_state_machine_arns
   }
 
   statement {
     sid       = "StopWorkflowExecutions"
     actions   = ["states:StopExecution"]
-    resources = [for machine in local.reset_state_machines : "arn:aws:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:execution:${split(":", machine.arn)[6]}:*"]
+    resources = [for machine_arn in local.reset_state_machine_arns : "arn:aws:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:execution:${split(":", machine_arn)[6]}:*"]
   }
 
   statement {
@@ -228,7 +230,7 @@ resource "aws_lambda_function" "reset_worker" {
       SESSION_ASSETS_BUCKET    = aws_s3_bucket.session_assets.id
       DISCORD_SECRET_NAME      = aws_secretsmanager_secret.discord_bot_token.name
       RESET_RUNTIME_QUEUE_URLS = join(",", [for queue in local.reset_runtime_queues : queue.url])
-      RESET_STATE_MACHINE_ARNS = join(",", [for machine in local.reset_state_machines : machine.arn])
+      RESET_STATE_MACHINE_ARNS = join(",", local.reset_state_machine_arns)
       RESET_LOG_GROUPS         = join(",", [for group in local.reset_application_log_groups : group.name])
     }
   }

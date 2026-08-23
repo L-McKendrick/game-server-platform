@@ -28,6 +28,9 @@ the final cross-step review, and is ready for a pull request.
   configuration objects and does not permit deletion of session inputs.
 - Archive/terminate confirmation retains current Discord role context while
   remaining optionless, atomic, state-bound, single-use, and replay-safe.
+- Reset workflow scope is now an explicit flattened list of ARN strings,
+  including every `for_each` lifecycle workflow plus provisioning and
+  bootstrap. This fixes the Terraform plan-time unsupported-attribute error.
 
 ## Validation
 
@@ -47,6 +50,8 @@ the final cross-step review, and is ready for a pull request.
 - No deployment, Discord registration, live reset, billable acceptance, or
   deferred Phase 10 retry was run during this review.
 - Never reuse `phase-12-8-6-scoped.tfplan` or another older saved plan.
+- The failed plan attempt did not produce an applicable reviewed plan. Create
+  the newly named plan below after pulling this fix.
 - Reset remains disabled by default. The default action is to keep
   `reset_enabled = false`; enabling it and executing a live reset are separate
   explicit decisions.
@@ -65,10 +70,10 @@ $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-final-review.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-12-final-review.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-workflow-arn-fix.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-12-workflow-arn-fix.tfplan
 # Apply only after reviewing and approving this exact saved plan.
-terraform -chdir=infra/terraform/environments/dev apply phase-12-final-review.tfplan
+terraform -chdir=infra/terraform/environments/dev apply phase-12-workflow-arn-fix.tfplan
 
 ./scripts/verify-bootstrap-worker-deployment.ps1
 
