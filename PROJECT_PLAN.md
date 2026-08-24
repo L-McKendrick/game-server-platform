@@ -4,6 +4,15 @@
 
 Build a secure, cost-bounded AWS platform controlled through Discord that provisions, operates, sleeps, archives, restores, and destroys temporary dedicated game servers. Deliver the complete Arma 3 lifecycle first, then reuse the platform for other games.
 
+## Remaining Delivery Order
+
+1. Complete the core product with automatic inactivity handling (Phase 14) and
+   maximum-duration cost guardrails (Phase 15).
+2. Harden production operations and optimize measured bottlenecks (Phase 16).
+3. Consider scheduling, additional games, web UI, multi-account, and
+   multi-region expansion only after the core platform is operationally ready
+   (Phase 17).
+
 ## Phases
 
 1. **Foundation — Done**
@@ -77,14 +86,14 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **10.3.4** [x] Fail closed on renewed Steam Guard challenges, provide operator-safe guidance, and preserve Workshop-free vanilla behavior.
       - **10.3.5** [x] Add replacement-host reuse, invalidation, concurrency, cleanup, redaction, archive/restore, and vanilla regression coverage plus the operating runbook.
 
-11. **Production Hardening — Pending**
-    - **11.1** [ ] Complete least-privilege and threat-model reviews.
-    - **11.2** [ ] Add OIDC deployment, staging, dashboards, and tested runbooks.
-    - **11.3** [ ] Verify costs and operational readiness.
+11. **Production Hardening — Resequenced**
+    - Remaining work moved to Phase 16 so the key lifecycle and cost-bound
+      product features land before final hardening and optimization.
 
-12. **Discord Experience and Session UX — Done (approved reorder; Phase 11 remains pending)**
+12. **Discord Experience and Session UX — Done (approved reorder)**
     - Proceeded before Phases 10 and 11 by explicit user approval because of
-      current limitations. Phase 10 is now complete; the reorder does not waive Phase 11.
+      current limitations. Phase 10 is complete; the deferred Phase 11 scope is
+      now ordered under Phase 16.
     - Detailed design and execution guidance: `docs/phase-12-discord-experience.md`.
     - **12.1** [x] Establish the Discord interaction and presentation foundation.
       - **12.1.1** [x] Replace the `/session` command definition and routing with guild-only `/rb`; do not ship a compatibility alias, and consolidate administration under the protected `/rb admin` group during release polish.
@@ -183,8 +192,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **12.13.4** [x] Preserve verified Discord role context through immediate and artifact-delayed automatic starts so the existing worker access policy authorizes them without an owner bypass.
       - **12.13.5** [x] Make cDLC-only bootstrap tolerate Steam's absent optional Workshop directory while retaining resumable checkpoints and the shared mod path.
 
-13. **Expansion and Optimization — Pending**
-    - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.
+13. **Product Expansion Foundations — Done**
     - **13.2** [x] Add optional and multiple Arma 3 mission files through a consolidated session-edit experience, while preserving a clean path to later mission rotation.
       - **13.2.1** [x] Replace the required single-mission projection with backward-compatible immutable mission records and atomic configured/current projections; make `MP_ZGM_m12.Stratis` the built-in configured default when no accepted upload is selected, preserve artifact history through archive/restore/termination, and prevent removal of the currently loaded mission.
       - **13.2.2** [x] Replace `/rb mods` with `/rb edit session:<slug> section:<mods|mission-files>` using a game-aware section contract; retain the existing preset and Creator DLC flow, and add a private five-per-page mission manager with validation state, `Default`, `Remove`, `Add mission`, and pagination controls plus a bounded `.pbo` upload modal.
@@ -194,9 +202,29 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **13.2.6** [x] Keep zero-object termination results present in the Lambda contract so Step Functions can finalize empty sessions without leaving stale deletion locks.
       - **13.2.7** [x] Avoid the AWK built-in `close` name in mission-rewrite locals so configuration deployment runs on Ubuntu's default `mawk`.
       - **13.2.8** [x] Remove stale saved plans from the active development environment while preserving the current reviewed plan and recoverable local history.
-    - **13.3** [ ] Add an admin-configurable maximum session duration, owner warnings, and auditable admin extension.
-    - **13.4** [ ] Evaluate scheduling and operational analytics using the Phase 12 admin and presentation contracts.
-    - **13.5** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; extend `/rb create` beyond its required Arma 3 choice and route each supported game into its game-specific setup contract.
-    - **13.6** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.
     - **13.7** [x] Publish a self-hosted Discord bot deployment guide.
       - **13.7.1** [x] Document Discord application setup, AWS/Terraform deployment, secret installation, command registration, verification, and safe provisioning enablement; link the guide from the README.
+
+14. **Automatic Inactivity Lifecycle — Pending**
+    - Deliver the first conservative fixed-policy foundation: sleep a running
+      session after 30 continuous minutes with no players, then archive it after
+      72 continuous hours sleeping. Defer configurable policies, richer activity
+      signals, warnings/cancellation, schedules, and extensions to later work.
+    - **14.1** [ ] Persist trustworthy inactivity evidence and transition timing from bounded player-count observations; treat missing, stale, malformed, or failed observations as unknown and never as zero players.
+    - **14.2** [ ] Extend the scheduled monitor to idempotently request the existing sleep workflow after 30 continuous verified zero-player minutes, while respecting lifecycle state, active workflow locks, and concurrent player activity.
+    - **14.3** [ ] Add a scheduled, idempotent 72-hour sleeping-state check that requests the existing verified archive workflow without weakening its resource-ownership, backup-integrity, or failure safeguards.
+    - **14.4** [ ] Add focused timing, state-drift, replay, concurrency, unknown-activity, workflow-failure, persistence, notification/card, Terraform, and end-to-end regression coverage; document the fixed policy and the deferred expansion points.
+
+15. **Maximum Session Duration Guardrails — Pending**
+    - **15.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
+
+16. **Production Hardening and Optimization — Pending**
+    - **16.1** [ ] Complete least-privilege and threat-model reviews across Discord, AWS, artifacts, workflows, and destructive lifecycle boundaries.
+    - **16.2** [ ] Add OIDC deployment, staging, dashboards, alert validation, and tested production and disaster-recovery runbooks.
+    - **16.3** [ ] Verify costs, quotas, failure recovery, backup restoration, and operational readiness against explicit release gates.
+    - **16.4** [ ] Benchmark bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements, then optimize only demonstrated bottlenecks within cost and reliability guardrails.
+
+17. **Potential Enhancements — Pending**
+    - **17.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.
+    - **17.2** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; extend `/rb create` beyond Arma 3 through explicit game-specific setup contracts.
+    - **17.3** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.

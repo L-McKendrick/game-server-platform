@@ -58,8 +58,13 @@ Terraform apply, or Discord registration was performed.
 
 ## Next Development Task
 
-- Continue with one selected pending Phase 13 step, or return to Phase 11
-  production hardening. Start the selected step on its own numbered task plan.
+- Phase 14 now plans the basic automatic inactivity lifecycle: sleep after 30
+  continuous verified zero-player minutes and archive after 72 continuous hours
+  sleeping. Development has not started. Before implementation, start the phase
+  on a new branch and break Phase 14.1 into its numbered task plan.
+- Remaining product delivery is ordered as Phase 14 inactivity automation,
+  Phase 15 maximum-duration cost guardrails, Phase 16 production hardening and
+  measured optimization, then Phase 17 potential enhancements.
 
 ## Commands to Apply Current Changes
 
@@ -97,3 +102,6 @@ volume may continue incurring cost until the operator retries or ends it. The
 fresh saved plan proposes one content-addressed bootstrap-object replacement
 and seven in-place Lambda/IAM-policy updates, with no runtime EC2/EBS changes.
 `test-12-3` and `test-13` need no further recovery action.
+
+The Phase 14 planning-only update requires no deployment or Discord command
+registration.
