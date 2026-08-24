@@ -23,6 +23,42 @@ type MissionRecord struct {
 
 func (record MissionRecord) Active() bool { return record.RemovedAt.IsZero() }
 
+func (record MissionRecord) Accepted() bool {
+	return record.Active() && record.Status == ArtifactAccepted && strings.TrimSpace(record.ObjectKey) != ""
+}
+
+// AcceptedMissionFiles returns the bounded bootstrap/live-copy authority in
+// stable insertion order. Removed and rejected records never reach a host.
+func (session Session) AcceptedMissionFiles() []MissionRecord {
+	missions := make([]MissionRecord, 0, len(session.MissionFiles))
+	seen := make(map[string]bool, len(session.MissionFiles))
+	for _, record := range session.MissionFiles {
+		if !record.Accepted() || seen[record.ObjectKey] {
+			continue
+		}
+		seen[record.ObjectKey] = true
+		missions = append(missions, record)
+	}
+	// Preserve legacy sessions whose accepted mission predates MissionFiles.
+	selection := session.MissionForApplication()
+	if selection.ObjectKey != "" && !seen[selection.ObjectKey] {
+		missions = append(missions, MissionRecord{ObjectKey: selection.ObjectKey, Filename: missionFilenameFromObjectKey(selection.ObjectKey), Status: ArtifactAccepted})
+	}
+	return missions
+}
+
+func (session Session) LiveMissionCopyTarget(objectKey string) (MissionRecord, bool) {
+	if (session.LifecycleState != StateRunning && session.LifecycleState != StateIdle) || session.ActiveWorkflowID != "" || strings.TrimSpace(session.Infrastructure.InstanceID) == "" {
+		return MissionRecord{}, false
+	}
+	for _, record := range session.AcceptedMissionFiles() {
+		if record.ObjectKey == strings.TrimSpace(objectKey) {
+			return record, true
+		}
+	}
+	return MissionRecord{}, false
+}
+
 type MissionSelection struct {
 	Template  string `json:"template"`
 	ObjectKey string `json:"object_key,omitempty"`

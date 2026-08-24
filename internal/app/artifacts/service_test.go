@@ -65,6 +65,18 @@ type testAutoStarter struct {
 	err      error
 }
 
+type testLiveMissionCopier struct {
+	sessions []domain.Session
+	missions []domain.MissionRecord
+	err      error
+}
+
+func (copier *testLiveMissionCopier) Copy(_ context.Context, session domain.Session, mission domain.MissionRecord) error {
+	copier.sessions = append(copier.sessions, session)
+	copier.missions = append(copier.missions, mission)
+	return copier.err
+}
+
 func (starter *testAutoStarter) RequestStart(_ context.Context, command appsession.StartCommand) error {
 	starter.commands = append(starter.commands, command)
 	return starter.err
@@ -178,6 +190,59 @@ func TestProcessSanitizesMissionFilenameBeforeObjectStorage(t *testing.T) {
 	want := "sessions/session-1/input/missions/9f9f5111f7b27a781f1f1ddde5ebc2dd2b796bfc7365c9c28b548e564176929f-operation_passwordAdmin_unsafe.Stratis.pbo"
 	if len(objects.objects) != 1 || objects.objects[0].key != want {
 		t.Fatalf("stored objects = %#v; want %q", objects.objects, want)
+	}
+}
+
+func TestProcessCopiesAcceptedMissionToCompatibleRunningInstanceAndReplaysIdempotently(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	repository := seededPresetRevisionRepository(t, now)
+	stored, err := repository.Get(context.Background(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c6a.large", InstanceID: "i-current", DataVolumeID: "vol-1"}
+	stored.Version++
+	event := domain.NewArtifactEvent("seed-infra", domain.EventArtifactValidated, "seed", domain.Actor{Type: domain.ActorTypeSystem, ID: "test"}, stored, domain.ArtifactMission, "seed", now)
+	record, _ := domain.NewCompletedIdempotencyRecord("seed:infra", "seed-infra-hash", stored.ID, now, time.Hour)
+	if err := repository.SaveWithEvent(context.Background(), stored, stored.Version-1, event, record); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("0123456789abcdef")
+	copier := &testLiveMissionCopier{}
+	service, err := NewService(repository, &testDownloader{body: body}, &testObjectStore{}, &testNotifications{}, &testIDs{ids: []string{"mission-live-event"}}, testClock{now.Add(time.Minute)}, time.Hour, WithLiveMissionCopier(copier))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := missionRequest(now, int64(len(body)))
+	if err := service.Process(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(copier.missions) != 1 || copier.sessions[0].Infrastructure.InstanceID != "i-current" || copier.missions[0].Filename != "operation.pbo" {
+		t.Fatalf("live copies = %#v / %#v", copier.sessions, copier.missions)
+	}
+	if err := service.Process(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(copier.missions) != 2 || copier.missions[0].ObjectKey != copier.missions[1].ObjectKey {
+		t.Fatalf("replayed live copies = %#v", copier.missions)
+	}
+}
+
+func TestProcessDefersLiveCopyDuringWorkflowConflict(t *testing.T) {
+	now := time.Date(2026, 8, 24, 11, 0, 0, 0, time.UTC)
+	repository := seededPresetRevisionRepository(t, now)
+	body := []byte("0123456789abcdef")
+	copier := &testLiveMissionCopier{}
+	service, err := NewService(repository, &testDownloader{body: body}, &testObjectStore{}, &testNotifications{}, &testIDs{ids: []string{"mission-bootstrap-only"}}, testClock{now}, time.Hour, WithLiveMissionCopier(copier))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := missionRequest(now, int64(len(body)))
+	if err := service.Process(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(copier.missions) != 0 {
+		t.Fatalf("live copy ran without an exact managed instance: %#v", copier.missions)
 	}
 }
 

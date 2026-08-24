@@ -131,6 +131,36 @@ data "aws_iam_policy_document" "artifact_worker" {
   }
 
   statement {
+    sid       = "UseRunShellScriptForLiveMissionCopy"
+    actions   = ["ssm:SendCommand"]
+    resources = ["arn:aws:ssm:${var.aws_region}::document/AWS-RunShellScript"]
+  }
+
+  statement {
+    sid       = "CopyMissionToTaggedGameInstance"
+    actions   = ["ssm:SendCommand"]
+    resources = ["arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "ssm:resourceTag/Project"
+      values   = [var.project_name]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "ssm:resourceTag/Environment"
+      values   = [var.environment]
+    }
+  }
+
+  statement {
+    sid       = "ObserveLiveMissionCopy"
+    actions   = ["ssm:GetCommandInvocation"]
+    resources = ["*"]
+  }
+
+  statement {
     sid = "ArtifactQueueConsume"
     actions = [
       "sqs:ReceiveMessage",

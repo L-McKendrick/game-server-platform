@@ -127,6 +127,13 @@ type ArtifactDownloader interface {
 	Download(ctx context.Context, request domain.ArtifactIngestRequest) ([]byte, error)
 }
 
+// LiveMissionCopier places one already-validated mission object on the exact
+// managed instance recorded by the session. Implementations must be
+// idempotent and must not restart or otherwise mutate the game service.
+type LiveMissionCopier interface {
+	Copy(ctx context.Context, session domain.Session, mission domain.MissionRecord) error
+}
+
 type AccessPolicyRepository interface {
 	GetAccessPolicy(ctx context.Context, guildID string) (domain.GuildAccessPolicy, error)
 	SaveAccessPolicy(ctx context.Context, policy domain.GuildAccessPolicy, expectedVersion int64) error

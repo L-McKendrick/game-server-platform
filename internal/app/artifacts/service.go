@@ -31,15 +31,20 @@ func WithAutoStarter(starter AutoStarter) Option {
 	return func(service *Service) { service.autoStarter = starter }
 }
 
+func WithLiveMissionCopier(copier ports.LiveMissionCopier) Option {
+	return func(service *Service) { service.liveMissionCopier = copier }
+}
+
 type Service struct {
-	repository    ports.SessionRepository
-	downloader    ports.ArtifactDownloader
-	objects       ports.ObjectStore
-	notifications ports.NotificationQueue
-	ids           IDGenerator
-	clock         Clock
-	retention     time.Duration
-	autoStarter   AutoStarter
+	repository        ports.SessionRepository
+	downloader        ports.ArtifactDownloader
+	objects           ports.ObjectStore
+	notifications     ports.NotificationQueue
+	ids               IDGenerator
+	clock             Clock
+	retention         time.Duration
+	autoStarter       AutoStarter
+	liveMissionCopier ports.LiveMissionCopier
 }
 
 func NewService(
@@ -112,6 +117,9 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 		persisted, getErr := service.repository.Get(ctx, request.SessionID)
 		if getErr != nil {
 			return getErr
+		}
+		if err := service.copyMissionLive(ctx, persisted, request, "", digestHex); err != nil {
+			return err
 		}
 		if err := service.autoStart(ctx, persisted, request); err != nil {
 			return err
@@ -203,6 +211,9 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 			if getErr != nil {
 				return getErr
 			}
+			if err := service.copyMissionLive(ctx, persisted, request, objectKey, digestHex); err != nil {
+				return err
+			}
 			if err := service.autoStart(ctx, persisted, request); err != nil {
 				return err
 			}
@@ -210,10 +221,35 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 		}
 		return fmt.Errorf("persist artifact metadata: %w", err)
 	}
+	if err := service.copyMissionLive(ctx, session, request, objectKey, digestHex); err != nil {
+		return err
+	}
 	if err := service.autoStart(ctx, session, request); err != nil {
 		return err
 	}
 	return service.notify(ctx, session, request, publicModlist)
+}
+
+func (service *Service) copyMissionLive(ctx context.Context, session domain.Session, request domain.ArtifactIngestRequest, objectKey, digestHex string) error {
+	if service.liveMissionCopier == nil || request.Kind != domain.ArtifactMission {
+		return nil
+	}
+	if objectKey == "" {
+		for _, record := range session.AcceptedMissionFiles() {
+			if strings.HasPrefix(path.Base(record.ObjectKey), digestHex+"-") {
+				objectKey = record.ObjectKey
+				break
+			}
+		}
+	}
+	mission, eligible := session.LiveMissionCopyTarget(objectKey)
+	if !eligible {
+		return nil
+	}
+	if err := service.liveMissionCopier.Copy(ctx, session, mission); err != nil {
+		return fmt.Errorf("copy accepted mission to running server: %w", err)
+	}
+	return nil
 }
 
 func (service *Service) autoStart(ctx context.Context, session domain.Session, request domain.ArtifactIngestRequest) error {

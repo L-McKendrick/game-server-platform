@@ -250,7 +250,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **17.4** [ ] Provide options of different EC2 instance types (weaker or more powerful options with explanations).
     - **17.5** [ ] Let administrators configure the active-session capacity limit while preserving atomic slot enforcement and clear start/wake feedback.
 
-18. **Miscellaneous Fixes and Quality of Life — In Progress (approved out of order)**
+18. **Miscellaneous Fixes and Quality of Life — Complete (approved out of order)**
     - Deliver on `codex/misc-fixes` by extending existing Discord, artifact,
       bootstrap, and SSM paths. Avoid new workers, queues, state machines, or
       persistent services unless implementation evidence shows they are needed.
@@ -265,7 +265,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **18.3.1** [x] Extend creation and `/rb edit session:<slug> section:mods` to accept a separately identified server-mod preset, reusing the existing private upload, validation, revision, authorization, and stale-state safeguards.
       - **18.3.2** [x] Persist server-only Workshop items separately, install them through the existing authenticated resumable SteamCMD path, and generate a deterministic `-serverMod=` launch argument while excluding them from the public card, client modlist artifact, and required client launch parameters.
       - **18.3.3** [x] Preserve server-mod active/pending intent through start, wake, revision, archive, restore, replacement hosts, and termination; add focused persistence, validation, replay, bootstrap, launch-argument, rollback, and backward-compatibility coverage.
-    - **18.4** [ ] Make newly accepted Arma 3 mission uploads available to a running server without restarting Arma or changing its current mission.
-      - **18.4.1** [ ] Extend the existing artifact acceptance path to revalidate the running lifecycle, exact managed instance, accepted mission revision, and workflow compatibility before requesting a bounded live copy; treat sleeping, archived, changing, or stale-instance sessions as bootstrap-only synchronization cases.
-      - **18.4.2** [ ] Reuse the artifact worker and narrowly scoped SSM access to download the exact S3 object to a temporary file, verify its checksum, set `steam:steam` ownership, and atomically place it in `arma3/mpmissions`; use existing retry and failure reporting and do not add a synchronization worker.
-      - **18.4.3** [ ] Synchronize every accepted active mission during start, wake, restore, and replacement-host bootstrap, and add focused live-copy, idempotency, checksum, state-drift, instance-drift, workflow-conflict, no-restart, and current-mission-preservation coverage.
+    - **18.4** [x] Make newly accepted Arma 3 mission uploads available to a running server without restarting Arma or changing its current mission.
+      - **18.4.1** [x] Extend the existing artifact acceptance path to revalidate the running lifecycle, exact managed instance, accepted mission revision, and workflow compatibility before requesting a bounded live copy; treat sleeping, archived, changing, or stale-instance sessions as bootstrap-only synchronization cases.
+      - **18.4.2** [x] Reuse the artifact worker and narrowly scoped SSM access to download the exact S3 object to a temporary file, verify its checksum, set `steam:steam` ownership, and atomically place it in `arma3/mpmissions`; use existing retry and failure reporting and do not add a synchronization worker.
+      - **18.4.3** [x] Synchronize every accepted active mission during start, wake, restore, and replacement-host bootstrap, and add focused live-copy, idempotency, checksum, state-drift, instance-drift, workflow-conflict, no-restart, and current-mission-preservation coverage.

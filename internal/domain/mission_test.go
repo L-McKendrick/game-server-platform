@@ -57,3 +57,24 @@ func TestMissionRecordsAreImmutableAndCurrentCannotBeRemoved(t *testing.T) {
 		t.Fatalf("removed mission state = %#v / %#v", session.MissionFiles[0], session.ConfiguredMission)
 	}
 }
+
+func TestLiveMissionCopyTargetRequiresStableRunningInstanceAndExactAcceptedRevision(t *testing.T) {
+	key := "sessions/session-1/input/missions/" + strings.Repeat("a", 64) + "-Coop.Altis.pbo"
+	record := MissionRecord{ObjectKey: key, Filename: "Coop.Altis.pbo", Status: ArtifactAccepted}
+	session := Session{LifecycleState: StateRunning, Infrastructure: Infrastructure{InstanceID: "i-current"}, MissionFiles: []MissionRecord{record}}
+	if selected, ok := session.LiveMissionCopyTarget(key); !ok || selected.ObjectKey != key {
+		t.Fatalf("target = %#v, %t", selected, ok)
+	}
+	session.ActiveWorkflowID = "wake-1"
+	if _, ok := session.LiveMissionCopyTarget(key); ok {
+		t.Fatal("workflow-conflicted session allowed live copy")
+	}
+	session.ActiveWorkflowID, session.LifecycleState = "", StateSleeping
+	if _, ok := session.LiveMissionCopyTarget(key); ok {
+		t.Fatal("sleeping session allowed live copy")
+	}
+	session.LifecycleState = StateRunning
+	if _, ok := session.LiveMissionCopyTarget(strings.Replace(key, "a", "b", 1)); ok {
+		t.Fatal("stale revision allowed live copy")
+	}
+}

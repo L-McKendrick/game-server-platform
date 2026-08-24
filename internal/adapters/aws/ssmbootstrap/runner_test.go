@@ -103,6 +103,34 @@ func TestCommandSupportsBuiltInDefaultMissionWithoutS3Object(t *testing.T) {
 	}
 }
 
+func TestCommandSynchronizesEveryAcceptedActiveMissionWithoutChangingSelection(t *testing.T) {
+	runner, err := New(&fakeSSM{}, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstKey := "sessions/session-1/input/missions/" + strings.Repeat("a", 64) + "-First.Altis.pbo"
+	secondKey := "sessions/session-1/input/missions/" + strings.Repeat("b", 64) + "-Second.Stratis.pbo"
+	session := domain.Session{ID: "session-1", DisplayName: "Test", Vanilla: true, ConfiguredMission: domain.UploadedMissionSelection(firstKey), CurrentMission: domain.UploadedMissionSelection(firstKey), MissionFiles: []domain.MissionRecord{
+		{ObjectKey: firstKey, Filename: "First.Altis.pbo", Status: domain.ArtifactAccepted},
+		{ObjectKey: secondKey, Filename: "Second.Stratis.pbo", Status: domain.ArtifactAccepted},
+		{ObjectKey: "rejected", Filename: "Rejected.pbo", Status: domain.ArtifactRejected},
+	}, LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}}
+	script, err := runner.command(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := strings.Repeat("a", 64) + "\tFirst.Altis.pbo\t" + firstKey + "\n" + strings.Repeat("b", 64) + "\tSecond.Stratis.pbo\t" + secondKey + "\n"
+	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(manifest))) {
+		t.Fatal("command omitted accepted mission manifest")
+	}
+	if strings.Contains(script, base64.StdEncoding.EncodeToString([]byte("rejected"))) {
+		t.Fatal("command included rejected mission")
+	}
+	if session.CurrentMission.ObjectKey != firstKey {
+		t.Fatal("manifest construction changed current mission")
+	}
+}
+
 func TestBootstrapArtifactAvoidsAWKBuiltinNamesForMissionRewriteLocals(t *testing.T) {
 	path := filepath.Clean(filepath.Join("..", "..", "..", "..", "deploy", "bootstrap", "arma3-bootstrap.sh"))
 	script, err := os.ReadFile(path)

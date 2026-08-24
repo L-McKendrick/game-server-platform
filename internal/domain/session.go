@@ -89,7 +89,11 @@ type Session struct {
 // AttachArtifact records a validated durable object and advances a complete
 // draft to NEW without tying session identity to the source attachment URL.
 func (session *Session) AttachArtifact(kind ArtifactKind, objectKey string, now time.Time) error {
-	missionEditable := kind == ArtifactMission && session.ActiveWorkflowID == "" && session.LifecycleState != StateDeleting && session.LifecycleState != StateDeleted && session.LifecycleState != StateArchiving && session.LifecycleState != StateDestroying
+	// A mission upload already admitted by Discord may finish validation after a
+	// lifecycle workflow starts. Recording it is safe because it does not change
+	// CurrentMission; live copy is separately gated and bootstrap picks up every
+	// accepted active record on a compatible host pass.
+	missionEditable := kind == ArtifactMission && session.LifecycleState != StateDeleting && session.LifecycleState != StateDeleted && session.LifecycleState != StateArchiving && session.LifecycleState != StateDestroying
 	if session.LifecycleState != StateDraft && session.LifecycleState != StateNew && !missionEditable {
 		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
 	}
@@ -150,7 +154,7 @@ func (session *Session) AttachArtifact(kind ArtifactKind, objectKey string, now 
 // RejectArtifact records the latest validation outcome while leaving the
 // draft editable and any independently accepted artifact intact.
 func (session *Session) RejectArtifact(kind ArtifactKind, issue string, now time.Time) error {
-	missionEditable := kind == ArtifactMission && session.ActiveWorkflowID == "" && session.LifecycleState != StateDeleting && session.LifecycleState != StateDeleted && session.LifecycleState != StateArchiving && session.LifecycleState != StateDestroying
+	missionEditable := kind == ArtifactMission && session.LifecycleState != StateDeleting && session.LifecycleState != StateDeleted && session.LifecycleState != StateArchiving && session.LifecycleState != StateDestroying
 	if session.LifecycleState != StateDraft && session.LifecycleState != StateNew && !missionEditable {
 		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
 	}

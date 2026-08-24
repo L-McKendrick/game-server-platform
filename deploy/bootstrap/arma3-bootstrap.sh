@@ -8,6 +8,7 @@ DISPLAY_NAME="$(decode "$DISPLAY_NAME_B64")"
 DATA_VOLUME_ID="$(decode "$DATA_VOLUME_ID_B64")"
 MISSION_KEY="$(decode "$MISSION_KEY_B64")"
 MISSION_TEMPLATE="$(decode "$MISSION_TEMPLATE_B64")"
+MISSION_MANIFEST="$(decode "$MISSION_MANIFEST_B64")"
 SERVER_CONFIG_KEY="$(decode "$SERVER_CONFIG_KEY_B64")"
 SERVER_CONFIG_SHA256="$(decode "$SERVER_CONFIG_SHA_B64")"
 SERVER_CONFIG_REVISION="$(decode "$SERVER_CONFIG_REV_B64")"
@@ -449,14 +450,22 @@ install_workshop() (
 sqf_escape() { printf '%s' "$1" | sed 's/"/""/g'; }
 
 deploy_content() {
-  local mission_file mission_template safe_mission_template safe_name
+  local mission_checksum mission_file mission_key mission_template pending safe_mission_template safe_name
   mission_template="$MISSION_TEMPLATE"
   mkdir -p "$ROOT/arma3/mpmissions" "$ROOT/home/.local/share/Arma 3 - Other Profiles/server"
-  if [ -n "$MISSION_KEY" ]; then
+  while IFS=$'\t' read -r mission_checksum mission_file mission_key; do
+    [ -n "$mission_key" ] || continue
+    [[ "$mission_checksum" =~ ^[0-9a-f]{64}$ && "$mission_file" =~ ^[A-Za-z0-9_.+-]+\.[pP][bB][oO]$ ]] || { log "accepted mission manifest is invalid"; return 1; }
+    pending="$(mktemp "$ROOT/arma3/mpmissions/.gsp-mission.XXXXXX")"
+    aws s3 cp "s3://$ASSETS_BUCKET/$mission_key" "$pending" --region "$AWS_REGION" --only-show-errors || { rm -f "$pending"; return 1; }
+    printf '%s  %s\n' "$mission_checksum" "$pending" | sha256sum --check --status || { rm -f "$pending"; log "mission checksum mismatch"; return 1; }
+    chown steam:steam "$pending"
+    chmod 0644 "$pending"
+    mv -f "$pending" "$ROOT/arma3/mpmissions/$mission_file"
+  done <<< "$MISSION_MANIFEST"
+  if [ -z "$MISSION_MANIFEST" ] && [ -n "$MISSION_KEY" ]; then
     mission_file="$(basename "$MISSION_KEY")"
-    if [[ "$mission_file" =~ ^[0-9a-f]{64}-(.+\.[pP][bB][oO])$ ]]; then
-      mission_file="${BASH_REMATCH[1]}"
-    fi
+    if [[ "$mission_file" =~ ^[0-9a-f]{64}-(.+\.[pP][bB][oO])$ ]]; then mission_file="${BASH_REMATCH[1]}"; fi
     aws s3 cp "s3://$ASSETS_BUCKET/$MISSION_KEY" "$ROOT/arma3/mpmissions/$mission_file" --region "$AWS_REGION" --only-show-errors
   fi
   safe_name="$(sqf_escape "$DISPLAY_NAME")"

@@ -15,11 +15,13 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3objects"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqscommand"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmlivemission"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/httpartifact"
 	"github.com/L-McKendrick/game-server-platform/internal/app/artifacts"
 	"github.com/L-McKendrick/game-server-platform/internal/app/serverconfig"
@@ -63,6 +65,10 @@ func build(ctx context.Context) (*handler, error) {
 	objects := s3objects.New(s3.NewFromConfig(awsCfg), cfg.SessionAssetsBucket)
 	clock := appsession.SystemClock{}
 	queueClient := sqs.NewFromConfig(awsCfg)
+	liveMissionCopier, err := ssmlivemission.New(ssm.NewFromConfig(awsCfg), ssmlivemission.Config{Region: cfg.AWSRegion, AssetsBucket: cfg.SessionAssetsBucket})
+	if err != nil {
+		return nil, err
+	}
 	startService, err := appsession.NewService(repository, identity.Generator{}, clock, cfg.IdempotencyRetention,
 		appsession.WithCommandQueue(sqscommand.New(queueClient, cfg.CommandQueueURL)),
 		appsession.WithServerConfigRepository(repository))
@@ -74,6 +80,7 @@ func build(ctx context.Context) (*handler, error) {
 		sqsnotification.New(queueClient, cfg.NotificationQueueURL),
 		identity.Generator{}, clock, cfg.IdempotencyRetention,
 		artifacts.WithAutoStarter(startService),
+		artifacts.WithLiveMissionCopier(liveMissionCopier),
 	)
 	if err != nil {
 		return nil, err

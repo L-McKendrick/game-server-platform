@@ -3,8 +3,10 @@ package ssmbootstrap
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 
@@ -219,6 +221,10 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	serverPresetObjectKey := session.ServerPresetObjectKeyForApplication()
 	serverPresetRevision := session.ServerPresetRevisionForApplication()
 	mission := session.MissionForApplication()
+	missionManifest, err := acceptedMissionManifest(session)
+	if err != nil {
+		return "", err
+	}
 	if rollback {
 		active := session.EffectiveActivePresetRevision()
 		presetObjectKey, presetRevision = active.PresetObjectKey, active.Number
@@ -234,6 +240,7 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 		"DATA_VOLUME_ID_B64":         session.Infrastructure.DataVolumeID,
 		"MISSION_KEY_B64":            mission.ObjectKey,
 		"MISSION_TEMPLATE_B64":       mission.Template,
+		"MISSION_MANIFEST_B64":       missionManifest,
 		"SERVER_CONFIG_KEY_B64":      session.ServerConfigObjectKey,
 		"SERVER_CONFIG_SHA_B64":      session.ServerConfigSHA256,
 		"SERVER_CONFIG_REV_B64":      fmt.Sprintf("%d", session.ServerConfigRevision),
@@ -252,7 +259,7 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	}
 	var command strings.Builder
 	command.WriteString("#!/usr/bin/env bash\nset -Eeuo pipefail\numask 077\n")
-	for _, key := range []string{"SESSION_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
+	for _, key := range []string{"SESSION_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "MISSION_MANIFEST_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
 		command.WriteString("export " + key + "='" + base64.StdEncoding.EncodeToString([]byte(values[key])) + "'\n")
 	}
 	if session.TeamSpeakEnabled {
@@ -283,4 +290,27 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	command.WriteString("chmod 700 \"$bootstrap_script\"\n")
 	command.WriteString("\"$bootstrap_script\"\n")
 	return command.String(), nil
+}
+
+func acceptedMissionManifest(session domain.Session) (string, error) {
+	var manifest strings.Builder
+	for _, mission := range session.AcceptedMissionFiles() {
+		base := path.Base(mission.ObjectKey)
+		expectedPrefix := path.Join("sessions", session.ID, "input", "missions") + "/"
+		separator := strings.IndexByte(base, '-')
+		if !strings.HasPrefix(mission.ObjectKey, expectedPrefix) || separator != 64 || len(base) <= 65 || base[65:] != mission.Filename {
+			// Legacy single-mission records predate content-addressed keys and
+			// continue through MISSION_KEY until replaced by a current upload.
+			if mission.ObjectKey == session.MissionForApplication().ObjectKey {
+				continue
+			}
+			return "", fmt.Errorf("accepted mission object key is malformed")
+		}
+		checksum := base[:64]
+		if _, err := hex.DecodeString(checksum); err != nil {
+			return "", fmt.Errorf("accepted mission checksum is malformed")
+		}
+		manifest.WriteString(checksum + "\t" + mission.Filename + "\t" + mission.ObjectKey + "\n")
+	}
+	return manifest.String(), nil
 }
