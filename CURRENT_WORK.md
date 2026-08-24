@@ -26,6 +26,10 @@ review. No deployment, Terraform apply, or Discord registration was performed.
   according to their lifecycle invariants.
 - The monitor has scoped send access to the existing command FIFO. The archive
   worker has scoped EC2 start and Systems Manager readiness permissions.
+- Start and wake requests now perform a consistent-read preflight against the
+  existing single provisioned-session capacity slot. A slot owned by another
+  session returns `Session capacity reached` before command dispatch, while the
+  owning session can continue bootstrap or wake and new drafts remain unrestricted.
 - Cross-layer regression coverage now exercises monitor-to-command-to-workflow
   handoff, deterministic replay, concurrent/state-drift rejection, unknown
   evidence, queue and workflow-start failures, sleeping-state restoration,
@@ -34,6 +38,9 @@ review. No deployment, Terraform apply, or Discord registration was performed.
   fail-closed behavior, operational impact, and deferred configurable,
   corroborating-signal, warning/cancellation, schedule, extension, and rest
   features. Phase 8/9 documentation and the README reflect the new behavior.
+- Capacity regressions cover an empty slot, the requesting session's slot, a
+  slot owned by another session, unrestricted creation, queue suppression, and
+  the user-facing Discord response in memory and DynamoDB adapters.
 
 ## Validation
 
@@ -69,14 +76,13 @@ $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out phase-14-inactivity-lifecycle.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-14-inactivity-lifecycle.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out phase-14-capacity-preflight.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-14-capacity-preflight.tfplan
 # Apply only after reviewing and approving this exact saved plan.
-terraform -chdir=infra/terraform/environments/dev apply phase-14-inactivity-lifecycle.tfplan
+terraform -chdir=infra/terraform/environments/dev apply phase-14-capacity-preflight.tfplan
 ```
 
-The package command rebuilds all Lambda archives, including the changed
-monitor, command, sleep/wake, and archive workers. The fresh plan should deploy
-those workers, monitor queue access, sleeping-host archive preparation states,
-and the archive worker's scoped EC2/Systems Manager permissions. No Discord
-command registration is required.
+The package command rebuilds all Lambda archives. The fresh plan should deploy
+the Phase 14 lifecycle workers and the Discord interaction Lambda containing
+the capacity preflight, plus the previously documented Phase 14 queue,
+workflow, and scoped IAM changes. No Discord command registration is required.

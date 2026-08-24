@@ -227,6 +227,10 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **14.4.2** [x] Add cross-layer regression coverage for automatic command handoff, stale or unknown activity, replay, concurrent mutation, workflow-start failure, and session-card notifications.
       - **14.4.3** [x] Document the fixed 30-minute sleep and 72-hour archive policy, operational failure behavior, and deferred richer activity, warning, cancellation, scheduling, and configuration features.
       - **14.4.4** [x] Run full Go, race/coverage, build, package, command-definition, bootstrap-script, and Terraform checks; review the final branch diff and refresh the phase handoff.
+    - **14.5** [x] Add an MVP capacity preflight for start and wake requests while keeping session creation unrestricted; defer administrator-configurable active-session limits.
+      - **14.5.1** [x] Expose a consistent repository capacity-availability check backed by the existing provisioned-session slots.
+      - **14.5.2** [x] Reject start and wake before queue dispatch when the single slot belongs to another session, and return a concise Discord capacity message.
+      - **14.5.3** [x] Add focused available, same-session, occupied-session, creation, and adapter regressions; run proportional validation and refresh the Phase 14 handoff.
 
 15. **Maximum Session Duration Guardrails — Pending**
     - **15.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
@@ -242,3 +246,4 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **17.2** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; extend `/rb create` beyond Arma 3 through explicit game-specific setup contracts.
     - **17.3** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.
     - **17.4** [ ] Provide options of different EC2 instance types (weaker or more powerful options with explanations).
+    - **17.5** [ ] Let administrators configure the active-session capacity limit while preserving atomic slot enforcement and clear start/wake feedback.

@@ -13,6 +13,24 @@ var _ ports.ProvisioningRepository = (*SessionRepository)(nil)
 var _ ports.BootstrapRepository = (*SessionRepository)(nil)
 var _ ports.MonitoringRepository = (*SessionRepository)(nil)
 
+func (repository *SessionRepository) CheckCapacity(ctx context.Context, sessionID string, limit int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if sessionID == "" || limit < 1 {
+		return fmt.Errorf("valid session and capacity limit are required")
+	}
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	for slot := 0; slot < limit; slot++ {
+		owner, occupied := repository.capacity[fmt.Sprintf("slot-%d", slot)]
+		if !occupied || owner == sessionID {
+			return nil
+		}
+	}
+	return domain.ErrQuotaExceeded
+}
+
 func (repository *SessionRepository) ListInactivityCandidates(ctx context.Context, limit int32) ([]domain.Session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

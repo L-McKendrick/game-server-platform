@@ -628,6 +628,41 @@ func TestRequestStartQueuesNormalizedCommandForReadyOwnerSession(t *testing.T) {
 	}
 }
 
+func TestRequestStartRejectsOccupiedCapacityWithoutRestrictingCreation(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	if _, err := repository.AcquireCapacitySlot(context.Background(), "other-session", "other-workflow", activeSessionCapacity, now); err != nil {
+		t.Fatal(err)
+	}
+	queue := &recordingCommandQueue{}
+	service, err := NewService(
+		repository,
+		&sequenceIDGenerator{ids: []string{"session-capacity", "create-capacity", "ready-capacity"}},
+		fixedClock{now: now},
+		time.Hour,
+		WithCommandQueue(queue),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actor := testActor("owner-1")
+	session := mustCreateSession(t, service, actor, "create-capacity", "capacity-test")
+	if _, err := service.Transition(context.Background(), TransitionCommand{
+		Actor: actor, SessionID: session.ID, To: domain.StateNew,
+		CorrelationID: "ready-capacity", IdempotencyKey: "test:ready-capacity",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err = service.RequestStart(context.Background(), StartCommand{
+		Actor: actor, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
+		CommandID: "start-capacity", CorrelationID: "start-capacity", IdempotencyKey: "discord:start-capacity",
+	})
+	if !errors.Is(err, domain.ErrQuotaExceeded) || len(queue.commands) != 0 {
+		t.Fatalf("RequestStart() error=%v commands=%#v", err, queue.commands)
+	}
+}
+
 func TestRequestStartRoutesProvisionedSessionToBootstrap(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
@@ -832,6 +867,54 @@ func TestRequestLifecycleReturnsExistingProgressWithoutQueueingDuplicate(t *test
 	}
 	if len(queue.commands) != 0 {
 		t.Fatalf("duplicate queued commands = %#v", queue.commands)
+	}
+}
+
+func TestRequestWakeRejectsAnotherSessionsCapacityAndAllowsOwnedSlot(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	queue := &recordingCommandQueue{}
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour, WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: "sleeping-session", Slug: "sleeping-session", DisplayName: "Sleeping Session", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateSleeping, domain.StateSleeping, domain.StateSleeping, domain.HealthStopped
+	session.SleepingSince = now.Add(-time.Minute)
+	session.Infrastructure = domain.Infrastructure{
+		CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"},
+		InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c7i.large", InstanceID: "i-sleeping", DataVolumeID: "vol-sleeping", LastObservedAt: now,
+	}
+	event := domain.NewSessionCreatedEvent("sleeping-created", "sleeping-created", testActor("owner-1"), session, now)
+	idempotency, _ := domain.NewCompletedIdempotencyRecord("sleeping-create", "sleeping-hash", session.ID, now, time.Hour)
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AcquireCapacitySlot(context.Background(), "other-session", "other-workflow", activeSessionCapacity, now); err != nil {
+		t.Fatal(err)
+	}
+	command := LifecycleCommand{
+		Actor: testActor("owner-1"), SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
+		CommandID: "wake-capacity", CorrelationID: "wake-capacity", IdempotencyKey: "discord:wake-capacity", CommandType: domain.CommandWakeSession,
+	}
+	if err := service.RequestLifecycle(context.Background(), command); !errors.Is(err, domain.ErrQuotaExceeded) || len(queue.commands) != 0 {
+		t.Fatalf("occupied wake error=%v commands=%#v", err, queue.commands)
+	}
+	if err := repository.ReleaseCapacitySlot(context.Background(), "slot-0", "other-session"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AcquireCapacitySlot(context.Background(), session.ID, "wake-workflow", activeSessionCapacity, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RequestLifecycle(context.Background(), command); err != nil || len(queue.commands) != 1 {
+		t.Fatalf("owned-slot wake error=%v commands=%#v", err, queue.commands)
 	}
 }
 

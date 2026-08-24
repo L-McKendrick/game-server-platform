@@ -1397,7 +1397,7 @@ func (handler *Handler) commandErrorMessage(err error, correlationID string) str
 	case errors.Is(err, domain.ErrFeatureDisabled):
 		return "Infrastructure provisioning is not enabled in this environment yet."
 	case errors.Is(err, domain.ErrQuotaExceeded):
-		return "The environment has reached its provisioned-session limit. Try again after another session is removed."
+		return "Session capacity reached. Archive or terminate the currently provisioned session before starting or waking another one."
 	case errors.Is(err, domain.ErrConfirmationRequired):
 		return "Create a durable confirmation with `/rb archive` or `/rb terminate` before requesting that action."
 	default:

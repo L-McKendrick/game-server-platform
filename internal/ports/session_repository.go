@@ -282,6 +282,12 @@ type SessionRepository interface {
 		key string,
 	) (domain.IdempotencyRecord, error)
 
+	CheckCapacity(
+		ctx context.Context,
+		sessionID string,
+		limit int,
+	) error
+
 	ListByOwner(
 		ctx context.Context,
 		ownerDiscordUserID string,

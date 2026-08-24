@@ -1368,6 +1368,14 @@ func TestUnknownCommandErrorIsBoundedAndWarnsWithoutPromisingRetry(t *testing.T)
 	}
 }
 
+func TestCapacityErrorExplainsHowToFreeTheSlot(t *testing.T) {
+	t.Parallel()
+	message := (&Handler{}).commandErrorMessage(domain.ErrQuotaExceeded, "reference")
+	if message != "Session capacity reached. Archive or terminate the currently provisioned session before starting or waking another one." {
+		t.Fatalf("capacity message = %q", message)
+	}
+}
+
 func TestHandlerConfiguresAndAcceptsMissionAttachment(t *testing.T) {
 	t.Parallel()
 
