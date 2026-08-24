@@ -30,7 +30,7 @@ func (repository *SessionRepository) ListRunning(ctx context.Context, limit int3
 	}
 	return result, nil
 }
-func (repository *SessionRepository) SaveMonitoring(ctx context.Context, session domain.Session, expectedVersion int64, event *domain.SessionEvent) error {
+func (repository *SessionRepository) SaveMonitoring(ctx context.Context, session domain.Session, expectedVersion int64, events []domain.SessionEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -44,8 +44,8 @@ func (repository *SessionRepository) SaveMonitoring(ctx context.Context, session
 		return domain.ErrConflict
 	}
 	repository.sessions[session.ID] = session
-	if event != nil {
-		repository.events[session.ID] = append(repository.events[session.ID], cloneEvent(*event))
+	for _, event := range events {
+		repository.events[session.ID] = append(repository.events[session.ID], cloneEvent(event))
 	}
 	return nil
 }

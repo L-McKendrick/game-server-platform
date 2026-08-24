@@ -18,13 +18,26 @@ type Service struct {
 	notifications ports.NotificationQueue
 	ids           IDGenerator
 	clock         Clock
+	players       ports.PlayerQuery
 }
 
-func NewService(repo ports.MonitoringRepository, runner ports.MonitoringRunner, notifications ports.NotificationQueue, ids IDGenerator, clock Clock) (*Service, error) {
+type Option func(*Service)
+
+func WithPlayerQuery(query ports.PlayerQuery) Option {
+	return func(service *Service) { service.players = query }
+}
+
+func NewService(repo ports.MonitoringRepository, runner ports.MonitoringRunner, notifications ports.NotificationQueue, ids IDGenerator, clock Clock, options ...Option) (*Service, error) {
 	if repo == nil || runner == nil || ids == nil || clock == nil {
 		return nil, fmt.Errorf("monitoring dependencies are required")
 	}
-	return &Service{repo, runner, notifications, ids, clock}, nil
+	service := &Service{repo: repo, runner: runner, notifications: notifications, ids: ids, clock: clock}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service, nil
 }
 func (service *Service) Run(ctx context.Context) (int, error) {
 	sessions, err := service.repo.ListRunning(ctx, 25)
@@ -64,26 +77,40 @@ func (service *Service) monitor(ctx context.Context, session domain.Session) err
 	if status.Status != "Success" {
 		health = domain.HealthUnhealthy
 	}
-	from, err := session.CompleteMonitoring(health, now)
+	activity := domain.PlayerActivityObservation{ObservedAt: now}
+	if status.Status == "Success" && service.players != nil && session.Infrastructure.PublicIPv4 != "" {
+		queryContext, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+		players, queryErr := service.players.Query(queryContext, session.Infrastructure.PublicIPv4)
+		cancel()
+		if queryErr == nil {
+			activity.Known = true
+			activity.PlayerCount = players.PlayerCount
+		}
+	}
+	from, err := session.CompleteMonitoring(health, activity, now)
 	if err != nil {
 		return err
 	}
-	var event *domain.SessionEvent
+	events := make([]domain.SessionEvent, 0, 2)
 	if from != health {
 		id, err := service.ids.New(now)
 		if err != nil {
 			return err
 		}
-		value := domain.NewHealthChangedEvent(id, session, from, status.Observation, now)
-		event = &value
+		events = append(events, domain.NewHealthChangedEvent(id, session, from, status.Observation, now))
 	}
-	if err := service.repo.SaveMonitoring(ctx, session, expected, event); err != nil {
+	activityEventID, err := service.ids.New(now)
+	if err != nil {
 		return err
 	}
-	if event != nil && service.notifications != nil {
+	events = append(events, domain.NewPlayerActivityObservedEvent(activityEventID, session, now))
+	if err := service.repo.SaveMonitoring(ctx, session, expected, events); err != nil {
+		return err
+	}
+	if from != health && service.notifications != nil {
 		id, err := service.ids.New(now)
 		if err == nil {
-			_ = service.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: id, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: fmt.Sprintf("**Game server health changed**\\nSession: `%s`\\nHealth: `%s` -> `%s`", session.ID, from, health), CorrelationID: event.CorrelationID, RequestedAt: now})
+			_ = service.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: id, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: fmt.Sprintf("**Game server health changed**\\nSession: `%s`\\nHealth: `%s` -> `%s`", session.ID, from, health), CorrelationID: events[0].CorrelationID, RequestedAt: now})
 		}
 	}
 	return nil

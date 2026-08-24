@@ -6,6 +6,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmmonitor"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/steamquery"
 	"github.com/L-McKendrick/game-server-platform/internal/app/monitoring"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
@@ -19,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 )
 
 type handler struct {
@@ -51,7 +53,11 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	service, err := monitoring.NewService(repo, runner, sqsnotification.New(sqs.NewFromConfig(awsCfg), cfg.NotificationQueueURL), identity.Generator{}, appsession.SystemClock{})
+	playerQuery, err := steamquery.New(2303, 1500*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	service, err := monitoring.NewService(repo, runner, sqsnotification.New(sqs.NewFromConfig(awsCfg), cfg.NotificationQueueURL), identity.Generator{}, appsession.SystemClock{}, monitoring.WithPlayerQuery(playerQuery))
 	if err != nil {
 		return nil, err
 	}

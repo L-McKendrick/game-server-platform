@@ -2,11 +2,19 @@
 
 ## State and Objective
 
-Phases 1-10 and 12 are complete; Phase 11 remains pending. Phase 13 steps 13.2
-and 13.7 are complete on `codex/phase-13-mission-management`. No deployment,
-Terraform apply, or Discord registration was performed.
+Phases 1-10, 12, and 13 are complete. Phase 14.1 is complete on
+`codex/phase-14-inactivity-lifecycle`. No deployment, Terraform apply, or
+Discord registration was performed.
 
 ## Completed Development
+
+- Scheduled monitoring now obtains bounded authoritative player counts through
+  A2S instead of treating host-probe output or query failures as an empty server.
+- Sessions persist the latest known/unknown player observation and a continuous
+  zero-player start time. Unknown observations and player returns clear that
+  continuity, and immutable activity events retain the evidence trail.
+- DynamoDB session decoding remains compatible with records created before the
+  inactivity fields existed.
 
 - Arma 3 creation accepts an optional mission upload and otherwise uses BI's
   `MP_ZGM_m12.Stratis` without creating a placeholder artifact.
@@ -58,10 +66,8 @@ Terraform apply, or Discord registration was performed.
 
 ## Next Development Task
 
-- Phase 14 now plans the basic automatic inactivity lifecycle: sleep after 30
-  continuous verified zero-player minutes and archive after 72 continuous hours
-  sleeping. Development has not started. Before implementation, start the phase
-  on a new branch and break Phase 14.1 into its numbered task plan.
+- Break Phase 14.2 into numbered tasks and implement idempotent automatic sleep
+  after 30 continuous verified zero-player minutes.
 - Remaining product delivery is ordered as Phase 14 inactivity automation,
   Phase 15 maximum-duration cost guardrails, Phase 16 production hardening and
   measured optimization, then Phase 17 potential enhancements.
@@ -77,31 +83,12 @@ $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out phase-13-test-14-mawk-fix.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-13-test-14-mawk-fix.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out phase-14-1-inactivity-evidence.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-14-1-inactivity-evidence.tfplan
 # Apply only after reviewing and approving this exact saved plan.
-terraform -chdir=infra/terraform/environments/dev apply phase-13-test-14-mawk-fix.tfplan
-
-./scripts/verify-bootstrap-worker-deployment.ps1
-./scripts/register-discord-command.ps1 -ApplicationId "<application-id>" -GuildId "<development-guild-id>"
-
-# Only after deployment verification, retry retained session test-12-2 once.
-# In Discord: /rb start session:test-12-2
-# Retry retained session test-14 only when the operator chooses to do so.
-# In Discord: /rb start session:test-14
+terraform -chdir=infra/terraform/environments/dev apply phase-14-1-inactivity-evidence.tfplan
 ```
 
-The fresh Terraform plan deploys the changed Lambda/bootstrap artifacts.
-Discord bulk registration is required because `/rb mods` changed to `/rb edit`.
-The documentation-only 13.7 change adds no deployment or registration action.
-The README status cleanup adds no deployment or registration action.
-No retry is scheduled for `test-12-2`; its retained running EC2 instance may
-continue incurring cost until the operator retries or ends the session.
-No retry is scheduled for `test-14`; its retained running EC2 instance and data
-volume may continue incurring cost until the operator retries or ends it. The
-fresh saved plan proposes one content-addressed bootstrap-object replacement
-and seven in-place Lambda/IAM-policy updates, with no runtime EC2/EBS changes.
-`test-12-3` and `test-13` need no further recovery action.
-
-The Phase 14 planning-only update requires no deployment or Discord command
-registration.
+The package command rebuilds the changed monitor-worker archive along with the
+other Lambda archives; the fresh plan should deploy the monitor worker change.
+No Discord command registration is required.

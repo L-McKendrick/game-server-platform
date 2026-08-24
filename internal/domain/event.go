@@ -51,6 +51,7 @@ const (
 	EventPresetRevisionActivated   EventType = "PresetRevisionActivated"
 	EventPresetRevisionFailed      EventType = "PresetRevisionFailed"
 	EventPresetRevisionRolledBack  EventType = "PresetRevisionRolledBack"
+	EventPlayerActivityObserved    EventType = "PlayerActivityObserved"
 )
 
 func NewTerminationEvent(eventID string, eventType EventType, stage string, workflow Workflow, session Session, objectsDeleted int, now time.Time) SessionEvent {
@@ -113,7 +114,24 @@ func NewRestoreEvent(eventID string, eventType EventType, stage string, workflow
 
 func NewHealthChangedEvent(eventID string, session Session, from HealthStatus, observation HealthObservation, now time.Time) SessionEvent {
 	return SessionEvent{ID: eventID, SessionID: session.ID, Type: EventHealthChanged, OccurredAt: now.UTC(), ActorType: string(ActorTypeSystem), ActorID: "MonitorGameServer", CorrelationID: eventID,
-		Data: map[string]string{"from_health": string(from), "to_health": string(session.HealthStatus), "arma_service": fmt.Sprintf("%t", observation.ArmaService), "arma_udp_2302": fmt.Sprintf("%t", observation.ArmaUDP), "teamspeak_service": fmt.Sprintf("%t", observation.TeamSpeakService), "teamspeak_udp_9987": fmt.Sprintf("%t", observation.TeamSpeakUDP), "disk_used_percent": fmt.Sprintf("%d", observation.DiskUsedPercent), "memory_available_bytes": fmt.Sprintf("%d", observation.MemoryAvailableBytes), "player_count": fmt.Sprintf("%d", observation.PlayerCount)},
+		Data: map[string]string{"from_health": string(from), "to_health": string(session.HealthStatus), "arma_service": fmt.Sprintf("%t", observation.ArmaService), "arma_udp_2302": fmt.Sprintf("%t", observation.ArmaUDP), "teamspeak_service": fmt.Sprintf("%t", observation.TeamSpeakService), "teamspeak_udp_9987": fmt.Sprintf("%t", observation.TeamSpeakUDP), "disk_used_percent": fmt.Sprintf("%d", observation.DiskUsedPercent), "memory_available_bytes": fmt.Sprintf("%d", observation.MemoryAvailableBytes)},
+	}
+}
+
+func NewPlayerActivityObservedEvent(eventID string, session Session, now time.Time) SessionEvent {
+	data := map[string]string{
+		"known":       fmt.Sprintf("%t", session.PlayerCountKnown),
+		"observed_at": session.PlayerCountObservedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if session.PlayerCountKnown {
+		data["player_count"] = fmt.Sprintf("%d", session.PlayerCount)
+	}
+	if !session.IdleSince.IsZero() {
+		data["idle_since"] = session.IdleSince.UTC().Format(time.RFC3339Nano)
+	}
+	return SessionEvent{
+		ID: eventID, SessionID: session.ID, Type: EventPlayerActivityObserved, OccurredAt: now.UTC(),
+		ActorType: string(ActorTypeSystem), ActorID: "MonitorGameServer", CorrelationID: eventID, Data: data,
 	}
 }
 

@@ -35,7 +35,7 @@ func (runner *Runner) Start(ctx context.Context, session domain.Session) (string
 	if session.TeamSpeakEnabled {
 		voice = "true"
 	}
-	script := "set -eu\narma_service=false; systemctl is-active --quiet arma3-server.service && arma_service=true\narma_udp=false; ss -H -lun | awk '{print $4}' | grep -Eq '(^|:)2302$' && arma_udp=true\nts_service=false; ts_udp=false\nif " + voice + "; then systemctl is-active --quiet teamspeak.service && ts_service=true; ss -H -lun | awk '{print $4}' | grep -Eq '(^|:)9987$' && ts_udp=true; fi\ndisk=$(df -P /srv/game-server | awk 'NR==2 {gsub(\"%\",\"\",$5); print $5}')\nmem=$(awk '/MemAvailable:/ {print $2*1024}' /proc/meminfo)\nprintf '{\"arma_service\":%s,\"arma_udp\":%s,\"teamspeak_service\":%s,\"teamspeak_udp\":%s,\"disk_used_percent\":%s,\"memory_available_bytes\":%s,\"player_count\":0}\\n' \"$arma_service\" \"$arma_udp\" \"$ts_service\" \"$ts_udp\" \"${disk:-0}\" \"${mem:-0}\"\n"
+	script := "set -eu\narma_service=false; systemctl is-active --quiet arma3-server.service && arma_service=true\narma_udp=false; ss -H -lun | awk '{print $4}' | grep -Eq '(^|:)2302$' && arma_udp=true\nts_service=false; ts_udp=false\nif " + voice + "; then systemctl is-active --quiet teamspeak.service && ts_service=true; ss -H -lun | awk '{print $4}' | grep -Eq '(^|:)9987$' && ts_udp=true; fi\ndisk=$(df -P /srv/game-server | awk 'NR==2 {gsub(\"%\",\"\",$5); print $5}')\nmem=$(awk '/MemAvailable:/ {print $2*1024}' /proc/meminfo)\nprintf '{\"arma_service\":%s,\"arma_udp\":%s,\"teamspeak_service\":%s,\"teamspeak_udp\":%s,\"disk_used_percent\":%s,\"memory_available_bytes\":%s}\\n' \"$arma_service\" \"$arma_udp\" \"$ts_service\" \"$ts_udp\" \"${disk:-0}\" \"${mem:-0}\"\n"
 	output, err := runner.client.SendCommand(ctx, &ssm.SendCommandInput{DocumentName: aws.String("AWS-RunShellScript"), InstanceIds: []string{session.Infrastructure.InstanceID}, Comment: aws.String("game-server-platform monitor " + session.ID), Parameters: map[string][]string{"commands": {script}, "executionTimeout": {"60"}}, TimeoutSeconds: aws.Int32(60)})
 	if err != nil {
 		return "", fmt.Errorf("send monitoring command: %w", err)
@@ -66,12 +66,11 @@ func (runner *Runner) Observe(ctx context.Context, instanceID, commandID string)
 		TeamSpeakUDP         bool  `json:"teamspeak_udp"`
 		DiskUsedPercent      int   `json:"disk_used_percent"`
 		MemoryAvailableBytes int64 `json:"memory_available_bytes"`
-		PlayerCount          int   `json:"player_count"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(aws.ToString(output.StandardOutputContent))), &wire); err != nil {
 		return ports.MonitoringCommandStatus{}, fmt.Errorf("decode monitoring output: %w", err)
 	}
-	result.Observation = domain.HealthObservation{ArmaService: wire.ArmaService, ArmaUDP: wire.ArmaUDP, TeamSpeakService: wire.TeamSpeakService, TeamSpeakUDP: wire.TeamSpeakUDP, DiskUsedPercent: wire.DiskUsedPercent, MemoryAvailableBytes: wire.MemoryAvailableBytes, PlayerCount: wire.PlayerCount}
+	result.Observation = domain.HealthObservation{ArmaService: wire.ArmaService, ArmaUDP: wire.ArmaUDP, TeamSpeakService: wire.TeamSpeakService, TeamSpeakUDP: wire.TeamSpeakUDP, DiskUsedPercent: wire.DiskUsedPercent, MemoryAvailableBytes: wire.MemoryAvailableBytes}
 	return result, nil
 }
 func bounded(value string) string {
