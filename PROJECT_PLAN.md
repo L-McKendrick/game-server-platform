@@ -212,7 +212,11 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **14.1.2** [x] Persist the inactivity evidence backward-compatibly through the session repository and immutable event history.
       - **14.1.3** [x] Feed bounded monitor player-count results into the domain model without interpreting query failures as zero players.
       - **14.1.4** [x] Add focused domain, monitor, and persistence tests for zero-player continuity, player return, unknown observations, replay, and legacy records.
-    - **14.2** [ ] Extend the scheduled monitor to idempotently request the existing sleep workflow after 30 continuous verified zero-player minutes, while respecting lifecycle state, active workflow locks, and concurrent player activity.
+    - **14.2** [x] Extend the scheduled monitor to idempotently request the existing sleep workflow after 30 continuous verified zero-player minutes, while respecting lifecycle state, active workflow locks, and concurrent player activity.
+      - **14.2.1** [x] Define a fixed 30-minute automatic-sleep eligibility policy and deterministic request identity at the domain/application boundary.
+      - **14.2.2** [x] Route eligible monitor results through the existing command and sleep-workflow safeguards using explicit system authority and least-privilege queue access.
+      - **14.2.3** [x] Revalidate persisted inactivity, lifecycle state, and workflow-lock state at command consumption so player return or concurrent mutation fails closed.
+      - **14.2.4** [x] Add focused due/not-due, replay, player-return, unknown-observation, state-drift, lock, and queue-failure tests and proportional Terraform validation.
     - **14.3** [ ] Add a scheduled, idempotent 72-hour sleeping-state check that requests the existing verified archive workflow without weakening its resource-ownership, backup-integrity, or failure safeguards.
     - **14.4** [ ] Add focused timing, state-drift, replay, concurrency, unknown-activity, workflow-failure, persistence, notification/card, Terraform, and end-to-end regression coverage; document the fixed policy and the deferred expansion points.
 

@@ -19,12 +19,17 @@ type Service struct {
 	ids           IDGenerator
 	clock         Clock
 	players       ports.PlayerQuery
+	commands      ports.CommandQueue
 }
 
 type Option func(*Service)
 
 func WithPlayerQuery(query ports.PlayerQuery) Option {
 	return func(service *Service) { service.players = query }
+}
+
+func WithCommandQueue(queue ports.CommandQueue) Option {
+	return func(service *Service) { service.commands = queue }
 }
 
 func NewService(repo ports.MonitoringRepository, runner ports.MonitoringRunner, notifications ports.NotificationQueue, ids IDGenerator, clock Clock, options ...Option) (*Service, error) {
@@ -106,6 +111,18 @@ func (service *Service) monitor(ctx context.Context, session domain.Session) err
 	events = append(events, domain.NewPlayerActivityObservedEvent(activityEventID, session, now))
 	if err := service.repo.SaveMonitoring(ctx, session, expected, events); err != nil {
 		return err
+	}
+	if service.commands != nil && session.AutomaticSleepDue(now) {
+		commandID := domain.AutomaticSleepCommandID(session.ID, session.IdleSince)
+		command := domain.CommandEnvelope{
+			SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandSleepSession, RequestedAt: now,
+			Actor:     domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true},
+			SessionID: session.ID, IdempotencyKey: "automatic-sleep:" + commandID, CorrelationID: commandID,
+			Parameters: map[string]string{domain.AutomaticIdleSinceParameter: session.IdleSince.UTC().Format(time.RFC3339Nano)},
+		}
+		if err := service.commands.Enqueue(ctx, command); err != nil {
+			return fmt.Errorf("enqueue automatic sleep: %w", err)
+		}
 	}
 	if from != health && service.notifications != nil {
 		id, err := service.ids.New(now)

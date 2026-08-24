@@ -165,6 +165,34 @@ func TestStart_AllowsGuildAdministratorForSleepWorkflow(t *testing.T) {
 	}
 }
 
+func TestStart_AllowsOnlyDueBoundAutomaticSleep(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	repository, command := seedAutomaticSleep(t, now, true)
+	starter := &workflowStarter{arn: "arn:aws:states:us-west-2:123456789012:execution:SleepSession:" + command.CommandID}
+	service, err := NewService(repository, repository, starter, rejectAuthorizer{}, &workflowIDs{ids: []string{"automatic-sleep-started"}}, workflowClock{now}, 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := service.Start(context.Background(), command)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if workflow.Type != domain.SleepWorkflowType || workflow.RequestedBy != domain.InactivityMonitorActorID || starter.calls != 1 {
+		t.Fatalf("workflow = %#v calls=%d", workflow, starter.calls)
+	}
+	events := repository.Events(command.SessionID)
+	if events[len(events)-1].ActorType != string(domain.ActorTypeSystem) {
+		t.Fatalf("automatic event actor = %#v", events[len(events)-1])
+	}
+
+	staleRepository, staleCommand := seedAutomaticSleep(t, now, false)
+	staleService, _ := NewService(staleRepository, staleRepository, &workflowStarter{arn: "unexpected"}, rejectAuthorizer{}, &workflowIDs{ids: []string{"unexpected"}}, workflowClock{now}, 2*time.Hour)
+	if _, err := staleService.Start(context.Background(), staleCommand); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("stale automatic sleep error = %v", err)
+	}
+}
+
 func TestStart_ResumesTrustedBootstrapContinuationWithoutDiscordRoleReplay(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
@@ -344,6 +372,29 @@ type rejectAuthorizer struct{}
 
 func (rejectAuthorizer) Authorize(context.Context, string, string, string, []string) error {
 	return domain.ErrForbidden
+}
+
+func seedAutomaticSleep(t *testing.T, now time.Time, due bool) (*memory.SessionRepository, domain.CommandEnvelope) {
+	t.Helper()
+	repository := memory.NewSessionRepository()
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "automatic-session", Slug: "automatic-session", DisplayName: "Automatic Session", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateRunning, domain.StateRunning, domain.StateRunning, domain.HealthHealthy
+	session.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "instance-profile", AMIID: "ami-1", InstanceType: "c7i-flex.large", InstanceID: "i-1", DataVolumeID: "vol-1", PublicIPv4: "203.0.113.1", LastObservedAt: now}
+	idleSince := now.Add(-30 * time.Minute)
+	session.PlayerCountKnown, session.PlayerCount, session.PlayerCountObservedAt, session.IdleSince = true, 0, now, idleSince
+	if !due {
+		session.PlayerCountObservedAt = now.Add(-domain.MaximumActivityEvidenceAge - time.Second)
+	}
+	event := domain.NewSessionCreatedEvent("automatic-created", "automatic-created", domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}, session, now.Add(-time.Hour))
+	idempotency, _ := domain.NewCompletedIdempotencyRecord("automatic-create", "automatic-hash", session.ID, now.Add(-time.Hour), time.Hour)
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatal(err)
+	}
+	commandID := domain.AutomaticSleepCommandID(session.ID, idleSince)
+	return repository, domain.CommandEnvelope{SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandSleepSession, RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true}, SessionID: session.ID, IdempotencyKey: "automatic-sleep:" + commandID, CorrelationID: commandID, Parameters: map[string]string{domain.AutomaticIdleSinceParameter: idleSince.Format(time.RFC3339Nano)}}
 }
 
 func seedRunningWorkflowRepository(t *testing.T, now time.Time) *memory.SessionRepository {

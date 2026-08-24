@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqscommand"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmmonitor"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/steamquery"
@@ -44,6 +45,9 @@ func build(ctx context.Context) (*handler, error) {
 	if strings.TrimSpace(cfg.NotificationQueueURL) == "" {
 		return nil, fmt.Errorf("NOTIFICATION_QUEUE_URL is required")
 	}
+	if strings.TrimSpace(cfg.CommandQueueURL) == "" {
+		return nil, fmt.Errorf("COMMAND_QUEUE_URL is required")
+	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.AWSRegion))
 	if err != nil {
 		return nil, err
@@ -57,7 +61,8 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	service, err := monitoring.NewService(repo, runner, sqsnotification.New(sqs.NewFromConfig(awsCfg), cfg.NotificationQueueURL), identity.Generator{}, appsession.SystemClock{}, monitoring.WithPlayerQuery(playerQuery))
+	sqsClient := sqs.NewFromConfig(awsCfg)
+	service, err := monitoring.NewService(repo, runner, sqsnotification.New(sqsClient, cfg.NotificationQueueURL), identity.Generator{}, appsession.SystemClock{}, monitoring.WithPlayerQuery(playerQuery), monitoring.WithCommandQueue(sqscommand.New(sqsClient, cfg.CommandQueueURL)))
 	if err != nil {
 		return nil, err
 	}

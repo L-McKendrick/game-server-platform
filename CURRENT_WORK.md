@@ -2,7 +2,7 @@
 
 ## State and Objective
 
-Phases 1-10, 12, and 13 are complete. Phase 14.1 is complete on
+Phases 1-10, 12, and 13 are complete. Phase 14 steps 14.1 and 14.2 are complete on
 `codex/phase-14-inactivity-lifecycle`. No deployment, Terraform apply, or
 Discord registration was performed.
 
@@ -15,6 +15,14 @@ Discord registration was performed.
   continuity, and immutable activity events retain the evidence trail.
 - DynamoDB session decoding remains compatible with records created before the
   inactivity fields existed.
+- Fresh monitor observations that complete a continuous 30-minute zero-player
+  window enqueue a deterministic automatic-sleep command. The command worker
+  uses explicit system authority and revalidates the bound idle window, fresh
+  evidence, lifecycle state, and workflow lock before starting the existing
+  guarded sleep workflow.
+- The monitor role has least-privilege send access to the existing command FIFO
+  queue; queue failures surface for scheduled retry, and FIFO deduplication plus
+  deterministic command IDs make replay safe.
 
 - Arma 3 creation accepts an optional mission upload and otherwise uses BI's
   `MP_ZGM_m12.Stratis` without creating a placeholder artifact.
@@ -66,8 +74,8 @@ Discord registration was performed.
 
 ## Next Development Task
 
-- Break Phase 14.2 into numbered tasks and implement idempotent automatic sleep
-  after 30 continuous verified zero-player minutes.
+- Break Phase 14.3 into numbered tasks and implement idempotent archive after 72
+  continuous hours in the sleeping state.
 - Remaining product delivery is ordered as Phase 14 inactivity automation,
   Phase 15 maximum-duration cost guardrails, Phase 16 production hardening and
   measured optimization, then Phase 17 potential enhancements.
@@ -83,12 +91,13 @@ $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out phase-14-1-inactivity-evidence.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-14-1-inactivity-evidence.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out phase-14-2-automatic-sleep.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-14-2-automatic-sleep.tfplan
 # Apply only after reviewing and approving this exact saved plan.
-terraform -chdir=infra/terraform/environments/dev apply phase-14-1-inactivity-evidence.tfplan
+terraform -chdir=infra/terraform/environments/dev apply phase-14-2-automatic-sleep.tfplan
 ```
 
-The package command rebuilds the changed monitor-worker archive along with the
-other Lambda archives; the fresh plan should deploy the monitor worker change.
-No Discord command registration is required.
+The package command rebuilds the changed monitor and command-worker archives
+along with the other Lambda archives. The fresh plan should deploy both worker
+changes, the monitor command-queue environment variable, and its scoped
+`sqs:SendMessage` permission. No Discord command registration is required.

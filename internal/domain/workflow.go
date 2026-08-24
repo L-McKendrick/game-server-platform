@@ -92,6 +92,7 @@ type CommandActor struct {
 	ChannelID      string   `json:"channel_id"`
 	Roles          []string `json:"roles"`
 	CanManageGuild bool     `json:"can_manage_guild"`
+	System         bool     `json:"system,omitempty"`
 }
 
 const (

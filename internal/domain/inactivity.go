@@ -1,8 +1,18 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
+)
+
+const (
+	AutomaticSleepAfter         = 30 * time.Minute
+	MaximumActivityEvidenceAge  = 10 * time.Minute
+	InactivityMonitorActorID    = "inactivity-monitor"
+	AutomaticIdleSinceParameter = "automatic_idle_since"
 )
 
 // PlayerActivityObservation is a bounded point-in-time player count. Known is
@@ -12,6 +22,35 @@ type PlayerActivityObservation struct {
 	Known       bool
 	PlayerCount int
 	ObservedAt  time.Time
+}
+
+func (session Session) AutomaticSleepDue(now time.Time) bool {
+	now = now.UTC()
+	return session.LifecycleState == StateRunning && session.ActiveWorkflowID == "" &&
+		session.PlayerCountKnown && session.PlayerCount == 0 && !session.IdleSince.IsZero() &&
+		!session.PlayerCountObservedAt.IsZero() && !session.PlayerCountObservedAt.After(now) &&
+		now.Sub(session.PlayerCountObservedAt) <= MaximumActivityEvidenceAge &&
+		now.Sub(session.IdleSince) >= AutomaticSleepAfter
+}
+
+func AutomaticSleepCommandID(sessionID string, idleSince time.Time) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + idleSince.UTC().Format(time.RFC3339Nano)))
+	return "auto-sleep-" + hex.EncodeToString(sum[:])[:24]
+}
+
+func ValidateAutomaticSleepCommand(command CommandEnvelope, session Session, now time.Time) error {
+	if !command.Actor.System || command.Actor.DiscordUserID != InactivityMonitorActorID || command.CommandType != CommandSleepSession {
+		return ErrForbidden
+	}
+	idleSince, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(command.Parameters[AutomaticIdleSinceParameter]))
+	if err != nil || !idleSince.Equal(session.IdleSince) || command.CommandID != AutomaticSleepCommandID(session.ID, idleSince) ||
+		command.IdempotencyKey != "automatic-sleep:"+command.CommandID || command.CorrelationID != command.CommandID {
+		return ErrIdempotencyConflict
+	}
+	if !session.AutomaticSleepDue(now) {
+		return fmt.Errorf("automatic sleep is no longer due: %w", ErrInvalidTransition)
+	}
+	return nil
 }
 
 // RecordPlayerActivity updates the durable evidence used by inactivity policy.

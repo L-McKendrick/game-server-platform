@@ -59,3 +59,23 @@ func TestRecordPlayerActivityRejectsInvalidOrOlderEvidence(t *testing.T) {
 		t.Fatal("out-of-range player count accepted")
 	}
 }
+
+func TestAutomaticSleepDueRequiresFreshContinuousEvidence(t *testing.T) {
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	session, _ := NewSession(NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner", GuildID: "guild", ChannelID: "channel"}, now.Add(-time.Hour))
+	session.DesiredState, session.ObservedState, session.LifecycleState = StateRunning, StateRunning, StateRunning
+	session.Infrastructure = Infrastructure{CapacitySlotID: "slot-1", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c7i.large", InstanceID: "i-1", DataVolumeID: "vol-1", PublicIPv4: "203.0.113.1", LastObservedAt: now}
+	session.PlayerCountKnown, session.PlayerCount = true, 0
+	session.IdleSince, session.PlayerCountObservedAt = now.Add(-30*time.Minute), now
+	if !session.AutomaticSleepDue(now) {
+		t.Fatal("fresh 30-minute zero-player window was not due")
+	}
+	session.PlayerCountObservedAt = now.Add(-MaximumActivityEvidenceAge - time.Second)
+	if session.AutomaticSleepDue(now) {
+		t.Fatal("stale evidence was due")
+	}
+	session.PlayerCountObservedAt, session.PlayerCount = now, 1
+	if session.AutomaticSleepDue(now) {
+		t.Fatal("non-empty session was due")
+	}
+}

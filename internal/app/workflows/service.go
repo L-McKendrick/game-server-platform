@@ -66,8 +66,9 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 	if err != nil {
 		return domain.Workflow{}, err
 	}
+	trustedAutomation := command.Actor.System && command.Actor.DiscordUserID == domain.InactivityMonitorActorID && workflowType == domain.SleepWorkflowType
 	canManageLifecycle := command.Actor.CanManageGuild && isOwnerOrAdminLifecycle(workflowType)
-	if !trustedContinuation && !canManageLifecycle {
+	if !trustedContinuation && !trustedAutomation && !canManageLifecycle {
 		if err := service.authorizer.Authorize(
 			ctx,
 			command.Actor.GuildID,
@@ -93,10 +94,15 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 	if err != nil {
 		return domain.Workflow{}, err
 	}
-	if session.GuildID != command.Actor.GuildID || (session.OwnerDiscordUserID != command.Actor.DiscordUserID && !canManageLifecycle) {
+	if session.GuildID != command.Actor.GuildID || (session.OwnerDiscordUserID != command.Actor.DiscordUserID && !canManageLifecycle && !trustedAutomation) {
 		return domain.Workflow{}, domain.ErrForbidden
 	}
 	now := service.clock.Now().UTC()
+	if trustedAutomation {
+		if err := domain.ValidateAutomaticSleepCommand(command, session, now); err != nil {
+			return domain.Workflow{}, err
+		}
+	}
 	workflowID := command.CommandID
 	expectedVersion := session.Version
 	if !trustedContinuation && (workflowType == domain.ProvisionWorkflowType || workflowType == domain.BootstrapWorkflowType) {
@@ -116,7 +122,11 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 	if err != nil {
 		return domain.Workflow{}, err
 	}
-	actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: command.Actor.DiscordUserID}
+	actorType := domain.ActorTypeDiscordUser
+	if trustedAutomation {
+		actorType = domain.ActorTypeSystem
+	}
+	actor := domain.Actor{Type: actorType, ID: command.Actor.DiscordUserID}
 	eventType := domain.EventWorkflowStarted
 	if workflow.Type == domain.ArchiveWorkflowType {
 		eventType = domain.EventArchiveStarted
@@ -224,7 +234,11 @@ func (service *Service) resumePending(ctx context.Context, workflow domain.Workf
 	if err != nil {
 		return domain.Workflow{}, err
 	}
-	actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: workflow.RequestedBy}
+	actorType := domain.ActorTypeDiscordUser
+	if workflow.RequestedBy == domain.InactivityMonitorActorID {
+		actorType = domain.ActorTypeSystem
+	}
+	actor := domain.Actor{Type: actorType, ID: workflow.RequestedBy}
 	return service.startExecution(ctx, session, workflow, actor)
 }
 

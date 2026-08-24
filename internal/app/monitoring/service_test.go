@@ -41,6 +41,16 @@ type monitoringQuery struct {
 	err    error
 }
 
+type monitoringCommands struct {
+	commands []domain.CommandEnvelope
+	err      error
+}
+
+func (queue *monitoringCommands) Enqueue(_ context.Context, command domain.CommandEnvelope) error {
+	queue.commands = append(queue.commands, command)
+	return queue.err
+}
+
 func (query monitoringQuery) Query(context.Context, string) (domain.PlayerStatus, error) {
 	return query.status, query.err
 }
@@ -109,5 +119,51 @@ func TestRunTreatsFailedPlayerQueryAsUnknownAndBreaksIdleContinuity(t *testing.T
 	}
 	if repo.session.PlayerCountKnown || !repo.session.IdleSince.IsZero() || repo.events[0].Data["known"] != "false" {
 		t.Fatalf("failed query became zero activity: session=%#v event=%#v", repo.session, repo.events[0])
+	}
+}
+
+func TestRunQueuesDeterministicAutomaticSleepOnlyWhenDue(t *testing.T) {
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	session := runningMonitoringSession(t, now)
+	session.PlayerCountKnown, session.PlayerCount = true, 0
+	session.IdleSince, session.PlayerCountObservedAt = now.Add(-30*time.Minute), now.Add(-5*time.Minute)
+	repo := &monitoringRepo{session: session}
+	queue := &monitoringCommands{}
+	service, err := NewService(repo, monitoringRunner{status: ports.MonitoringCommandStatus{Status: "Success", Observation: domain.HealthObservation{ArmaService: true, ArmaUDP: true}}}, nil, &monitoringIDs{}, monitoringClock{now}, WithPlayerQuery(monitoringQuery{status: domain.PlayerStatus{PlayerCount: 0}}), WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.commands) != 1 {
+		t.Fatalf("commands = %#v", queue.commands)
+	}
+	command := queue.commands[0]
+	wantID := domain.AutomaticSleepCommandID(session.ID, session.IdleSince)
+	if command.CommandID != wantID || !command.Actor.System || command.Parameters[domain.AutomaticIdleSinceParameter] != session.IdleSince.Format(time.RFC3339Nano) {
+		t.Fatalf("automatic sleep command = %#v", command)
+	}
+}
+
+func TestRunReturnsAutomaticSleepQueueFailureForScheduledRetry(t *testing.T) {
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	session := runningMonitoringSession(t, now)
+	session.PlayerCountKnown, session.PlayerCount = true, 0
+	session.IdleSince, session.PlayerCountObservedAt = now.Add(-30*time.Minute), now.Add(-5*time.Minute)
+	repo := &monitoringRepo{session: session}
+	queue := &monitoringCommands{err: errors.New("queue unavailable")}
+	service, err := NewService(repo, monitoringRunner{status: ports.MonitoringCommandStatus{Status: "Success", Observation: domain.HealthObservation{ArmaService: true, ArmaUDP: true}}}, nil, &monitoringIDs{}, monitoringClock{now}, WithPlayerQuery(monitoringQuery{status: domain.PlayerStatus{PlayerCount: 0}}), WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background()); err == nil || len(queue.commands) != 1 {
+		t.Fatalf("queue failure error=%v commands=%#v", err, queue.commands)
 	}
 }
