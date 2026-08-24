@@ -217,6 +217,36 @@ func TestObservePersistsManagedBootstrapCheckpointsInOneProgressMutation(t *test
 	}
 }
 
+func TestObservePersistsSafeBootstrapActivity(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 11, 0, 0, 0, time.UTC)
+	repository, workflow := seedBootstrap(t, now)
+	runner := &testRunner{status: ports.BootstrapCommandStatus{
+		Status: "InProgress", Activity: "Arma 3 server files",
+		Checkpoints: []domain.ProgressMilestone{domain.ProgressHostPrepared, domain.ProgressGameServerInstalled},
+	}}
+	notifications := &testNotifications{}
+	service, err := NewService(repository, repository, repository, runner, notifications, &testIDs{values: []string{"prepare-event", "progress-event", "activity-event"}}, testClock{now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := TaskRequest{Action: ActionPrepare, SessionID: workflow.SessionID, WorkflowID: workflow.ID}
+	if _, err := service.Handle(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	request.Action, request.CommandID = ActionObserve, "command-1"
+	if _, err := service.Handle(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	session, err := repository.Get(context.Background(), workflow.SessionID)
+	if err != nil || session.Progress.Activity != "Arma 3 server files" {
+		t.Fatalf("session activity = %q, err = %v", session.Progress.Activity, err)
+	}
+	if len(notifications.requests) != 3 || !strings.Contains(notifications.requests[2].NotificationID, "game-server-installed-activity-") {
+		t.Fatalf("notifications = %#v", notifications.requests)
+	}
+}
+
 func TestBootstrapFailureRollsBackAndRetainsFailedPendingRevision(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)

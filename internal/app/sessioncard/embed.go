@@ -103,6 +103,9 @@ func publicProgressValue(card Projection) string {
 	if card.Progress.Condition != "" {
 		value += "\n**State:** " + safe(card.Progress.Condition)
 	}
+	if card.Progress.Activity != "" {
+		value += "\n**Current download:** " + safe(card.Progress.Activity)
+	}
 	if !card.OperationStartedAt.IsZero() {
 		value += "\n**Started:** " + timestamp(card.OperationStartedAt)
 	}

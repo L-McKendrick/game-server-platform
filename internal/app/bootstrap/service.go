@@ -246,6 +246,21 @@ func (service *Service) observe(ctx context.Context, request TaskRequest) (TaskR
 		}
 		service.notify(ctx, &result, session, workflow)
 	}
+	activity := status.Activity
+	if session.Progress.Milestone != domain.ProgressGameServerInstalled && session.Progress.Milestone != domain.ProgressModsApplied {
+		activity = ""
+	}
+	activityExpectedVersion := session.Version
+	activityChanged, activityErr := session.SetProgressActivity(workflow.ID, activity, service.clock.Now())
+	if activityErr != nil {
+		return TaskResult{}, activityErr
+	}
+	if activityChanged {
+		if progressErr := service.saveProgress(ctx, session, activityExpectedVersion, workflow); progressErr != nil {
+			return TaskResult{}, progressErr
+		}
+		service.notify(ctx, &result, session, workflow)
+	}
 	switch status.Status {
 	case "Success":
 		result.Done, result.Succeeded = true, true

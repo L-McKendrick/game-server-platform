@@ -8,8 +8,10 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
 
 1. Complete the core product with automatic inactivity handling (Phase 14) and
    maximum-duration cost guardrails (Phase 15).
-2. Harden production operations and optimize measured bottlenecks (Phase 16).
-3. Future enhancements (17+)
+2. Complete the approved out-of-order miscellaneous fixes and quality-of-life
+   work on `codex/misc-fixes` (Phase 18).
+3. Harden production operations and optimize measured bottlenecks (Phase 16).
+4. Future enhancements (Phase 17).
 
 ## Phases
 
@@ -247,15 +249,23 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **17.3** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.
     - **17.4** [ ] Provide options of different EC2 instance types (weaker or more powerful options with explanations).
     - **17.5** [ ] Let administrators configure the active-session capacity limit while preserving atomic slot enforcement and clear start/wake feedback.
-    - **17.6** [ ] Make bootstrap progress reflect active work instead of completion-sounding checkpoints, and expose safe coarse SteamCMD download activity without adding infrastructure.
-      - **17.6.1** [ ] Reframe the bootstrap sequence so Step 2 is `Preparing host`, Step 3 is `Downloading and installing game files`, and later steps advance only at clear stage boundaries; preserve deterministic replay and skipped-stage behavior.
-      - **17.6.2** [ ] Extend the existing SSM stdout protocol with bounded allowlisted activity records for the current SteamCMD target, such as the Arma 3 server or a Workshop item, while continuing to suppress raw SteamCMD output, credentials, authentication state, arbitrary paths, and untrusted item names.
-      - **17.6.3** [ ] Render the latest safe activity beneath the current stage with rate-limited card updates, graceful fallback when SteamCMD exposes no usable signal, and focused redaction, ordering, replay, truncation, and stale-output tests.
-    - **17.7** [ ] Show automatic inactivity lifecycle timing in `/rb status`.
-      - **17.7.1** [ ] Show the trustworthy `idle_since` observation and projected automatic-sleep date and time for an eligible running session, using Discord-native timestamps and clearly marking unknown or interrupted idle evidence.
-      - **17.7.2** [ ] Show the projected automatic-archive date and time for a sleeping session from its authoritative `sleeping_since` value and configured archive threshold; avoid presenting projections when lifecycle state or evidence makes them inapplicable.
-      - **17.7.3** [ ] Add focused rendering coverage for active players, continuous idle time, unknown observations, sleeping sessions, disabled or changed thresholds, clock anomalies, and Discord response bounds.
 
-18. **Miscellaneous Fixes — Done (approved out of order)**
+18. **Miscellaneous Fixes and Quality of Life — In Progress (approved out of order)**
+    - Deliver on `codex/misc-fixes` by extending existing Discord, artifact,
+      bootstrap, and SSM paths. Avoid new workers, queues, state machines, or
+      persistent services unless implementation evidence shows they are needed.
     - **18.1** [x] Polish existing Discord interaction layouts without changing their safety or authorization contracts.
       - **18.1.1** [x] Group each `/rb edit` mission-file name and its controls on one row, move `Add mission` to the bottom, retain five-file pagination, and add focused rendering coverage.
+    - **18.2** [x] Make setup and automatic lifecycle timing more informative through the existing Discord presentation paths.
+      - **18.2.1** [x] Reframe bootstrap milestones around active work so host preparation no longer occupies most of setup; expose distinct game-file and Workshop installation stages while preserving deterministic replay, retries, and skipped-stage behavior.
+      - **18.2.2** [x] Emit only bounded, allowlisted SteamCMD activity from the existing bootstrap/SSM progress protocol and render the latest safe target on the public card with existing rate limits; suppress raw output, credentials, authentication state, arbitrary paths, and untrusted names, and degrade cleanly when no signal is available.
+      - **18.2.3** [x] Show Discord-native projected sleep or archive times in `/rb status` from authoritative `idle_since` or `sleeping_since` evidence and the existing policy thresholds; omit projections when state or evidence is unknown, interrupted, or inapplicable.
+      - **18.2.4** [x] Add focused milestone, activity-redaction, replay, stale-output, inactivity-state, clock-anomaly, fallback, and Discord-bound regression coverage without adding monitoring infrastructure.
+    - **18.3** [ ] Support Arma 3 server-only mods through the existing session mod-management and bootstrap architecture.
+      - **18.3.1** [ ] Extend creation and `/rb edit session:<slug> section:mods` to accept a separately identified server-mod preset, reusing the existing private upload, validation, revision, authorization, and stale-state safeguards.
+      - **18.3.2** [ ] Persist server-only Workshop items separately, install them through the existing authenticated resumable SteamCMD path, and generate a deterministic `-serverMod=` launch argument while excluding them from the public card, client modlist artifact, and required client launch parameters.
+      - **18.3.3** [ ] Preserve server-mod active/pending intent through start, wake, revision, archive, restore, replacement hosts, and termination; add focused persistence, validation, replay, bootstrap, launch-argument, rollback, and backward-compatibility coverage.
+    - **18.4** [ ] Make newly accepted Arma 3 mission uploads available to a running server without restarting Arma or changing its current mission.
+      - **18.4.1** [ ] Extend the existing artifact acceptance path to revalidate the running lifecycle, exact managed instance, accepted mission revision, and workflow compatibility before requesting a bounded live copy; treat sleeping, archived, changing, or stale-instance sessions as bootstrap-only synchronization cases.
+      - **18.4.2** [ ] Reuse the artifact worker and narrowly scoped SSM access to download the exact S3 object to a temporary file, verify its checksum, set `steam:steam` ownership, and atomically place it in `arma3/mpmissions`; use existing retry and failure reporting and do not add a synchronization worker.
+      - **18.4.3** [ ] Synchronize every accepted active mission during start, wake, restore, and replacement-host bootstrap, and add focused live-copy, idempotency, checksum, state-drift, instance-drift, workflow-conflict, no-restart, and current-mission-preservation coverage.

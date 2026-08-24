@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -133,8 +134,40 @@ func (runner *Runner) Observe(ctx context.Context, instanceID string, commandID 
 	code, message := bootstrapFailure(aws.ToString(output.StandardErrorContent))
 	return ports.BootstrapCommandStatus{
 		Status: string(output.Status), ErrorCode: code, ErrorMessage: message,
+		Activity:    parseActivity(aws.ToString(output.StandardOutputContent)),
 		Checkpoints: parseCheckpoints(aws.ToString(output.StandardOutputContent)),
 	}, nil
+}
+
+func parseActivity(output string) string {
+	activity := ""
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "GSP_CHECKPOINT:") {
+			activity = ""
+			continue
+		}
+		const prefix = "GSP_ACTIVITY:"
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		switch {
+		case value == "ARMA_SERVER":
+			activity = "Arma 3 server files"
+		case strings.HasPrefix(value, "WORKSHOP_ITEMS:"):
+			count := strings.TrimPrefix(value, "WORKSHOP_ITEMS:")
+			parsed, err := strconv.Atoi(count)
+			if err == nil && parsed >= 1 && parsed <= 9999 && strconv.Itoa(parsed) == count {
+				unit := "items"
+				if parsed == 1 {
+					unit = "item"
+				}
+				activity = fmt.Sprintf("Workshop content (%d %s)", parsed, unit)
+			}
+		}
+	}
+	return activity
 }
 
 func bootstrapFailure(stderr string) (string, string) {

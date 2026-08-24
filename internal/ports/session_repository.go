@@ -222,6 +222,9 @@ type BootstrapCommandStatus struct {
 	Status       string
 	ErrorCode    string
 	ErrorMessage string
+	// Activity is one bounded, allowlisted description of the current download
+	// target. Raw managed-command output never crosses this port.
+	Activity string
 	// Checkpoints contains only allowlisted progress facts parsed from the
 	// managed command's output. Raw output never crosses this port.
 	Checkpoints []domain.ProgressMilestone

@@ -131,6 +131,7 @@ type SessionProgress struct {
 	CompletedMilestones []ProgressMilestone
 	SkippedMilestones   []ProgressMilestone
 	State               ProgressState
+	Activity            string
 	StartedAt           time.Time
 	LastProgressAt      time.Time
 }
@@ -138,7 +139,7 @@ type SessionProgress struct {
 func (progress SessionProgress) Empty() bool {
 	return progress.WorkflowID == "" && progress.WorkflowType == "" && progress.Milestone == "" &&
 		len(progress.CompletedMilestones) == 0 && len(progress.SkippedMilestones) == 0 && progress.State == "" &&
-		progress.StartedAt.IsZero() && progress.LastProgressAt.IsZero()
+		progress.Activity == "" && progress.StartedAt.IsZero() && progress.LastProgressAt.IsZero()
 }
 
 func (progress SessionProgress) Validate() error {
@@ -154,6 +155,8 @@ func (progress SessionProgress) Validate() error {
 		return fmt.Errorf("invalid progress milestone %q", progress.Milestone)
 	case progress.State != "" && !progress.State.Valid():
 		return fmt.Errorf("invalid progress state %q", progress.State)
+	case len(progress.Activity) > 100 || strings.ContainsAny(progress.Activity, "\r\n"):
+		return fmt.Errorf("progress activity is invalid")
 	case progress.StartedAt.IsZero():
 		return fmt.Errorf("progress start timestamp is required")
 	case progress.LastProgressAt.IsZero():
@@ -210,6 +213,27 @@ func (progress SessionProgress) Validate() error {
 		previous = index
 	}
 	return nil
+}
+
+// SetProgressActivity records only an adapter-sanitized, bounded activity
+// label. Repeated observations are no-ops and cannot move workflow milestones.
+func (session *Session) SetProgressActivity(workflowID, activity string, now time.Time) (bool, error) {
+	if session.Progress.WorkflowID != strings.TrimSpace(workflowID) {
+		return false, fmt.Errorf("%w: progress belongs to another workflow", ErrConflict)
+	}
+	activity = strings.TrimSpace(activity)
+	if len(activity) > 100 || strings.ContainsAny(activity, "\r\n") {
+		return false, fmt.Errorf("invalid progress activity")
+	}
+	if session.Progress.Activity == activity {
+		return false, nil
+	}
+	now = monotonicProgressTime(now, session.Progress.LastProgressAt)
+	session.Progress.Activity = activity
+	session.Progress.LastProgressAt = now
+	session.Version++
+	session.UpdatedAt = now
+	return true, session.Validate()
 }
 
 // AdvanceProgress records a monotonic milestone for the current workflow and

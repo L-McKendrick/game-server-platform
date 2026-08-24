@@ -123,6 +123,39 @@ func TestSessionProgressIsMonotonicAndVersioned(t *testing.T) {
 	}
 }
 
+func TestProgressActivityIsBoundedReplaySafeAndWorkflowBound(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{
+		ID: "session-activity", Slug: "session-activity", DisplayName: "Activity",
+		GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.AcquireWorkflowLock("bootstrap-1", BootstrapWorkflowType, time.Hour, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	version := session.Version
+	changed, err := session.SetProgressActivity("bootstrap-1", "Arma 3 server files", now.Add(2*time.Minute))
+	if err != nil || !changed || session.Version != version+1 || session.Progress.Activity != "Arma 3 server files" {
+		t.Fatalf("activity = %#v changed=%t err=%v", session.Progress, changed, err)
+	}
+	version = session.Version
+	if changed, err = session.SetProgressActivity("bootstrap-1", "Arma 3 server files", now.Add(3*time.Minute)); err != nil || changed || session.Version != version {
+		t.Fatalf("replay changed=%t version=%d err=%v", changed, session.Version, err)
+	}
+	if _, err = session.SetProgressActivity("other", "Workshop content (2 items)", now); !errors.Is(err, ErrConflict) {
+		t.Fatalf("other workflow error = %v", err)
+	}
+	if _, err = session.SetProgressActivity("bootstrap-1", "unsafe\noutput", now); err == nil {
+		t.Fatal("newline activity was accepted")
+	}
+	if _, err = session.SetProgressActivity("bootstrap-1", strings.Repeat("x", 101), now); err == nil {
+		t.Fatal("oversized activity was accepted")
+	}
+}
+
 func TestSessionProgressMigratesLegacyActiveWorkflowOnWrite(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 15, 4, 0, 0, 0, time.UTC)

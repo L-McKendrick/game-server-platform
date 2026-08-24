@@ -178,6 +178,7 @@ type sessionItem struct {
 	ProgressCompletedMilestones      []string `dynamodbav:"progress_completed_milestones,omitempty"`
 	ProgressSkippedMilestones        []string `dynamodbav:"progress_skipped_milestones,omitempty"`
 	ProgressState                    string   `dynamodbav:"progress_state,omitempty"`
+	ProgressActivity                 string   `dynamodbav:"progress_activity,omitempty"`
 	ProgressStartedAt                string   `dynamodbav:"progress_started_at,omitempty"`
 	ProgressLastProgressAt           string   `dynamodbav:"progress_last_progress_at,omitempty"`
 	// ProgressUpdatedAt is retained as a write-through compatibility projection
@@ -1128,6 +1129,7 @@ func toSessionItem(session domain.Session) sessionItem {
 		ProgressCompletedMilestones:      progressMilestoneStrings(session.Progress.CompletedMilestones),
 		ProgressSkippedMilestones:        progressMilestoneStrings(session.Progress.SkippedMilestones),
 		ProgressState:                    string(session.Progress.State),
+		ProgressActivity:                 session.Progress.Activity,
 		ProgressStartedAt:                optionalTimestamp(session.Progress.StartedAt),
 		ProgressLastProgressAt:           optionalTimestamp(session.Progress.LastProgressAt),
 		ProgressUpdatedAt:                optionalTimestamp(session.Progress.LastProgressAt),
@@ -1368,6 +1370,7 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 			CompletedMilestones: progressCompleted,
 			SkippedMilestones:   progressMilestones(item.ProgressSkippedMilestones),
 			State:               progressState(item.ProgressState, item.ProgressMilestone, item.ActiveWorkflowID),
+			Activity:            item.ProgressActivity,
 			StartedAt:           progressStartedAt, LastProgressAt: progressLastProgressAt,
 		},
 		Failure: domain.FailureRecord{

@@ -579,6 +579,9 @@ func TestSessionItemRoundTripPreservesProgressMilestone(t *testing.T) {
 	if _, err := session.AdvanceProgress("workflow-1", domain.ProgressInfrastructureReady, now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := session.SetProgressActivity("workflow-1", "Arma 3 server files", now.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 
 	stored, err := fromSessionItem(toSessionItem(session))
 	if err != nil {

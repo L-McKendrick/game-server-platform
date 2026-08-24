@@ -46,6 +46,11 @@ go run ./cmd/discord-local       # run the local in-memory Discord endpoint
 ```
 
 Run `terraform init -backend=false` before validation in a fresh checkout.
+On Windows feature-development hosts without a C compiler, run `go test
+-cover ./...` locally and leave `go test -race -coverprofile=coverage.out ./...`
+to the required GitHub CI job; do not treat the local CGO/toolchain limitation
+as a product failure. Still run the race check locally when a working CGO C
+compiler is available.
 
 ## Coding Style & Naming Conventions
 

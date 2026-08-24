@@ -40,6 +40,7 @@ type Projection struct {
 	StatusSince        time.Time
 	Elapsed            time.Duration
 	Progress           ProgressProjection
+	LifecycleTiming    LifecycleTimingProjection
 
 	Players   PlayerProjection
 	Endpoints EndpointProjection
@@ -57,6 +58,12 @@ type ProgressProjection struct {
 	Completed int
 	Condition string
 	Guidance  string
+	Activity  string
+}
+
+type LifecycleTimingProjection struct {
+	Label string
+	DueAt time.Time
 }
 
 type PlayerProjection struct {
@@ -165,6 +172,7 @@ func Project(session domain.Session, options Options) Projection {
 		projection.Stage = label
 	}
 	projection.Progress = progressProjection(session, options.Workflow, now)
+	projection.LifecycleTiming = lifecycleTimingProjection(session, now)
 	if session.LifecycleState == domain.StateRunning || session.LifecycleState == domain.StateIdle {
 		if session.Progress.State == domain.ProgressCompletedState && !session.Progress.LastProgressAt.IsZero() {
 			projection.StatusSince = session.Progress.LastProgressAt.UTC()
@@ -313,9 +321,9 @@ func progressLabel(milestone domain.ProgressMilestone) string {
 	case domain.ProgressHostPrepared:
 		return "Preparing host"
 	case domain.ProgressGameServerInstalled:
-		return "Installing Arma 3 server"
+		return "Downloading and installing game files"
 	case domain.ProgressModsApplied:
-		return "Applying mods"
+		return "Downloading and installing Workshop content"
 	case domain.ProgressConfigurationReady:
 		return "Deploying configuration"
 	case domain.ProgressServiceStarted:
@@ -390,7 +398,26 @@ func progressProjection(session domain.Session, workflow *domain.Workflow, now t
 	return ProgressProjection{
 		Visible: true, Bar: bar.String(), Step: current + 1,
 		Total: len(milestones), Completed: len(progress.CompletedMilestones),
-		Condition: condition, Guidance: progressGuidance(progress.Milestone, condition),
+		Condition: condition, Guidance: progressGuidance(progress.Milestone, condition), Activity: progressActivity(progress),
+	}
+}
+
+func progressActivity(progress domain.SessionProgress) string {
+	if progress.Milestone != domain.ProgressGameServerInstalled && progress.Milestone != domain.ProgressModsApplied {
+		return ""
+	}
+	return strings.TrimSpace(progress.Activity)
+}
+
+func lifecycleTimingProjection(session domain.Session, now time.Time) LifecycleTimingProjection {
+	switch {
+	case (session.LifecycleState == domain.StateRunning || session.LifecycleState == domain.StateIdle) &&
+		session.PlayerCountKnown && session.PlayerCount == 0 && !session.IdleSince.IsZero() && !session.IdleSince.After(now):
+		return LifecycleTimingProjection{Label: "Automatic sleep", DueAt: session.IdleSince.UTC().Add(domain.AutomaticSleepAfter)}
+	case session.LifecycleState == domain.StateSleeping && !session.SleepingSince.IsZero() && !session.SleepingSince.After(now):
+		return LifecycleTimingProjection{Label: "Automatic archive", DueAt: session.SleepingSince.UTC().Add(domain.AutomaticArchiveAfter)}
+	default:
+		return LifecycleTimingProjection{}
 	}
 }
 

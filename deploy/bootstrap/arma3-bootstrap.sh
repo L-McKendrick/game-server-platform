@@ -41,6 +41,7 @@ STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=300
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 checkpoint() { printf 'GSP_CHECKPOINT:%s\n' "$1"; }
+activity() { printf 'GSP_ACTIVITY:%s\n' "$1"; }
 
 prepare_host() {
   command -v apt-get >/dev/null 2>&1 || { log "bootstrap requires the approved Ubuntu game-host image"; return 1; }
@@ -352,6 +353,7 @@ install_arma() (
   else
     printf 'app_update 233780 -beta creatordlc validate\nquit\n' >> "$runfile"
   fi
+  activity ARMA_SERVER
   run_steamcmd "$runfile"
   test -x "$ROOT/arma3/arma3server_x64"
 )
@@ -397,6 +399,7 @@ install_workshop() (
   steam_login_file "$runfile"
   for id in "${ids[@]}"; do printf 'workshop_download_item 107410 %s validate\n' "$id" >> "$runfile"; done
   printf 'quit\n' >> "$runfile"
+  activity "WORKSHOP_ITEMS:${#ids[@]}"
   run_steamcmd "$runfile"
   for id in "${ids[@]}"; do
     source="$ROOT/home/Steam/steamapps/workshop/content/107410/$id"

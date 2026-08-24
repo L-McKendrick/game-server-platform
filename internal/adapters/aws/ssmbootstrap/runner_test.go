@@ -378,6 +378,41 @@ func TestObserveReturnsOnlyOrderedAllowlistedCheckpoints(t *testing.T) {
 	}
 }
 
+func TestObserveReturnsOnlyLatestAllowlistedActivity(t *testing.T) {
+	t.Parallel()
+	output := strings.Join([]string{
+		"GSP_ACTIVITY:ARMA_SERVER",
+		"GSP_ACTIVITY:WORKSHOP_ITEMS:12",
+		"GSP_ACTIVITY:WORKSHOP_ITEM:1234",
+		"GSP_ACTIVITY:WORKSHOP_ITEMS:12 password=secret",
+	}, "\n")
+	client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{
+		Status: types.CommandInvocationStatusInProgress, StandardOutputContent: aws.String(output),
+	}}
+	runner, _ := New(client, testConfig())
+	status, err := runner.Observe(context.Background(), "i-1", "command-1")
+	if err != nil || status.Activity != "Workshop content (12 items)" || strings.Contains(fmt.Sprintf("%#v", status), "secret") {
+		t.Fatalf("sanitized activity = %#v, err = %v", status, err)
+	}
+}
+
+func TestObserveClearsActivityAfterNewerCheckpoint(t *testing.T) {
+	t.Parallel()
+	output := strings.Join([]string{
+		"GSP_CHECKPOINT:GAME_SERVER_INSTALLED",
+		"GSP_ACTIVITY:ARMA_SERVER",
+		"GSP_CHECKPOINT:MODS_APPLIED",
+	}, "\n")
+	client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{
+		Status: types.CommandInvocationStatusInProgress, StandardOutputContent: aws.String(output),
+	}}
+	runner, _ := New(client, testConfig())
+	status, err := runner.Observe(context.Background(), "i-1", "command-1")
+	if err != nil || status.Activity != "" {
+		t.Fatalf("stale activity = %#v, err = %v", status, err)
+	}
+}
+
 func testConfig() Config {
 	return Config{Region: "us-west-2", AssetsBucket: "assets", BootstrapScriptKey: "platform/bootstrap/arma3.sh", MetadataTableName: "metadata", SteamAuthSecretID: "/steam-auth", TeamSpeakVersion: "3.13.8", TimeoutSeconds: 21600}
 }
