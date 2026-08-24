@@ -446,20 +446,20 @@ persistent = 1;
 EOF
   fi
   awk '
-    function structural(value, output, index, character, following) {
+    function structural(value, output, position, character, following) {
       output=""
-      for (index=1; index<=length(value); index++) {
-        character=substr(value,index,1); following=substr(value,index+1,1)
-        if (block_comment) { if (character=="*" && following=="/") { block_comment=0; index++ }; continue }
-        if (quoted) { if (character=="\"" && following=="\"") { index++; continue }; if (character=="\"") quoted=0; continue }
+      for (position=1; position<=length(value); position++) {
+        character=substr(value,position,1); following=substr(value,position+1,1)
+        if (block_comment) { if (character=="*" && following=="/") { block_comment=0; position++ }; continue }
+        if (quoted) { if (character=="\"" && following=="\"") { position++; continue }; if (character=="\"") quoted=0; continue }
         if (character=="/" && following=="/") break
-        if (character=="/" && following=="*") { block_comment=1; index++; continue }
+        if (character=="/" && following=="*") { block_comment=1; position++; continue }
         if (character=="\"") { quoted=1; continue }
         output=output character
       }
       return output
     }
-    function braces(value, open, close) { open=gsub(/\{/, "{", value); close=gsub(/\}/, "}", value); return open-close }
+    function braces(value, opening_count, closing_count) { opening_count=gsub(/\{/, "{", value); closing_count=gsub(/\}/, "}", value); return opening_count-closing_count }
     BEGIN { skipping=0; depth=0; block_comment=0; quoted=0 }
     { syntax=structural($0); folded=tolower(syntax) }
     !skipping && folded ~ /^[[:space:]]*class[[:space:]]+missions([[:space:]:{]|$)/ { skipping=1; depth=braces(syntax); if (depth<=0 && syntax ~ /;/) skipping=0; next }

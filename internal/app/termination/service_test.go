@@ -2,12 +2,28 @@ package termination
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
+
+func TestTaskResultSerializesZeroObjectsDeletedForWorkflowJSONPath(t *testing.T) {
+	payload, err := json.Marshal(TaskResult{SessionID: "session-1", WorkflowID: "workflow-1", Done: true, Succeeded: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	value, present := decoded["objects_deleted"]
+	if !present || value != float64(0) {
+		t.Fatalf("objects_deleted must remain present for Step Functions JSONPath: %s", payload)
+	}
+}
 
 type destroyer struct{ terminated, volumeDeleted bool }
 
