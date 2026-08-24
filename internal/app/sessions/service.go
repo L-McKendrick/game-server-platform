@@ -17,6 +17,8 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
+const activeSessionCapacity = 1
+
 // Clock supplies the current time.
 //
 // It is an interface so unit tests can use a fixed timestamp.
@@ -510,6 +512,11 @@ func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleC
 	if command.CommandType != domain.CommandSleepSession && command.CommandType != domain.CommandWakeSession && command.CommandType != domain.CommandRestoreSession {
 		return fmt.Errorf("unsupported lifecycle command")
 	}
+	if command.CommandType == domain.CommandWakeSession {
+		if err := service.repository.CheckCapacity(ctx, session.ID, activeSessionCapacity); err != nil {
+			return err
+		}
+	}
 	return service.commandQueue.Enqueue(ctx, domain.CommandEnvelope{SchemaVersion: 1, CommandID: strings.TrimSpace(command.CommandID), CommandType: command.CommandType, RequestedAt: service.clock.Now().UTC(), Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID), Roles: append([]string(nil), command.Roles...), CanManageGuild: command.CanManageGuild}, SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: map[string]string{}})
 }
 
@@ -543,6 +550,9 @@ func (service *Service) RequestStart(ctx context.Context, command StartCommand) 
 		commandType = domain.CommandBootstrapServer
 	default:
 		return fmt.Errorf("session is not ready for provisioning or bootstrap: %w", domain.ErrInvalidTransition)
+	}
+	if err := service.repository.CheckCapacity(ctx, session.ID, activeSessionCapacity); err != nil {
+		return err
 	}
 	parameters := map[string]string{}
 	if service.serverConfigs != nil {

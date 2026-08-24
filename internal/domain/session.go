@@ -63,12 +63,17 @@ type Session struct {
 	ActiveWorkflowStartedAt      time.Time
 	ActiveWorkflowLeaseExpiresAt time.Time
 
-	DesiredState        LifecycleState
-	ObservedState       LifecycleState
-	LifecycleState      LifecycleState
-	HealthStatus        HealthStatus
-	MonitoringCommandID string
-	MonitoringStartedAt time.Time
+	DesiredState          LifecycleState
+	ObservedState         LifecycleState
+	LifecycleState        LifecycleState
+	HealthStatus          HealthStatus
+	MonitoringCommandID   string
+	MonitoringStartedAt   time.Time
+	PlayerCountKnown      bool
+	PlayerCount           int
+	PlayerCountObservedAt time.Time
+	IdleSince             time.Time
+	SleepingSince         time.Time
 
 	Version   int64
 	CreatedAt time.Time
@@ -477,6 +482,18 @@ func (session Session) Validate() error {
 		return fmt.Errorf("monitoring start timestamp requires a command ID")
 	case session.MonitoringCommandID != "" && session.MonitoringStartedAt.IsZero():
 		return fmt.Errorf("monitoring command requires a start timestamp")
+	case session.PlayerCountKnown && session.PlayerCountObservedAt.IsZero():
+		return fmt.Errorf("known player count requires an observation timestamp")
+	case !session.PlayerCountKnown && session.PlayerCount != 0:
+		return fmt.Errorf("unknown player count cannot retain a count")
+	case session.PlayerCount < 0 || session.PlayerCount > 255:
+		return fmt.Errorf("player count must be between 0 and 255")
+	case !session.IdleSince.IsZero() && (!session.PlayerCountKnown || session.PlayerCount != 0):
+		return fmt.Errorf("idle timestamp requires a known zero-player observation")
+	case !session.IdleSince.IsZero() && session.PlayerCountObservedAt.Before(session.IdleSince):
+		return fmt.Errorf("idle timestamp cannot follow the player observation")
+	case !session.SleepingSince.IsZero() && session.LifecycleState != StateSleeping && !(session.LifecycleState == StateArchiving && session.ArchiveSourceState == StateSleeping) && !(session.LifecycleState == StateWaking && session.ActiveWorkflowType == WakeWorkflowType):
+		return fmt.Errorf("sleeping timestamp requires a sleeping lifecycle")
 	case session.Version < 1:
 		return fmt.Errorf("session version must be at least 1")
 	case session.CreatedAt.IsZero():
@@ -619,7 +636,7 @@ func (session *Session) BeginMonitoring(commandID string, now time.Time) error {
 
 // CompleteMonitoring records the latest classified health result and clears
 // the durable pending probe marker.
-func (session *Session) CompleteMonitoring(health HealthStatus, now time.Time) (HealthStatus, error) {
+func (session *Session) CompleteMonitoring(health HealthStatus, activity PlayerActivityObservation, now time.Time) (HealthStatus, error) {
 	if session.MonitoringCommandID == "" {
 		return HealthUnknown, fmt.Errorf("%w: no monitoring command is pending", ErrConflict)
 	}
@@ -629,6 +646,9 @@ func (session *Session) CompleteMonitoring(health HealthStatus, now time.Time) (
 	previous := session.HealthStatus
 	session.MonitoringCommandID, session.MonitoringStartedAt = "", time.Time{}
 	session.HealthStatus = health
+	if err := session.RecordPlayerActivity(activity); err != nil {
+		return HealthUnknown, err
+	}
 	return previous, session.RecordMutation(now)
 }
 

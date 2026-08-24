@@ -44,7 +44,7 @@ data "aws_iam_policy_document" "monitor_worker" {
   }
   statement {
     actions   = ["sqs:SendMessage"]
-    resources = [aws_sqs_queue.notifications.arn]
+    resources = [aws_sqs_queue.notifications.arn, aws_sqs_queue.commands.arn]
   }
   statement {
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
@@ -62,7 +62,7 @@ resource "aws_iam_role_policy" "monitor_worker" {
 }
 resource "aws_lambda_function" "monitor_worker" {
   function_name    = "${local.name_prefix}-monitor-worker"
-  description      = "Phase 7 read-only game server health monitor."
+  description      = "Game server health and inactivity monitor."
   role             = aws_iam_role.monitor_worker.arn
   runtime          = "provided.al2023"
   handler          = "bootstrap"
@@ -71,12 +71,12 @@ resource "aws_lambda_function" "monitor_worker" {
   source_code_hash = var.monitor_worker_lambda_source_hash != null ? var.monitor_worker_lambda_source_hash : try(filebase64sha256(local.monitor_worker_package_path), null)
   timeout          = 60
   memory_size      = 256
-  environment { variables = { APP_ENV = var.environment, LOG_LEVEL = "info", METADATA_TABLE_NAME = aws_dynamodb_table.metadata.name, NOTIFICATION_QUEUE_URL = aws_sqs_queue.notifications.url, MONITOR_SCHEMA_VERSION = "1" } }
+  environment { variables = { APP_ENV = var.environment, LOG_LEVEL = "info", METADATA_TABLE_NAME = aws_dynamodb_table.metadata.name, NOTIFICATION_QUEUE_URL = aws_sqs_queue.notifications.url, COMMAND_QUEUE_URL = aws_sqs_queue.commands.url, MONITOR_SCHEMA_VERSION = "1" } }
   depends_on = [aws_cloudwatch_log_group.monitor_worker, aws_iam_role_policy.monitor_worker]
 }
 resource "aws_cloudwatch_event_rule" "monitor_game_servers" {
   name                = "${local.name_prefix}-monitor-game-servers"
-  description         = "Run Phase 7 read-only health probes every five minutes."
+  description         = "Run health and inactivity checks every five minutes."
   schedule_expression = "rate(5 minutes)"
 }
 resource "aws_cloudwatch_event_target" "monitor_game_servers" {

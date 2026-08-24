@@ -41,6 +41,8 @@ func (session *Session) CompleteSleep(workflowID string, now time.Time) error {
 		return err
 	}
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateSleeping, StateSleeping, StateSleeping, HealthStopped
+	session.SleepingSince = now.UTC()
+	session.IdleSince = time.Time{}
 	session.clearWorkflowLock()
 	session.Version++
 	session.UpdatedAt = now.UTC()
@@ -75,6 +77,7 @@ func (session *Session) CompleteWake(workflowID string, publicIPv4 string, now t
 	}
 	session.Infrastructure.PublicIPv4, session.Infrastructure.LastObservedAt = strings.TrimSpace(publicIPv4), now.UTC()
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateRunning, StateRunning, StateRunning, HealthHealthy
+	session.SleepingSince = time.Time{}
 	session.clearWorkflowLock()
 	session.Version++
 	session.UpdatedAt = now.UTC()
@@ -89,6 +92,7 @@ func (session *Session) FailSleepWake(workflowID string, now time.Time) error {
 		return err
 	}
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateFailed, StateFailed, StateFailed, HealthUnhealthy
+	session.SleepingSince = time.Time{}
 	session.clearWorkflowLock()
 	session.Version++
 	session.UpdatedAt = now.UTC()

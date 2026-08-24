@@ -9,9 +9,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
 1. Complete the core product with automatic inactivity handling (Phase 14) and
    maximum-duration cost guardrails (Phase 15).
 2. Harden production operations and optimize measured bottlenecks (Phase 16).
-3. Consider scheduling, additional games, web UI, multi-account, and
-   multi-region expansion only after the core platform is operationally ready
-   (Phase 17).
+3. Future enhancements (17+)
 
 ## Phases
 
@@ -87,8 +85,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **10.3.5** [x] Add replacement-host reuse, invalidation, concurrency, cleanup, redaction, archive/restore, and vanilla regression coverage plus the operating runbook.
 
 11. **Production Hardening — Resequenced**
-    - Remaining work moved to Phase 16 so the key lifecycle and cost-bound
-      product features land before final hardening and optimization.
+    - moved -
 
 12. **Discord Experience and Session UX — Done (approved reorder)**
     - Proceeded before Phases 10 and 11 by explicit user approval because of
@@ -205,15 +202,35 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **13.7** [x] Publish a self-hosted Discord bot deployment guide.
       - **13.7.1** [x] Document Discord application setup, AWS/Terraform deployment, secret installation, command registration, verification, and safe provisioning enablement; link the guide from the README.
 
-14. **Automatic Inactivity Lifecycle — Pending**
+14. **Automatic Inactivity Lifecycle — Complete**
     - Deliver the first conservative fixed-policy foundation: sleep a running
       session after 30 continuous minutes with no players, then archive it after
       72 continuous hours sleeping. Defer configurable policies, richer activity
       signals, warnings/cancellation, schedules, and extensions to later work.
-    - **14.1** [ ] Persist trustworthy inactivity evidence and transition timing from bounded player-count observations; treat missing, stale, malformed, or failed observations as unknown and never as zero players.
-    - **14.2** [ ] Extend the scheduled monitor to idempotently request the existing sleep workflow after 30 continuous verified zero-player minutes, while respecting lifecycle state, active workflow locks, and concurrent player activity.
-    - **14.3** [ ] Add a scheduled, idempotent 72-hour sleeping-state check that requests the existing verified archive workflow without weakening its resource-ownership, backup-integrity, or failure safeguards.
-    - **14.4** [ ] Add focused timing, state-drift, replay, concurrency, unknown-activity, workflow-failure, persistence, notification/card, Terraform, and end-to-end regression coverage; document the fixed policy and the deferred expansion points.
+    - **14.1** [x] Persist trustworthy inactivity evidence and transition timing from bounded player-count observations; treat missing, stale, malformed, or failed observations as unknown and never as zero players.
+      - **14.1.1** [x] Define domain-level player-activity observation and continuous zero-player timing semantics, including explicit unknown-data behavior and reset rules.
+      - **14.1.2** [x] Persist the inactivity evidence backward-compatibly through the session repository and immutable event history.
+      - **14.1.3** [x] Feed bounded monitor player-count results into the domain model without interpreting query failures as zero players.
+      - **14.1.4** [x] Add focused domain, monitor, and persistence tests for zero-player continuity, player return, unknown observations, replay, and legacy records.
+    - **14.2** [x] Extend the scheduled monitor to idempotently request the existing sleep workflow after 30 continuous verified zero-player minutes, while respecting lifecycle state, active workflow locks, and concurrent player activity.
+      - **14.2.1** [x] Define a fixed 30-minute automatic-sleep eligibility policy and deterministic request identity at the domain/application boundary.
+      - **14.2.2** [x] Route eligible monitor results through the existing command and sleep-workflow safeguards using explicit system authority and least-privilege queue access.
+      - **14.2.3** [x] Revalidate persisted inactivity, lifecycle state, and workflow-lock state at command consumption so player return or concurrent mutation fails closed.
+      - **14.2.4** [x] Add focused due/not-due, replay, player-return, unknown-observation, state-drift, lock, and queue-failure tests and proportional Terraform validation.
+    - **14.3** [x] Add a scheduled, idempotent 72-hour sleeping-state check that requests the existing verified archive workflow without weakening its resource-ownership, backup-integrity, or failure safeguards.
+      - **14.3.1** [x] Persist an explicit sleeping-since timestamp across sleep completion and clear it on exit from the sleeping lifecycle, with backward-compatible repository handling.
+      - **14.3.2** [x] Define fixed 72-hour automatic-archive eligibility, deterministic request identity, and system-authority revalidation at command consumption.
+      - **14.3.3** [x] Extend scheduled inactivity scanning and the archive workflow to safely prepare a sleeping managed instance for the existing SSM backup and verified destruction stages.
+      - **14.3.4** [x] Add focused due/not-due, replay, state-drift, workflow-lock, wake-for-archive, integrity-guard, queue-failure, and Terraform validation coverage.
+    - **14.4** [x] Add focused timing, state-drift, replay, concurrency, unknown-activity, workflow-failure, persistence, notification/card, Terraform, and end-to-end regression coverage; document the fixed policy and the deferred expansion points.
+      - **14.4.1** [x] Review the complete Phase 14 branch across domain, monitoring, workflow, persistence, and infrastructure boundaries; correct cross-step lifecycle or fail-closed gaps.
+      - **14.4.2** [x] Add cross-layer regression coverage for automatic command handoff, stale or unknown activity, replay, concurrent mutation, workflow-start failure, and session-card notifications.
+      - **14.4.3** [x] Document the fixed 30-minute sleep and 72-hour archive policy, operational failure behavior, and deferred richer activity, warning, cancellation, scheduling, and configuration features.
+      - **14.4.4** [x] Run full Go, race/coverage, build, package, command-definition, bootstrap-script, and Terraform checks; review the final branch diff and refresh the phase handoff.
+    - **14.5** [x] Add an MVP capacity preflight for start and wake requests while keeping session creation unrestricted; defer administrator-configurable active-session limits.
+      - **14.5.1** [x] Expose a consistent repository capacity-availability check backed by the existing provisioned-session slots.
+      - **14.5.2** [x] Reject start and wake before queue dispatch when the single slot belongs to another session, and return a concise Discord capacity message.
+      - **14.5.3** [x] Add focused available, same-session, occupied-session, creation, and adapter regressions; run proportional validation and refresh the Phase 14 handoff.
 
 15. **Maximum Session Duration Guardrails — Pending**
     - **15.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
@@ -228,3 +245,5 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **17.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.
     - **17.2** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; extend `/rb create` beyond Arma 3 through explicit game-specific setup contracts.
     - **17.3** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.
+    - **17.4** [ ] Provide options of different EC2 instance types (weaker or more powerful options with explanations).
+    - **17.5** [ ] Let administrators configure the active-session capacity limit while preserving atomic slot enforcement and clear start/wake feedback.

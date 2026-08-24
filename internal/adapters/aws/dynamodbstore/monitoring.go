@@ -16,7 +16,7 @@ import (
 
 var _ ports.MonitoringRepository = (*Repository)(nil)
 
-func (repository *Repository) ListRunning(ctx context.Context, limit int32) ([]domain.Session, error) {
+func (repository *Repository) ListInactivityCandidates(ctx context.Context, limit int32) ([]domain.Session, error) {
 	if err := repository.validate(); err != nil {
 		return nil, err
 	}
@@ -26,7 +26,7 @@ func (repository *Repository) ListRunning(ctx context.Context, limit int32) ([]d
 	sessions := make([]domain.Session, 0, limit)
 	var startKey map[string]types.AttributeValue
 	for len(sessions) < int(limit) {
-		output, err := repository.client.Scan(ctx, &dynamodb.ScanInput{TableName: aws.String(repository.tableName), Limit: aws.Int32(limit), ExclusiveStartKey: startKey, FilterExpression: aws.String("entity_type = :type AND lifecycle_state = :state"), ExpressionAttributeValues: map[string]types.AttributeValue{":type": &types.AttributeValueMemberS{Value: "Session"}, ":state": &types.AttributeValueMemberS{Value: string(domain.StateRunning)}}})
+		output, err := repository.client.Scan(ctx, &dynamodb.ScanInput{TableName: aws.String(repository.tableName), Limit: aws.Int32(limit), ExclusiveStartKey: startKey, FilterExpression: aws.String("entity_type = :type AND lifecycle_state IN (:running, :sleeping)"), ExpressionAttributeValues: map[string]types.AttributeValue{":type": &types.AttributeValueMemberS{Value: "Session"}, ":running": &types.AttributeValueMemberS{Value: string(domain.StateRunning)}, ":sleeping": &types.AttributeValueMemberS{Value: string(domain.StateSleeping)}}})
 		if err != nil {
 			return nil, fmt.Errorf("scan running sessions: %w", err)
 		}
@@ -52,7 +52,7 @@ func (repository *Repository) ListRunning(ctx context.Context, limit int32) ([]d
 	return sessions, nil
 }
 
-func (repository *Repository) SaveMonitoring(ctx context.Context, session domain.Session, expectedVersion int64, event *domain.SessionEvent) error {
+func (repository *Repository) SaveMonitoring(ctx context.Context, session domain.Session, expectedVersion int64, events []domain.SessionEvent) error {
 	if err := repository.validate(); err != nil {
 		return err
 	}
@@ -68,11 +68,11 @@ func (repository *Repository) SaveMonitoring(ctx context.Context, session domain
 	}
 	items := []types.TransactWriteItem{{Put: &types.Put{TableName: aws.String(repository.tableName), Item: attributes, ConditionExpression: aws.String("#version = :version"), ExpressionAttributeNames: map[string]string{"#version": "version"}, ExpressionAttributeValues: map[string]types.AttributeValue{":version": &types.AttributeValueMemberN{Value: strconv.FormatInt(expectedVersion, 10)}}}}}
 	token := session.ID + "-" + strconv.FormatInt(session.Version, 10)
-	if event != nil {
-		if err := validateEvent(session.ID, *event); err != nil {
+	for _, event := range events {
+		if err := validateEvent(session.ID, event); err != nil {
 			return err
 		}
-		eventAttributes, err := attributevalue.MarshalMap(toEventItem(*event))
+		eventAttributes, err := attributevalue.MarshalMap(toEventItem(event))
 		if err != nil {
 			return err
 		}

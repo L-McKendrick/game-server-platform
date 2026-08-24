@@ -204,8 +204,8 @@ type BootstrapRepository interface {
 }
 
 type MonitoringRepository interface {
-	ListRunning(ctx context.Context, limit int32) ([]domain.Session, error)
-	SaveMonitoring(ctx context.Context, session domain.Session, expectedVersion int64, event *domain.SessionEvent) error
+	ListInactivityCandidates(ctx context.Context, limit int32) ([]domain.Session, error)
+	SaveMonitoring(ctx context.Context, session domain.Session, expectedVersion int64, events []domain.SessionEvent) error
 }
 
 type MonitoringCommandStatus struct {
@@ -281,6 +281,12 @@ type SessionRepository interface {
 		ctx context.Context,
 		key string,
 	) (domain.IdempotencyRecord, error)
+
+	CheckCapacity(
+		ctx context.Context,
+		sessionID string,
+		limit int,
+	) error
 
 	ListByOwner(
 		ctx context.Context,

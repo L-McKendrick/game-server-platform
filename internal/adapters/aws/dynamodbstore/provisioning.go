@@ -35,6 +35,39 @@ type capacitySlotItem struct {
 	AcquiredAt    string `dynamodbav:"acquired_at"`
 }
 
+func (repository *Repository) CheckCapacity(ctx context.Context, sessionID string, limit int) error {
+	if err := repository.validate(); err != nil {
+		return err
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || limit < 1 || limit > 20 {
+		return fmt.Errorf("valid session and capacity limit are required")
+	}
+	for slot := 0; slot < limit; slot++ {
+		output, err := repository.client.GetItem(ctx, &dynamodb.GetItemInput{
+			TableName: aws.String(repository.tableName), ConsistentRead: aws.Bool(true),
+			Key: map[string]types.AttributeValue{
+				"pk": &types.AttributeValueMemberS{Value: "CAPACITY#PROVISIONED"},
+				"sk": &types.AttributeValueMemberS{Value: fmt.Sprintf("SLOT#slot-%d", slot)},
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("check capacity slot: %w", err)
+		}
+		if len(output.Item) == 0 {
+			return nil
+		}
+		var existing capacitySlotItem
+		if err := attributevalue.UnmarshalMap(output.Item, &existing); err != nil {
+			return fmt.Errorf("decode capacity slot: %w", err)
+		}
+		if existing.SessionID == sessionID {
+			return nil
+		}
+	}
+	return domain.ErrQuotaExceeded
+}
+
 func (repository *Repository) SaveProvisioningStage(ctx context.Context, session domain.Session, expectedVersion int64, event domain.SessionEvent) error {
 	if err := repository.validate(); err != nil {
 		return err

@@ -13,7 +13,25 @@ var _ ports.ProvisioningRepository = (*SessionRepository)(nil)
 var _ ports.BootstrapRepository = (*SessionRepository)(nil)
 var _ ports.MonitoringRepository = (*SessionRepository)(nil)
 
-func (repository *SessionRepository) ListRunning(ctx context.Context, limit int32) ([]domain.Session, error) {
+func (repository *SessionRepository) CheckCapacity(ctx context.Context, sessionID string, limit int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if sessionID == "" || limit < 1 {
+		return fmt.Errorf("valid session and capacity limit are required")
+	}
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	for slot := 0; slot < limit; slot++ {
+		owner, occupied := repository.capacity[fmt.Sprintf("slot-%d", slot)]
+		if !occupied || owner == sessionID {
+			return nil
+		}
+	}
+	return domain.ErrQuotaExceeded
+}
+
+func (repository *SessionRepository) ListInactivityCandidates(ctx context.Context, limit int32) ([]domain.Session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -21,7 +39,7 @@ func (repository *SessionRepository) ListRunning(ctx context.Context, limit int3
 	defer repository.mu.RUnlock()
 	result := []domain.Session{}
 	for _, session := range repository.sessions {
-		if session.LifecycleState == domain.StateRunning {
+		if session.LifecycleState == domain.StateRunning || session.LifecycleState == domain.StateSleeping {
 			result = append(result, session)
 			if int32(len(result)) >= limit {
 				break
@@ -30,7 +48,7 @@ func (repository *SessionRepository) ListRunning(ctx context.Context, limit int3
 	}
 	return result, nil
 }
-func (repository *SessionRepository) SaveMonitoring(ctx context.Context, session domain.Session, expectedVersion int64, event *domain.SessionEvent) error {
+func (repository *SessionRepository) SaveMonitoring(ctx context.Context, session domain.Session, expectedVersion int64, events []domain.SessionEvent) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -44,8 +62,8 @@ func (repository *SessionRepository) SaveMonitoring(ctx context.Context, session
 		return domain.ErrConflict
 	}
 	repository.sessions[session.ID] = session
-	if event != nil {
-		repository.events[session.ID] = append(repository.events[session.ID], cloneEvent(*event))
+	for _, event := range events {
+		repository.events[session.ID] = append(repository.events[session.ID], cloneEvent(event))
 	}
 	return nil
 }

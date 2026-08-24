@@ -14,6 +14,12 @@ server without using the AWS console. Server owners can revise mods and mission
 files between runs. Discord administrators control access, upload a shared
 `server.cfg`, repair session cards, and reset runtime data.
 
+Running servers automatically sleep after 30 continuous minutes of verified
+zero-player activity. A server that remains sleeping for 72 continuous hours
+automatically enters the same verified archive workflow used by an owner
+request. Missing or failed player queries pause the policy rather than being
+treated as an empty server; see [Automatic inactivity lifecycle](docs/phase-14-inactivity-lifecycle.md).
+
 The platform keeps persistent session records and portable archives while game
 servers remain disposable. Provisioning limits and AWS Budget alerts constrain
 cost. Confirmation checks protect destructive actions.

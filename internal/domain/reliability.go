@@ -121,6 +121,9 @@ func (session *Session) CancelWorkflowAtSafeBoundary(workflow Workflow, now time
 		source := session.ArchiveSourceState
 		session.ArchiveSourceState = ""
 		session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = source, source, source, HealthHealthy
+		if source == StateSleeping {
+			session.HealthStatus = HealthStopped
+		}
 	case RestoreWorkflowType:
 		if session.LifecycleState != StateRestoring || !session.Infrastructure.Empty() {
 			return fmt.Errorf("%w: restore crossed its safe cancellation boundary", ErrInvalidTransition)

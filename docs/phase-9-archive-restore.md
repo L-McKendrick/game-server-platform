@@ -8,9 +8,13 @@ extends the same workflow through guarded destruction and adds restore.
 - `/session archive` is owner-only and requires an explicit `confirm: true`
   acknowledgement that services stop and the current EC2/EBS resources are
   removed only after the consistent archive is verified.
-- Archives may start only from `RUNNING` or `IDLE` with a managed instance and
-  data volume. One normal workflow lock covers command dispatch, upload,
-  verification, manifest persistence, and metadata completion.
+- Owner-requested archives may start from `RUNNING` or `IDLE` with a managed
+  instance and data volume. One normal workflow lock covers command dispatch,
+  upload, verification, manifest persistence, and metadata completion.
+- Phase 14 extends the same guarded workflow to a session that has remained
+  `SLEEPING` for 72 continuous hours. The workflow starts the retained instance,
+  waits for EC2 and Systems Manager readiness, and then follows the same backup,
+  checksum, ownership, and destruction boundaries described below.
 - The host takes an exclusive archive lock, stops active Arma and optional
   TeamSpeak services, and always attempts to restart services on exit.
 - The `tar+gzip` archive contains configuration, platform state, logs, mission

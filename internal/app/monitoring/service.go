@@ -18,27 +18,65 @@ type Service struct {
 	notifications ports.NotificationQueue
 	ids           IDGenerator
 	clock         Clock
+	players       ports.PlayerQuery
+	commands      ports.CommandQueue
 }
 
-func NewService(repo ports.MonitoringRepository, runner ports.MonitoringRunner, notifications ports.NotificationQueue, ids IDGenerator, clock Clock) (*Service, error) {
+type Option func(*Service)
+
+func WithPlayerQuery(query ports.PlayerQuery) Option {
+	return func(service *Service) { service.players = query }
+}
+
+func WithCommandQueue(queue ports.CommandQueue) Option {
+	return func(service *Service) { service.commands = queue }
+}
+
+func NewService(repo ports.MonitoringRepository, runner ports.MonitoringRunner, notifications ports.NotificationQueue, ids IDGenerator, clock Clock, options ...Option) (*Service, error) {
 	if repo == nil || runner == nil || ids == nil || clock == nil {
 		return nil, fmt.Errorf("monitoring dependencies are required")
 	}
-	return &Service{repo, runner, notifications, ids, clock}, nil
+	service := &Service{repo: repo, runner: runner, notifications: notifications, ids: ids, clock: clock}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service, nil
 }
 func (service *Service) Run(ctx context.Context) (int, error) {
-	sessions, err := service.repo.ListRunning(ctx, 25)
+	sessions, err := service.repo.ListInactivityCandidates(ctx, 25)
 	if err != nil {
 		return 0, err
 	}
 	completed := 0
 	for _, session := range sessions {
-		if err := service.monitor(ctx, session); err != nil {
-			return completed, err
+		var runErr error
+		if session.LifecycleState == domain.StateSleeping {
+			runErr = service.archiveIfDue(ctx, session)
+		} else {
+			runErr = service.monitor(ctx, session)
+		}
+		if runErr != nil {
+			return completed, runErr
 		}
 		completed++
 	}
 	return completed, nil
+}
+
+func (service *Service) archiveIfDue(ctx context.Context, session domain.Session) error {
+	if service.commands == nil || !session.AutomaticArchiveDue(service.clock.Now().UTC()) {
+		return nil
+	}
+	now := service.clock.Now().UTC()
+	commandID := domain.AutomaticArchiveCommandID(session.ID, session.SleepingSince)
+	return service.commands.Enqueue(ctx, domain.CommandEnvelope{
+		SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandArchiveSession, RequestedAt: now,
+		Actor:     domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true},
+		SessionID: session.ID, IdempotencyKey: "automatic-archive:" + commandID, CorrelationID: commandID,
+		Parameters: map[string]string{domain.AutomaticSleepingSinceParameter: session.SleepingSince.UTC().Format(time.RFC3339Nano)},
+	})
 }
 func (service *Service) monitor(ctx context.Context, session domain.Session) error {
 	expected := session.Version
@@ -64,26 +102,52 @@ func (service *Service) monitor(ctx context.Context, session domain.Session) err
 	if status.Status != "Success" {
 		health = domain.HealthUnhealthy
 	}
-	from, err := session.CompleteMonitoring(health, now)
+	activity := domain.PlayerActivityObservation{ObservedAt: now}
+	if status.Status == "Success" && service.players != nil && session.Infrastructure.PublicIPv4 != "" {
+		queryContext, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+		players, queryErr := service.players.Query(queryContext, session.Infrastructure.PublicIPv4)
+		cancel()
+		if queryErr == nil {
+			activity.Known = true
+			activity.PlayerCount = players.PlayerCount
+		}
+	}
+	from, err := session.CompleteMonitoring(health, activity, now)
 	if err != nil {
 		return err
 	}
-	var event *domain.SessionEvent
+	events := make([]domain.SessionEvent, 0, 2)
 	if from != health {
 		id, err := service.ids.New(now)
 		if err != nil {
 			return err
 		}
-		value := domain.NewHealthChangedEvent(id, session, from, status.Observation, now)
-		event = &value
+		events = append(events, domain.NewHealthChangedEvent(id, session, from, status.Observation, now))
 	}
-	if err := service.repo.SaveMonitoring(ctx, session, expected, event); err != nil {
+	activityEventID, err := service.ids.New(now)
+	if err != nil {
 		return err
 	}
-	if event != nil && service.notifications != nil {
+	events = append(events, domain.NewPlayerActivityObservedEvent(activityEventID, session, now))
+	if err := service.repo.SaveMonitoring(ctx, session, expected, events); err != nil {
+		return err
+	}
+	if service.commands != nil && session.AutomaticSleepDue(now) {
+		commandID := domain.AutomaticSleepCommandID(session.ID, session.IdleSince)
+		command := domain.CommandEnvelope{
+			SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandSleepSession, RequestedAt: now,
+			Actor:     domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true},
+			SessionID: session.ID, IdempotencyKey: "automatic-sleep:" + commandID, CorrelationID: commandID,
+			Parameters: map[string]string{domain.AutomaticIdleSinceParameter: session.IdleSince.UTC().Format(time.RFC3339Nano)},
+		}
+		if err := service.commands.Enqueue(ctx, command); err != nil {
+			return fmt.Errorf("enqueue automatic sleep: %w", err)
+		}
+	}
+	if from != health && service.notifications != nil {
 		id, err := service.ids.New(now)
 		if err == nil {
-			_ = service.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: id, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: fmt.Sprintf("**Game server health changed**\\nSession: `%s`\\nHealth: `%s` -> `%s`", session.ID, from, health), CorrelationID: event.CorrelationID, RequestedAt: now})
+			_ = service.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: id, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: fmt.Sprintf("**Game server health changed**\\nSession: `%s`\\nHealth: `%s` -> `%s`", session.ID, from, health), CorrelationID: events[0].CorrelationID, RequestedAt: now})
 		}
 	}
 	return nil
