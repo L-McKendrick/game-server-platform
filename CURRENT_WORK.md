@@ -26,6 +26,10 @@ changes and no new worker, queue, state machine, or persistent service. Phase
 - Final review allows an established cDLC/server-only session to stage its first
   client preset at base revision zero and makes interrupted live-mission replay
   select the exact digest-plus-normalized-filename object.
+- Terraform routes the existing account budget through AWS's documented
+  `budgets.us-east-1.api.aws` endpoint using an isolated `us-east-1` billing
+  provider. This avoids operator-network timeouts to the legacy global Budgets
+  endpoint without changing budget policy or regional workload resources.
 - `AGENTS.md` documents that the required GitHub CI job owns race testing when
   the Windows development host has no CGO C compiler.
 
@@ -39,23 +43,29 @@ changes and no new worker, queue, state machine, or persistent service. Phase
 - `go test ./...`, `go test -cover ./...`, `go vet ./...`, `go build ./cmd/...`,
   all 13 Lambda packages, Git Bash syntax, Terraform format/validation, and
   `git diff --check` pass after the final review fixes.
+- A complete saved Terraform plan succeeds through the alternate Budgets
+  endpoint. Its actionable resources are the expected Phase 18 Lambda/IAM
+  updates and content-addressed bootstrap replacement; the budget has no
+  planned change.
 - `go test -race -coverprofile=coverage.out ./...` remains delegated to required
   GitHub CI because this Windows host has no CGO C compiler.
 
 ## Next Development Task
 
-- Commit and push the Phase 18.5 review/handoff changes, then open the Phase 18
-  pull request and require CI before merge.
+- Open the Phase 18 pull request and require CI before merge.
 - After merge, begin Phase 15.1 on a new phase branch.
 
-## Terraform Refresh Note
+## Terraform Budgets Endpoint Note
 
-Terraform may pause while refreshing an unchanged Lambda event-source mapping,
-including `aws_lambda_event_source_mapping.command_worker`. If the same refresh
-line makes no progress for several minutes, cancel once with `Ctrl+C`, confirm
-the AWS identity/region, inspect the reported mapping with
-`aws lambda get-event-source-mapping --uuid <reported-id>`, and rerun a new plan
-with a new filename. Do not reuse or apply a plan from an interrupted run.
+A trace of the apparent `aws_lambda_event_source_mapping.command_worker` stall
+showed both mapping and tag reads completing normally. The actual blocked call
+was `Budgets/DescribeBudget`: this operator network could not establish TCP 443
+to `budgets.amazonaws.com`. AWS's documented alternate endpoint
+`budgets.us-east-1.api.aws` is reachable and is now configured only for the
+budget resource. Do not work around refresh failures with `-refresh=false`,
+`-target`, `-lock=false`, state removal, or mapping deletion. After interrupting
+a stuck plan, verify no Terraform process remains and remove only the exact
+stale lock reported by the next command before creating a fresh plan.
 
 ## Commands to Apply Current Changes
 
@@ -65,7 +75,9 @@ From the repository root in PowerShell:
 $env:AWS_PROFILE = "game-server-dev"
 $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
-aws sts get-caller-identity
+$AwsIdentity = aws sts get-caller-identity | ConvertFrom-Json
+$AwsIdentity
+aws budgets describe-budget --region us-east-1 --endpoint-url https://budgets.us-east-1.api.aws --account-id $AwsIdentity.Account --budget-name game-server-platform-dev-monthly-cost
 
 # Phase 18 changes the Discord, artifact, bootstrap, archive/restore, monitor,
 # and shared lifecycle code. Package the complete Lambda set once.

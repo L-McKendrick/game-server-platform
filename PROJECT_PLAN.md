@@ -269,3 +269,6 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **18.5** [x] Complete the final cross-step branch review and prepare the Phase 18 pull request.
       - **18.5.1** [x] Review Discord mod recovery, artifact replay, lifecycle state, revision authority, private-data boundaries, bootstrap compatibility, IAM scope, and deployment impact; allow first client-preset staging on established cDLC/server-only sessions and bind live-mission replay to the exact normalized filename.
       - **18.5.2** [x] Run full proportional Go, packaging, Bash, Terraform, and diff validation; consolidate the branch deployment handoff and provide the proposed pull-request title and description without deploying or opening the PR.
+    - **18.6** [x] Make Terraform budget refreshes use AWS's reachable alternate endpoint.
+      - **18.6.1** [x] Route only the existing AWS Budget through a us-east-1 billing provider configured for `budgets.us-east-1.api.aws`, without changing budget policy or other regional resources.
+      - **18.6.2** [x] Verify a complete saved plan, refresh the operator handoff, then commit and push the fix.

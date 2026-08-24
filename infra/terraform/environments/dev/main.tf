@@ -91,6 +91,27 @@ provider "aws" {
   }
 }
 
+# AWS publishes this us-east-1 API endpoint for Budgets in every supported
+# region. Keep billing calls isolated from the regional workload provider and
+# avoid the legacy budgets.amazonaws.com route, which is unreachable on some
+# operator networks.
+provider "aws" {
+  alias  = "billing"
+  region = "us-east-1"
+
+  endpoints {
+    budgets = "https://budgets.us-east-1.api.aws"
+  }
+
+  default_tags {
+    tags = {
+      Project     = var.project_name
+      Environment = var.environment
+      ManagedBy   = "Terraform"
+    }
+  }
+}
+
 data "aws_caller_identity" "current" {}
 
 locals {
