@@ -248,8 +248,6 @@ func (session Session) ValidatePresetRevisionStaging(expectedActiveRevision int6
 	switch {
 	case session.Vanilla:
 		return fmt.Errorf("%w: vanilla sessions do not have a mod preset", ErrInvalidTransition)
-	case active.Empty():
-		return fmt.Errorf("%w: an active preset is required before staging a revision", ErrInvalidTransition)
 	case active.Number != expectedActiveRevision:
 		return fmt.Errorf("%w: active preset revision changed", ErrConflict)
 	case session.ActiveWorkflowID != "":

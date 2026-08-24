@@ -228,6 +228,44 @@ func TestProcessCopiesAcceptedMissionToCompatibleRunningInstanceAndReplaysIdempo
 	}
 }
 
+func TestProcessReplaySelectsExactMissionFilenameWhenContentDigestIsShared(t *testing.T) {
+	now := time.Date(2026, 8, 24, 10, 30, 0, 0, time.UTC)
+	repository := seededPresetRevisionRepository(t, now)
+	stored, err := repository.Get(context.Background(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("0123456789abcdef")
+	digest := "9f9f5111f7b27a781f1f1ddde5ebc2dd2b796bfc7365c9c28b548e564176929f"
+	otherKey := "sessions/session-1/input/missions/" + digest + "-Other.Altis.pbo"
+	targetKey := "sessions/session-1/input/missions/" + digest + "-operation.pbo"
+	stored.MissionFiles = []domain.MissionRecord{
+		{ObjectKey: otherKey, Filename: "Other.Altis.pbo", Status: domain.ArtifactAccepted, AddedAt: now},
+		{ObjectKey: targetKey, Filename: "operation.pbo", Status: domain.ArtifactAccepted, AddedAt: now},
+	}
+	stored.ConfiguredMission = domain.UploadedMissionSelection(targetKey)
+	stored.MissionObjectKey = targetKey
+	stored.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c6a.large", InstanceID: "i-current", DataVolumeID: "vol-1"}
+	stored.Version++
+	event := domain.NewArtifactEvent("seed-replay", domain.EventArtifactValidated, "seed", domain.Actor{Type: domain.ActorTypeSystem, ID: "test"}, stored, domain.ArtifactMission, targetKey, now)
+	request := missionRequest(now, int64(len(body)))
+	record, _ := domain.NewCompletedIdempotencyRecord(artifactIdempotencyKey(request), digest, stored.ID, now, time.Hour)
+	if err := repository.SaveWithEvent(context.Background(), stored, stored.Version-1, event, record); err != nil {
+		t.Fatal(err)
+	}
+	copier := &testLiveMissionCopier{}
+	service, err := NewService(repository, &testDownloader{body: body}, &testObjectStore{}, &testNotifications{}, &testIDs{}, testClock{now}, time.Hour, WithLiveMissionCopier(copier))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Process(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(copier.missions) != 1 || copier.missions[0].ObjectKey != targetKey {
+		t.Fatalf("replay selected missions = %#v; want %q", copier.missions, targetKey)
+	}
+}
+
 func TestProcessDefersLiveCopyDuringWorkflowConflict(t *testing.T) {
 	now := time.Date(2026, 8, 24, 11, 0, 0, 0, time.UTC)
 	repository := seededPresetRevisionRepository(t, now)

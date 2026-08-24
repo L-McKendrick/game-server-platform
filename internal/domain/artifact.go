@@ -176,8 +176,8 @@ func (request ArtifactIngestRequest) Validate() error {
 		return fmt.Errorf("unsupported artifact ingest purpose %q", request.Purpose)
 	case request.Purpose == ArtifactPurposePresetRevision && request.Kind != ArtifactPreset:
 		return fmt.Errorf("preset revision ingestion requires a preset artifact")
-	case request.Purpose == ArtifactPurposePresetRevision && request.ExpectedActivePresetRevision < 1:
-		return fmt.Errorf("preset revision ingestion requires the expected active revision")
+	case request.Purpose == ArtifactPurposePresetRevision && request.ExpectedActivePresetRevision < 0:
+		return fmt.Errorf("expected active preset revision cannot be negative")
 	case request.Purpose == ArtifactPurposeServerPresetRevision && request.Kind != ArtifactServerPreset:
 		return fmt.Errorf("server preset revision ingestion requires a server preset artifact")
 	case request.ExpectedActiveServerPresetRevision < 0:

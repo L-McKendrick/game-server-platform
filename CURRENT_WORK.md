@@ -2,50 +2,60 @@
 
 ## State and Objective
 
-Phases 1-10, 12-14, and the approved out-of-order Phase 18 are complete.
-`codex/misc-fixes` contains the Discord mission layout, lifecycle-progress,
-server-only-mod, and live mission-upload improvements. Phase 15 is next in the
-primary delivery order.
+Phase 18 and its final review are complete on `codex/misc-fixes`. The branch
+contains four lightweight Discord/Arma quality-of-life
+changes and no new worker, queue, state machine, or persistent service. Phase
+15 remains next in the primary delivery order after this branch is merged.
 
 ## Completed Development
 
-- Newly accepted Arma 3 mission uploads are persisted first, then copied to the
-  exact managed host only while the session is stably `RUNNING` or `IDLE` with
-  no active mutating workflow.
-- The artifact worker reuses bounded SSM access to download the exact
-  content-addressed S3 object into `arma3/mpmissions`, verify SHA-256, apply
-  `steam:steam` ownership, and atomically rename it. It never restarts Arma or
-  rewrites the current mission selection.
-- Sleeping, archived, changing, destructive, and instance-less sessions skip
-  live copy. Accepted uploads remain available for the next compatible
-  bootstrap rather than requiring a synchronization service.
-- Start, wake, restore, and replacement-host bootstrap synchronize every active
-  accepted mission from a checksum-bound manifest while preserving the
-  separately snapshotted current mission as launch authority. Legacy
-  single-mission sessions retain their existing fallback.
-- Artifact replay retries an incomplete live copy idempotently; IAM permits the
-  artifact worker to use `AWS-RunShellScript` only against project/environment
-  tagged instances and observe its command.
+- Mission-manager controls are grouped per file with `Add mission` at the
+  bottom while retaining private pagination and stale-component safeguards.
+- Bootstrap progress distinguishes game-file and Workshop installation, and
+  exposes only bounded allowlisted SteamCMD activity. Private `/rb status`
+  projects automatic sleep/archive times from authoritative lifecycle evidence.
+- Creation and `/rb edit ... section:mods` accept a separate private
+  server-only preset with independent active/pending revisions. Bootstrap
+  installs it through the existing authenticated SteamCMD flow and generates a
+  deterministic `-serverMod=` argument without exposing it on the public card
+  or client modlist.
+- Accepted mission uploads are copied checksum-first and atomically to a stable
+  running/idle managed host without restarting Arma or changing its current
+  mission. Every active accepted mission is also synchronized on start, wake,
+  restore, and replacement-host bootstrap.
+- Final review allows an established cDLC/server-only session to stage its first
+  client preset at base revision zero and makes interrupted live-mission replay
+  select the exact digest-plus-normalized-filename object.
+- `AGENTS.md` documents that the required GitHub CI job owns race testing when
+  the Windows development host has no CGO C compiler.
 
-## Validation
+## Review and Validation
 
-- Focused domain, artifact-service, live-SSM-copy, bootstrap-runner, and worker
-  tests pass, covering acceptance replay, exact-instance selection, lifecycle
-  and workflow conflicts, checksum/atomic placement, no restart, all-active
-  bootstrap synchronization, and current-mission preservation.
-- `go test ./...` passes with workspace-local Go caches.
-- `go test -cover ./...`, `go vet ./...`, `go build ./cmd/...`, all 13 Lambda
-  packages, Git Bash syntax validation, Terraform format/validation, and
-  `git diff --check` pass.
-- The race/coverage check remains owned by required GitHub CI on this Windows
-  host because no CGO C compiler is installed, as documented in `AGENTS.md`.
+- Final review covers authorization and stale modal state, independent revision
+  promotion/rollback, archive/restore and DynamoDB compatibility, private
+  server-preset boundaries, progress redaction, mission replay/idempotency,
+  checksum placement, current-mission preservation, bootstrap replay, and
+  least-privilege tagged-instance SSM access.
+- `go test ./...`, `go test -cover ./...`, `go vet ./...`, `go build ./cmd/...`,
+  all 13 Lambda packages, Git Bash syntax, Terraform format/validation, and
+  `git diff --check` pass after the final review fixes.
+- `go test -race -coverprofile=coverage.out ./...` remains delegated to required
+  GitHub CI because this Windows host has no CGO C compiler.
 
 ## Next Development Task
 
-- Phase 15.1: add maximum session-duration guardrails according to the project
-  plan. Start it on a new phase branch.
-- Because Phase 18 is complete, merge `codex/misc-fixes` only through a reviewed
-  pull request after CI passes.
+- Commit and push the Phase 18.5 review/handoff changes, then open the Phase 18
+  pull request and require CI before merge.
+- After merge, begin Phase 15.1 on a new phase branch.
+
+## Terraform Refresh Note
+
+Terraform may pause while refreshing an unchanged Lambda event-source mapping,
+including `aws_lambda_event_source_mapping.command_worker`. If the same refresh
+line makes no progress for several minutes, cancel once with `Ctrl+C`, confirm
+the AWS identity/region, inspect the reported mapping with
+`aws lambda get-event-source-mapping --uuid <reported-id>`, and rerun a new plan
+with a new filename. Do not reuse or apply a plan from an interrupted run.
 
 ## Commands to Apply Current Changes
 
@@ -57,12 +67,20 @@ $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
+# Phase 18 changes the Discord, artifact, bootstrap, archive/restore, monitor,
+# and shared lifecycle code. Package the complete Lambda set once.
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out misc-fixes-live-missions.tfplan
-terraform -chdir=infra/terraform/environments/dev show misc-fixes-live-missions.tfplan
-# Apply only after reviewing and approving this exact saved plan.
-terraform -chdir=infra/terraform/environments/dev apply misc-fixes-live-missions.tfplan
 
+# Always create, review, and apply one fresh plan. The timestamp avoids
+# overwriting user-owned or interrupted saved plans.
+$PlanFile = "misc-fixes-phase18-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
+terraform -chdir=infra/terraform/environments/dev plan -out $PlanFile
+terraform -chdir=infra/terraform/environments/dev show $PlanFile
+# Apply only after reviewing and approving this exact saved plan.
+terraform -chdir=infra/terraform/environments/dev apply $PlanFile
+
+# Verify Terraform published the content-addressed bootstrap revision used by
+# provisioning, wake, restore, and replacement-host workflows.
 $BootstrapBucket = terraform -chdir=infra/terraform/environments/dev output -raw session_assets_bucket_name
 $BootstrapContent = (Get-Content -Raw "deploy/bootstrap/arma3-bootstrap.sh").Replace("`r`n", "`n")
 $BootstrapHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($BootstrapContent))).ToLowerInvariant()
@@ -70,8 +88,18 @@ $BootstrapKey = "platform/bootstrap/arma3-$($BootstrapHash.Substring(0, 16)).sh"
 aws s3api head-object --bucket $BootstrapBucket --key $BootstrapKey
 ```
 
-No Discord command registration is required. After deployment, upload a small
-mission to a running development session and verify it appears in
-`/srv/game-server/arma3/mpmissions` without the Arma service PID changing. Then
-start or wake a session with multiple accepted missions and verify the complete
-active set is present while the configured/current mission remains unchanged.
+No Discord command registration is required because the `/rb` command schema
+did not change. After deployment, verify all Phase 18 behavior in development:
+
+1. Open `/rb edit ... mission-files`; confirm each filename shares a row with
+   its controls and `Add mission` is last.
+2. Start a small session; confirm the card advances through game-file and
+   Workshop stages with only safe current-download text, and confirm private
+   `/rb status` shows applicable automatic sleep/archive projections.
+3. Create or edit a modded session with a small server-only preset; confirm
+   private validation/revision status, no public-card or client-modlist leak,
+   healthy bootstrap, and the expected `-serverMod=` launch argument.
+4. Upload a small mission while Arma is running; confirm it appears in
+   `/srv/game-server/arma3/mpmissions` with `steam:steam` ownership and that the
+   Arma service PID/current mission do not change. Start or wake with multiple
+   accepted missions and confirm the complete active set is synchronized.

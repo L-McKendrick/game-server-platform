@@ -197,11 +197,30 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 		return "", newUserError("The mod options form is incomplete. Run `/rb edit` with section `mods` again.")
 	}
 	keyPrefix := "discord:" + strings.TrimSpace(payload.ID) + ":mod-options"
+	current, err := handler.service.Get(ctx, appsession.GetQuery{Actor: actor, SessionID: state.sessionID, GuildID: payload.GuildID})
+	if err != nil {
+		return "", err
+	}
+	if current.Version != state.version || current.EffectiveActivePresetRevision().Number != state.activeRevision || current.EffectiveActiveServerPresetRevision().Number != state.activeServerRevision {
+		return "", newUserError("The session changed while the form was open. Run `/rb edit` with section `mods` again.")
+	}
+	clientRevision := current.LifecycleState != domain.StateDraft || state.activeRevision > 0
+	serverRevision := current.LifecycleState != domain.StateDraft || state.activeServerRevision > 0
+	if attachment != nil && clientRevision {
+		if err := current.ValidatePresetRevisionStaging(state.activeRevision); err != nil {
+			return "", modsStagingUserError(err)
+		}
+	}
+	if serverAttachment != nil && serverRevision {
+		if err := current.ValidateServerPresetRevisionStaging(state.activeServerRevision); err != nil {
+			return "", modsStagingUserError(err)
+		}
+	}
 	var presetRequest *domain.ArtifactIngestRequest
 	var serverPresetRequest *domain.ArtifactIngestRequest
 	if attachment != nil {
 		request := createArtifactRequest(payload, actor, correlationID, state.sessionID, domain.ArtifactPreset, *attachment, keyPrefix+":preset", handler.clock.Now().UTC())
-		if state.mode == modsModeRevision {
+		if clientRevision {
 			request.Purpose = domain.ArtifactPurposePresetRevision
 			request.ExpectedActivePresetRevision = state.activeRevision
 		}
@@ -212,7 +231,7 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 	}
 	if serverAttachment != nil {
 		request := createArtifactRequest(payload, actor, correlationID, state.sessionID, domain.ArtifactServerPreset, *serverAttachment, keyPrefix+":server-preset", handler.clock.Now().UTC())
-		if state.mode == modsModeRevision {
+		if serverRevision {
 			request.Purpose = domain.ArtifactPurposeServerPresetRevision
 			request.ExpectedActiveServerPresetRevision = state.activeServerRevision
 		}
@@ -224,8 +243,8 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 	session, err := handler.service.UpdateModOptions(ctx, appsession.UpdateModOptionsCommand{
 		Actor: actor, SessionID: state.sessionID, GuildID: payload.GuildID, CorrelationID: correlationID,
 		IdempotencyKey: keyPrefix + ":configure", ExpectedVersion: state.version, CreatorDLCs: creatorDLCs,
-		PreparePreset:       presetRequest != nil && state.mode == modsModeCreate,
-		PrepareServerPreset: serverPresetRequest != nil && state.mode == modsModeCreate,
+		PreparePreset:       presetRequest != nil && !clientRevision,
+		PrepareServerPreset: serverPresetRequest != nil && !serverRevision,
 		Roles:               interactionRoles(payload),
 	})
 	if err != nil {
@@ -233,7 +252,7 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 	}
 	presetStatus := "No preset was uploaded."
 	if presetRequest != nil {
-		if state.mode == modsModeRevision {
+		if clientRevision {
 			if err := session.ValidatePresetRevisionStaging(state.activeRevision); err != nil {
 				return "", modsStagingUserError(err)
 			}
@@ -243,14 +262,14 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 		}
 		presetStatus = fmt.Sprintf("Preset `%s` queued for validation.", sanitizeCode(attachment.Filename))
 	}
-	if state.mode == modsModeCreate && attachment == nil && serverAttachment == nil {
+	if current.LifecycleState == domain.StateDraft && attachment == nil && serverAttachment == nil {
 		presetStatus = "No preset was uploaded; this modded session remains a recoverable draft."
-	} else if state.mode == modsModeCreate && attachment == nil {
+	} else if current.LifecycleState == domain.StateDraft && attachment == nil {
 		presetStatus = "No client preset was uploaded; this server-only mod setup can become ready after validation."
 	}
 	serverPresetStatus := "No server-only preset was uploaded."
 	if serverPresetRequest != nil {
-		if state.mode == modsModeRevision {
+		if serverRevision {
 			if err := session.ValidateServerPresetRevisionStaging(state.activeServerRevision); err != nil {
 				return "", modsStagingUserError(err)
 			}

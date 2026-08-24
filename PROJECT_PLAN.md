@@ -6,12 +6,9 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
 
 ## Remaining Delivery Order
 
-1. Complete the core product with automatic inactivity handling (Phase 14) and
-   maximum-duration cost guardrails (Phase 15).
-2. Complete the approved out-of-order miscellaneous fixes and quality-of-life
-   work on `codex/misc-fixes` (Phase 18).
-3. Harden production operations and optimize measured bottlenecks (Phase 16).
-4. Future enhancements (Phase 17).
+1. Complete the core product with maximum-duration cost guardrails (Phase 15).
+2. Harden production operations and optimize measured bottlenecks (Phase 16).
+3. Future enhancements (Phase 17).
 
 ## Phases
 
@@ -269,3 +266,6 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **18.4.1** [x] Extend the existing artifact acceptance path to revalidate the running lifecycle, exact managed instance, accepted mission revision, and workflow compatibility before requesting a bounded live copy; treat sleeping, archived, changing, or stale-instance sessions as bootstrap-only synchronization cases.
       - **18.4.2** [x] Reuse the artifact worker and narrowly scoped SSM access to download the exact S3 object to a temporary file, verify its checksum, set `steam:steam` ownership, and atomically place it in `arma3/mpmissions`; use existing retry and failure reporting and do not add a synchronization worker.
       - **18.4.3** [x] Synchronize every accepted active mission during start, wake, restore, and replacement-host bootstrap, and add focused live-copy, idempotency, checksum, state-drift, instance-drift, workflow-conflict, no-restart, and current-mission-preservation coverage.
+    - **18.5** [x] Complete the final cross-step branch review and prepare the Phase 18 pull request.
+      - **18.5.1** [x] Review Discord mod recovery, artifact replay, lifecycle state, revision authority, private-data boundaries, bootstrap compatibility, IAM scope, and deployment impact; allow first client-preset staging on established cDLC/server-only sessions and bind live-mission replay to the exact normalized filename.
+      - **18.5.2** [x] Run full proportional Go, packaging, Bash, Terraform, and diff validation; consolidate the branch deployment handoff and provide the proposed pull-request title and description without deploying or opening the PR.

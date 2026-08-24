@@ -45,6 +45,19 @@ func TestServerConfigIngestRequestIsGuildBoundAndSmall(t *testing.T) {
 	}
 }
 
+func TestFirstPresetRevisionMayBindToEmptyActiveRevision(t *testing.T) {
+	t.Parallel()
+	request := validArtifactRequest()
+	request.Kind = ArtifactPreset
+	request.Filename = "preset.html"
+	request.SourceURL = "https://cdn.discordapp.com/attachments/1/2/preset.html"
+	request.Purpose = ArtifactPurposePresetRevision
+	request.ExpectedActivePresetRevision = 0
+	if err := request.Validate(); err != nil {
+		t.Fatalf("first preset revision request: %v", err)
+	}
+}
+
 func TestNormalizeMissionFilenamePreservesSafeNamesAndSanitizesConfigSyntax(t *testing.T) {
 	t.Parallel()
 

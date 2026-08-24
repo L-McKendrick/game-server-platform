@@ -235,8 +235,13 @@ func (service *Service) copyMissionLive(ctx context.Context, session domain.Sess
 		return nil
 	}
 	if objectKey == "" {
+		filename, err := domain.NormalizeMissionFilename(request.Filename)
+		if err != nil {
+			return err
+		}
+		expectedBase := digestHex + "-" + filename
 		for _, record := range session.AcceptedMissionFiles() {
-			if strings.HasPrefix(path.Base(record.ObjectKey), digestHex+"-") {
+			if path.Base(record.ObjectKey) == expectedBase {
 				objectKey = record.ObjectKey
 				break
 			}

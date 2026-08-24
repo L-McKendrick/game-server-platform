@@ -51,6 +51,29 @@ func TestServerOnlyPresetCanCompleteModdedDraftReadiness(t *testing.T) {
 	}
 }
 
+func TestEstablishedSessionCanStageItsFirstClientPresetRevision(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{ID: "cdlc-only", Slug: "cdlc-only", DisplayName: "CDLC Only", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 86400, CreatorDLCs: []string{CreatorDLCReactionForces}}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateNew || !session.EffectiveActivePresetRevision().Empty() {
+		t.Fatalf("initial established session = %#v", session)
+	}
+	modlist := PresetModlistMetadata{ObjectKey: "sessions/cdlc-only/input/modlists/v1.html", Filename: "modlist.html", SHA256: strings.Repeat("a", 64), SizeBytes: 128, WorkshopCount: 1}
+	revision, err := session.StagePresetRevision(0, "sessions/cdlc-only/input/presets/v1.html", modlist, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision.Number != 1 || revision.BaseRevision != 0 || revision.Status != PresetRevisionPending || !session.ActivePresetRevision.Empty() {
+		t.Fatalf("first staged client preset = %#v session=%#v", revision, session)
+	}
+}
+
 func TestPendingPresetPromotesOnlyAfterLifecycleHealthSuccess(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 17, 23, 0, 0, 0, time.UTC)
