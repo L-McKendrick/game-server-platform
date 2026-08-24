@@ -497,6 +497,40 @@ func TestSessionItemReadInfersAcceptedLegacyArtifactObjectKeys(t *testing.T) {
 	}
 }
 
+func TestSessionItemRoundTripPreservesMissionHistoryAndSelections(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 23, 16, 0, 0, 0, time.UTC)
+	session := testSession(t, now)
+	key := "sessions/session-1/input/missions/" + strings.Repeat("a", 64) + "-Coop.Altis.pbo"
+	session.MissionObjectKey = key
+	session.MissionFiles = []domain.MissionRecord{{ObjectKey: key, Filename: "Coop.Altis.pbo", Status: domain.ArtifactAccepted, AddedAt: now}}
+	session.ConfiguredMission = domain.UploadedMissionSelection(key)
+	session.CurrentMission = domain.DefaultMissionSelection()
+	stored, err := fromSessionItem(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(stored.MissionFiles, session.MissionFiles) || stored.ConfiguredMission != session.ConfiguredMission || stored.CurrentMission != session.CurrentMission {
+		t.Fatalf("mission round trip = %#v / %#v / %#v", stored.MissionFiles, stored.ConfiguredMission, stored.CurrentMission)
+	}
+}
+
+func TestSessionItemReadMigratesLegacyMissionPointer(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 23, 16, 0, 0, 0, time.UTC)
+	item := toSessionItem(testSession(t, now))
+	item.MissionObjectKey = "sessions/session-1/input/missions/Legacy.Altis.pbo"
+	item.MissionFilesJSON, item.ConfiguredMissionJSON, item.CurrentMissionJSON = "", "", ""
+	item.MissionArtifactStatus = ""
+	stored, err := fromSessionItem(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.MissionFiles) != 1 || stored.MissionFiles[0].Status != domain.ArtifactAccepted || stored.ConfiguredMission.Template != "Legacy.Altis" || stored.ConfiguredMission.ObjectKey != item.MissionObjectKey {
+		t.Fatalf("legacy mission migration = %#v", stored)
+	}
+}
+
 func TestSessionItemRoundTripPreservesOptionalDescription(t *testing.T) {
 	t.Parallel()
 	session := testSession(t, time.Date(2026, 8, 14, 20, 0, 0, 0, time.UTC))

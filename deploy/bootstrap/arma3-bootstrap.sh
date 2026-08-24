@@ -7,6 +7,7 @@ SESSION_ID="$(decode "$SESSION_ID_B64")"
 DISPLAY_NAME="$(decode "$DISPLAY_NAME_B64")"
 DATA_VOLUME_ID="$(decode "$DATA_VOLUME_ID_B64")"
 MISSION_KEY="$(decode "$MISSION_KEY_B64")"
+MISSION_TEMPLATE="$(decode "$MISSION_TEMPLATE_B64")"
 SERVER_CONFIG_KEY="$(decode "$SERVER_CONFIG_KEY_B64")"
 SERVER_CONFIG_SHA256="$(decode "$SERVER_CONFIG_SHA_B64")"
 SERVER_CONFIG_REVISION="$(decode "$SERVER_CONFIG_REV_B64")"
@@ -418,13 +419,15 @@ sqf_escape() { printf '%s' "$1" | sed 's/"/""/g'; }
 
 deploy_content() {
   local mission_file mission_template safe_mission_template safe_name
-  mission_file="$(basename "$MISSION_KEY")"
-  if [[ "$mission_file" =~ ^[0-9a-f]{64}-(.+\.[pP][bB][oO])$ ]]; then
-    mission_file="${BASH_REMATCH[1]}"
-  fi
-  mission_template="${mission_file%.[Pp][Bb][Oo]}"
+  mission_template="$MISSION_TEMPLATE"
   mkdir -p "$ROOT/arma3/mpmissions" "$ROOT/home/.local/share/Arma 3 - Other Profiles/server"
-  aws s3 cp "s3://$ASSETS_BUCKET/$MISSION_KEY" "$ROOT/arma3/mpmissions/$mission_file" --region "$AWS_REGION" --only-show-errors
+  if [ -n "$MISSION_KEY" ]; then
+    mission_file="$(basename "$MISSION_KEY")"
+    if [[ "$mission_file" =~ ^[0-9a-f]{64}-(.+\.[pP][bB][oO])$ ]]; then
+      mission_file="${BASH_REMATCH[1]}"
+    fi
+    aws s3 cp "s3://$ASSETS_BUCKET/$MISSION_KEY" "$ROOT/arma3/mpmissions/$mission_file" --region "$AWS_REGION" --only-show-errors
+  fi
   safe_name="$(sqf_escape "$DISPLAY_NAME")"
   safe_mission_template="$(sqf_escape "$mission_template")"
   if [ -n "$SERVER_CONFIG_KEY" ]; then
@@ -440,6 +443,30 @@ verifySignatures = 2;
 kickDuplicate = 1;
 BattlEye = 1;
 persistent = 1;
+EOF
+  fi
+  awk '
+    function structural(value, output, position, character, following) {
+      output=""
+      for (position=1; position<=length(value); position++) {
+        character=substr(value,position,1); following=substr(value,position+1,1)
+        if (block_comment) { if (character=="*" && following=="/") { block_comment=0; position++ }; continue }
+        if (quoted) { if (character=="\"" && following=="\"") { position++; continue }; if (character=="\"") quoted=0; continue }
+        if (character=="/" && following=="/") break
+        if (character=="/" && following=="*") { block_comment=1; position++; continue }
+        if (character=="\"") { quoted=1; continue }
+        output=output character
+      }
+      return output
+    }
+    function braces(value, opening_count, closing_count) { opening_count=gsub(/\{/, "{", value); closing_count=gsub(/\}/, "}", value); return opening_count-closing_count }
+    BEGIN { skipping=0; depth=0; block_comment=0; quoted=0 }
+    { syntax=structural($0); folded=tolower(syntax) }
+    !skipping && folded ~ /^[[:space:]]*class[[:space:]]+missions([[:space:]:{]|$)/ { skipping=1; depth=braces(syntax); if (depth<=0 && syntax ~ /;/) skipping=0; next }
+    skipping { depth += braces(syntax); if (depth<=0 && syntax ~ /;/) skipping=0; next }
+    { print }
+  ' "$ROOT/config/server.cfg" > "$ROOT/config/server.cfg.mission"
+  cat >> "$ROOT/config/server.cfg.mission" <<EOF
 class Missions {
   class Primary {
     template = "$safe_mission_template";
@@ -447,7 +474,7 @@ class Missions {
   };
 };
 EOF
-  fi
+  mv -f "$ROOT/config/server.cfg.mission" "$ROOT/config/server.cfg"
   cat > "$ROOT/config/launch-arma.sh" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail

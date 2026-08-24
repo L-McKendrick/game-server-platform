@@ -74,7 +74,7 @@ func (handler *Handler) submitCreateModal(
 	session, err = handler.service.PrepareCreationArtifacts(ctx, appsession.PrepareCreationArtifactsCommand{
 		Actor: actor, SessionID: session.ID, GuildID: payload.GuildID,
 		CorrelationID: correlationID, IdempotencyKey: keyPrefix + ":artifacts",
-		HasPreset: false,
+		HasPreset: false, HasMission: submission.mission != nil, Roles: interactionRoles(payload),
 	})
 	if err != nil {
 		return createModalResult{}, fmt.Errorf("prepare creation artifacts: %w", err)
@@ -88,15 +88,14 @@ func (handler *Handler) submitCreateModal(
 		return createModalResult{}, fmt.Errorf("publish creation session card: %w", err)
 	}
 
-	missionRequest := createArtifactRequest(
-		payload, actor, correlationID, session.ID, domain.ArtifactMission,
-		*submission.mission, keyPrefix+":mission", now,
-	)
-	if err := handler.service.RequestArtifactIngest(ctx, actor, missionRequest); err != nil {
-		return createModalResult{}, fmt.Errorf("queue creation mission: %w", err)
+	queued := "Default mission: `MP_ZGM_m12.Stratis`."
+	if submission.mission != nil {
+		missionRequest := createArtifactRequest(payload, actor, correlationID, session.ID, domain.ArtifactMission, *submission.mission, keyPrefix+":mission", now)
+		if err := handler.service.RequestArtifactIngest(ctx, actor, missionRequest); err != nil {
+			return createModalResult{}, fmt.Errorf("queue creation mission: %w", err)
+		}
+		queued = "Mission queued for validation."
 	}
-
-	queued := "Mission queued for validation."
 	components := []interactionComponent(nil)
 	if submission.modded {
 		queued += " Continue to mod options to upload a preset and choose Creator DLC."
@@ -198,9 +197,9 @@ func parseCreateModalSubmission(
 				}
 			}
 		case createMissionCustomID:
-			attachment, err := resolveModalAttachment(payload.Data, component, true)
+			attachment, err := resolveModalAttachment(payload.Data, component, false)
 			if err != nil {
-				return createModalSubmission{}, newUserError("A single mission .pbo upload is required.")
+				return createModalSubmission{}, newUserError("Upload at most one mission .pbo file.")
 			}
 			submission.mission = attachment
 		default:
@@ -220,12 +219,11 @@ func parseCreateModalSubmission(
 		return createModalSubmission{}, newUserError("The session name must contain 1 to 100 characters.")
 	}
 
-	missionRequest := createArtifactRequest(
-		payload, actor, correlationID, "pending-session", domain.ArtifactMission,
-		*submission.mission, keyPrefix+":mission", requestedAt,
-	)
-	if err := missionRequest.Validate(); err != nil {
-		return createModalSubmission{}, newUserError("The mission upload must be a .pbo file no larger than 100 MiB from Discord.")
+	if submission.mission != nil {
+		missionRequest := createArtifactRequest(payload, actor, correlationID, "pending-session", domain.ArtifactMission, *submission.mission, keyPrefix+":mission", requestedAt)
+		if err := missionRequest.Validate(); err != nil {
+			return createModalSubmission{}, newUserError("The mission upload must be a .pbo file no larger than 100 MiB from Discord.")
+		}
 	}
 	return submission, nil
 }

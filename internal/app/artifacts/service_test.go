@@ -129,7 +129,7 @@ func TestProcessStoresValidatedMissionAndPersistsMetadata(t *testing.T) {
 	if err := service.Process(context.Background(), request); err != nil {
 		t.Fatalf("Process() returned error: %v", err)
 	}
-	if len(objects.objects) != 1 || objects.objects[0].key != "sessions/session-1/input/missions/operation.pbo" {
+	if len(objects.objects) != 1 || objects.objects[0].key != "sessions/session-1/input/missions/9f9f5111f7b27a781f1f1ddde5ebc2dd2b796bfc7365c9c28b548e564176929f-operation.pbo" {
 		t.Fatalf("stored objects = %#v; want one mission object", objects.objects)
 	}
 	session, err := repository.Get(context.Background(), "session-1")
@@ -175,7 +175,7 @@ func TestProcessSanitizesMissionFilenameBeforeObjectStorage(t *testing.T) {
 	if err := service.Process(context.Background(), request); err != nil {
 		t.Fatalf("Process() returned error: %v", err)
 	}
-	want := "sessions/session-1/input/missions/operation_passwordAdmin_unsafe.Stratis.pbo"
+	want := "sessions/session-1/input/missions/9f9f5111f7b27a781f1f1ddde5ebc2dd2b796bfc7365c9c28b548e564176929f-operation_passwordAdmin_unsafe.Stratis.pbo"
 	if len(objects.objects) != 1 || objects.objects[0].key != want {
 		t.Fatalf("stored objects = %#v; want %q", objects.objects, want)
 	}

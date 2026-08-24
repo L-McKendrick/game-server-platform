@@ -260,7 +260,7 @@ func TestHandlerOpensAndSubmitsPrivateModsModalForRunningSession(t *testing.T) {
 	openBody := marshalPayload(map[string]any{
 		"id": "mods-open", "application_id": "app-1", "type": interactionTypeApplicationCommand, "guild_id": "guild-1", "channel_id": "channel-1",
 		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
-		"data":   map[string]any{"name": "rb", "options": []any{map[string]any{"type": applicationCommandOptionSubcommand, "name": "mods", "options": []any{map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "session-mods"}}}}},
+		"data":   map[string]any{"name": "rb", "options": []any{map[string]any{"type": applicationCommandOptionSubcommand, "name": "edit", "options": []any{map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "session-mods"}, map[string]any{"type": applicationCommandOptionString, "name": "section", "value": "mods"}}}}},
 	})
 	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
 	var modal interactionResponse
@@ -490,9 +490,6 @@ func TestParseCreateModalSubmissionEnforcesServerSideLimits(t *testing.T) {
 			value := attachment(payload, "attachment-mission")
 			value.Size = 100*1024*1024 + 1
 			setAttachment(payload, "attachment-mission", value)
-		}},
-		{name: "missing required mission", want: "single mission .pbo", mutate: func(payload *interactionPayload) {
-			payload.Data.Components[3].Component.Values = nil
 		}},
 	}
 	for _, test := range tests {
@@ -812,8 +809,8 @@ func TestHandlerOpensCreateModalWithoutPersistingSession(t *testing.T) {
 		t.Fatalf("feature defaults = %#v; want modded on and TeamSpeak off", features.Options)
 	}
 	mission := components[3].Component
-	if mission.CustomID != createMissionCustomID || mission.Required == nil || !*mission.Required ||
-		mission.MinValues == nil || *mission.MinValues != 1 || mission.MaxValues == nil || *mission.MaxValues != 1 {
+	if mission.CustomID != createMissionCustomID || mission.Required == nil || *mission.Required ||
+		mission.MinValues == nil || *mission.MinValues != 0 || mission.MaxValues == nil || *mission.MaxValues != 1 {
 		t.Fatalf("mission file requirements = %#v", mission)
 	}
 

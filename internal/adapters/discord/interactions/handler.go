@@ -69,6 +69,7 @@ type SessionService interface {
 	PrepareCreationArtifacts(ctx context.Context, command appsession.PrepareCreationArtifactsCommand) (domain.Session, error)
 	UpdateDraftSetup(ctx context.Context, command appsession.UpdateDraftSetupCommand) (domain.Session, error)
 	UpdateModOptions(ctx context.Context, command appsession.UpdateModOptionsCommand) (domain.Session, error)
+	UpdateMission(ctx context.Context, command appsession.UpdateMissionCommand) (domain.Session, error)
 
 	RequestStart(ctx context.Context, command appsession.StartCommand) error
 	RequestLifecycle(ctx context.Context, command appsession.LifecycleCommand) error
@@ -364,6 +365,12 @@ func (handler *Handler) ServeHTTP(
 		return
 	}
 	if payload.Type == interactionTypeMessageComponent {
+		if isMissionManagerComponent(payload) {
+			if err := handler.handleMissionManagerComponent(request.Context(), writer, payload, domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID}); err != nil {
+				writeInteractionMessage(writer, componentErrorMessage(err))
+			}
+			return
+		}
 		if isCreateModsContinue(payload) {
 			err := handler.openCreateModsModal(request.Context(), writer, payload, domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID})
 			if err != nil {
@@ -396,7 +403,7 @@ func (handler *Handler) ServeHTTP(
 		writeAutocompleteChoices(writer, choices)
 		return
 	}
-	if payload.Type == interactionTypeModalSubmit && (payload.Data == nil || (payload.Data.CustomID != createModalCustomID && !isSetupModalCustomID(payload.Data.CustomID) && !isModsModalCustomID(payload.Data.CustomID) && !strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix) && !strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix))) {
+	if payload.Type == interactionTypeModalSubmit && (payload.Data == nil || (payload.Data.CustomID != createModalCustomID && !isSetupModalCustomID(payload.Data.CustomID) && !isModsModalCustomID(payload.Data.CustomID) && !isMissionUploadModal(payload.Data.CustomID) && !strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix) && !strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix))) {
 		writeInteractionMessage(writer, "This modal is not supported or has expired.")
 		return
 	}
@@ -429,7 +436,7 @@ func (handler *Handler) ServeHTTP(
 		}
 		return
 	}
-	if payload.isRBModsCommand() {
+	if payload.isRBEditCommand() {
 		if message := payload.channelCapabilities().setupBlockedMessage(true); message != "" {
 			writeInteractionMessage(writer, message)
 			return
@@ -439,8 +446,7 @@ func (handler *Handler) ServeHTTP(
 			writeInteractionMessage(writer, "The command could not be processed. Please try again.")
 			return
 		}
-		err = handler.openModsModal(request.Context(), writer, payload, domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID})
-		if err != nil {
+		if err := handler.openEdit(request.Context(), writer, payload, domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID}); err != nil {
 			writeInteractionMessage(writer, handler.commandErrorMessage(err, correlationID))
 		}
 		return
@@ -453,7 +459,7 @@ func (handler *Handler) ServeHTTP(
 		return
 	}
 	if payload.Type == interactionTypeModalSubmit {
-		edit := isSetupModalCustomID(payload.Data.CustomID) || isModsModalCustomID(payload.Data.CustomID)
+		edit := isSetupModalCustomID(payload.Data.CustomID) || isModsModalCustomID(payload.Data.CustomID) || isMissionUploadModal(payload.Data.CustomID)
 		if message := payload.channelCapabilities().setupBlockedMessage(edit); message != "" {
 			writeInteractionMessage(writer, message)
 			return
@@ -464,7 +470,9 @@ func (handler *Handler) ServeHTTP(
 		}
 		var content string
 		var components []interactionComponent
-		if isModsModalCustomID(payload.Data.CustomID) {
+		if isMissionUploadModal(payload.Data.CustomID) {
+			content, err = handler.submitMissionUpload(request.Context(), payload, actor, correlationID)
+		} else if isModsModalCustomID(payload.Data.CustomID) {
 			content, err = handler.submitModsModal(request.Context(), payload, actor, correlationID)
 		} else if isSetupModalCustomID(payload.Data.CustomID) {
 			content, err = handler.submitSetupModal(request.Context(), payload, actor, correlationID)

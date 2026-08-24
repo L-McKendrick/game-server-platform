@@ -211,6 +211,9 @@ func (service *Service) verifyArchive(ctx context.Context, session domain.Sessio
 	if manifest.SessionID != session.ID || manifest.ArchiveID != archive.ID || manifest.ObjectKey != archive.ObjectKey || manifest.SHA256 != archive.SHA256 || manifest.SizeBytes != archive.SizeBytes || manifest.GameProfileID != session.GameProfileID || manifest.ConfigurationRevision != session.ConfigurationRevision || manifest.MissionObjectKey != session.MissionObjectKey || manifest.PresetObjectKey != session.PresetObjectKey || manifest.Vanilla != session.Vanilla || !slices.Equal(manifest.CreatorDLCs, session.CreatorDLCs) || !manifestReadableIdentityMatches(manifest, session) || !manifest.PresetRevisionIntentMatches(session) {
 		return TaskResult{}, fmt.Errorf("archive manifest does not match authoritative session metadata")
 	}
+	if manifest.ConfiguredMission.Template != "" && (manifest.ConfiguredMission != session.ConfiguredMission || manifest.CurrentMission != session.CurrentMission || !slices.Equal(manifest.MissionFiles, session.MissionFiles)) {
+		return TaskResult{}, fmt.Errorf("archive mission history does not match authoritative session metadata")
+	}
 	if err := service.store.Verify(ctx, ports.ArchiveObject{Key: archive.ObjectKey, SHA256: archive.SHA256, SizeBytes: archive.SizeBytes, ContentType: "application/gzip"}); err != nil {
 		return TaskResult{}, err
 	}

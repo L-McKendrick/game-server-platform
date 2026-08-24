@@ -71,13 +71,15 @@ Administrator or Manage Server permission.
 3. combined mode/features control, with vanilla implied when modded is not
    selected, TeamSpeak independently selectable, and an optional durable
    `Begin server setup` intent;
-4. required mission upload.
+4. optional mission upload; when omitted, Arma uses BI's
+   `MP_ZGM_m12.Stratis` built-in mission.
 
 After a modded base submission, an ephemeral `Continue to mod options` button
 opens a second modal containing an optional Launcher preset upload and a
 checkbox group for the seven supported Creator DLCs. Discord does not permit a
 modal-submit response to open another modal, so the explicit button is the
-native continuation boundary. Vanilla creation skips it. `/rb mods` opens this
+native continuation boundary. Vanilla creation skips it. `/rb edit` with the
+`mods` section opens this
 same mod-options modal for an existing modded session and allows a preset
 upload, a cDLC-only change, or both. Every submission is owner/guild/version
 bound and stale forms fail closed. Discord modals do not support arbitrary
@@ -187,7 +189,7 @@ validated preset, use a slug-based filename, and strip irrelevant local or
 sensitive metadata. Recreate the message from the durable S3 object if it is
 deleted.
 
-Post-creation `/rb mods` updates the desired Creator DLC set and optionally
+Post-creation `/rb edit` with the `mods` section updates the desired Creator DLC set and optionally
 uploads and validates a pending preset revision. A running session is not
 interrupted. Apply pending mod options on the next start,
 wake, or restore. The previous revision remains active until installation and

@@ -40,6 +40,45 @@ func (queue failingCommandQueue) Enqueue(context.Context, domain.CommandEnvelope
 	return queue.err
 }
 
+func TestPrepareCreationArtifactsAutomaticallyStartsReadyDefaultMissionSession(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 8, 23, 15, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-default", Slug: "session-default", DisplayName: "Default mission", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(domain.SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 86400, Vanilla: true, StartWhenReady: true}, now); err != nil {
+		t.Fatal(err)
+	}
+	record, _ := domain.NewCompletedIdempotencyRecord("create-default", "hash", session.ID, now, time.Hour)
+	event := domain.NewSessionCreatedEvent("create-event", "create-correlation", testActor("owner-1"), session, now)
+	if err := repository.Create(ctx, session, event, record); err != nil {
+		t.Fatal(err)
+	}
+	queue := &recordingCommandQueue{}
+	service, err := NewService(repository, &sequenceIDGenerator{ids: []string{"artifact-event"}}, fixedClock{now}, time.Hour, WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := PrepareCreationArtifactsCommand{Actor: testActor("owner-1"), SessionID: session.ID, GuildID: session.GuildID, CorrelationID: "creation-correlation", IdempotencyKey: "creation-artifacts", Roles: []string{"role-allowed"}}
+	first, err := service.PrepareCreationArtifacts(ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.PrepareCreationArtifacts(ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.ConfiguredMission.IsDefault() || first.LifecycleState != domain.StateNew || second.LifecycleState != domain.StateNew || len(queue.commands) != 2 {
+		t.Fatalf("sessions=(%#v,%#v) commands=%#v", first, second, queue.commands)
+	}
+	if queue.commands[0].CommandID != queue.commands[1].CommandID || queue.commands[0].IdempotencyKey != queue.commands[1].IdempotencyKey || !slices.Equal(queue.commands[0].Actor.Roles, []string{"role-allowed"}) {
+		t.Fatalf("automatic start replay = %#v", queue.commands)
+	}
+}
+
 func TestUpdateModOptionsAutomaticallyStartsCreatorDLCOnlyReadySession(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -80,6 +119,49 @@ func TestUpdateModOptionsAutomaticallyStartsCreatorDLCOnlyReadySession(t *testin
 	if len(queue.commands[0].Actor.Roles) != 1 || queue.commands[0].Actor.Roles[0] != "role-allowed" ||
 		len(queue.commands[1].Actor.Roles) != 1 || queue.commands[1].Actor.Roles[0] != "role-allowed" {
 		t.Fatalf("automatic start roles = %#v; want signed interaction roles on every replay", queue.commands)
+	}
+}
+
+func TestUpdateMissionIsOwnerBoundStaleSafeAndIdempotent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 8, 23, 16, 30, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-missions", Slug: "session-missions", DisplayName: "Missions", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "sessions/session-missions/input/missions/Coop.Altis.pbo"
+	if err := session.AttachArtifact(domain.ArtifactMission, key, now); err != nil {
+		t.Fatal(err)
+	}
+	record, _ := domain.NewCompletedIdempotencyRecord("seed-missions", "hash", session.ID, now, time.Hour)
+	if err := repository.Create(ctx, session, domain.NewSessionCreatedEvent("seed-event", "seed-correlation", testActor("owner-1"), session, now), record); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(repository, &sequenceIDGenerator{ids: []string{"mission-event"}}, fixedClock{now}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := UpdateMissionCommand{Actor: testActor("owner-1"), SessionID: session.ID, GuildID: session.GuildID, CorrelationID: "mission-correlation", IdempotencyKey: "mission-default", ExpectedVersion: session.Version, Action: "default-built-in", MissionIndex: -1}
+	first, err := service.UpdateMission(ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.UpdateMission(ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.ConfiguredMission.IsDefault() || second.Version != first.Version {
+		t.Fatalf("mission replay = %#v / %#v", first, second)
+	}
+	command.IdempotencyKey, command.ExpectedVersion = "mission-stale", session.Version
+	if _, err := service.UpdateMission(ctx, command); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("stale mission error = %v", err)
+	}
+	command.Actor, command.IdempotencyKey, command.ExpectedVersion = testActor("owner-2"), "mission-forbidden", first.Version
+	if _, err := service.UpdateMission(ctx, command); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("non-owner mission error = %v", err)
 	}
 }
 

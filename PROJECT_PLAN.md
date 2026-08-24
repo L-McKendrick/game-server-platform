@@ -185,8 +185,18 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
 
 13. **Expansion and Optimization — Pending**
     - **13.1** [ ] Benchmark and optimize bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements with cost guardrails.
-    - **13.2** [ ] Add multiple mission uploads and safe in-game mission rotation with artifact history and authorization.
+    - **13.2** [x] Add optional and multiple Arma 3 mission files through a consolidated session-edit experience, while preserving a clean path to later mission rotation.
+      - **13.2.1** [x] Replace the required single-mission projection with backward-compatible immutable mission records and atomic configured/current projections; make `MP_ZGM_m12.Stratis` the built-in configured default when no accepted upload is selected, preserve artifact history through archive/restore/termination, and prevent removal of the currently loaded mission.
+      - **13.2.2** [x] Replace `/rb mods` with `/rb edit session:<slug> section:<mods|mission-files>` using a game-aware section contract; retain the existing preset and Creator DLC flow, and add a private five-per-page mission manager with validation state, `Default`, `Remove`, `Add mission`, and pagination controls plus a bounded `.pbo` upload modal.
+      - **13.2.3** [x] Snapshot the configured mission at each start, wake, or restore; deploy the exact accepted upload or fall back to `MP_ZGM_m12.Stratis`; and always replace the effective `class Missions` block with the platform-generated selection even when an Administrator-provided `server.cfg` is active, without changing a running server in place.
+      - **13.2.4** [x] Add focused domain, persistence, artifact, Discord, bootstrap, archive/restore, authorization, stale-component, idempotency, pagination, and compatibility coverage; update command registration, user/operator documentation, and deployment handoffs, then run proportional Go, Terraform, command-contract, Bash-artifact, packaging, and diff validation.
+      - **13.2.5** [x] Make the mission-block rewrite portable to Ubuntu's default AWK by avoiding built-in function names as local parameters.
+      - **13.2.6** [x] Keep zero-object termination results present in the Lambda contract so Step Functions can finalize empty sessions without leaving stale deletion locks.
+      - **13.2.7** [x] Avoid the AWK built-in `close` name in mission-rewrite locals so configuration deployment runs on Ubuntu's default `mawk`.
+      - **13.2.8** [x] Remove stale saved plans from the active development environment while preserving the current reviewed plan and recoverable local history.
     - **13.3** [ ] Add an admin-configurable maximum session duration, owner warnings, and auditable admin extension.
     - **13.4** [ ] Evaluate scheduling and operational analytics using the Phase 12 admin and presentation contracts.
     - **13.5** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; extend `/rb create` beyond its required Arma 3 choice and route each supported game into its game-specific setup contract.
     - **13.6** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.
+    - **13.7** [x] Publish a self-hosted Discord bot deployment guide.
+      - **13.7.1** [x] Document Discord application setup, AWS/Terraform deployment, secret installation, command registration, verification, and safe provisioning enablement; link the guide from the README.

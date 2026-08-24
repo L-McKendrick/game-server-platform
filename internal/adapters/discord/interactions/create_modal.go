@@ -62,7 +62,7 @@ func writeCreateModal(writer http.ResponseWriter, gameType string) {
 		writeInteractionMessage(writer, "That game is not supported yet.")
 		return
 	}
-	writeSessionSetupModal(writer, createModalCustomID, "Create Arma 3 session", domain.Session{}, true, true)
+	writeSessionSetupModal(writer, createModalCustomID, "Create Arma 3 session", domain.Session{}, false, true)
 }
 
 func writeSessionSetupModal(writer http.ResponseWriter, customID, title string, session domain.Session, missionRequired, creation bool) {
@@ -84,7 +84,7 @@ func writeSessionSetupModal(writer http.ResponseWriter, customID, title string, 
 		{Label: "TeamSpeak", Value: createFeatureTeamSpeak, Description: "Run a TeamSpeak server", Default: session.TeamSpeakEnabled},
 	}
 	if creation {
-		featureOptions = append(featureOptions, interactionSelectOption{Label: "Begin server setup", Value: createFeatureAutoStart, Description: "Start after required files validate", Default: session.StartWhenReady})
+		featureOptions = append(featureOptions, interactionSelectOption{Label: "Begin server setup", Value: createFeatureAutoStart, Description: "Automatically start the server setup process", Default: session.StartWhenReady})
 	}
 	featureDescription := "Modded is the platform default; clear it for vanilla. TeamSpeak is optional."
 	if creation {
@@ -145,13 +145,13 @@ func writeSessionSetupModal(writer http.ResponseWriter, customID, title string, 
 
 func setupArtifactDescription(kind string, status domain.ArtifactStatus, objectKey string, creation bool) string {
 	if creation && kind == "mission" {
-		return "Required Arma mission .pbo file (maximum 100 MiB)."
+		return "Optional Arma mission .pbo (maximum 100 MiB)."
 	}
 	if status == domain.ArtifactAccepted || status == domain.ArtifactPending || strings.TrimSpace(objectKey) != "" {
 		return "Already accepted or validating; leave empty because it cannot be replaced here."
 	}
 	if kind == "mission" {
-		return "Upload a replacement .pbo only when the mission is missing or rejected."
+		return "Upload a .pbo mission file."
 	}
-	return "Upload a replacement .html only when the preset is missing or rejected."
+	return "Upload a .html modlist file."
 }

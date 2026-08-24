@@ -4,38 +4,25 @@ An on-demand platform for provisioning and managing temporary dedicated game ser
 
 ## Current status
 
-The platform currently provides:
+Game Server Platform lets a Discord community create and operate temporary
+Arma 3 servers through `/rb` commands. It deploys each server to AWS, installs
+the selected mission and mods, publishes connection details, and reports live
+status in Discord.
 
-- Ed25519 verification against the exact raw Discord request body;
-- timestamp freshness, request-size, application-ID, and guild validation;
-- `/rb create`, `/rb list`, `/rb status`, `/rb configure`, uploads, start, sleep, wake, owner-confirmed archive, restore, and owner-confirmed irreversible termination;
-- ephemeral responses with mentions disabled;
-- command idempotency derived from Discord interaction IDs;
-- API Gateway HTTP API v2 and Lambda backed by DynamoDB;
-- DynamoDB-backed guild access configured through the ephemeral `/rb admin` menu, with role replacement and confirmed removal;
-- an asynchronous attachment worker with approved-host downloads, strict bounds, SHA-256 hashing, content validation, isolated S3 persistence, and conditional metadata updates;
-- a Secrets Manager-backed Discord notification worker;
-- normalized command and workflow contracts with conditional per-session workflow leases;
-- command, attachment, and notification FIFO queues with dead-letter queues;
-- canonical Step Functions Standard state-machine boundaries;
-- a FIFO command worker that revalidates access and starts implemented lifecycle workflows;
-- a dedicated game VPC, two public subnets, game/voice security groups, and no inbound SSH;
-- an idempotent EC2/EBS provisioning worker with IMDSv2, encrypted volumes, Systems Manager readiness, resource discovery tags, and DynamoDB capacity slots;
-- deployed provisioning, resumable Arma bootstrap, monitoring, and manual sleep/wake workflows;
-- a resumable Systems Manager bootstrap path for SteamCMD, Arma, Workshop content, mission deployment, optional TeamSpeak, systemd, and health gating;
-- guarded portable archive/destruction and restore workflows with versioned manifests, checksum verification, tagged-resource deletion, fresh infrastructure, safe extraction, and health acceptance;
-- irreversible termination with exact tag checks, bounded EC2/EBS deletion, permanent removal of every versioned session object, and an audit tombstone;
-- an AWS monthly budget and a fail-closed provisioning enablement gate;
-- reproducible Lambda packages, least-privilege IAM, retained logs, and CI checks.
+Members can start, sleep, wake, archive, restore, or permanently terminate a
+server without using the AWS console. Server owners can revise mods and mission
+files between runs. Discord administrators control access, upload a shared
+`server.cfg`, repair session cards, and reset runtime data.
 
-The reconciliation state machine intentionally terminates with `PhaseNotImplemented`. `/rb start` and restore use the development one-session capacity limit and AWS Budget alerts.
+The platform keeps persistent session records and portable archives while game
+servers remain disposable. Provisioning limits and AWS Budget alerts constrain
+cost. Confirmation checks protect destructive actions.
 
-Current milestone: Phase 12 Discord experience and session UX is proceeding by
-explicit roadmap reorder. Phases 10 and 11 remain pending.
+## Deploy to your Discord server
 
-See [Phase 5: Infrastructure Provisioning](docs/phase-5-infrastructure-provisioning.md) for the implemented boundary and deployment safety gates.
-See [Phase 6: Arma Bootstrap](docs/phase-6-arma-bootstrap.md) for the resumable installation and health boundary.
-See [Phase 8: Sleep and Wake](docs/phase-8-sleep-wake.md) and [Phase 9: Archive and Restore](docs/phase-9-archive-restore.md) for the current lifecycle boundaries.
+Follow [Deploy the bot to a Discord server](docs/deployment.md) for the full
+Discord application, AWS, Terraform, secret, command-registration, and
+verification procedure.
 
 ## Local Discord interaction server
 
@@ -118,5 +105,6 @@ Never place the bot token in a `.tfvars` file, command definition, log, or Terra
 
 - Deployment: a persistent game-server configuration and lifecycle record
 - Server: a temporary compute instance
-- Mission: an Arma-specific mission file
+- Missions: optional, immutable Arma `.pbo` uploads managed through
+  `/rb edit`; sessions use `MP_ZGM_m12.Stratis` by default
 - Deployment archive: a long-term backup of a deployment

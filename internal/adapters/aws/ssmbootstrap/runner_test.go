@@ -84,6 +84,46 @@ func TestStartBuildsSecretSafeResumableCommand(t *testing.T) {
 	}
 }
 
+func TestCommandSupportsBuiltInDefaultMissionWithoutS3Object(t *testing.T) {
+	t.Parallel()
+	runner, err := New(&fakeSSM{}, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := domain.Session{ID: "session-default", DisplayName: "Default", Vanilla: true, ConfiguredMission: domain.DefaultMissionSelection(), CurrentMission: domain.DefaultMissionSelection(), LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}}
+	script, err := runner.command(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(domain.DefaultArma3MissionTemplate))) {
+		t.Fatal("command omitted built-in mission template")
+	}
+	if !strings.Contains(script, "MISSION_KEY_B64=''") {
+		t.Fatal("built-in mission unexpectedly required an object key")
+	}
+}
+
+func TestBootstrapArtifactAvoidsAWKBuiltinNamesForMissionRewriteLocals(t *testing.T) {
+	path := filepath.Clean(filepath.Join("..", "..", "..", "..", "deploy", "bootstrap", "arma3-bootstrap.sh"))
+	script, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := string(script)
+	if strings.Contains(artifact, "function structural(value, output, index,") {
+		t.Fatal("mission rewrite uses awk's built-in index function name as a local parameter")
+	}
+	if !strings.Contains(artifact, "function structural(value, output, position,") {
+		t.Fatal("mission rewrite does not declare its portable position local")
+	}
+	if strings.Contains(artifact, "function braces(value, open, close)") {
+		t.Fatal("mission rewrite uses awk's built-in close function name as a local parameter")
+	}
+	if !strings.Contains(artifact, "function braces(value, opening_count, closing_count)") {
+		t.Fatal("mission rewrite does not declare portable brace-count locals")
+	}
+}
+
 func TestCommandPassesCreatorDLCsThroughExistingModPath(t *testing.T) {
 	t.Parallel()
 	runner, err := New(&fakeSSM{}, testConfig())

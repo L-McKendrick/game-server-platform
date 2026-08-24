@@ -2,69 +2,64 @@
 
 ## State and Objective
 
-Phases 1-10 are complete. Phase 11 remains pending under the approved Phase 12
-reorder. Step 12.13 is complete on `main`. The focused automatic-start
-authorization and cDLC-only bootstrap fixes are complete on
-`codex/fix-auto-start-role-auth`.
+Phases 1-10 and 12 are complete; Phase 11 remains pending. Phase 13 steps 13.2
+and 13.7 are complete on `codex/phase-13-mission-management`. No deployment,
+Terraform apply, or Discord registration was performed.
 
-## Focused Bug Fixes
+## Completed Development
 
-- Live inspection found `test-11` ready and opted into automatic setup, but its
-  start command was rejected as `forbidden` on each bounded queue delivery.
-- The guild access policy requires an approved Discord role. Manual lifecycle
-  commands carried the member's signed role IDs, while both immediate and
-  artifact-delayed automatic-start commands discarded them.
-- Create and mod-options submissions now preserve role IDs from the verified
-  Discord interaction. Immediate cDLC-only starts and delayed artifact-complete
-  starts carry those roles through the existing start use case and command
-  envelope.
-- Worker authorization is unchanged and remains fail-closed. The fix does not
-  introduce an owner bypass, trust client-supplied role data, or weaken the
-  configured guild role/channel policy.
-- Automatic command IDs remain derived from session ID and configuration
-  revision. Replays preserve the same ID and idempotency key while retaining
-  the original interaction roles.
-- Artifact requests reject empty/oversized role IDs and more than 250 roles.
-  Older queued requests remain backward-compatible because the new field is
-  optional.
-- Live `test-11` provisioning succeeded and retained its EC2/EBS resources, but
-  bootstrap failed after `MODS_APPLIED` because cDLC-only installation did not
-  create Steam's optional `steamapps/workshop` directory before a recursive
-  ownership operation.
-- Bootstrap now creates that directory idempotently before applying ownership.
-  Workshop-backed sessions are unchanged, and cDLC-only retries reuse the
-  retained host and completed durable checkpoints.
+- Arma 3 creation accepts an optional mission upload and otherwise uses BI's
+  `MP_ZGM_m12.Stratis` without creating a placeholder artifact.
+- Immutable, content-addressed mission records retain accepted/rejected and
+  logically removed history. Backward-compatible configured/current
+  projections persist through archive, restore, and termination.
+- `/rb edit session:<slug> section:<mods|mission-files>` replaces `/rb mods`.
+  The private mission manager renders five files per page within Discord's
+  component bounds and provides `Default`, protected `Remove`, `Add mission`,
+  and stale-safe pagination controls.
+- Start, wake, and restore snapshot the configured mission. Bootstrap downloads
+  the exact upload or uses the BI default and always replaces `class Missions`
+  after loading generated or Administrator-provided `server.cfg`.
+- The mission-block rewrite is compatible with Ubuntu's default `mawk`; its
+  scanner and brace counter no longer declare the built-in `index` or `close`
+  names as local parameters.
+- Empty-session termination always serializes `objects_deleted: 0`, preventing
+  the final Step Functions JSONPath from failing after successful cleanup.
+- Live sessions `test-12-3` and `test-13` had no remaining EC2, EBS, or S3
+  resources and were safely finalized as unlocked `DELETED` tombstones.
+- Live session `test-14` failed during configuration deployment because Ubuntu
+  `mawk` rejected the AWK built-in `close` name as a helper local. Its EC2
+  instance and data volume remain retained and billable; no retry is scheduled.
+- The development Terraform directory retains only the current saved plan.
+  Twenty-seven stale plans were moved to the recoverable, gitignored archive
+  `.cache/obsolete-terraform-plans-20260823`; active providers, configuration,
+  local variables, state migrations, and the current plan were preserved.
+- **Begin server setup** remains functional for every readiness path. A vanilla
+  session with no mission upload queues its deterministic start immediately;
+  uploaded-mission and modded sessions wait for required artifact/mod validation.
+  Initial delivery and idempotent replay preserve signed Discord role IDs.
+- `docs/deployment.md` provides a start-to-finish self-hosting guide for Discord
+  application setup, Terraform state, AWS deployment, secret installation,
+  guild command registration, verification, and provisioning enablement. The
+  README links to it.
+- The README's current-status section now describes the product and its user
+  workflows without exposing an implementation inventory or stale roadmap state.
 
 ## Validation
 
-- Focused domain, artifact, session, and Discord interaction tests pass,
-  including role preservation through immediate and delayed automatic starts.
-- Focused SSM bootstrap, bootstrap application, and worker tests pass. Regression
-  coverage requires the optional Workshop directory to be created before its
-  ownership operation, and the bootstrap artifact passes Bash syntax validation.
-- `go test ./...`, `go vet ./...`, and `go build ./cmd/...` pass with
-  workspace-local Go caches.
-- `terraform fmt -check -recursive infra/terraform` and
-  `terraform -chdir=infra/terraform/environments/dev validate` pass.
+- `go test ./...` and `go vet ./...` pass with workspace-local caches.
 - All 13 Lambda archives package successfully.
+- `terraform fmt -check -recursive infra/terraform` passes.
+- `terraform -chdir=infra/terraform/environments/dev validate` passes.
+- Bootstrap Bash syntax and Discord command JSON validation pass.
+- The focused bootstrap adapter regression covers both Ubuntu `mawk` local-name
+  collisions (`index` and `close`) and passes.
 - `git diff --check` passes.
 
-## Deployment and Retry Disposition
+## Next Development Task
 
-- No deployment, Discord registration, Terraform apply, queue redrive, or
-  unscheduled retry was performed for this fix.
-- The old role-less `test-11` command reached its bounded DLQ disposition. Do
-  not redrive it and do not imply another attempt is scheduled.
-- `test-11` is currently `FAILED`/`ACTION_REQUIRED`; its running EC2 instance
-  remains billable. No automatic bootstrap retry is scheduled.
-- After deploying both fixes and verifying the bootstrap worker, recover
-  `test-11` by running `/rb start` once as a currently authorized member. This
-  starts a new resumable bootstrap and reuses retained infrastructure; it does
-  not redrive the old message or failed execution.
-- Discord command definitions did not change, so re-registration is not
-  required.
-- Never reuse an older saved Terraform plan. Create and review the fresh plan
-  below; preserve any user-owned plan files.
+- Continue with one selected pending Phase 13 step, or return to Phase 11
+  production hardening. Start the selected step on its own numbered task plan.
 
 ## Commands to Apply Current Changes
 
@@ -77,13 +72,28 @@ $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=phase-12-auto-start-cdlc-bootstrap-fixes.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-12-auto-start-cdlc-bootstrap-fixes.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out phase-13-test-14-mawk-fix.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-13-test-14-mawk-fix.tfplan
 # Apply only after reviewing and approving this exact saved plan.
-terraform -chdir=infra/terraform/environments/dev apply phase-12-auto-start-cdlc-bootstrap-fixes.tfplan
+terraform -chdir=infra/terraform/environments/dev apply phase-13-test-14-mawk-fix.tfplan
 
 ./scripts/verify-bootstrap-worker-deployment.ps1
+./scripts/register-discord-command.ps1 -ApplicationId "<application-id>" -GuildId "<development-guild-id>"
+
+# Only after deployment verification, retry retained session test-12-2 once.
+# In Discord: /rb start session:test-12-2
+# Retry retained session test-14 only when the operator chooses to do so.
+# In Discord: /rb start session:test-14
 ```
 
-Only after verification succeeds, run `/rb start` once for `test-11` as a
-member with an allowed role. No Discord command registration is required.
+The fresh Terraform plan deploys the changed Lambda/bootstrap artifacts.
+Discord bulk registration is required because `/rb mods` changed to `/rb edit`.
+The documentation-only 13.7 change adds no deployment or registration action.
+The README status cleanup adds no deployment or registration action.
+No retry is scheduled for `test-12-2`; its retained running EC2 instance may
+continue incurring cost until the operator retries or ends the session.
+No retry is scheduled for `test-14`; its retained running EC2 instance and data
+volume may continue incurring cost until the operator retries or ends it. The
+fresh saved plan proposes one content-addressed bootstrap-object replacement
+and seven in-place Lambda/IAM-policy updates, with no runtime EC2/EBS changes.
+`test-12-3` and `test-13` need no further recovery action.

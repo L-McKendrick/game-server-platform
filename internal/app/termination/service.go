@@ -43,7 +43,7 @@ type TaskResult struct {
 	State          string `json:"state"`
 	Done           bool   `json:"done"`
 	Succeeded      bool   `json:"succeeded"`
-	ObjectsDeleted int    `json:"objects_deleted,omitempty"`
+	ObjectsDeleted int    `json:"objects_deleted"`
 }
 
 type Service struct {

@@ -12,6 +12,9 @@ func TestSessionTerminationLifecycle(t *testing.T) {
 	session.Slug = "saturday-arma"
 	session.Description = "Weekly co-op night"
 	session.MissionObjectKey = "sessions/session-1/input/mission.pbo"
+	session.MissionFiles = []MissionRecord{{ObjectKey: session.MissionObjectKey, Filename: "mission.pbo", Status: ArtifactAccepted, AddedAt: now}}
+	session.ConfiguredMission = UploadedMissionSelection(session.MissionObjectKey)
+	session.CurrentMission = session.ConfiguredMission
 	session.PresetObjectKey = "sessions/session-1/input/preset.html"
 	session.PresetRevisionSequence = 2
 	session.ActivePresetRevision = PresetRevision{Number: 1, PresetObjectKey: session.PresetObjectKey, Status: PresetRevisionActive, StagedAt: now, ActivatedAt: now}
@@ -34,6 +37,9 @@ func TestSessionTerminationLifecycle(t *testing.T) {
 	}
 	if session.DisplayName != "Saturday Arma" || session.Slug != "saturday-arma" || session.Description != "Weekly co-op night" {
 		t.Fatalf("deleted session lost readable tombstone identity: %#v", session)
+	}
+	if len(session.MissionFiles) != 1 || session.ConfiguredMission.Template != "mission" || session.CurrentMission.Template != "mission" {
+		t.Fatalf("deleted session lost mission audit history: %#v", session)
 	}
 }
 

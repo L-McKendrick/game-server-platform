@@ -214,6 +214,8 @@ type PrepareCreationArtifactsCommand struct {
 	Actor                                             domain.Actor
 	SessionID, GuildID, CorrelationID, IdempotencyKey string
 	HasPreset                                         bool
+	HasMission                                        bool
+	Roles                                             []string
 }
 
 // PrepareCreationArtifacts durably records queued inputs before asynchronous
@@ -227,15 +229,20 @@ func (service *Service) PrepareCreationArtifacts(ctx context.Context, command Pr
 		return domain.Session{}, fmt.Errorf("idempotency key is required")
 	}
 	hash, err := hashRequest(struct {
-		CommandType string `json:"command_type"`
-		ActorID     string `json:"actor_id"`
-		SessionID   string `json:"session_id"`
-		HasPreset   bool   `json:"has_preset"`
-	}{"PrepareCreationArtifacts", command.Actor.ID, strings.TrimSpace(command.SessionID), command.HasPreset})
+		CommandType string   `json:"command_type"`
+		ActorID     string   `json:"actor_id"`
+		SessionID   string   `json:"session_id"`
+		HasPreset   bool     `json:"has_preset"`
+		HasMission  bool     `json:"has_mission"`
+		Roles       []string `json:"roles,omitempty"`
+	}{"PrepareCreationArtifacts", command.Actor.ID, strings.TrimSpace(command.SessionID), command.HasPreset, command.HasMission, command.Roles})
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("hash artifact preparation: %w", err)
 	}
 	if replayed, found, err := service.replaySession(ctx, key, hash, command.Actor); err != nil || found {
+		if err == nil {
+			err = service.requestAutomaticStart(ctx, replayed, command.CorrelationID, command.Roles)
+		}
 		return replayed, err
 	}
 	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
@@ -249,7 +256,7 @@ func (service *Service) PrepareCreationArtifacts(ctx context.Context, command Pr
 		return domain.Session{}, domain.ErrForbidden
 	}
 	now, expectedVersion := service.clock.Now().UTC(), session.Version
-	if err := session.PrepareCreationArtifacts(command.HasPreset, now); err != nil {
+	if err := session.PrepareOptionalCreationArtifacts(command.HasMission, command.HasPreset, now); err != nil {
 		return domain.Session{}, err
 	}
 	eventID, err := service.newID(now, "artifact preparation event")
@@ -263,7 +270,7 @@ func (service *Service) PrepareCreationArtifacts(ctx context.Context, command Pr
 	event := domain.SessionEvent{
 		ID: eventID, SessionID: session.ID, Type: domain.EventArtifactRequested, OccurredAt: now,
 		ActorType: string(command.Actor.Type), ActorID: command.Actor.ID, CorrelationID: correlationID,
-		Data: map[string]string{"mission": "pending", "preset": strconv.FormatBool(command.HasPreset)},
+		Data: map[string]string{"mission": strconv.FormatBool(command.HasMission), "preset": strconv.FormatBool(command.HasPreset)},
 	}
 	record, err := domain.NewCompletedIdempotencyRecord(key, hash, session.ID, now, service.idempotencyRetention)
 	if err != nil {
@@ -271,9 +278,15 @@ func (service *Service) PrepareCreationArtifacts(ctx context.Context, command Pr
 	}
 	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, record); err != nil {
 		if replayed, found, replayErr := service.replaySession(ctx, key, hash, command.Actor); replayErr != nil || found {
+			if replayErr == nil {
+				replayErr = service.requestAutomaticStart(ctx, replayed, command.CorrelationID, command.Roles)
+			}
 			return replayed, replayErr
 		}
 		return domain.Session{}, fmt.Errorf("persist artifact preparation: %w", err)
+	}
+	if err := service.requestAutomaticStart(ctx, session, correlationID, command.Roles); err != nil {
+		return session, err
 	}
 	return session, nil
 }
@@ -610,6 +623,85 @@ type UpdateModOptionsCommand struct {
 	PreparePreset                                     bool
 }
 
+type UpdateMissionCommand struct {
+	Actor                                             domain.Actor
+	SessionID, GuildID, CorrelationID, IdempotencyKey string
+	ExpectedVersion                                   int64
+	Action                                            string
+	MissionIndex                                      int
+}
+
+func (service *Service) UpdateMission(ctx context.Context, command UpdateMissionCommand) (domain.Session, error) {
+	if err := command.Actor.Validate(); err != nil {
+		return domain.Session{}, err
+	}
+	key := strings.TrimSpace(command.IdempotencyKey)
+	if key == "" || command.ExpectedVersion < 1 {
+		return domain.Session{}, fmt.Errorf("mission edit idempotency and expected version are required")
+	}
+	hash, err := hashRequest(struct {
+		CommandType, ActorID, SessionID, GuildID, Action string
+		ExpectedVersion                                  int64
+		MissionIndex                                     int
+	}{"UpdateMission", command.Actor.ID, strings.TrimSpace(command.SessionID), strings.TrimSpace(command.GuildID), command.Action, command.ExpectedVersion, command.MissionIndex})
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("hash mission edit: %w", err)
+	}
+	if replayed, found, err := service.replaySession(ctx, key, hash, command.Actor); err != nil || found {
+		return replayed, err
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if err := authorizeOwner(command.Actor, session); err != nil || session.GuildID != strings.TrimSpace(command.GuildID) {
+		return domain.Session{}, domain.ErrForbidden
+	}
+	if session.Version != command.ExpectedVersion || session.ActiveWorkflowID != "" {
+		return domain.Session{}, domain.ErrConflict
+	}
+	now, expected := service.clock.Now().UTC(), session.Version
+	switch command.Action {
+	case "default-built-in":
+		err = session.ConfigureMission("", now)
+	case "default":
+		if command.MissionIndex < 0 || command.MissionIndex >= len(session.MissionFiles) {
+			return domain.Session{}, domain.ErrNotFound
+		}
+		err = session.ConfigureMission(session.MissionFiles[command.MissionIndex].ObjectKey, now)
+	case "remove":
+		if command.MissionIndex < 0 || command.MissionIndex >= len(session.MissionFiles) {
+			return domain.Session{}, domain.ErrNotFound
+		}
+		err = session.RemoveMission(session.MissionFiles[command.MissionIndex].ObjectKey, now)
+	default:
+		return domain.Session{}, fmt.Errorf("unsupported mission action")
+	}
+	if err != nil {
+		return domain.Session{}, err
+	}
+	eventID, err := service.newID(now, "mission edit event")
+	if err != nil {
+		return domain.Session{}, err
+	}
+	correlationID, err := service.resolveCorrelationID(command.CorrelationID, now)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	event := domain.NewSessionConfiguredEvent(eventID, correlationID, command.Actor, session, now)
+	record, err := domain.NewCompletedIdempotencyRecord(key, hash, session.ID, now, service.idempotencyRetention)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if err := service.repository.SaveWithEvent(ctx, session, expected, event, record); err != nil {
+		if replayed, found, replayErr := service.replaySession(ctx, key, hash, command.Actor); replayErr != nil || found {
+			return replayed, replayErr
+		}
+		return domain.Session{}, err
+	}
+	return session, nil
+}
+
 // UpdateModOptions atomically persists a stale-bound desired Creator DLC set.
 func (service *Service) UpdateModOptions(ctx context.Context, command UpdateModOptionsCommand) (domain.Session, error) {
 	if err := command.Actor.Validate(); err != nil {
@@ -930,6 +1022,9 @@ func (service *Service) RequestArtifactIngest(ctx context.Context, actor domain.
 		if err := session.ValidatePresetRevisionStaging(request.ExpectedActivePresetRevision); err != nil {
 			return err
 		}
+	} else if request.Kind == domain.ArtifactMission && session.ActiveWorkflowID == "" && session.LifecycleState != domain.StateDeleting && session.LifecycleState != domain.StateDeleted && session.LifecycleState != domain.StateArchiving && session.LifecycleState != domain.StateDestroying {
+		// Mission files are immutable additions. The configured selection changes
+		// for the next lifecycle start only; a running server is not mutated.
 	} else if session.LifecycleState != domain.StateDraft {
 		return fmt.Errorf("attachments are only accepted while a session is DRAFT: %w", domain.ErrInvalidTransition)
 	}
