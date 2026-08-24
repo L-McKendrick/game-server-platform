@@ -193,6 +193,28 @@ func TestStart_AllowsOnlyDueBoundAutomaticSleep(t *testing.T) {
 	}
 }
 
+func TestStart_AllowsOnlyDueBoundAutomaticArchive(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	repository, command := seedAutomaticArchive(t, now)
+	starter := &workflowStarter{arn: "arn:aws:states:us-west-2:123456789012:execution:ArchiveSession:" + command.CommandID}
+	service, err := NewService(repository, repository, starter, rejectAuthorizer{}, &workflowIDs{ids: []string{"automatic-archive-started"}}, workflowClock{now}, 8*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := service.Start(context.Background(), command)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if workflow.Type != domain.ArchiveWorkflowType || workflow.RequestedBy != domain.InactivityMonitorActorID || starter.calls != 1 {
+		t.Fatalf("workflow = %#v calls=%d", workflow, starter.calls)
+	}
+	stored, _ := repository.Get(context.Background(), command.SessionID)
+	if stored.LifecycleState != domain.StateArchiving || stored.ArchiveSourceState != domain.StateSleeping {
+		t.Fatalf("archive state = %#v", stored)
+	}
+}
+
 func TestStart_ResumesTrustedBootstrapContinuationWithoutDiscordRoleReplay(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
@@ -395,6 +417,25 @@ func seedAutomaticSleep(t *testing.T, now time.Time, due bool) (*memory.SessionR
 	}
 	commandID := domain.AutomaticSleepCommandID(session.ID, idleSince)
 	return repository, domain.CommandEnvelope{SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandSleepSession, RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true}, SessionID: session.ID, IdempotencyKey: "automatic-sleep:" + commandID, CorrelationID: commandID, Parameters: map[string]string{domain.AutomaticIdleSinceParameter: idleSince.Format(time.RFC3339Nano)}}
+}
+
+func seedAutomaticArchive(t *testing.T, now time.Time) (*memory.SessionRepository, domain.CommandEnvelope) {
+	t.Helper()
+	repository := memory.NewSessionRepository()
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "archive-session", Slug: "archive-session", DisplayName: "Archive Session", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now.Add(-100*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateSleeping, domain.StateSleeping, domain.StateSleeping, domain.HealthStopped
+	session.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "instance-profile", AMIID: "ami-1", InstanceType: "c7i-flex.large", InstanceID: "i-1", DataVolumeID: "vol-1", LastObservedAt: now.Add(-72 * time.Hour)}
+	session.SleepingSince = now.Add(-72 * time.Hour)
+	event := domain.NewSessionCreatedEvent("archive-created", "archive-created", domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}, session, now.Add(-100*time.Hour))
+	idempotency, _ := domain.NewCompletedIdempotencyRecord("archive-create", "archive-hash", session.ID, now.Add(-100*time.Hour), time.Hour)
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatal(err)
+	}
+	commandID := domain.AutomaticArchiveCommandID(session.ID, session.SleepingSince)
+	return repository, domain.CommandEnvelope{SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandArchiveSession, RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true}, SessionID: session.ID, IdempotencyKey: "automatic-archive:" + commandID, CorrelationID: commandID, Parameters: map[string]string{domain.AutomaticSleepingSinceParameter: session.SleepingSince.Format(time.RFC3339Nano)}}
 }
 
 func seedRunningWorkflowRepository(t *testing.T, now time.Time) *memory.SessionRepository {

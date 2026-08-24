@@ -16,21 +16,23 @@ func TestSessionItemRoundTripPreservesInactivityEvidenceAndLegacyDefaults(t *tes
 	if err := session.RecordPlayerActivity(domain.PlayerActivityObservation{Known: true, PlayerCount: 0, ObservedAt: now.Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateSleeping, domain.StateSleeping, domain.StateSleeping, domain.HealthStopped
+	session.SleepingSince = now.Add(2 * time.Minute)
 	roundTrip, err := fromSessionItem(toSessionItem(session))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !roundTrip.PlayerCountKnown || roundTrip.PlayerCount != 0 || !roundTrip.PlayerCountObservedAt.Equal(now.Add(time.Minute)) || !roundTrip.IdleSince.Equal(now.Add(time.Minute)) {
+	if !roundTrip.PlayerCountKnown || roundTrip.PlayerCount != 0 || !roundTrip.PlayerCountObservedAt.Equal(now.Add(time.Minute)) || !roundTrip.IdleSince.Equal(now.Add(time.Minute)) || !roundTrip.SleepingSince.Equal(now.Add(2*time.Minute)) {
 		t.Fatalf("round-trip evidence = %#v", roundTrip)
 	}
 
 	legacy := toSessionItem(session)
-	legacy.PlayerCountKnown, legacy.PlayerCount, legacy.PlayerCountObservedAt, legacy.IdleSince = false, 0, "", ""
+	legacy.PlayerCountKnown, legacy.PlayerCount, legacy.PlayerCountObservedAt, legacy.IdleSince, legacy.SleepingSince = false, 0, "", "", ""
 	roundTrip, err = fromSessionItem(legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if roundTrip.PlayerCountKnown || !roundTrip.PlayerCountObservedAt.IsZero() || !roundTrip.IdleSince.IsZero() {
+	if roundTrip.PlayerCountKnown || !roundTrip.PlayerCountObservedAt.IsZero() || !roundTrip.IdleSince.IsZero() || !roundTrip.SleepingSince.IsZero() {
 		t.Fatalf("legacy evidence = %#v", roundTrip)
 	}
 }

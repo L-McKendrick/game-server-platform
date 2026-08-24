@@ -18,6 +18,30 @@ type testRunner struct{ status ports.ArchiveCommandStatus }
 
 type testDestroyer struct{}
 
+type testCompute struct {
+	started int
+	state   string
+	managed bool
+}
+
+func (compute *testCompute) FindInstance(context.Context, domain.ComputeLaunchRequest) (domain.ComputeObservation, bool, error) {
+	return domain.ComputeObservation{}, false, nil
+}
+func (compute *testCompute) EnsureInstance(context.Context, domain.ComputeLaunchRequest, string) (domain.ComputeObservation, error) {
+	return domain.ComputeObservation{}, nil
+}
+func (compute *testCompute) ObserveInstance(context.Context, string) (domain.ComputeObservation, error) {
+	return domain.ComputeObservation{State: compute.state}, nil
+}
+func (compute *testCompute) IsManaged(context.Context, string) (bool, error) {
+	return compute.managed, nil
+}
+func (compute *testCompute) StopInstance(context.Context, string) error { return nil }
+func (compute *testCompute) StartInstance(context.Context, string) error {
+	compute.started++
+	return nil
+}
+
 func (testDestroyer) TerminateInstance(context.Context, string, string) error { return nil }
 func (testDestroyer) InstanceTerminated(context.Context, string, string) (bool, error) {
 	return true, nil
@@ -134,6 +158,42 @@ func TestService_VerifiesManifestBeforeCompletingDestruction(t *testing.T) {
 	}
 	if stored.LifecycleState != domain.StateArchived || stored.Archive.ID != workflow.ID || !stored.Infrastructure.Empty() {
 		t.Fatalf("stored session = %#v", stored)
+	}
+}
+
+func TestService_PreparesSleepingHostBeforeArchiveDispatch(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	session := archiveServiceSession(t, now.Add(-100*time.Hour))
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateSleeping, domain.StateSleeping, domain.StateSleeping, domain.HealthStopped
+	session.SleepingSince = now.Add(-72 * time.Hour)
+	createEvent := domain.NewSessionCreatedEvent("sleeping-create", "sleeping-create", domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}, session, now.Add(-100*time.Hour))
+	idempotency, _ := domain.NewCompletedIdempotencyRecord("sleeping-create", "sleeping-hash", session.ID, now.Add(-100*time.Hour), time.Hour)
+	if err := repository.Create(ctx, session, createEvent, idempotency); err != nil {
+		t.Fatal(err)
+	}
+	expected := session.Version
+	if err := session.BeginArchive("archive-sleeping", time.Hour, now); err != nil {
+		t.Fatal(err)
+	}
+	workflow := domain.Workflow{ID: "archive-sleeping", SessionID: session.ID, Type: domain.ArchiveWorkflowType, Status: domain.WorkflowRunning, RequestedBy: domain.InactivityMonitorActorID, CorrelationID: "archive-sleeping", ExpectedVersion: expected, StartedAt: now, LeaseExpiresAt: now.Add(time.Hour)}
+	startEvent := domain.NewWorkflowEvent("archive-sleeping-start", domain.EventArchiveStarted, workflow.CorrelationID, domain.Actor{Type: domain.ActorTypeSystem, ID: domain.InactivityMonitorActorID}, session, workflow, now)
+	if err := repository.AcquireWorkflow(ctx, session, expected, workflow, startEvent); err != nil {
+		t.Fatal(err)
+	}
+	compute := &testCompute{state: "running", managed: true}
+	service, err := NewService(repository, repository, repository, &testRunner{}, &testStore{}, testDestroyer{}, nil, testIDs{value: "unused"}, testClock{now}, WithComputeProvisioner(compute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := service.Handle(ctx, TaskRequest{Action: ActionPrepareHost, SessionID: session.ID, WorkflowID: workflow.ID})
+	if err != nil || prepared.Ready || compute.started != 1 {
+		t.Fatalf("prepare=%#v started=%d err=%v", prepared, compute.started, err)
+	}
+	observed, err := service.Handle(ctx, TaskRequest{Action: ActionObserveHost, SessionID: session.ID, WorkflowID: workflow.ID})
+	if err != nil || !observed.Ready {
+		t.Fatalf("observe=%#v err=%v", observed, err)
 	}
 }
 

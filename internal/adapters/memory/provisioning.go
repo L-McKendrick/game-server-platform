@@ -13,7 +13,7 @@ var _ ports.ProvisioningRepository = (*SessionRepository)(nil)
 var _ ports.BootstrapRepository = (*SessionRepository)(nil)
 var _ ports.MonitoringRepository = (*SessionRepository)(nil)
 
-func (repository *SessionRepository) ListRunning(ctx context.Context, limit int32) ([]domain.Session, error) {
+func (repository *SessionRepository) ListInactivityCandidates(ctx context.Context, limit int32) ([]domain.Session, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -21,7 +21,7 @@ func (repository *SessionRepository) ListRunning(ctx context.Context, limit int3
 	defer repository.mu.RUnlock()
 	result := []domain.Session{}
 	for _, session := range repository.sessions {
-		if session.LifecycleState == domain.StateRunning {
+		if session.LifecycleState == domain.StateRunning || session.LifecycleState == domain.StateSleeping {
 			result = append(result, session)
 			if int32(len(result)) >= limit {
 				break

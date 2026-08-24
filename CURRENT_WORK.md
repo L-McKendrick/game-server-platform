@@ -2,7 +2,7 @@
 
 ## State and Objective
 
-Phases 1-10, 12, and 13 are complete. Phase 14 steps 14.1 and 14.2 are complete on
+Phases 1-10, 12, and 13 are complete. Phase 14 steps 14.1-14.3 are complete on
 `codex/phase-14-inactivity-lifecycle`. No deployment, Terraform apply, or
 Discord registration was performed.
 
@@ -23,6 +23,14 @@ Discord registration was performed.
 - The monitor role has least-privilege send access to the existing command FIFO
   queue; queue failures surface for scheduled retry, and FIFO deduplication plus
   deterministic command IDs make replay safe.
+- Successful sleep completion persists an explicit sleeping-since timestamp.
+  The scheduled inactivity scan queues a deterministic automatic archive after
+  72 continuous sleeping hours and the command worker revalidates the exact
+  bound sleeping window, lifecycle state, and workflow lock.
+- The guarded archive workflow can start a sleeping tagged instance, wait up to
+  ten minutes for EC2 and Systems Manager readiness, and then reuse the existing
+  checksum verification and tag-guarded destruction stages. Running-session
+  archive behavior passes through without a host start.
 
 - Arma 3 creation accepts an optional mission upload and otherwise uses BI's
   `MP_ZGM_m12.Stratis` without creating a placeholder artifact.
@@ -74,8 +82,8 @@ Discord registration was performed.
 
 ## Next Development Task
 
-- Break Phase 14.3 into numbered tasks and implement idempotent archive after 72
-  continuous hours in the sleeping state.
+- Stop before Phase 14.4 as requested. Phase 14.4 remains pending for broader
+  end-to-end regression coverage and feature documentation.
 - Remaining product delivery is ordered as Phase 14 inactivity automation,
   Phase 15 maximum-duration cost guardrails, Phase 16 production hardening and
   measured optimization, then Phase 17 potential enhancements.
@@ -91,13 +99,14 @@ $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out phase-14-2-automatic-sleep.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-14-2-automatic-sleep.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out phase-14-3-automatic-archive.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-14-3-automatic-archive.tfplan
 # Apply only after reviewing and approving this exact saved plan.
-terraform -chdir=infra/terraform/environments/dev apply phase-14-2-automatic-sleep.tfplan
+terraform -chdir=infra/terraform/environments/dev apply phase-14-3-automatic-archive.tfplan
 ```
 
-The package command rebuilds the changed monitor and command-worker archives
-along with the other Lambda archives. The fresh plan should deploy both worker
-changes, the monitor command-queue environment variable, and its scoped
-`sqs:SendMessage` permission. No Discord command registration is required.
+The package command rebuilds the changed monitor, command, sleep/wake, and
+archive worker archives along with the other Lambda archives. The fresh plan
+should deploy those worker changes, the monitor queue configuration and scoped
+permission, the sleeping-host archive preparation states, and the archive
+worker's scoped EC2/SSM permissions. No Discord registration is required.

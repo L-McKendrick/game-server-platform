@@ -18,6 +18,8 @@ import (
 
 const (
 	ActionDispatch           = "dispatch"
+	ActionPrepareHost        = "prepare_host"
+	ActionObserveHost        = "observe_host"
 	ActionObserve            = "observe"
 	ActionVerify             = "verify"
 	ActionRecordVerified     = "record_verified"
@@ -57,6 +59,7 @@ type TaskResult struct {
 	CommandID         string `json:"command_id,omitempty"`
 	Done              bool   `json:"done"`
 	Succeeded         bool   `json:"succeeded"`
+	Ready             bool   `json:"ready"`
 	ObjectKey         string `json:"object_key,omitempty"`
 	SHA256            string `json:"sha256,omitempty"`
 	SizeBytes         int64  `json:"size_bytes,omitempty"`
@@ -79,13 +82,26 @@ type Service struct {
 	notifications ports.NotificationQueue
 	ids           IDGenerator
 	clock         Clock
+	compute       ports.ComputeProvisioner
 }
 
-func NewService(sessions ports.SessionRepository, workflows ports.WorkflowRepository, stages ports.ProvisioningRepository, runner ports.ArchiveRunner, store ports.ArchiveStore, destroyer ports.InfrastructureDestroyer, notifications ports.NotificationQueue, ids IDGenerator, clock Clock) (*Service, error) {
+type Option func(*Service)
+
+func WithComputeProvisioner(compute ports.ComputeProvisioner) Option {
+	return func(service *Service) { service.compute = compute }
+}
+
+func NewService(sessions ports.SessionRepository, workflows ports.WorkflowRepository, stages ports.ProvisioningRepository, runner ports.ArchiveRunner, store ports.ArchiveStore, destroyer ports.InfrastructureDestroyer, notifications ports.NotificationQueue, ids IDGenerator, clock Clock, options ...Option) (*Service, error) {
 	if sessions == nil || workflows == nil || stages == nil || runner == nil || store == nil || destroyer == nil || ids == nil || clock == nil {
 		return nil, fmt.Errorf("archive service dependencies are required")
 	}
-	return &Service{sessions: sessions, workflows: workflows, stages: stages, runner: runner, store: store, destroyer: destroyer, notifications: notifications, ids: ids, clock: clock}, nil
+	service := &Service{sessions: sessions, workflows: workflows, stages: stages, runner: runner, store: store, destroyer: destroyer, notifications: notifications, ids: ids, clock: clock}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service, nil
 }
 
 func (service *Service) Handle(ctx context.Context, request TaskRequest) (TaskResult, error) {
@@ -99,6 +115,10 @@ func (service *Service) Handle(ctx context.Context, request TaskRequest) (TaskRe
 		}
 	}
 	switch request.Action {
+	case ActionPrepareHost:
+		return service.prepareHost(ctx, session, workflow)
+	case ActionObserveHost:
+		return service.observeHost(ctx, session, workflow)
 	case ActionDispatch:
 		commandID, err := service.runner.Start(ctx, session, workflow.ID)
 		if err != nil {
@@ -128,6 +148,41 @@ func (service *Service) Handle(ctx context.Context, request TaskRequest) (TaskRe
 	default:
 		return TaskResult{}, fmt.Errorf("unsupported archive action %q", request.Action)
 	}
+}
+
+func (service *Service) prepareHost(ctx context.Context, session domain.Session, workflow domain.Workflow) (TaskResult, error) {
+	result := taskResult(session, workflow)
+	if session.ArchiveSourceState != domain.StateSleeping {
+		result.Ready = true
+		return result, nil
+	}
+	if service.compute == nil {
+		return TaskResult{}, fmt.Errorf("compute provisioner is required to archive a sleeping session")
+	}
+	if err := service.compute.StartInstance(ctx, session.Infrastructure.InstanceID); err != nil {
+		return TaskResult{}, err
+	}
+	return result, nil
+}
+
+func (service *Service) observeHost(ctx context.Context, session domain.Session, workflow domain.Workflow) (TaskResult, error) {
+	result := taskResult(session, workflow)
+	if session.ArchiveSourceState != domain.StateSleeping {
+		result.Ready = true
+		return result, nil
+	}
+	if service.compute == nil {
+		return TaskResult{}, fmt.Errorf("compute provisioner is required to archive a sleeping session")
+	}
+	observation, err := service.compute.ObserveInstance(ctx, session.Infrastructure.InstanceID)
+	if err != nil {
+		return TaskResult{}, err
+	}
+	if observation.State != "running" {
+		return result, nil
+	}
+	result.Ready, err = service.compute.IsManaged(ctx, session.Infrastructure.InstanceID)
+	return result, err
 }
 
 func (service *Service) observe(ctx context.Context, session domain.Session, workflow domain.Workflow, commandID string) (TaskResult, error) {

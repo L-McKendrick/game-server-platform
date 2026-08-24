@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ec2compute"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ec2destroy"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3archive"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
@@ -53,7 +54,9 @@ func build(ctx context.Context) (*handler, error) {
 		return nil, err
 	}
 	repository := dynamodbstore.New(dynamodb.NewFromConfig(awsCfg), cfg.MetadataTable)
-	runner, err := ssmarchive.New(ssm.NewFromConfig(awsCfg), cfg.SessionAssetsBucket, cfg.AWSRegion, 14400)
+	ssmClient := ssm.NewFromConfig(awsCfg)
+	ec2Client := ec2.NewFromConfig(awsCfg)
+	runner, err := ssmarchive.New(ssmClient, cfg.SessionAssetsBucket, cfg.AWSRegion, 14400)
 	if err != nil {
 		return nil, err
 	}
@@ -61,11 +64,11 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	destroyer, err := ec2destroy.New(ec2.NewFromConfig(awsCfg), env("PROJECT_NAME", "game-server-platform"), cfg.Environment)
+	destroyer, err := ec2destroy.New(ec2Client, env("PROJECT_NAME", "game-server-platform"), cfg.Environment)
 	if err != nil {
 		return nil, err
 	}
-	service, err := archive.NewService(repository, repository, repository, runner, store, destroyer, sqsnotification.New(sqs.NewFromConfig(awsCfg), cfg.NotificationQueueURL), identity.Generator{}, appsession.SystemClock{})
+	service, err := archive.NewService(repository, repository, repository, runner, store, destroyer, sqsnotification.New(sqs.NewFromConfig(awsCfg), cfg.NotificationQueueURL), identity.Generator{}, appsession.SystemClock{}, archive.WithComputeProvisioner(ec2compute.New(ec2Client, ssmClient)))
 	if err != nil {
 		return nil, err
 	}

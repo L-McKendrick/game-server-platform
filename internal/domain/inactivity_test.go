@@ -79,3 +79,24 @@ func TestAutomaticSleepDueRequiresFreshContinuousEvidence(t *testing.T) {
 		t.Fatal("non-empty session was due")
 	}
 }
+
+func TestAutomaticArchiveDueRequiresContinuousSleepingState(t *testing.T) {
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	session, _ := NewSession(NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner", GuildID: "guild", ChannelID: "channel"}, now.Add(-100*time.Hour))
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateSleeping, StateSleeping, StateSleeping, HealthStopped
+	session.Infrastructure = Infrastructure{CapacitySlotID: "slot-1", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c7i.large", InstanceID: "i-1", DataVolumeID: "vol-1", LastObservedAt: now.Add(-72 * time.Hour)}
+	session.SleepingSince = now.Add(-72 * time.Hour)
+	if !session.AutomaticArchiveDue(now) {
+		t.Fatal("72-hour sleeping session was not due")
+	}
+	session.SleepingSince = now.Add(-72*time.Hour + time.Second)
+	if session.AutomaticArchiveDue(now) {
+		t.Fatal("session below 72 hours was due")
+	}
+	session.SleepingSince = now.Add(-72 * time.Hour)
+	session.ActiveWorkflowID, session.ActiveWorkflowType = "workflow", SleepWorkflowType
+	session.ActiveWorkflowStartedAt, session.ActiveWorkflowLeaseExpiresAt = now.Add(-time.Minute), now.Add(time.Hour)
+	if session.AutomaticArchiveDue(now) {
+		t.Fatal("workflow-locked session was due")
+	}
+}

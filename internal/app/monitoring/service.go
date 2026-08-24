@@ -45,18 +45,38 @@ func NewService(repo ports.MonitoringRepository, runner ports.MonitoringRunner, 
 	return service, nil
 }
 func (service *Service) Run(ctx context.Context) (int, error) {
-	sessions, err := service.repo.ListRunning(ctx, 25)
+	sessions, err := service.repo.ListInactivityCandidates(ctx, 25)
 	if err != nil {
 		return 0, err
 	}
 	completed := 0
 	for _, session := range sessions {
-		if err := service.monitor(ctx, session); err != nil {
-			return completed, err
+		var runErr error
+		if session.LifecycleState == domain.StateSleeping {
+			runErr = service.archiveIfDue(ctx, session)
+		} else {
+			runErr = service.monitor(ctx, session)
+		}
+		if runErr != nil {
+			return completed, runErr
 		}
 		completed++
 	}
 	return completed, nil
+}
+
+func (service *Service) archiveIfDue(ctx context.Context, session domain.Session) error {
+	if service.commands == nil || !session.AutomaticArchiveDue(service.clock.Now().UTC()) {
+		return nil
+	}
+	now := service.clock.Now().UTC()
+	commandID := domain.AutomaticArchiveCommandID(session.ID, session.SleepingSince)
+	return service.commands.Enqueue(ctx, domain.CommandEnvelope{
+		SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandArchiveSession, RequestedAt: now,
+		Actor:     domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true},
+		SessionID: session.ID, IdempotencyKey: "automatic-archive:" + commandID, CorrelationID: commandID,
+		Parameters: map[string]string{domain.AutomaticSleepingSinceParameter: session.SleepingSince.UTC().Format(time.RFC3339Nano)},
+	})
 }
 func (service *Service) monitor(ctx context.Context, session domain.Session) error {
 	expected := session.Version

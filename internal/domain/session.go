@@ -73,6 +73,7 @@ type Session struct {
 	PlayerCount           int
 	PlayerCountObservedAt time.Time
 	IdleSince             time.Time
+	SleepingSince         time.Time
 
 	Version   int64
 	CreatedAt time.Time
@@ -491,6 +492,8 @@ func (session Session) Validate() error {
 		return fmt.Errorf("idle timestamp requires a known zero-player observation")
 	case !session.IdleSince.IsZero() && session.PlayerCountObservedAt.Before(session.IdleSince):
 		return fmt.Errorf("idle timestamp cannot follow the player observation")
+	case !session.SleepingSince.IsZero() && session.LifecycleState != StateSleeping && !(session.LifecycleState == StateArchiving && session.ArchiveSourceState == StateSleeping) && !(session.LifecycleState == StateWaking && session.ActiveWorkflowType == WakeWorkflowType):
+		return fmt.Errorf("sleeping timestamp requires a sleeping lifecycle")
 	case session.Version < 1:
 		return fmt.Errorf("session version must be at least 1")
 	case session.CreatedAt.IsZero():

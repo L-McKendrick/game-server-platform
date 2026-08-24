@@ -49,7 +49,32 @@ locals {
     TimeoutSeconds = 18000
     StartAt        = "InitializeAttempts"
     States = {
-      InitializeAttempts = { Type = "Pass", Result = { termination = 0, volume = 0 }, ResultPath = "$.attempts", Next = "Dispatch" }
+      InitializeAttempts = { Type = "Pass", Result = { host = 0, termination = 0, volume = 0 }, ResultPath = "$.attempts", Next = "PrepareHost" }
+      PrepareHost = {
+        Type           = "Task"
+        Resource       = "arn:aws:states:::lambda:invoke"
+        Parameters     = { FunctionName = aws_lambda_function.archive_worker.function_name, Payload = { action = "prepare_host", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
+        ResultSelector = { "result.$" = "$.Payload" }
+        ResultPath     = "$.host"
+        Retry          = [local.lambda_transient_retry]
+        Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }]
+        Next           = "HostPrepared"
+      }
+      HostPrepared = { Type = "Choice", Choices = [{ Variable = "$.host.result.ready", BooleanEquals = true, Next = "Dispatch" }], Default = "WaitForHost" }
+      WaitForHost  = { Type = "Wait", Seconds = 15, Next = "ObserveHost" }
+      ObserveHost = {
+        Type           = "Task"
+        Resource       = "arn:aws:states:::lambda:invoke"
+        Parameters     = { FunctionName = aws_lambda_function.archive_worker.function_name, Payload = { action = "observe_host", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
+        ResultSelector = { "result.$" = "$.Payload" }
+        ResultPath     = "$.host"
+        Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }]
+        Next           = "HostReady"
+      }
+      HostReady             = { Type = "Choice", Choices = [{ Variable = "$.host.result.ready", BooleanEquals = true, Next = "Dispatch" }], Default = "IncrementHost" }
+      IncrementHost         = { Type = "Pass", Parameters = { "host.$" = "States.MathAdd($.attempts.host, 1)", "termination.$" = "$.attempts.termination", "volume.$" = "$.attempts.volume" }, ResultPath = "$.attempts", Next = "HostAttemptsAvailable" }
+      HostAttemptsAvailable = { Type = "Choice", Choices = [{ Variable = "$.attempts.host", NumericGreaterThanEquals = 40, Next = "HostTimeout" }], Default = "WaitForHost" }
+      HostTimeout           = { Type = "Pass", Result = { Error = "ERR_ARCHIVE_HOST_TIMEOUT", Cause = "Sleeping archive host did not become managed within the bounded wait." }, ResultPath = "$.failure", Next = "Fail" }
       Dispatch = {
         Type           = "Task"
         Resource       = "arn:aws:states:::lambda:invoke"
@@ -351,6 +376,26 @@ data "aws_iam_policy_document" "archive_worker" {
   statement {
     sid       = "ObserveArchiveInfrastructure"
     actions   = ["ec2:DescribeInstances", "ec2:DescribeVolumes"]
+    resources = ["*"]
+  }
+  statement {
+    sid       = "StartSleepingArchiveInstance"
+    actions   = ["ec2:StartInstances"]
+    resources = ["arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:ResourceTag/Project"
+      values   = [var.project_name]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:ResourceTag/Environment"
+      values   = [var.environment]
+    }
+  }
+  statement {
+    sid       = "ObserveSleepingArchiveManagedNode"
+    actions   = ["ssm:DescribeInstanceInformation"]
     resources = ["*"]
   }
   statement {

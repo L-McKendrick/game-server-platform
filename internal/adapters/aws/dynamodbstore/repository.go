@@ -206,6 +206,7 @@ type sessionItem struct {
 	PlayerCount           int    `dynamodbav:"player_count,omitempty"`
 	PlayerCountObservedAt string `dynamodbav:"player_count_observed_at,omitempty"`
 	IdleSince             string `dynamodbav:"idle_since,omitempty"`
+	SleepingSince         string `dynamodbav:"sleeping_since,omitempty"`
 
 	Version   int64  `dynamodbav:"version"`
 	CreatedAt string `dynamodbav:"created_at"`
@@ -1152,6 +1153,7 @@ func toSessionItem(session domain.Session) sessionItem {
 		PlayerCount:           session.PlayerCount,
 		PlayerCountObservedAt: optionalTimestamp(session.PlayerCountObservedAt),
 		IdleSince:             optionalTimestamp(session.IdleSince),
+		SleepingSince:         optionalTimestamp(session.SleepingSince),
 
 		Version:   session.Version,
 		CreatedAt: session.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -1215,6 +1217,10 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	idleSince, err := parseOptionalTimestamp(item.IdleSince)
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("parse idle_since: %w", err)
+	}
+	sleepingSince, err := parseOptionalTimestamp(item.SleepingSince)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse sleeping_since: %w", err)
 	}
 	progressLastProgressAt, err := parseOptionalTimestamp(item.ProgressLastProgressAt)
 	if err != nil {
@@ -1383,6 +1389,7 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		MonitoringCommandID: item.MonitoringCommandID, MonitoringStartedAt: monitoringStartedAt,
 		PlayerCountKnown: item.PlayerCountKnown, PlayerCount: item.PlayerCount,
 		PlayerCountObservedAt: playerCountObservedAt, IdleSince: idleSince,
+		SleepingSince: sleepingSince,
 
 		Version:   item.Version,
 		CreatedAt: createdAt.UTC(),

@@ -217,7 +217,11 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **14.2.2** [x] Route eligible monitor results through the existing command and sleep-workflow safeguards using explicit system authority and least-privilege queue access.
       - **14.2.3** [x] Revalidate persisted inactivity, lifecycle state, and workflow-lock state at command consumption so player return or concurrent mutation fails closed.
       - **14.2.4** [x] Add focused due/not-due, replay, player-return, unknown-observation, state-drift, lock, and queue-failure tests and proportional Terraform validation.
-    - **14.3** [ ] Add a scheduled, idempotent 72-hour sleeping-state check that requests the existing verified archive workflow without weakening its resource-ownership, backup-integrity, or failure safeguards.
+    - **14.3** [x] Add a scheduled, idempotent 72-hour sleeping-state check that requests the existing verified archive workflow without weakening its resource-ownership, backup-integrity, or failure safeguards.
+      - **14.3.1** [x] Persist an explicit sleeping-since timestamp across sleep completion and clear it on exit from the sleeping lifecycle, with backward-compatible repository handling.
+      - **14.3.2** [x] Define fixed 72-hour automatic-archive eligibility, deterministic request identity, and system-authority revalidation at command consumption.
+      - **14.3.3** [x] Extend scheduled inactivity scanning and the archive workflow to safely prepare a sleeping managed instance for the existing SSM backup and verified destruction stages.
+      - **14.3.4** [x] Add focused due/not-due, replay, state-drift, workflow-lock, wake-for-archive, integrity-guard, queue-failure, and Terraform validation coverage.
     - **14.4** [ ] Add focused timing, state-drift, replay, concurrency, unknown-activity, workflow-failure, persistence, notification/card, Terraform, and end-to-end regression coverage; document the fixed policy and the deferred expansion points.
 
 15. **Maximum Session Duration Guardrails — Pending**

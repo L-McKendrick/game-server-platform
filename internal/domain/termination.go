@@ -28,6 +28,7 @@ func (session *Session) BeginTermination(workflowID string, lease time.Duration,
 	session.ArchiveSourceState = ""
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateDeleted, StateDeleting, StateDeleting
 	session.HealthStatus = HealthUnknown
+	session.SleepingSince = time.Time{}
 	return session.Validate()
 }
 

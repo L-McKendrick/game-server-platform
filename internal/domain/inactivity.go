@@ -9,10 +9,12 @@ import (
 )
 
 const (
-	AutomaticSleepAfter         = 30 * time.Minute
-	MaximumActivityEvidenceAge  = 10 * time.Minute
-	InactivityMonitorActorID    = "inactivity-monitor"
-	AutomaticIdleSinceParameter = "automatic_idle_since"
+	AutomaticSleepAfter             = 30 * time.Minute
+	AutomaticArchiveAfter           = 72 * time.Hour
+	MaximumActivityEvidenceAge      = 10 * time.Minute
+	InactivityMonitorActorID        = "inactivity-monitor"
+	AutomaticIdleSinceParameter     = "automatic_idle_since"
+	AutomaticSleepingSinceParameter = "automatic_sleeping_since"
 )
 
 // PlayerActivityObservation is a bounded point-in-time player count. Known is
@@ -22,6 +24,33 @@ type PlayerActivityObservation struct {
 	Known       bool
 	PlayerCount int
 	ObservedAt  time.Time
+}
+
+func (session Session) AutomaticArchiveDue(now time.Time) bool {
+	now = now.UTC()
+	return session.LifecycleState == StateSleeping && session.ActiveWorkflowID == "" &&
+		session.Infrastructure.InstanceID != "" && session.Infrastructure.DataVolumeID != "" &&
+		!session.SleepingSince.IsZero() && !session.SleepingSince.After(now) && now.Sub(session.SleepingSince) >= AutomaticArchiveAfter
+}
+
+func AutomaticArchiveCommandID(sessionID string, sleepingSince time.Time) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + sleepingSince.UTC().Format(time.RFC3339Nano)))
+	return "auto-archive-" + hex.EncodeToString(sum[:])[:22]
+}
+
+func ValidateAutomaticArchiveCommand(command CommandEnvelope, session Session, now time.Time) error {
+	if !command.Actor.System || command.Actor.DiscordUserID != InactivityMonitorActorID || command.CommandType != CommandArchiveSession {
+		return ErrForbidden
+	}
+	sleepingSince, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(command.Parameters[AutomaticSleepingSinceParameter]))
+	if err != nil || !sleepingSince.Equal(session.SleepingSince) || command.CommandID != AutomaticArchiveCommandID(session.ID, sleepingSince) ||
+		command.IdempotencyKey != "automatic-archive:"+command.CommandID || command.CorrelationID != command.CommandID {
+		return ErrIdempotencyConflict
+	}
+	if !session.AutomaticArchiveDue(now) {
+		return fmt.Errorf("automatic archive is no longer due: %w", ErrInvalidTransition)
+	}
+	return nil
 }
 
 func (session Session) AutomaticSleepDue(now time.Time) bool {

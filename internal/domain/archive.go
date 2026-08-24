@@ -73,8 +73,9 @@ func validSHA256(value string) bool {
 
 func (session Session) CanArchive() bool {
 	return session.ActiveWorkflowID == "" && session.Infrastructure.InstanceID != "" &&
-		session.Infrastructure.DataVolumeID != "" && session.HealthStatus == HealthHealthy &&
-		(session.LifecycleState == StateRunning || session.LifecycleState == StateIdle)
+		session.Infrastructure.DataVolumeID != "" &&
+		((session.HealthStatus == HealthHealthy && (session.LifecycleState == StateRunning || session.LifecycleState == StateIdle)) ||
+			(session.HealthStatus == HealthStopped && session.LifecycleState == StateSleeping))
 }
 
 func (session *Session) BeginArchive(workflowID string, lease time.Duration, now time.Time) error {
@@ -104,7 +105,7 @@ func (session *Session) RecordVerifiedArchive(workflowID string, archive Archive
 	if err := archive.Validate(); err != nil {
 		return err
 	}
-	if session.ArchiveSourceState != StateRunning && session.ArchiveSourceState != StateIdle {
+	if session.ArchiveSourceState != StateRunning && session.ArchiveSourceState != StateIdle && session.ArchiveSourceState != StateSleeping {
 		return fmt.Errorf("%w: archive source state is invalid", ErrConflict)
 	}
 	session.Archive = archive
@@ -114,6 +115,7 @@ func (session *Session) RecordVerifiedArchive(workflowID string, archive Archive
 	session.ArchiveSourceState = ""
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateArchived, StateDestroying, StateDestroying
 	session.HealthStatus = HealthStopped
+	session.SleepingSince = time.Time{}
 	session.Version++
 	session.UpdatedAt = now.UTC()
 	return session.Validate()
@@ -132,6 +134,7 @@ func (session *Session) CompleteArchive(workflowID string, now time.Time) error 
 	session.Infrastructure = Infrastructure{}
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateArchived, StateArchived, StateArchived
 	session.HealthStatus = HealthStopped
+	session.SleepingSince = time.Time{}
 	session.clearWorkflowLock()
 	session.Version++
 	session.UpdatedAt = now.UTC()
@@ -142,7 +145,7 @@ func (session *Session) AbortArchiveWorkflowStart(workflowID string, now time.Ti
 	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) || session.ActiveWorkflowType != ArchiveWorkflowType {
 		return ErrConflict
 	}
-	if session.ArchiveSourceState != StateRunning && session.ArchiveSourceState != StateIdle {
+	if session.ArchiveSourceState != StateRunning && session.ArchiveSourceState != StateIdle && session.ArchiveSourceState != StateSleeping {
 		return fmt.Errorf("%w: archive source state is invalid", ErrConflict)
 	}
 	if err := session.setProgressWithoutVersion(workflowID, ProgressFailed, now); err != nil {
@@ -152,6 +155,9 @@ func (session *Session) AbortArchiveWorkflowStart(workflowID string, now time.Ti
 	session.ArchiveSourceState = ""
 	session.DesiredState, session.ObservedState, session.LifecycleState = sourceState, sourceState, sourceState
 	session.HealthStatus = HealthHealthy
+	if sourceState == StateSleeping {
+		session.HealthStatus = HealthStopped
+	}
 	session.clearWorkflowLock()
 	session.Version++
 	session.UpdatedAt = now.UTC()
@@ -168,6 +174,7 @@ func (session *Session) FailArchive(workflowID string, now time.Time) error {
 	session.ArchiveSourceState = ""
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateFailed, StateFailed, StateFailed
 	session.HealthStatus = HealthUnhealthy
+	session.SleepingSince = time.Time{}
 	session.clearWorkflowLock()
 	session.Version++
 	session.UpdatedAt = now.UTC()

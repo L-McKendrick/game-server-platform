@@ -66,7 +66,7 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 	if err != nil {
 		return domain.Workflow{}, err
 	}
-	trustedAutomation := command.Actor.System && command.Actor.DiscordUserID == domain.InactivityMonitorActorID && workflowType == domain.SleepWorkflowType
+	trustedAutomation := command.Actor.System && command.Actor.DiscordUserID == domain.InactivityMonitorActorID && (workflowType == domain.SleepWorkflowType || workflowType == domain.ArchiveWorkflowType)
 	canManageLifecycle := command.Actor.CanManageGuild && isOwnerOrAdminLifecycle(workflowType)
 	if !trustedContinuation && !trustedAutomation && !canManageLifecycle {
 		if err := service.authorizer.Authorize(
@@ -99,8 +99,14 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 	}
 	now := service.clock.Now().UTC()
 	if trustedAutomation {
-		if err := domain.ValidateAutomaticSleepCommand(command, session, now); err != nil {
-			return domain.Workflow{}, err
+		var automationErr error
+		if workflowType == domain.SleepWorkflowType {
+			automationErr = domain.ValidateAutomaticSleepCommand(command, session, now)
+		} else {
+			automationErr = domain.ValidateAutomaticArchiveCommand(command, session, now)
+		}
+		if automationErr != nil {
+			return domain.Workflow{}, automationErr
 		}
 	}
 	workflowID := command.CommandID

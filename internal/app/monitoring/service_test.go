@@ -15,7 +15,7 @@ type monitoringRepo struct {
 	events  []domain.SessionEvent
 }
 
-func (repo *monitoringRepo) ListRunning(context.Context, int32) ([]domain.Session, error) {
+func (repo *monitoringRepo) ListInactivityCandidates(context.Context, int32) ([]domain.Session, error) {
 	return []domain.Session{repo.session}, nil
 }
 func (repo *monitoringRepo) SaveMonitoring(_ context.Context, session domain.Session, expected int64, events []domain.SessionEvent) error {
@@ -165,5 +165,34 @@ func TestRunReturnsAutomaticSleepQueueFailureForScheduledRetry(t *testing.T) {
 	}
 	if _, err := service.Run(context.Background()); err == nil || len(queue.commands) != 1 {
 		t.Fatalf("queue failure error=%v commands=%#v", err, queue.commands)
+	}
+}
+
+func TestRunQueuesDeterministicArchiveAfterSeventyTwoSleepingHours(t *testing.T) {
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	session := runningMonitoringSession(t, now)
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateSleeping, domain.StateSleeping, domain.StateSleeping, domain.HealthStopped
+	session.SleepingSince = now.Add(-72 * time.Hour)
+	repo := &monitoringRepo{session: session}
+	queue := &monitoringCommands{}
+	service, err := NewService(repo, monitoringRunner{}, nil, &monitoringIDs{}, monitoringClock{now}, WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.commands) != 1 {
+		t.Fatalf("commands = %#v", queue.commands)
+	}
+	command := queue.commands[0]
+	wantID := domain.AutomaticArchiveCommandID(session.ID, session.SleepingSince)
+	if command.CommandID != wantID || command.CommandType != domain.CommandArchiveSession || command.Parameters[domain.AutomaticSleepingSinceParameter] != session.SleepingSince.Format(time.RFC3339Nano) {
+		t.Fatalf("automatic archive command = %#v", command)
+	}
+	failing := &monitoringCommands{err: errors.New("queue unavailable")}
+	service, _ = NewService(repo, monitoringRunner{}, nil, &monitoringIDs{}, monitoringClock{now}, WithCommandQueue(failing))
+	if _, err := service.Run(context.Background()); err == nil || len(failing.commands) != 1 {
+		t.Fatalf("archive queue failure error=%v commands=%#v", err, failing.commands)
 	}
 }
