@@ -255,3 +255,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **17.7.1** [ ] Show the trustworthy `idle_since` observation and projected automatic-sleep date and time for an eligible running session, using Discord-native timestamps and clearly marking unknown or interrupted idle evidence.
       - **17.7.2** [ ] Show the projected automatic-archive date and time for a sleeping session from its authoritative `sleeping_since` value and configured archive threshold; avoid presenting projections when lifecycle state or evidence makes them inapplicable.
       - **17.7.3** [ ] Add focused rendering coverage for active players, continuous idle time, unknown observations, sleeping sessions, disabled or changed thresholds, clock anomalies, and Discord response bounds.
+
+18. **Miscellaneous Fixes — Done (approved out of order)**
+    - **18.1** [x] Polish existing Discord interaction layouts without changing their safety or authorization contracts.
+      - **18.1.1** [x] Group each `/rb edit` mission-file name and its controls on one row, move `Add mission` to the bottom, retain five-file pagination, and add focused rendering coverage.
