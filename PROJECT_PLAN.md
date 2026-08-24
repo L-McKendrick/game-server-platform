@@ -247,3 +247,11 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **17.3** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.
     - **17.4** [ ] Provide options of different EC2 instance types (weaker or more powerful options with explanations).
     - **17.5** [ ] Let administrators configure the active-session capacity limit while preserving atomic slot enforcement and clear start/wake feedback.
+    - **17.6** [ ] Make bootstrap progress reflect active work instead of completion-sounding checkpoints, and expose safe coarse SteamCMD download activity without adding infrastructure.
+      - **17.6.1** [ ] Reframe the bootstrap sequence so Step 2 is `Preparing host`, Step 3 is `Downloading and installing game files`, and later steps advance only at clear stage boundaries; preserve deterministic replay and skipped-stage behavior.
+      - **17.6.2** [ ] Extend the existing SSM stdout protocol with bounded allowlisted activity records for the current SteamCMD target, such as the Arma 3 server or a Workshop item, while continuing to suppress raw SteamCMD output, credentials, authentication state, arbitrary paths, and untrusted item names.
+      - **17.6.3** [ ] Render the latest safe activity beneath the current stage with rate-limited card updates, graceful fallback when SteamCMD exposes no usable signal, and focused redaction, ordering, replay, truncation, and stale-output tests.
+    - **17.7** [ ] Show automatic inactivity lifecycle timing in `/rb status`.
+      - **17.7.1** [ ] Show the trustworthy `idle_since` observation and projected automatic-sleep date and time for an eligible running session, using Discord-native timestamps and clearly marking unknown or interrupted idle evidence.
+      - **17.7.2** [ ] Show the projected automatic-archive date and time for a sleeping session from its authoritative `sleeping_since` value and configured archive threshold; avoid presenting projections when lifecycle state or evidence makes them inapplicable.
+      - **17.7.3** [ ] Add focused rendering coverage for active players, continuous idle time, unknown observations, sleeping sessions, disabled or changed thresholds, clock anomalies, and Discord response bounds.
