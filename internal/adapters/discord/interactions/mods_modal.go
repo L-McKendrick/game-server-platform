@@ -15,15 +15,16 @@ const (
 	modsModalCustomIDPrefix  = "rb:mods:v2:"
 	createModsContinuePrefix = "rb:create-mods:v1:"
 	modsPresetCustomID       = "mods:preset"
+	modsServerPresetCustomID = "mods:server-preset"
 	modsCreatorDLCsCustomID  = "mods:creator-dlcs"
 	modsModeCreate           = "create"
 	modsModeRevision         = "revision"
 )
 
 type modsModalState struct {
-	mode                    string
-	sessionID               string
-	activeRevision, version int64
+	mode                                          string
+	sessionID                                     string
+	activeRevision, activeServerRevision, version int64
 }
 
 func createModsContinueCustomID(sessionID string, version int64) (string, error) {
@@ -56,8 +57,8 @@ func isCreateModsContinue(payload interactionPayload) bool {
 }
 
 func modsModalCustomID(state modsModalState) (string, error) {
-	value := fmt.Sprintf("%s%s:%s:%d:%d", modsModalCustomIDPrefix, state.mode, strings.TrimSpace(state.sessionID), state.activeRevision, state.version)
-	if (state.mode != modsModeCreate && state.mode != modsModeRevision) || strings.TrimSpace(state.sessionID) == "" || state.activeRevision < 0 || state.version < 1 || len(value) > 100 {
+	value := fmt.Sprintf("%s%s:%s:%d:%d:%d", modsModalCustomIDPrefix, state.mode, strings.TrimSpace(state.sessionID), state.activeRevision, state.activeServerRevision, state.version)
+	if (state.mode != modsModeCreate && state.mode != modsModeRevision) || strings.TrimSpace(state.sessionID) == "" || state.activeRevision < 0 || state.activeServerRevision < 0 || state.version < 1 || len(value) > 100 {
 		return "", fmt.Errorf("mods modal state is invalid")
 	}
 	return value, nil
@@ -65,15 +66,16 @@ func modsModalCustomID(state modsModalState) (string, error) {
 
 func parseModsModalCustomID(value string) (modsModalState, error) {
 	parts := strings.Split(strings.TrimPrefix(strings.TrimSpace(value), modsModalCustomIDPrefix), ":")
-	if len(parts) != 4 || (parts[0] != modsModeCreate && parts[0] != modsModeRevision) || strings.TrimSpace(parts[1]) == "" {
+	if len(parts) != 5 || (parts[0] != modsModeCreate && parts[0] != modsModeRevision) || strings.TrimSpace(parts[1]) == "" {
 		return modsModalState{}, fmt.Errorf("mods modal identifier is invalid")
 	}
 	active, activeErr := strconv.ParseInt(parts[2], 10, 64)
-	version, versionErr := strconv.ParseInt(parts[3], 10, 64)
-	if activeErr != nil || versionErr != nil || active < 0 || version < 1 {
+	activeServer, activeServerErr := strconv.ParseInt(parts[3], 10, 64)
+	version, versionErr := strconv.ParseInt(parts[4], 10, 64)
+	if activeErr != nil || activeServerErr != nil || versionErr != nil || active < 0 || activeServer < 0 || version < 1 {
 		return modsModalState{}, fmt.Errorf("mods modal revision is invalid")
 	}
-	return modsModalState{mode: parts[0], sessionID: parts[1], activeRevision: active, version: version}, nil
+	return modsModalState{mode: parts[0], sessionID: parts[1], activeRevision: active, activeServerRevision: activeServer, version: version}, nil
 }
 
 func isModsModalCustomID(customID string) bool {
@@ -124,7 +126,7 @@ func (handler *Handler) openModsModal(ctx context.Context, writer http.ResponseW
 
 func writeModsModal(writer http.ResponseWriter, session domain.Session, mode string) error {
 	active := session.EffectiveActivePresetRevision()
-	customID, err := modsModalCustomID(modsModalState{mode: mode, sessionID: session.ID, activeRevision: active.Number, version: session.Version})
+	customID, err := modsModalCustomID(modsModalState{mode: mode, sessionID: session.ID, activeRevision: active.Number, activeServerRevision: session.EffectiveActiveServerPresetRevision().Number, version: session.Version})
 	if err != nil {
 		return err
 	}
@@ -144,6 +146,7 @@ func writeModsModal(writer http.ResponseWriter, session domain.Session, mode str
 	}
 	components := []interactionComponent{
 		{Type: componentTypeLabel, Label: "Arma Launcher preset", Description: "Optional here. Upload .html/.htm to add or replace the Workshop modlist.", Component: &interactionComponent{Type: componentTypeFileUpload, CustomID: modsPresetCustomID, Required: &optional, MinValues: &minimumNone, MaxValues: &maximumOne}},
+		{Type: componentTypeLabel, Label: "Server-only mod preset", Description: "Optional. These Workshop mods load only on the server and are not shared with players.", Component: &interactionComponent{Type: componentTypeFileUpload, CustomID: modsServerPresetCustomID, Required: &optional, MinValues: &minimumNone, MaxValues: &maximumOne}},
 		{Type: componentTypeLabel, Label: "Creator DLC to load", Description: "Select every official Creator DLC required by the mission.", Component: &interactionComponent{Type: componentTypeCheckboxGroup, CustomID: modsCreatorDLCsCustomID, Required: &optional, MinValues: &minimumNone, MaxValues: &maximumDLCs, Options: options}},
 	}
 	writeJSON(writer, http.StatusOK, interactionResponse{Type: interactionResponseModal, Data: &interactionResponseData{CustomID: customID, Title: "Arma 3 mod options", Components: &components}})
@@ -161,10 +164,10 @@ func containsString(values []string, wanted string) bool {
 
 func (handler *Handler) submitModsModal(ctx context.Context, payload interactionPayload, actor domain.Actor, correlationID string) (string, error) {
 	state, err := parseModsModalCustomID(payload.Data.CustomID)
-	if err != nil || len(payload.Data.Components) != 2 {
+	if err != nil || len(payload.Data.Components) != 3 {
 		return "", newUserError("The mod options form is malformed or expired. Run `/rb edit` with section `mods` again.")
 	}
-	var attachment *interactionAttachment
+	var attachment, serverAttachment *interactionAttachment
 	var creatorDLCs []string
 	seen := map[string]bool{}
 	for _, label := range payload.Data.Components {
@@ -175,6 +178,8 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 		switch label.Component.CustomID {
 		case modsPresetCustomID:
 			attachment, err = resolveModalAttachment(payload.Data, label.Component, false)
+		case modsServerPresetCustomID:
+			serverAttachment, err = resolveModalAttachment(payload.Data, label.Component, false)
 		case modsCreatorDLCsCustomID:
 			if label.Component.Type != componentTypeCheckboxGroup {
 				err = fmt.Errorf("invalid Creator DLC control")
@@ -188,11 +193,12 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 			return "", newUserError("Choose only supported Creator DLCs and at most one preset file.")
 		}
 	}
-	if !seen[modsPresetCustomID] || !seen[modsCreatorDLCsCustomID] {
+	if !seen[modsPresetCustomID] || !seen[modsServerPresetCustomID] || !seen[modsCreatorDLCsCustomID] {
 		return "", newUserError("The mod options form is incomplete. Run `/rb edit` with section `mods` again.")
 	}
 	keyPrefix := "discord:" + strings.TrimSpace(payload.ID) + ":mod-options"
 	var presetRequest *domain.ArtifactIngestRequest
+	var serverPresetRequest *domain.ArtifactIngestRequest
 	if attachment != nil {
 		request := createArtifactRequest(payload, actor, correlationID, state.sessionID, domain.ArtifactPreset, *attachment, keyPrefix+":preset", handler.clock.Now().UTC())
 		if state.mode == modsModeRevision {
@@ -204,11 +210,23 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 		}
 		presetRequest = &request
 	}
+	if serverAttachment != nil {
+		request := createArtifactRequest(payload, actor, correlationID, state.sessionID, domain.ArtifactServerPreset, *serverAttachment, keyPrefix+":server-preset", handler.clock.Now().UTC())
+		if state.mode == modsModeRevision {
+			request.Purpose = domain.ArtifactPurposeServerPresetRevision
+			request.ExpectedActiveServerPresetRevision = state.activeServerRevision
+		}
+		if err := request.Validate(); err != nil {
+			return "", newUserError("The server-only preset upload must be an .html or .htm file no larger than 10 MiB from Discord.")
+		}
+		serverPresetRequest = &request
+	}
 	session, err := handler.service.UpdateModOptions(ctx, appsession.UpdateModOptionsCommand{
 		Actor: actor, SessionID: state.sessionID, GuildID: payload.GuildID, CorrelationID: correlationID,
 		IdempotencyKey: keyPrefix + ":configure", ExpectedVersion: state.version, CreatorDLCs: creatorDLCs,
-		PreparePreset: presetRequest != nil && state.mode == modsModeCreate,
-		Roles:         interactionRoles(payload),
+		PreparePreset:       presetRequest != nil && state.mode == modsModeCreate,
+		PrepareServerPreset: serverPresetRequest != nil && state.mode == modsModeCreate,
+		Roles:               interactionRoles(payload),
 	})
 	if err != nil {
 		return "", modsStagingUserError(err)
@@ -225,10 +243,24 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 		}
 		presetStatus = fmt.Sprintf("Preset `%s` queued for validation.", sanitizeCode(attachment.Filename))
 	}
-	if state.mode == modsModeCreate && attachment == nil {
+	if state.mode == modsModeCreate && attachment == nil && serverAttachment == nil {
 		presetStatus = "No preset was uploaded; this modded session remains a recoverable draft."
+	} else if state.mode == modsModeCreate && attachment == nil {
+		presetStatus = "No client preset was uploaded; this server-only mod setup can become ready after validation."
 	}
-	return fmt.Sprintf("**Mod options saved**\nCreator DLC selected: %d\n%s\nNo running server was changed in place.\n\nNext: use `/rb status` to verify validation and readiness.", len(creatorDLCs), presetStatus), nil
+	serverPresetStatus := "No server-only preset was uploaded."
+	if serverPresetRequest != nil {
+		if state.mode == modsModeRevision {
+			if err := session.ValidateServerPresetRevisionStaging(state.activeServerRevision); err != nil {
+				return "", modsStagingUserError(err)
+			}
+		}
+		if err := handler.service.RequestArtifactIngest(ctx, actor, *serverPresetRequest); err != nil {
+			return "", modsStagingUserError(err)
+		}
+		serverPresetStatus = fmt.Sprintf("Server-only preset `%s` queued for private validation.", sanitizeCode(serverAttachment.Filename))
+	}
+	return fmt.Sprintf("**Mod options saved**\nCreator DLC selected: %d\n%s\n%s\nNo running server was changed in place.\n\nNext: use `/rb status` to verify validation and readiness.", len(creatorDLCs), presetStatus, serverPresetStatus), nil
 }
 
 func modsStagingUserError(err error) error {

@@ -631,6 +631,7 @@ type UpdateModOptionsCommand struct {
 	CreatorDLCs                                       []string
 	Roles                                             []string
 	PreparePreset                                     bool
+	PrepareServerPreset                               bool
 }
 
 type UpdateMissionCommand struct {
@@ -731,7 +732,8 @@ func (service *Service) UpdateModOptions(ctx context.Context, command UpdateModO
 		CreatorDLCs                              []string
 		Roles                                    []string
 		PreparePreset                            bool
-	}{"UpdateModOptions", command.Actor.ID, strings.TrimSpace(command.SessionID), strings.TrimSpace(command.GuildID), command.ExpectedVersion, creatorDLCs, command.Roles, command.PreparePreset})
+		PrepareServerPreset                      bool
+	}{"UpdateModOptions", command.Actor.ID, strings.TrimSpace(command.SessionID), strings.TrimSpace(command.GuildID), command.ExpectedVersion, creatorDLCs, command.Roles, command.PreparePreset, command.PrepareServerPreset})
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("hash mod options: %w", err)
 	}
@@ -752,7 +754,7 @@ func (service *Service) UpdateModOptions(ctx context.Context, command UpdateModO
 		return domain.Session{}, fmt.Errorf("%w: session changed while mod options were open", domain.ErrConflict)
 	}
 	now, expectedVersion := service.clock.Now().UTC(), session.Version
-	if err := session.UpdateCreatorDLCs(creatorDLCs, command.PreparePreset, now); err != nil {
+	if err := session.UpdateModOptions(creatorDLCs, command.PreparePreset, command.PrepareServerPreset, now); err != nil {
 		return domain.Session{}, err
 	}
 	eventID, err := service.newID(now, "mod options event")
@@ -1030,6 +1032,10 @@ func (service *Service) RequestArtifactIngest(ctx context.Context, actor domain.
 	}
 	if request.IsPresetRevision() {
 		if err := session.ValidatePresetRevisionStaging(request.ExpectedActivePresetRevision); err != nil {
+			return err
+		}
+	} else if request.IsServerPresetRevision() {
+		if err := session.ValidateServerPresetRevisionStaging(request.ExpectedActiveServerPresetRevision); err != nil {
 			return err
 		}
 	} else if request.Kind == domain.ArtifactMission && session.ActiveWorkflowID == "" && session.LifecycleState != domain.StateDeleting && session.LifecycleState != domain.StateDeleted && session.LifecycleState != domain.StateArchiving && session.LifecycleState != domain.StateDestroying {

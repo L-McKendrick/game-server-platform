@@ -306,6 +306,43 @@ func TestProcessStagesRunningPresetRevisionWithoutPromotingModlist(t *testing.T)
 	}
 }
 
+func TestProcessStagesPrivateServerPresetWithoutPublishingClientModlist(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
+	repository := seededPresetRevisionRepository(t, now)
+	body := []byte(`<html><tr data-type="ModContainer"><td data-type="DisplayName">Private server mod</td><td><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=450814997">Private</a></td></tr></html>`)
+	objects, notifications := &testObjectStore{}, &testNotifications{}
+	service, err := NewService(repository, &testDownloader{body: body}, objects, notifications, &testIDs{ids: []string{"server-revision-event"}}, testClock{now.Add(time.Minute)}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := missionRequest(now, int64(len(body)))
+	request.Kind, request.Filename, request.AttachmentID = domain.ArtifactServerPreset, "private-server.html", "server-preset-attachment"
+	request.Purpose = domain.ArtifactPurposeServerPresetRevision
+	if err := service.Process(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := repository.Get(context.Background(), request.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PendingServerPresetRevision.Number != 1 || stored.PendingServerPresetRevision.BaseRevision != 0 || stored.ServerPresetObjectKey != "" {
+		t.Fatalf("server preset state = %#v", stored)
+	}
+	if len(objects.objects) != 1 || !strings.Contains(objects.objects[0].key, "/server-presets/") || !strings.Contains(string(objects.objects[0].contents), "Private server mod") {
+		t.Fatalf("private stored objects = %#v", objects.objects)
+	}
+	if len(notifications.requests) != 1 || notifications.requests[0].Kind != domain.NotificationSessionCard || notifications.requests[0].Attachment != nil || strings.Contains(notifications.requests[0].Content, "Private server mod") {
+		t.Fatalf("server preset leaked to public notification = %#v", notifications.requests)
+	}
+	if err := service.Process(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(objects.objects) != 1 || len(notifications.requests) != 2 || notifications.requests[0].NotificationID != notifications.requests[1].NotificationID {
+		t.Fatalf("server preset replay objects=%#v notifications=%#v", objects.objects, notifications.requests)
+	}
+}
+
 func TestProcessRejectsInvalidRunningPresetRevisionWithoutChangingActive(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 17, 22, 0, 0, 0, time.UTC)

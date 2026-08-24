@@ -89,6 +89,25 @@ func TestArchiveManifestPresetIntentMatchesRestoreTransitionAndRejectsDrift(t *t
 	}
 }
 
+func TestArchiveManifestPreservesPendingFirstServerPresetAcrossRestore(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
+	pending := PresetRevision{Number: 1, PresetObjectKey: "sessions/session-1/input/server-presets/v1.html", Status: PresetRevisionPending, StagedAt: now}
+	manifest := ArchiveManifest{SchemaVersion: 1, ArchiveID: "archive-1", SessionID: "session-1", CreatedAt: now.Format(time.RFC3339Nano), Format: "tar+gzip", ObjectKey: "sessions/session-1/archives/archive-1/session.tar.gz", SHA256: base64.StdEncoding.EncodeToString(make([]byte, 32)), SizeBytes: 42, ContentRoots: []string{"/srv/game-server/config"}, GameProfileID: "arma3-default", ServerPresetRevisionSequence: 1, PendingServerPresetRevision: ArchivePresetRevisionSnapshot(pending), SourceInstanceID: "i-1", SourceDataVolumeID: "vol-1"}
+	if err := manifest.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	session := Session{ID: "session-1", ServerPresetRevisionSequence: 1, PendingServerPresetRevision: pending}
+	if !manifest.ServerPresetRevisionIntentMatches(session) {
+		t.Fatal("matching pending server preset was rejected")
+	}
+	session.ActiveWorkflowID, session.ActiveWorkflowType = "restore-1", RestoreWorkflowType
+	session.PendingServerPresetRevision.Status, session.PendingServerPresetRevision.ApplyWorkflowID, session.PendingServerPresetRevision.ApplyStartedAt = PresetRevisionApplying, "restore-1", now.Add(time.Minute)
+	if !manifest.ServerPresetRevisionIntentMatches(session) {
+		t.Fatal("restore-owned server preset application was rejected")
+	}
+}
+
 func TestArchiveEventCapturesRevisionIntentWithoutFailureText(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 18, 2, 0, 0, 0, time.UTC)

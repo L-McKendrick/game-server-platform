@@ -14,6 +14,8 @@ SERVER_CONFIG_REVISION="$(decode "$SERVER_CONFIG_REV_B64")"
 PRESET_KEY="$(decode "$PRESET_KEY_B64")"
 PRESET_REVISION="$(decode "$PRESET_REVISION_B64")"
 PRESET_ROLLBACK="$(decode "$PRESET_ROLLBACK_B64")"
+SERVER_PRESET_KEY="$(decode "$SERVER_PRESET_KEY_B64")"
+SERVER_PRESET_REVISION="$(decode "$SERVER_PRESET_REVISION_B64")"
 CREATOR_DLC_MODS="$(decode "$CREATOR_DLC_MODS_B64")"
 MOD_CONFIG_REVISION="$(decode "$MOD_CONFIG_REVISION_B64")"
 ASSETS_BUCKET="$(decode "$ASSETS_BUCKET_B64")"
@@ -369,22 +371,37 @@ lowercase_tree() {
 install_workshop() (
   if [ "$VANILLA_MODE" = true ]; then
     : > "$ROOT/config/mods.txt"
+	: > "$ROOT/config/server-mods.txt"
     rm -f "$ROOT/config/preset.html"
-    chown steam:steam "$ROOT/config/mods.txt"
+    chown steam:steam "$ROOT/config/mods.txt" "$ROOT/config/server-mods.txt"
     return 0
   fi
-	local preset_file mods_file mods="" dlc
-	mkdir -p "$ROOT/config/presets" "$ROOT/config/mod-revisions"
+	local preset_file server_preset_file mods_file server_mods_file mods="" server_mods="" dlc
+	mkdir -p "$ROOT/config/presets" "$ROOT/config/server-presets" "$ROOT/config/mod-revisions" "$ROOT/config/server-mod-revisions"
 	preset_file="$ROOT/config/presets/revision-$PRESET_REVISION.html"
 	mods_file="$ROOT/config/mod-revisions/revision-$PRESET_REVISION.txt"
+	server_preset_file="$ROOT/config/server-presets/revision-$SERVER_PRESET_REVISION.html"
+	server_mods_file="$ROOT/config/server-mod-revisions/revision-$SERVER_PRESET_REVISION.txt"
 	ids=()
+	server_ids=()
 	if [ -n "$PRESET_KEY" ]; then
 		aws s3 cp "s3://$ASSETS_BUCKET/$PRESET_KEY" "$preset_file" --region "$AWS_REGION" --only-show-errors
 		mapfile -t ids < <(grep -Eio "id=[0-9]+|data-publishedfileid=[\"'][0-9]+" "$preset_file" | grep -Eo '[0-9]+' | awk '!seen[$0]++')
 	else
 		rm -f -- "$preset_file" "$ROOT/config/preset.html"
 	fi
+	if [ -n "$SERVER_PRESET_KEY" ]; then
+		aws s3 cp "s3://$ASSETS_BUCKET/$SERVER_PRESET_KEY" "$server_preset_file" --region "$AWS_REGION" --only-show-errors
+		mapfile -t server_ids < <(grep -Eio "id=[0-9]+|data-publishedfileid=[\"'][0-9]+" "$server_preset_file" | grep -Eo '[0-9]+' | awk '!seen[$0]++')
+		client_ids=" ${ids[*]} "
+		filtered_server_ids=()
+		for id in "${server_ids[@]}"; do [[ "$client_ids" == *" $id "* ]] || filtered_server_ids+=("$id"); done
+		server_ids=("${filtered_server_ids[@]}")
+	else
+		rm -f -- "$server_preset_file"
+	fi
 	: > "$mods_file"
+	: > "$server_mods_file"
   IFS=';' read -r -a creator_dlcs <<< "$CREATOR_DLC_MODS"
   for dlc in "${creator_dlcs[@]}"; do
     [ -z "$dlc" ] && continue
@@ -393,13 +410,14 @@ install_workshop() (
     mods="${mods:+$mods;}$dlc"
   done
   local runfile id source link
-  if [ "${#ids[@]}" -gt 0 ]; then
+  workshop_count=$((${#ids[@]} + ${#server_ids[@]}))
+  if [ "$workshop_count" -gt 0 ]; then
   runfile="$(mktemp /run/gsp-steam.XXXXXX)"
   trap 'rm -f "$runfile"' EXIT
   steam_login_file "$runfile"
-  for id in "${ids[@]}"; do printf 'workshop_download_item 107410 %s validate\n' "$id" >> "$runfile"; done
+  for id in "${ids[@]}" "${server_ids[@]}"; do [ -z "$id" ] || printf 'workshop_download_item 107410 %s validate\n' "$id" >> "$runfile"; done
   printf 'quit\n' >> "$runfile"
-  activity "WORKSHOP_ITEMS:${#ids[@]}"
+  activity "WORKSHOP_ITEMS:$workshop_count"
   run_steamcmd "$runfile"
   for id in "${ids[@]}"; do
     source="$ROOT/home/Steam/steamapps/workshop/content/107410/$id"
@@ -409,10 +427,20 @@ install_workshop() (
     ln -sfn "$source" "$link"
     mods="${mods:+$mods;}@workshop_$id"
   done
+	for id in "${server_ids[@]}"; do
+		source="$ROOT/home/Steam/steamapps/workshop/content/107410/$id"
+		[ -d "$source" ] || { log "Server-only Workshop item $id was not downloaded"; return 1; }
+		lowercase_tree "$source"
+		link="$ROOT/arma3/@workshop_$id"
+		ln -sfn "$source" "$link"
+		server_mods="${server_mods:+$server_mods;}@workshop_$id"
+	done
 	fi
 	printf '%s' "$mods" > "$mods_file"
+	printf '%s' "$server_mods" > "$server_mods_file"
 	if [ -n "$PRESET_KEY" ]; then ln -sfn "presets/revision-$PRESET_REVISION.html" "$ROOT/config/preset.html"; fi
 	ln -sfn "mod-revisions/revision-$PRESET_REVISION.txt" "$ROOT/config/mods.txt"
+	ln -sfn "server-mod-revisions/revision-$SERVER_PRESET_REVISION.txt" "$ROOT/config/server-mods.txt"
 	printf '%s' "$PRESET_REVISION" > "$ROOT/config/active-preset-revision"
   mkdir -p "$ROOT/home/Steam/steamapps/workshop"
   chown -R steam:steam "$ROOT/config" "$ROOT/home/Steam/steamapps/workshop" "$ROOT/arma3"
@@ -483,9 +511,11 @@ EOF
 set -Eeuo pipefail
 ROOT=/srv/game-server
 mods="$(cat "$ROOT/config/mods.txt" 2>/dev/null || true)"
+server_mods="$(cat "$ROOT/config/server-mods.txt" 2>/dev/null || true)"
 cd "$ROOT/arma3"
 args=(-name=server -config="$ROOT/config/server.cfg" -port=2302 -steamQueryPort=2303 -autoInit -noSound)
 [ -z "$mods" ] || args+=("-mod=$mods")
+[ -z "$server_mods" ] || args+=("-serverMod=$server_mods")
 exec ./arma3server_x64 "${args[@]}"
 EOF
   chmod 755 "$ROOT/config/launch-arma.sh"
@@ -588,7 +618,7 @@ for stage in install_steamcmd install_arma install_workshop deploy_content insta
 	esac
   marker="$STATE_DIR/$stage.complete"
 	if [ "$stage" = install_workshop ] && [ "$VANILLA_MODE" = false ]; then
-		marker="$STATE_DIR/$stage.revision-$PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete"
+		marker="$STATE_DIR/$stage.revision-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete"
 		[ "$PRESET_ROLLBACK" = true ] && rm -f -- "$marker"
 	fi
   if [ -f "$marker" ]; then

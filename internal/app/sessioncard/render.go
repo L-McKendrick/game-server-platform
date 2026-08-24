@@ -127,6 +127,15 @@ func render(card Projection, detailed bool) string {
 	if card.Mods.DownloadURL != "" {
 		fmt.Fprintf(&builder, "\n%s", modlistLinkLine(card.Mods.DownloadURL))
 	}
+	if detailed {
+		fmt.Fprintf(&builder, "\n**Server-only mods:** %s", artifactLine(ArtifactView{Status: card.ServerMods.Status, Issue: card.ServerMods.Issue}))
+		if card.ServerMods.ActiveRevision > 0 {
+			fmt.Fprintf(&builder, "\n**Active server-mod revision:** `%d`", card.ServerMods.ActiveRevision)
+		}
+		if card.ServerMods.PendingRevision > 0 {
+			fmt.Fprintf(&builder, "\n**Pending server-mod revision:** `%d` — %s", card.ServerMods.PendingRevision, safe(card.ServerMods.PendingStatus))
+		}
+	}
 	renderFailure(&builder, card.Failure, detailed)
 
 	if card.Players.Available {

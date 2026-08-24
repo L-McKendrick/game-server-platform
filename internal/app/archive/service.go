@@ -230,12 +230,16 @@ func (service *Service) verify(ctx context.Context, session domain.Session, work
 		ConfigurationRevision: session.ConfigurationRevision, MissionObjectKey: session.MissionObjectKey,
 		MissionFiles: append([]domain.MissionRecord(nil), session.MissionFiles...), ConfiguredMission: session.ConfiguredMission, CurrentMission: session.CurrentMission,
 		PresetObjectKey: session.PresetObjectKey, SourceInstanceID: session.Infrastructure.InstanceID,
-		PresetRevisionSequence: session.EffectivePresetRevisionSequence(),
-		ActivePresetRevision:   domain.ArchivePresetRevisionSnapshot(session.EffectiveActivePresetRevision()),
-		PendingPresetRevision:  domain.ArchivePresetRevisionSnapshot(session.PendingPresetRevision),
-		Vanilla:                session.Vanilla,
-		CreatorDLCs:            append([]string(nil), session.CreatorDLCs...),
-		SourceDataVolumeID:     session.Infrastructure.DataVolumeID,
+		PresetRevisionSequence:       session.EffectivePresetRevisionSequence(),
+		ActivePresetRevision:         domain.ArchivePresetRevisionSnapshot(session.EffectiveActivePresetRevision()),
+		PendingPresetRevision:        domain.ArchivePresetRevisionSnapshot(session.PendingPresetRevision),
+		ServerPresetObjectKey:        session.ServerPresetObjectKey,
+		ServerPresetRevisionSequence: session.EffectiveServerPresetRevisionSequence(),
+		ActiveServerPresetRevision:   domain.ArchivePresetRevisionSnapshot(session.EffectiveActiveServerPresetRevision()),
+		PendingServerPresetRevision:  domain.ArchivePresetRevisionSnapshot(session.PendingServerPresetRevision),
+		Vanilla:                      session.Vanilla,
+		CreatorDLCs:                  append([]string(nil), session.CreatorDLCs...),
+		SourceDataVolumeID:           session.Infrastructure.DataVolumeID,
 	}
 	if err := manifest.Validate(); err != nil {
 		return TaskResult{}, err

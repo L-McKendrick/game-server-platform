@@ -216,37 +216,43 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	}
 	presetObjectKey := session.PresetObjectKeyForApplication()
 	presetRevision := session.PresetRevisionForApplication()
+	serverPresetObjectKey := session.ServerPresetObjectKeyForApplication()
+	serverPresetRevision := session.ServerPresetRevisionForApplication()
 	mission := session.MissionForApplication()
 	if rollback {
 		active := session.EffectiveActivePresetRevision()
 		presetObjectKey, presetRevision = active.PresetObjectKey, active.Number
+		serverActive := session.EffectiveActiveServerPresetRevision()
+		serverPresetObjectKey, serverPresetRevision = serverActive.PresetObjectKey, serverActive.Number
 	}
-	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || mission.Template == "" || (!session.Vanilla && presetObjectKey == "" && len(creatorDLCFolders) == 0) {
+	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || mission.Template == "" || (!session.Vanilla && presetObjectKey == "" && serverPresetObjectKey == "" && len(creatorDLCFolders) == 0) {
 		return "", fmt.Errorf("instance, data volume, mission selection, and modded content are required")
 	}
 	values := map[string]string{
-		"SESSION_ID_B64":          session.ID,
-		"DISPLAY_NAME_B64":        session.DisplayName,
-		"DATA_VOLUME_ID_B64":      session.Infrastructure.DataVolumeID,
-		"MISSION_KEY_B64":         mission.ObjectKey,
-		"MISSION_TEMPLATE_B64":    mission.Template,
-		"SERVER_CONFIG_KEY_B64":   session.ServerConfigObjectKey,
-		"SERVER_CONFIG_SHA_B64":   session.ServerConfigSHA256,
-		"SERVER_CONFIG_REV_B64":   fmt.Sprintf("%d", session.ServerConfigRevision),
-		"PRESET_KEY_B64":          presetObjectKey,
-		"PRESET_REVISION_B64":     fmt.Sprintf("%d", presetRevision),
-		"PRESET_ROLLBACK_B64":     fmt.Sprintf("%t", rollback),
-		"CREATOR_DLC_MODS_B64":    strings.Join(creatorDLCFolders, ";"),
-		"MOD_CONFIG_REVISION_B64": fmt.Sprintf("%d", session.ConfigurationRevision),
-		"ASSETS_BUCKET_B64":       runner.config.AssetsBucket,
-		"METADATA_TABLE_B64":      runner.config.MetadataTableName,
-		"STEAM_AUTH_SECRET_B64":   runner.config.SteamAuthSecretID,
-		"AWS_REGION_B64":          runner.config.Region,
-		"TEAMSPEAK_VERSION_B64":   runner.config.TeamSpeakVersion,
+		"SESSION_ID_B64":             session.ID,
+		"DISPLAY_NAME_B64":           session.DisplayName,
+		"DATA_VOLUME_ID_B64":         session.Infrastructure.DataVolumeID,
+		"MISSION_KEY_B64":            mission.ObjectKey,
+		"MISSION_TEMPLATE_B64":       mission.Template,
+		"SERVER_CONFIG_KEY_B64":      session.ServerConfigObjectKey,
+		"SERVER_CONFIG_SHA_B64":      session.ServerConfigSHA256,
+		"SERVER_CONFIG_REV_B64":      fmt.Sprintf("%d", session.ServerConfigRevision),
+		"PRESET_KEY_B64":             presetObjectKey,
+		"PRESET_REVISION_B64":        fmt.Sprintf("%d", presetRevision),
+		"PRESET_ROLLBACK_B64":        fmt.Sprintf("%t", rollback),
+		"SERVER_PRESET_KEY_B64":      serverPresetObjectKey,
+		"SERVER_PRESET_REVISION_B64": fmt.Sprintf("%d", serverPresetRevision),
+		"CREATOR_DLC_MODS_B64":       strings.Join(creatorDLCFolders, ";"),
+		"MOD_CONFIG_REVISION_B64":    fmt.Sprintf("%d", session.ConfigurationRevision),
+		"ASSETS_BUCKET_B64":          runner.config.AssetsBucket,
+		"METADATA_TABLE_B64":         runner.config.MetadataTableName,
+		"STEAM_AUTH_SECRET_B64":      runner.config.SteamAuthSecretID,
+		"AWS_REGION_B64":             runner.config.Region,
+		"TEAMSPEAK_VERSION_B64":      runner.config.TeamSpeakVersion,
 	}
 	var command strings.Builder
 	command.WriteString("#!/usr/bin/env bash\nset -Eeuo pipefail\numask 077\n")
-	for _, key := range []string{"SESSION_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
+	for _, key := range []string{"SESSION_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
 		command.WriteString("export " + key + "='" + base64.StdEncoding.EncodeToString([]byte(values[key])) + "'\n")
 	}
 	if session.TeamSpeakEnabled {

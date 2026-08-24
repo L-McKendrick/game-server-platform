@@ -75,13 +75,14 @@ Administrator or Manage Server permission.
    `MP_ZGM_m12.Stratis` built-in mission.
 
 After a modded base submission, an ephemeral `Continue to mod options` button
-opens a second modal containing an optional Launcher preset upload and a
-checkbox group for the seven supported Creator DLCs. Discord does not permit a
+opens a second modal containing separate optional client and server-only
+Launcher preset uploads plus a checkbox group for the seven supported Creator
+DLCs. Discord does not permit a
 modal-submit response to open another modal, so the explicit button is the
 native continuation boundary. Vanilla creation skips it. `/rb edit` with the
 `mods` section opens this
-same mod-options modal for an existing modded session and allows a preset
-upload, a cDLC-only change, or both. Every submission is owner/guild/version
+same mod-options modal for an existing modded session and allows either preset
+scope, a cDLC-only change, or a combination. Every submission is owner/guild/version
 bound and stale forms fail closed. Discord modals do not support arbitrary
 images or media galleries; cDLCs therefore use their official accessible names
 without unsupported icon placeholders.
@@ -102,6 +103,9 @@ Workshop-looking IDs in footers or unrelated markup cannot override the form.
 A preset that becomes Workshop-empty after filtering is accepted only when the
 form selects at least one supported cDLC. cDLC-only sessions are therefore
 valid, while a content-empty modded session remains a recoverable draft.
+Server-only preset items are stored and revisioned separately, are never added
+to the public card or downloadable client modlist, and are applied through
+Arma's `-serverMod=` launch argument.
 
 Combined submissions mark the initial preset pending in the same stale-bound
 configuration write before automatic-start eligibility is evaluated. This
@@ -190,7 +194,8 @@ sensitive metadata. Recreate the message from the durable S3 object if it is
 deleted.
 
 Post-creation `/rb edit` with the `mods` section updates the desired Creator DLC set and optionally
-uploads and validates a pending preset revision. A running session is not
+uploads and validates independent pending client or server-only preset
+revisions. A running session is not
 interrupted. Apply pending mod options on the next start,
 wake, or restore. The previous revision remains active until installation and
 health verification pass; promote the public attachment only after success.

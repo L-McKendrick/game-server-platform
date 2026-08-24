@@ -297,32 +297,36 @@ func (session Session) requireRestoreWorkflow(workflowID string) error {
 
 // ArchiveManifest is the versioned, portable description stored beside an archive.
 type ArchiveManifest struct {
-	SchemaVersion          int                    `json:"schema_version"`
-	ArchiveID              string                 `json:"archive_id"`
-	SessionID              string                 `json:"session_id"`
-	SessionName            string                 `json:"session_name,omitempty"`
-	SessionSlug            string                 `json:"session_slug,omitempty"`
-	Description            string                 `json:"description,omitempty"`
-	CreatedAt              string                 `json:"created_at"`
-	Format                 string                 `json:"format"`
-	ObjectKey              string                 `json:"object_key"`
-	SHA256                 string                 `json:"sha256"`
-	SizeBytes              int64                  `json:"size_bytes"`
-	ContentRoots           []string               `json:"content_roots"`
-	GameProfileID          string                 `json:"game_profile_id"`
-	ConfigurationRevision  int64                  `json:"configuration_revision"`
-	MissionObjectKey       string                 `json:"mission_object_key"`
-	MissionFiles           []MissionRecord        `json:"mission_files,omitempty"`
-	ConfiguredMission      MissionSelection       `json:"configured_mission"`
-	CurrentMission         MissionSelection       `json:"current_mission,omitempty"`
-	PresetObjectKey        string                 `json:"preset_object_key"`
-	PresetRevisionSequence int64                  `json:"preset_revision_sequence,omitempty"`
-	ActivePresetRevision   *ArchivePresetRevision `json:"active_preset_revision,omitempty"`
-	PendingPresetRevision  *ArchivePresetRevision `json:"pending_preset_revision,omitempty"`
-	Vanilla                bool                   `json:"vanilla"`
-	CreatorDLCs            []string               `json:"creator_dlcs,omitempty"`
-	SourceInstanceID       string                 `json:"source_instance_id"`
-	SourceDataVolumeID     string                 `json:"source_data_volume_id"`
+	SchemaVersion                int                    `json:"schema_version"`
+	ArchiveID                    string                 `json:"archive_id"`
+	SessionID                    string                 `json:"session_id"`
+	SessionName                  string                 `json:"session_name,omitempty"`
+	SessionSlug                  string                 `json:"session_slug,omitempty"`
+	Description                  string                 `json:"description,omitempty"`
+	CreatedAt                    string                 `json:"created_at"`
+	Format                       string                 `json:"format"`
+	ObjectKey                    string                 `json:"object_key"`
+	SHA256                       string                 `json:"sha256"`
+	SizeBytes                    int64                  `json:"size_bytes"`
+	ContentRoots                 []string               `json:"content_roots"`
+	GameProfileID                string                 `json:"game_profile_id"`
+	ConfigurationRevision        int64                  `json:"configuration_revision"`
+	MissionObjectKey             string                 `json:"mission_object_key"`
+	MissionFiles                 []MissionRecord        `json:"mission_files,omitempty"`
+	ConfiguredMission            MissionSelection       `json:"configured_mission"`
+	CurrentMission               MissionSelection       `json:"current_mission,omitempty"`
+	PresetObjectKey              string                 `json:"preset_object_key"`
+	PresetRevisionSequence       int64                  `json:"preset_revision_sequence,omitempty"`
+	ActivePresetRevision         *ArchivePresetRevision `json:"active_preset_revision,omitempty"`
+	PendingPresetRevision        *ArchivePresetRevision `json:"pending_preset_revision,omitempty"`
+	ServerPresetObjectKey        string                 `json:"server_preset_object_key,omitempty"`
+	ServerPresetRevisionSequence int64                  `json:"server_preset_revision_sequence,omitempty"`
+	ActiveServerPresetRevision   *ArchivePresetRevision `json:"active_server_preset_revision,omitempty"`
+	PendingServerPresetRevision  *ArchivePresetRevision `json:"pending_server_preset_revision,omitempty"`
+	Vanilla                      bool                   `json:"vanilla"`
+	CreatorDLCs                  []string               `json:"creator_dlcs,omitempty"`
+	SourceInstanceID             string                 `json:"source_instance_id"`
+	SourceDataVolumeID           string                 `json:"source_data_volume_id"`
 }
 
 // ArchivePresetRevision is a redacted, portable snapshot of revision intent.
@@ -398,6 +402,9 @@ func (manifest ArchiveManifest) Validate() error {
 	if err := manifest.validatePresetRevisionIntent(); err != nil {
 		return err
 	}
+	if err := manifest.validateServerPresetRevisionIntent(); err != nil {
+		return err
+	}
 	if !manifest.IncludesReadableIdentity() {
 		return nil
 	}
@@ -407,6 +414,48 @@ func (manifest ArchiveManifest) Validate() error {
 	description, err := NormalizeSessionDescription(manifest.Description)
 	if err != nil || description != manifest.Description {
 		return fmt.Errorf("manifest session description is invalid")
+	}
+	return nil
+}
+
+func (modlist ArchivePresetModlist) Empty() bool {
+	return modlist.ObjectKey == "" && modlist.Filename == "" && modlist.SHA256 == "" && modlist.SizeBytes == 0 && modlist.WorkshopCount == 0
+}
+
+func (manifest ArchiveManifest) validateServerPresetRevisionIntent() error {
+	if !manifest.IncludesServerPresetRevisionIntent() {
+		return nil
+	}
+	if manifest.Vanilla {
+		return fmt.Errorf("vanilla manifest cannot contain server preset revision intent")
+	}
+	if manifest.ServerPresetRevisionSequence < 1 {
+		return fmt.Errorf("manifest server preset revision sequence is invalid")
+	}
+	activeNumber := int64(0)
+	if manifest.ActiveServerPresetRevision != nil {
+		if err := manifest.ActiveServerPresetRevision.validate(true); err != nil {
+			return fmt.Errorf("manifest active server preset revision is invalid: %w", err)
+		}
+		if !manifest.ActiveServerPresetRevision.Modlist.Empty() {
+			return fmt.Errorf("server preset revision must not contain a public modlist")
+		}
+		if manifest.ActiveServerPresetRevision.PresetObjectKey != manifest.ServerPresetObjectKey || manifest.ActiveServerPresetRevision.Number > manifest.ServerPresetRevisionSequence {
+			return fmt.Errorf("manifest active server preset revision does not match compatibility metadata")
+		}
+		activeNumber = manifest.ActiveServerPresetRevision.Number
+	} else if manifest.ServerPresetObjectKey != "" {
+		return fmt.Errorf("manifest server preset compatibility metadata has no active revision")
+	}
+	if pending := manifest.PendingServerPresetRevision; pending != nil {
+		if err := pending.validate(false); err != nil {
+			return fmt.Errorf("manifest pending server preset revision is invalid: %w", err)
+		}
+		if !pending.Modlist.Empty() || pending.Number > manifest.ServerPresetRevisionSequence || pending.BaseRevision != activeNumber {
+			return fmt.Errorf("manifest pending server preset revision sequence is invalid")
+		}
+	} else if manifest.ActiveServerPresetRevision == nil {
+		return fmt.Errorf("manifest server preset revision intent is incomplete")
 	}
 	return nil
 }
@@ -488,6 +537,10 @@ func (manifest ArchiveManifest) IncludesPresetRevisionIntent() bool {
 	return manifest.PresetRevisionSequence != 0 || manifest.ActivePresetRevision != nil || manifest.PendingPresetRevision != nil
 }
 
+func (manifest ArchiveManifest) IncludesServerPresetRevisionIntent() bool {
+	return manifest.ServerPresetRevisionSequence != 0 || manifest.ActiveServerPresetRevision != nil || manifest.PendingServerPresetRevision != nil
+}
+
 // PresetRevisionIntentMatches accepts legacy manifests and the expected
 // PENDING-to-APPLYING transition owned by the restore workflow.
 func (manifest ArchiveManifest) PresetRevisionIntentMatches(session Session) bool {
@@ -503,6 +556,18 @@ func (manifest ArchiveManifest) PresetRevisionIntentMatches(session Session) boo
 	}
 	pending := ArchivePresetRevisionSnapshot(pendingRevision)
 	return manifest.PresetRevisionSequence == session.EffectivePresetRevisionSequence() && archivePresetRevisionEqual(manifest.ActivePresetRevision, active) && archivePresetRevisionEqual(manifest.PendingPresetRevision, pending)
+}
+
+func (manifest ArchiveManifest) ServerPresetRevisionIntentMatches(session Session) bool {
+	if !manifest.IncludesServerPresetRevisionIntent() {
+		return true
+	}
+	active := ArchivePresetRevisionSnapshot(session.EffectiveActiveServerPresetRevision())
+	pendingRevision := session.PendingServerPresetRevision
+	if pendingRevision.Status == PresetRevisionApplying && session.ActiveWorkflowType == RestoreWorkflowType && pendingRevision.ApplyWorkflowID == session.ActiveWorkflowID {
+		pendingRevision.Status, pendingRevision.ApplyWorkflowID, pendingRevision.ApplyStartedAt = PresetRevisionPending, "", time.Time{}
+	}
+	return manifest.ServerPresetRevisionSequence == session.EffectiveServerPresetRevisionSequence() && archivePresetRevisionEqual(manifest.ActiveServerPresetRevision, active) && archivePresetRevisionEqual(manifest.PendingServerPresetRevision, ArchivePresetRevisionSnapshot(pendingRevision))
 }
 
 func archivePresetRevisionEqual(left, right *ArchivePresetRevision) bool {

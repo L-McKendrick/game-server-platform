@@ -42,12 +42,13 @@ type Projection struct {
 	Progress           ProgressProjection
 	LifecycleTiming    LifecycleTimingProjection
 
-	Players   PlayerProjection
-	Endpoints EndpointProjection
-	Mods      ModsProjection
-	Failure   FailureProjection
-	Freshness FreshnessProjection
-	Artifacts ArtifactProjection
+	Players    PlayerProjection
+	Endpoints  EndpointProjection
+	Mods       ModsProjection
+	ServerMods ServerModsProjection
+	Failure    FailureProjection
+	Freshness  FreshnessProjection
+	Artifacts  ArtifactProjection
 }
 
 type ProgressProjection struct {
@@ -100,6 +101,14 @@ type ModsProjection struct {
 	PendingSince    time.Time
 	DownloadURL     string
 	CreatorDLCs     []string
+}
+
+type ServerModsProjection struct {
+	Status          string
+	Issue           string
+	ActiveRevision  int64
+	PendingRevision int64
+	PendingStatus   string
 }
 
 type FailureProjection struct {
@@ -158,7 +167,8 @@ func Project(session domain.Session, options Options) Projection {
 		Mode: modeLabel(session.Vanilla), TeamSpeak: session.TeamSpeakEnabled,
 		Lifecycle: LifecycleLabel(session.LifecycleState), Health: HealthLabel(session.HealthStatus),
 		CurrentOperation: operationLabel(session.ActiveWorkflowType), Stage: stageLabel(session),
-		Mods: modProjection(session, options.ModlistURL),
+		Mods:       modProjection(session, options.ModlistURL),
+		ServerMods: serverModProjection(session),
 		Artifacts: ArtifactProjection{
 			Mission: artifactView(session.MissionArtifactStatus, session.MissionObjectKey, session.MissionArtifactIssue, false),
 			Preset:  presetArtifactView(session),
@@ -249,7 +259,30 @@ func Project(session domain.Session, options Options) Projection {
 	return projection
 }
 
+func serverModProjection(session domain.Session) ServerModsProjection {
+	view := artifactView(session.ServerPresetArtifactStatus, session.ServerPresetObjectKey, session.ServerPresetArtifactIssue, session.Vanilla)
+	projection := ServerModsProjection{Status: view.Status, Issue: view.Issue}
+	if active := session.EffectiveActiveServerPresetRevision(); !active.Empty() {
+		projection.ActiveRevision = active.Number
+	}
+	if pending := session.PendingServerPresetRevision; !pending.Empty() {
+		projection.PendingRevision = pending.Number
+		switch pending.Status {
+		case domain.PresetRevisionPending:
+			projection.PendingStatus = "Staged"
+		case domain.PresetRevisionApplying:
+			projection.PendingStatus = "Applying"
+		case domain.PresetRevisionFailed:
+			projection.PendingStatus = "Failed"
+		}
+	}
+	return projection
+}
+
 func presetArtifactView(session domain.Session) ArtifactView {
+	if !session.Vanilla && artifactAcceptedServerPreset(session) && session.PresetArtifactStatus == "" && session.PresetObjectKey == "" {
+		return ArtifactView{Status: "Not needed without client mods"}
+	}
 	if !session.Vanilla && len(session.CreatorDLCs) > 0 && session.PresetArtifactStatus == "" && session.PresetObjectKey == "" {
 		return ArtifactView{Status: "Not needed for Creator DLC only"}
 	}
@@ -639,7 +672,14 @@ func modStatus(session domain.Session) string {
 	if len(session.CreatorDLCs) > 0 && session.PresetArtifactStatus == "" && session.PresetObjectKey == "" {
 		return "Creator DLC only"
 	}
+	if artifactAcceptedServerPreset(session) && session.PresetArtifactStatus == "" && session.PresetObjectKey == "" {
+		return "No client mods"
+	}
 	return artifactView(session.PresetArtifactStatus, session.PresetObjectKey, session.PresetArtifactIssue, false).Status
+}
+
+func artifactAcceptedServerPreset(session domain.Session) bool {
+	return session.ServerPresetArtifactStatus == domain.ArtifactAccepted || (session.ServerPresetArtifactStatus == "" && strings.TrimSpace(session.ServerPresetObjectKey) != "")
 }
 
 func modProjection(session domain.Session, modlistURL string) ModsProjection {
