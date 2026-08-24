@@ -202,7 +202,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **13.7** [x] Publish a self-hosted Discord bot deployment guide.
       - **13.7.1** [x] Document Discord application setup, AWS/Terraform deployment, secret installation, command registration, verification, and safe provisioning enablement; link the guide from the README.
 
-14. **Automatic Inactivity Lifecycle — Pending**
+14. **Automatic Inactivity Lifecycle — Complete**
     - Deliver the first conservative fixed-policy foundation: sleep a running
       session after 30 continuous minutes with no players, then archive it after
       72 continuous hours sleeping. Defer configurable policies, richer activity
@@ -222,7 +222,11 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **14.3.2** [x] Define fixed 72-hour automatic-archive eligibility, deterministic request identity, and system-authority revalidation at command consumption.
       - **14.3.3** [x] Extend scheduled inactivity scanning and the archive workflow to safely prepare a sleeping managed instance for the existing SSM backup and verified destruction stages.
       - **14.3.4** [x] Add focused due/not-due, replay, state-drift, workflow-lock, wake-for-archive, integrity-guard, queue-failure, and Terraform validation coverage.
-    - **14.4** [ ] Add focused timing, state-drift, replay, concurrency, unknown-activity, workflow-failure, persistence, notification/card, Terraform, and end-to-end regression coverage; document the fixed policy and the deferred expansion points.
+    - **14.4** [x] Add focused timing, state-drift, replay, concurrency, unknown-activity, workflow-failure, persistence, notification/card, Terraform, and end-to-end regression coverage; document the fixed policy and the deferred expansion points.
+      - **14.4.1** [x] Review the complete Phase 14 branch across domain, monitoring, workflow, persistence, and infrastructure boundaries; correct cross-step lifecycle or fail-closed gaps.
+      - **14.4.2** [x] Add cross-layer regression coverage for automatic command handoff, stale or unknown activity, replay, concurrent mutation, workflow-start failure, and session-card notifications.
+      - **14.4.3** [x] Document the fixed 30-minute sleep and 72-hour archive policy, operational failure behavior, and deferred richer activity, warning, cancellation, scheduling, and configuration features.
+      - **14.4.4** [x] Run full Go, race/coverage, build, package, command-definition, bootstrap-script, and Terraform checks; review the final branch diff and refresh the phase handoff.
 
 15. **Maximum Session Duration Guardrails — Pending**
     - **15.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.

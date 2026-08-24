@@ -215,6 +215,47 @@ func TestStart_AllowsOnlyDueBoundAutomaticArchive(t *testing.T) {
 	}
 }
 
+func TestStart_AutomaticArchiveFailureRestoresSleepingStateAndUpdatesCard(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	repository, command := seedAutomaticArchive(t, now)
+	before, err := repository.Get(context.Background(), command.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notifications := memory.NewNotificationQueue()
+	service, err := NewService(
+		repository,
+		repository,
+		&workflowStarter{err: errors.New("Step Functions unavailable")},
+		rejectAuthorizer{},
+		&workflowIDs{ids: []string{"automatic-archive-started", "automatic-archive-failed"}},
+		workflowClock{now},
+		8*time.Hour,
+		WithNotificationQueue(notifications),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Start(context.Background(), command); err == nil {
+		t.Fatal("automatic archive start failure returned nil error")
+	}
+	stored, err := repository.Get(context.Background(), command.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := repository.GetWorkflow(context.Background(), command.SessionID, command.CommandID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := notifications.Requests()
+	if stored.LifecycleState != domain.StateSleeping || stored.ActiveWorkflowID != "" || !stored.SleepingSince.Equal(before.SleepingSince) ||
+		workflow.Status != domain.WorkflowFailed || workflow.ErrorCode != "ERR_WORKFLOW_START_FAILED" ||
+		len(requests) != 2 || requests[0].Kind != domain.NotificationSessionCard || requests[1].Kind != domain.NotificationSessionCard {
+		t.Fatalf("session=%#v workflow=%#v notifications=%#v", stored, workflow, requests)
+	}
+}
+
 func TestStart_ResumesTrustedBootstrapContinuationWithoutDiscordRoleReplay(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)

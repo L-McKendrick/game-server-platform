@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
+	workflowapp "github.com/L-McKendrick/game-server-platform/internal/app/workflows"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -64,6 +66,19 @@ type monitoringIDs struct{ next int }
 func (ids *monitoringIDs) New(time.Time) (string, error) {
 	ids.next++
 	return "event-" + string(rune('0'+ids.next)), nil
+}
+
+type lifecycleWorkflowStarter struct{ calls int }
+
+func (starter *lifecycleWorkflowStarter) Start(_ context.Context, workflow domain.Workflow) (string, error) {
+	starter.calls++
+	return "arn:aws:states:us-west-2:123456789012:execution:" + workflow.Type + ":" + workflow.ID, nil
+}
+
+type lifecycleAuthorizer struct{}
+
+func (lifecycleAuthorizer) Authorize(context.Context, string, string, string, []string) error {
+	return domain.ErrForbidden
 }
 
 func runningMonitoringSession(t *testing.T, now time.Time) domain.Session {
@@ -194,5 +209,78 @@ func TestRunQueuesDeterministicArchiveAfterSeventyTwoSleepingHours(t *testing.T)
 	service, _ = NewService(repo, monitoringRunner{}, nil, &monitoringIDs{}, monitoringClock{now}, WithCommandQueue(failing))
 	if _, err := service.Run(context.Background()); err == nil || len(failing.commands) != 1 {
 		t.Fatalf("archive queue failure error=%v commands=%#v", err, failing.commands)
+	}
+}
+
+func TestRunAutomaticSleepCommandStartsExistingWorkflowAndReplaysSafely(t *testing.T) {
+	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	session := runningMonitoringSession(t, now)
+	session.PlayerCountKnown, session.PlayerCount = true, 0
+	session.IdleSince, session.PlayerCountObservedAt = now.Add(-30*time.Minute), now.Add(-5*time.Minute)
+	monitorRepo := &monitoringRepo{session: session}
+	queue := &monitoringCommands{}
+	monitorService, err := NewService(
+		monitorRepo,
+		monitoringRunner{status: ports.MonitoringCommandStatus{Status: "Success", Observation: domain.HealthObservation{ArmaService: true, ArmaUDP: true}}},
+		nil,
+		&monitoringIDs{},
+		monitoringClock{now},
+		WithPlayerQuery(monitoringQuery{status: domain.PlayerStatus{PlayerCount: 0}}),
+		WithCommandQueue(queue),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := monitorService.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := monitorService.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.commands) != 1 {
+		t.Fatalf("automatic commands = %#v", queue.commands)
+	}
+
+	repository := memory.NewSessionRepository()
+	created := domain.NewSessionCreatedEvent("created", "created", domain.Actor{Type: domain.ActorTypeSystem, ID: "test"}, monitorRepo.session, now)
+	idempotency, err := domain.NewCompletedIdempotencyRecord("create", "request-hash", monitorRepo.session.ID, now, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.Create(context.Background(), monitorRepo.session, created, idempotency); err != nil {
+		t.Fatal(err)
+	}
+	starter := &lifecycleWorkflowStarter{}
+	notifications := memory.NewNotificationQueue()
+	workflowService, err := workflowapp.NewService(
+		repository,
+		repository,
+		starter,
+		lifecycleAuthorizer{},
+		&monitoringIDs{},
+		monitoringClock{now},
+		2*time.Hour,
+		workflowapp.WithNotificationQueue(notifications),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workflow, err := workflowService.Start(context.Background(), queue.commands[0])
+	if err != nil {
+		t.Fatalf("start automatic sleep: %v", err)
+	}
+	replayed, err := workflowService.Start(context.Background(), queue.commands[0])
+	if err != nil {
+		t.Fatalf("replay automatic sleep: %v", err)
+	}
+	stored, err := repository.Get(context.Background(), session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := notifications.Requests()
+	if workflow.Type != domain.SleepWorkflowType || replayed.ID != workflow.ID || starter.calls != 1 ||
+		stored.ActiveWorkflowID != workflow.ID || stored.LifecycleState != domain.StateStopping ||
+		len(requests) != 1 || requests[0].Kind != domain.NotificationSessionCard {
+		t.Fatalf("workflow=%#v replay=%#v session=%#v calls=%d notifications=%#v", workflow, replayed, stored, starter.calls, requests)
 	}
 }
