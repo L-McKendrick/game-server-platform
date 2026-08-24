@@ -219,7 +219,14 @@ func (service *Service) observe(ctx context.Context, request TaskRequest) (TaskR
 	if commandID == "" {
 		return TaskResult{}, fmt.Errorf("bootstrap command ID is required")
 	}
-	status, err := service.runner.Observe(ctx, session.Infrastructure.InstanceID, commandID)
+	var status ports.BootstrapCommandStatus
+	if live, ok := service.runner.(interface {
+		ObserveProgress(context.Context, string, string, string, string) (ports.BootstrapCommandStatus, error)
+	}); ok {
+		status, err = live.ObserveProgress(ctx, session.Infrastructure.InstanceID, commandID, session.ID, workflow.ID)
+	} else {
+		status, err = service.runner.Observe(ctx, session.Infrastructure.InstanceID, commandID)
+	}
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("observe bootstrap command: %w", err)
 	}

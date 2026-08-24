@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
@@ -28,6 +30,10 @@ type API interface {
 	GetCommandInvocation(context.Context, *ssm.GetCommandInvocationInput, ...func(*ssm.Options)) (*ssm.GetCommandInvocationOutput, error)
 }
 
+type progressAPI interface {
+	GetObject(context.Context, *s3.GetObjectInput, ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+}
+
 type Config struct {
 	Region             string
 	AssetsBucket       string
@@ -39,8 +45,9 @@ type Config struct {
 }
 
 type Runner struct {
-	client API
-	config Config
+	client   API
+	progress progressAPI
+	config   Config
 }
 
 var _ ports.BootstrapRunner = (*Runner)(nil)
@@ -74,6 +81,13 @@ func New(client API, config Config) (*Runner, error) {
 		return nil, fmt.Errorf("bootstrap timeout must be between 900 and 172800 seconds")
 	}
 	return &Runner{client: client, config: config}, nil
+}
+
+// WithProgressStore enables live progress snapshots from the existing session
+// assets bucket. SSM command stdout remains the terminal/fallback source.
+func (runner *Runner) WithProgressStore(client progressAPI) *Runner {
+	runner.progress = client
+	return runner
 }
 
 func (runner *Runner) Start(ctx context.Context, session domain.Session) (string, error) {
@@ -139,6 +153,30 @@ func (runner *Runner) Observe(ctx context.Context, instanceID string, commandID 
 		Activity:    parseActivity(aws.ToString(output.StandardOutputContent)),
 		Checkpoints: parseCheckpoints(aws.ToString(output.StandardOutputContent)),
 	}, nil
+}
+
+// ObserveProgress reads the workflow-scoped snapshot written by the running
+// host command, avoiding SSM's buffered in-progress StandardOutputContent.
+func (runner *Runner) ObserveProgress(ctx context.Context, instanceID, commandID, sessionID, workflowID string) (ports.BootstrapCommandStatus, error) {
+	status, err := runner.Observe(ctx, instanceID, commandID)
+	if err != nil || runner.progress == nil || strings.TrimSpace(workflowID) == "" {
+		return status, err
+	}
+	output, getErr := runner.progress.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(runner.config.AssetsBucket),
+		Key:    aws.String("sessions/" + sessionID + "/runtime/bootstrap-progress-" + workflowID + ".txt"),
+	})
+	if getErr != nil {
+		return status, nil
+	}
+	defer output.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(output.Body, 16*1024))
+	if readErr != nil {
+		return status, nil
+	}
+	status.Activity = parseActivity(string(body))
+	status.Checkpoints = parseCheckpoints(string(body))
+	return status, nil
 }
 
 func parseActivity(output string) string {
@@ -236,6 +274,7 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	}
 	values := map[string]string{
 		"SESSION_ID_B64":             session.ID,
+		"WORKFLOW_ID_B64":            session.ActiveWorkflowID,
 		"DISPLAY_NAME_B64":           session.DisplayName,
 		"DATA_VOLUME_ID_B64":         session.Infrastructure.DataVolumeID,
 		"MISSION_KEY_B64":            mission.ObjectKey,
@@ -259,7 +298,7 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	}
 	var command strings.Builder
 	command.WriteString("#!/usr/bin/env bash\nset -Eeuo pipefail\numask 077\n")
-	for _, key := range []string{"SESSION_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "MISSION_MANIFEST_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
+	for _, key := range []string{"SESSION_ID_B64", "WORKFLOW_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "MISSION_MANIFEST_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
 		command.WriteString("export " + key + "='" + base64.StdEncoding.EncodeToString([]byte(values[key])) + "'\n")
 	}
 	if session.TeamSpeakEnabled {

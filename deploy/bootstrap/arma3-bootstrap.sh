@@ -4,6 +4,7 @@ umask 077
 
 decode() { printf '%s' "$1" | base64 -d; }
 SESSION_ID="$(decode "$SESSION_ID_B64")"
+WORKFLOW_ID="$(decode "$WORKFLOW_ID_B64")"
 DISPLAY_NAME="$(decode "$DISPLAY_NAME_B64")"
 DATA_VOLUME_ID="$(decode "$DATA_VOLUME_ID_B64")"
 MISSION_KEY="$(decode "$MISSION_KEY_B64")"
@@ -41,10 +42,13 @@ STEAM_AUTH_PERSIST_ATTEMPTED=false
 STEAM_AUTH_LOCK_HEARTBEAT_PID=""
 STEAM_AUTH_LOCK_LEASE_SECONDS=900
 STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=300
+PROGRESS_FILE=/run/gsp-bootstrap-progress
+PROGRESS_KEY="sessions/$SESSION_ID/runtime/bootstrap-progress-$WORKFLOW_ID.txt"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
-checkpoint() { printf 'GSP_CHECKPOINT:%s\n' "$1"; }
-activity() { printf 'GSP_ACTIVITY:%s\n' "$1"; }
+publish_progress() { aws s3 cp "$PROGRESS_FILE" "s3://$ASSETS_BUCKET/$PROGRESS_KEY" --region "$AWS_REGION" --only-show-errors >/dev/null 2>&1 || true; }
+checkpoint() { printf 'GSP_CHECKPOINT:%s\n' "$1" | tee -a "$PROGRESS_FILE"; publish_progress; }
+activity() { sed -i '/^GSP_ACTIVITY:/d' "$PROGRESS_FILE"; printf 'GSP_ACTIVITY:%s\n' "$1" | tee -a "$PROGRESS_FILE"; publish_progress; }
 
 prepare_host() {
   command -v apt-get >/dev/null 2>&1 || { log "bootstrap requires the approved Ubuntu game-host image"; return 1; }
@@ -613,8 +617,9 @@ launch_and_verify() {
 
 exec 8>/run/gsp-bootstrap-host.lock
 flock -w 30 8
-checkpoint HOST_PREPARED
+: > "$PROGRESS_FILE"
 prepare_host
+checkpoint HOST_PREPARED
 mkdir -p "$STATE_DIR" "$LOG_DIR"
 exec 9>"$STATE_DIR/bootstrap.lock"
 flock -w 30 9

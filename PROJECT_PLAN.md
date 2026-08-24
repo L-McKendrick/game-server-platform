@@ -272,3 +272,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **18.6** [x] Make Terraform budget refreshes use AWS's reachable alternate endpoint.
       - **18.6.1** [x] Route only the existing AWS Budget through a us-east-1 billing provider configured for `budgets.us-east-1.api.aws`, without changing budget policy or other regional resources.
       - **18.6.2** [x] Verify a complete saved plan, refresh the operator handoff, then commit and push the fix.
+    - **18.7** [x] Repair live bootstrap progress delivery after development verification showed SSM buffered command output until completion.
+      - **18.7.1** [x] Publish a workflow-scoped, allowlisted progress snapshot from the host to the existing encrypted session-assets bucket and read it during the existing 30-second bootstrap poll, retaining SSM output as a terminal fallback.
+      - **18.7.2** [x] Emit `HOST_PREPARED` only after host preparation succeeds, and preserve the public game-file and Workshop stage/activity projection without exposing raw SteamCMD output.
+      - **18.7.3** [x] Add focused snapshot/key/parser coverage, review IAM and stale-workflow isolation, run proportional branch validation, and refresh the deployment handoff.

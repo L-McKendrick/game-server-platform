@@ -2,7 +2,7 @@
 
 ## State and Objective
 
-Phase 18 and its final review are complete on `codex/misc-fixes`. The branch
+Phase 18 and its follow-up live-progress repair are complete on `codex/misc-fixes`. The branch
 contains four lightweight Discord/Arma quality-of-life
 changes and no new worker, queue, state machine, or persistent service. Phase
 15 remains next in the primary delivery order after this branch is merged.
@@ -12,7 +12,10 @@ changes and no new worker, queue, state machine, or persistent service. Phase
 - Mission-manager controls are grouped per file with `Add mission` at the
   bottom while retaining private pagination and stale-component safeguards.
 - Bootstrap progress distinguishes game-file and Workshop installation, and
-  exposes only bounded allowlisted SteamCMD activity. Private `/rb status`
+  exposes only bounded allowlisted SteamCMD activity. A workflow-scoped
+  snapshot in the existing encrypted session-assets bucket makes those updates
+  visible during the running SSM command instead of waiting for buffered
+  command output. Private `/rb status`
   projects automatic sleep/archive times from authoritative lifecycle evidence.
 - Creation and `/rb edit ... section:mods` accept a separate private
   server-only preset with independent active/pending revisions. Bootstrap
@@ -40,6 +43,8 @@ changes and no new worker, queue, state machine, or persistent service. Phase
   server-preset boundaries, progress redaction, mission replay/idempotency,
   checksum placement, current-mission preservation, bootstrap replay, and
   least-privilege tagged-instance SSM access.
+- Live-progress review covers workflow-scoped object keys, bounded reads,
+  allowlisted parsing, missing-snapshot fallback, and least-privilege S3 access.
 - `go test ./...`, `go test -cover ./...`, `go vet ./...`, `go build ./cmd/...`,
   all 13 Lambda packages, Git Bash syntax, Terraform format/validation, and
   `git diff --check` pass after the final review fixes.
@@ -98,6 +103,10 @@ $BootstrapContent = (Get-Content -Raw "deploy/bootstrap/arma3-bootstrap.sh").Rep
 $BootstrapHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($BootstrapContent))).ToLowerInvariant()
 $BootstrapKey = "platform/bootstrap/arma3-$($BootstrapHash.Substring(0, 16)).sh"
 aws s3api head-object --bucket $BootstrapBucket --key $BootstrapKey
+
+# During a new setup, verify the workflow-scoped live snapshot exists. Obtain
+# the current workflow ID from the private `/rb status` response or metadata.
+# aws s3 cp "s3://$BootstrapBucket/sessions/<session-id>/runtime/bootstrap-progress-<workflow-id>.txt" -
 ```
 
 No Discord command registration is required because the `/rb` command schema

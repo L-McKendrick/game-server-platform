@@ -1,9 +1,11 @@
 package ssmbootstrap
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
@@ -23,6 +26,16 @@ import (
 type fakeSSM struct {
 	sent       *ssm.SendCommandInput
 	invocation *ssm.GetCommandInvocationOutput
+}
+
+type fakeProgress struct {
+	input *s3.GetObjectInput
+	body  string
+}
+
+func (fake *fakeProgress) GetObject(_ context.Context, input *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	fake.input = input
+	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewBufferString(fake.body))}, nil
 }
 
 func TestNewReportsExactMissingConfiguration(t *testing.T) {
@@ -56,6 +69,23 @@ func (fake *fakeSSM) SendCommand(_ context.Context, input *ssm.SendCommandInput,
 }
 func (fake *fakeSSM) GetCommandInvocation(context.Context, *ssm.GetCommandInvocationInput, ...func(*ssm.Options)) (*ssm.GetCommandInvocationOutput, error) {
 	return fake.invocation, nil
+}
+
+func TestObserveProgressUsesWorkflowScopedLiveSnapshot(t *testing.T) {
+	client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{Status: types.CommandInvocationStatusInProgress}}
+	progress := &fakeProgress{body: "GSP_CHECKPOINT:HOST_PREPARED\nGSP_CHECKPOINT:GAME_SERVER_INSTALLED\nGSP_ACTIVITY:ARMA_SERVER\n"}
+	runner, err := New(client, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.WithProgressStore(progress)
+	status, err := runner.ObserveProgress(context.Background(), "i-1", "command-1", "session-1", "workflow-1")
+	if err != nil || status.Activity != "Arma 3 server files" || !reflect.DeepEqual(status.Checkpoints, []domain.ProgressMilestone{domain.ProgressHostPrepared, domain.ProgressGameServerInstalled}) {
+		t.Fatalf("status = %#v, err = %v", status, err)
+	}
+	if got := aws.ToString(progress.input.Key); got != "sessions/session-1/runtime/bootstrap-progress-workflow-1.txt" {
+		t.Fatalf("progress key = %q", got)
+	}
 }
 
 func TestStartBuildsSecretSafeResumableCommand(t *testing.T) {
