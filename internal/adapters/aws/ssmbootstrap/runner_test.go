@@ -1,9 +1,11 @@
 package ssmbootstrap
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
@@ -23,6 +26,16 @@ import (
 type fakeSSM struct {
 	sent       *ssm.SendCommandInput
 	invocation *ssm.GetCommandInvocationOutput
+}
+
+type fakeProgress struct {
+	input *s3.GetObjectInput
+	body  string
+}
+
+func (fake *fakeProgress) GetObject(_ context.Context, input *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
+	fake.input = input
+	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewBufferString(fake.body))}, nil
 }
 
 func TestNewReportsExactMissingConfiguration(t *testing.T) {
@@ -56,6 +69,23 @@ func (fake *fakeSSM) SendCommand(_ context.Context, input *ssm.SendCommandInput,
 }
 func (fake *fakeSSM) GetCommandInvocation(context.Context, *ssm.GetCommandInvocationInput, ...func(*ssm.Options)) (*ssm.GetCommandInvocationOutput, error) {
 	return fake.invocation, nil
+}
+
+func TestObserveProgressUsesWorkflowScopedLiveSnapshot(t *testing.T) {
+	client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{Status: types.CommandInvocationStatusInProgress}}
+	progress := &fakeProgress{body: "GSP_CHECKPOINT:HOST_PREPARED\nGSP_CHECKPOINT:GAME_SERVER_INSTALLED\nGSP_ACTIVITY:ARMA_SERVER\n"}
+	runner, err := New(client, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.WithProgressStore(progress)
+	status, err := runner.ObserveProgress(context.Background(), "i-1", "command-1", "session-1", "workflow-1")
+	if err != nil || status.Activity != "Arma 3 server files" || !reflect.DeepEqual(status.Checkpoints, []domain.ProgressMilestone{domain.ProgressHostPrepared, domain.ProgressGameServerInstalled}) {
+		t.Fatalf("status = %#v, err = %v", status, err)
+	}
+	if got := aws.ToString(progress.input.Key); got != "sessions/session-1/runtime/bootstrap-progress-workflow-1.txt" {
+		t.Fatalf("progress key = %q", got)
+	}
 }
 
 func TestStartBuildsSecretSafeResumableCommand(t *testing.T) {
@@ -100,6 +130,34 @@ func TestCommandSupportsBuiltInDefaultMissionWithoutS3Object(t *testing.T) {
 	}
 	if !strings.Contains(script, "MISSION_KEY_B64=''") {
 		t.Fatal("built-in mission unexpectedly required an object key")
+	}
+}
+
+func TestCommandSynchronizesEveryAcceptedActiveMissionWithoutChangingSelection(t *testing.T) {
+	runner, err := New(&fakeSSM{}, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstKey := "sessions/session-1/input/missions/" + strings.Repeat("a", 64) + "-First.Altis.pbo"
+	secondKey := "sessions/session-1/input/missions/" + strings.Repeat("b", 64) + "-Second.Stratis.pbo"
+	session := domain.Session{ID: "session-1", DisplayName: "Test", Vanilla: true, ConfiguredMission: domain.UploadedMissionSelection(firstKey), CurrentMission: domain.UploadedMissionSelection(firstKey), MissionFiles: []domain.MissionRecord{
+		{ObjectKey: firstKey, Filename: "First.Altis.pbo", Status: domain.ArtifactAccepted},
+		{ObjectKey: secondKey, Filename: "Second.Stratis.pbo", Status: domain.ArtifactAccepted},
+		{ObjectKey: "rejected", Filename: "Rejected.pbo", Status: domain.ArtifactRejected},
+	}, LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}}
+	script, err := runner.command(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := strings.Repeat("a", 64) + "\tFirst.Altis.pbo\t" + firstKey + "\n" + strings.Repeat("b", 64) + "\tSecond.Stratis.pbo\t" + secondKey + "\n"
+	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(manifest))) {
+		t.Fatal("command omitted accepted mission manifest")
+	}
+	if strings.Contains(script, base64.StdEncoding.EncodeToString([]byte("rejected"))) {
+		t.Fatal("command included rejected mission")
+	}
+	if session.CurrentMission.ObjectKey != firstKey {
+		t.Fatal("manifest construction changed current mission")
 	}
 }
 
@@ -214,6 +272,27 @@ func TestStartRollbackSelectsPriorActiveRevision(t *testing.T) {
 	}
 }
 
+func TestCommandSelectsApplyingServerPresetIndependently(t *testing.T) {
+	t.Parallel()
+	runner, err := New(&fakeSSM{}, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
+	activeServer := "sessions/session-1/input/server-presets/v1.html"
+	pendingServer := "sessions/session-1/input/server-presets/v2.html"
+	session := domain.Session{ID: "session-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: "sessions/session-1/input/presets/v1.html", LifecycleState: domain.StateWaking, ActiveWorkflowID: "wake-1", Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}, ServerPresetObjectKey: activeServer,
+		ActiveServerPresetRevision:  domain.PresetRevision{Number: 1, PresetObjectKey: activeServer, Status: domain.PresetRevisionActive, StagedAt: now, ActivatedAt: now},
+		PendingServerPresetRevision: domain.PresetRevision{Number: 2, BaseRevision: 1, PresetObjectKey: pendingServer, Status: domain.PresetRevisionApplying, StagedAt: now, ApplyWorkflowID: "wake-1", ApplyStartedAt: now}}
+	script, err := runner.command(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(pendingServer))) || strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(activeServer))) {
+		t.Fatalf("server preset selection missing from command: %s", script)
+	}
+}
+
 func TestGeneratedCommandPassesBashSyntaxCheck(t *testing.T) {
 	runner, err := New(&fakeSSM{}, testConfig())
 	if err != nil {
@@ -259,7 +338,7 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"get-secret-value", "put-secret-value", "AWSCURRENT", "source_version_id", "config_sha256", "STEAM_AUTH#CACHE", "lease_expires_at < :now", "refresh_steam_auth_lock", "start_steam_auth_lock_heartbeat", "STEAM_AUTH_LOCK_LEASE_SECONDS=900", "STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=300", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "VANILLA_MODE", "PRESET_REVISION", "PRESET_ROLLBACK", "MOD_CONFIG_REVISION", "SERVER_CONFIG_KEY", "SERVER_CONFIG_SHA256", "server.cfg.pending", "sha256sum --check --status", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "revision-$PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete", "mod-revisions/revision-", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "safe_mission_template=\"$(sqf_escape \"$mission_template\")\"", "template = \"$safe_mission_template\";", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
+	for _, required := range []string{"get-secret-value", "put-secret-value", "AWSCURRENT", "source_version_id", "config_sha256", "STEAM_AUTH#CACHE", "lease_expires_at < :now", "refresh_steam_auth_lock", "start_steam_auth_lock_heartbeat", "STEAM_AUTH_LOCK_LEASE_SECONDS=900", "STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=300", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "VANILLA_MODE", "PRESET_REVISION", "SERVER_PRESET_REVISION", "PRESET_ROLLBACK", "MOD_CONFIG_REVISION", "SERVER_CONFIG_KEY", "SERVER_CONFIG_SHA256", "server.cfg.pending", "sha256sum --check --status", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "revision-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete", "mod-revisions/revision-", "server-mod-revisions/revision-", "-serverMod=$server_mods", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "safe_mission_template=\"$(sqf_escape \"$mission_template\")\"", "template = \"$safe_mission_template\";", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
 		if !strings.Contains(string(script), required) {
 			t.Errorf("script missing %q", required)
 		}
@@ -375,6 +454,41 @@ func TestObserveReturnsOnlyOrderedAllowlistedCheckpoints(t *testing.T) {
 	want := []domain.ProgressMilestone{domain.ProgressHostPrepared, domain.ProgressGameServerInstalled, domain.ProgressModsApplied}
 	if !reflect.DeepEqual(status.Checkpoints, want) || strings.Contains(fmt.Sprintf("%#v", status), "password") {
 		t.Fatalf("sanitized status = %#v; want checkpoints %#v", status, want)
+	}
+}
+
+func TestObserveReturnsOnlyLatestAllowlistedActivity(t *testing.T) {
+	t.Parallel()
+	output := strings.Join([]string{
+		"GSP_ACTIVITY:ARMA_SERVER",
+		"GSP_ACTIVITY:WORKSHOP_ITEMS:12",
+		"GSP_ACTIVITY:WORKSHOP_ITEM:1234",
+		"GSP_ACTIVITY:WORKSHOP_ITEMS:12 password=secret",
+	}, "\n")
+	client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{
+		Status: types.CommandInvocationStatusInProgress, StandardOutputContent: aws.String(output),
+	}}
+	runner, _ := New(client, testConfig())
+	status, err := runner.Observe(context.Background(), "i-1", "command-1")
+	if err != nil || status.Activity != "Workshop content (12 items)" || strings.Contains(fmt.Sprintf("%#v", status), "secret") {
+		t.Fatalf("sanitized activity = %#v, err = %v", status, err)
+	}
+}
+
+func TestObserveClearsActivityAfterNewerCheckpoint(t *testing.T) {
+	t.Parallel()
+	output := strings.Join([]string{
+		"GSP_CHECKPOINT:GAME_SERVER_INSTALLED",
+		"GSP_ACTIVITY:ARMA_SERVER",
+		"GSP_CHECKPOINT:MODS_APPLIED",
+	}, "\n")
+	client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{
+		Status: types.CommandInvocationStatusInProgress, StandardOutputContent: aws.String(output),
+	}}
+	runner, _ := New(client, testConfig())
+	status, err := runner.Observe(context.Background(), "i-1", "command-1")
+	if err != nil || status.Activity != "" {
+		t.Fatalf("stale activity = %#v, err = %v", status, err)
 	}
 }
 

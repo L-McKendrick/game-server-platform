@@ -198,6 +198,36 @@ func TestRequestArtifactIngestAllowsOwnerToQueueRunningPresetRevision(t *testing
 	}
 }
 
+func TestRequestArtifactIngestAllowsFirstClientPresetOnEstablishedCDLCSession(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 12, 30, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	queue := memory.NewArtifactQueue()
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now}, time.Hour, WithArtifactQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-cdlc-established", Slug: "cdlc-established", DisplayName: "CDLC Established", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(domain.SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 86400, CreatorDLCs: []string{domain.CreatorDLCReactionForces}}, now); err != nil {
+		t.Fatal(err)
+	}
+	event := domain.NewSessionCreatedEvent("event-cdlc-established", "correlation-cdlc-established", testActor("owner-1"), session, now)
+	record, _ := domain.NewCompletedIdempotencyRecord("seed:cdlc-established", "hash", session.ID, now, time.Hour)
+	if err := repository.Create(context.Background(), session, event, record); err != nil {
+		t.Fatal(err)
+	}
+	request := domain.ArtifactIngestRequest{SchemaVersion: 1, SessionID: session.ID, Kind: domain.ArtifactPreset, AttachmentID: "attachment-first-client", Filename: "first.html", ContentType: "text/html", SizeBytes: 100, SourceURL: "https://cdn.discordapp.com/attachments/1/2/first.html", ActorID: "owner-1", GuildID: session.GuildID, ChannelID: session.ChannelID, CorrelationID: "correlation-first-client", IdempotencyKey: "discord:first-client", RequestedAt: now, Purpose: domain.ArtifactPurposePresetRevision, ExpectedActivePresetRevision: 0}
+	if err := service.RequestArtifactIngest(context.Background(), testActor("owner-1"), request); err != nil {
+		t.Fatal(err)
+	}
+	if requests := queue.Requests(); len(requests) != 1 || requests[0].ExpectedActivePresetRevision != 0 || !requests[0].IsPresetRevision() {
+		t.Fatalf("queued requests = %#v", requests)
+	}
+}
+
 func seedPresetRevisionSession(t *testing.T, repository *memory.SessionRepository, now time.Time, owner string) domain.Session {
 	t.Helper()
 	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-mods", Slug: "session-mods", DisplayName: "Session Mods", GameType: "arma3", OwnerDiscordUserID: owner, GuildID: "guild-1", ChannelID: "channel-1"}, now)

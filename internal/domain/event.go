@@ -291,6 +291,22 @@ func addPresetApplicationEventData(data map[string]string, session Session, now 
 		data["base_preset_revision"] = fmt.Sprintf("%d", pending.BaseRevision)
 		data["rollback_disposition"] = string(pending.RollbackDisposition)
 	}
+	if pending := session.PendingServerPresetRevision; pending.Status == PresetRevisionApplying && pending.ApplyStartedAt.Equal(now.UTC()) {
+		data["server_revision_event_type"] = string(EventPresetRevisionApplying)
+		data["server_preset_revision"] = fmt.Sprintf("%d", pending.Number)
+		data["base_server_preset_revision"] = fmt.Sprintf("%d", pending.BaseRevision)
+	}
+	if active := session.ActiveServerPresetRevision; !active.Empty() && active.ActivatedAt.Equal(now.UTC()) {
+		data["server_revision_event_type"] = string(EventPresetRevisionActivated)
+		data["server_preset_revision"] = fmt.Sprintf("%d", active.Number)
+		data["base_server_preset_revision"] = fmt.Sprintf("%d", active.BaseRevision)
+	}
+	if pending := session.PendingServerPresetRevision; pending.Status == PresetRevisionFailed && pending.FailedAt.Equal(now.UTC()) {
+		data["server_revision_event_type"] = string(EventPresetRevisionFailed)
+		data["server_preset_revision"] = fmt.Sprintf("%d", pending.Number)
+		data["base_server_preset_revision"] = fmt.Sprintf("%d", pending.BaseRevision)
+		data["server_rollback_disposition"] = string(pending.RollbackDisposition)
+	}
 }
 
 func addPresetIntentEventData(data map[string]string, session Session) {
@@ -300,6 +316,13 @@ func addPresetIntentEventData(data map[string]string, session Session) {
 	if pending := session.PendingPresetRevision; !pending.Empty() {
 		data["pending_preset_revision"] = fmt.Sprintf("%d", pending.Number)
 		data["pending_preset_revision_status"] = string(pending.Status)
+	}
+	if active := session.EffectiveActiveServerPresetRevision(); !active.Empty() {
+		data["active_server_preset_revision"] = fmt.Sprintf("%d", active.Number)
+	}
+	if pending := session.PendingServerPresetRevision; !pending.Empty() {
+		data["pending_server_preset_revision"] = fmt.Sprintf("%d", pending.Number)
+		data["pending_server_preset_revision_status"] = string(pending.Status)
 	}
 }
 

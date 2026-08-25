@@ -3,11 +3,16 @@ package ssmbootstrap
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"path"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
@@ -25,6 +30,10 @@ type API interface {
 	GetCommandInvocation(context.Context, *ssm.GetCommandInvocationInput, ...func(*ssm.Options)) (*ssm.GetCommandInvocationOutput, error)
 }
 
+type progressAPI interface {
+	GetObject(context.Context, *s3.GetObjectInput, ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+}
+
 type Config struct {
 	Region             string
 	AssetsBucket       string
@@ -36,8 +45,9 @@ type Config struct {
 }
 
 type Runner struct {
-	client API
-	config Config
+	client   API
+	progress progressAPI
+	config   Config
 }
 
 var _ ports.BootstrapRunner = (*Runner)(nil)
@@ -71,6 +81,13 @@ func New(client API, config Config) (*Runner, error) {
 		return nil, fmt.Errorf("bootstrap timeout must be between 900 and 172800 seconds")
 	}
 	return &Runner{client: client, config: config}, nil
+}
+
+// WithProgressStore enables live progress snapshots from the existing session
+// assets bucket. SSM command stdout remains the terminal/fallback source.
+func (runner *Runner) WithProgressStore(client progressAPI) *Runner {
+	runner.progress = client
+	return runner
 }
 
 func (runner *Runner) Start(ctx context.Context, session domain.Session) (string, error) {
@@ -133,8 +150,64 @@ func (runner *Runner) Observe(ctx context.Context, instanceID string, commandID 
 	code, message := bootstrapFailure(aws.ToString(output.StandardErrorContent))
 	return ports.BootstrapCommandStatus{
 		Status: string(output.Status), ErrorCode: code, ErrorMessage: message,
+		Activity:    parseActivity(aws.ToString(output.StandardOutputContent)),
 		Checkpoints: parseCheckpoints(aws.ToString(output.StandardOutputContent)),
 	}, nil
+}
+
+// ObserveProgress reads the workflow-scoped snapshot written by the running
+// host command, avoiding SSM's buffered in-progress StandardOutputContent.
+func (runner *Runner) ObserveProgress(ctx context.Context, instanceID, commandID, sessionID, workflowID string) (ports.BootstrapCommandStatus, error) {
+	status, err := runner.Observe(ctx, instanceID, commandID)
+	if err != nil || runner.progress == nil || strings.TrimSpace(workflowID) == "" {
+		return status, err
+	}
+	output, getErr := runner.progress.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(runner.config.AssetsBucket),
+		Key:    aws.String("sessions/" + sessionID + "/runtime/bootstrap-progress-" + workflowID + ".txt"),
+	})
+	if getErr != nil {
+		return status, nil
+	}
+	defer output.Body.Close()
+	body, readErr := io.ReadAll(io.LimitReader(output.Body, 16*1024))
+	if readErr != nil {
+		return status, nil
+	}
+	status.Activity = parseActivity(string(body))
+	status.Checkpoints = parseCheckpoints(string(body))
+	return status, nil
+}
+
+func parseActivity(output string) string {
+	activity := ""
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "GSP_CHECKPOINT:") {
+			activity = ""
+			continue
+		}
+		const prefix = "GSP_ACTIVITY:"
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		switch {
+		case value == "ARMA_SERVER":
+			activity = "Arma 3 server files"
+		case strings.HasPrefix(value, "WORKSHOP_ITEMS:"):
+			count := strings.TrimPrefix(value, "WORKSHOP_ITEMS:")
+			parsed, err := strconv.Atoi(count)
+			if err == nil && parsed >= 1 && parsed <= 9999 && strconv.Itoa(parsed) == count {
+				unit := "items"
+				if parsed == 1 {
+					unit = "item"
+				}
+				activity = fmt.Sprintf("Workshop content (%d %s)", parsed, unit)
+			}
+		}
+	}
+	return activity
 }
 
 func bootstrapFailure(stderr string) (string, string) {
@@ -183,37 +256,49 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	}
 	presetObjectKey := session.PresetObjectKeyForApplication()
 	presetRevision := session.PresetRevisionForApplication()
+	serverPresetObjectKey := session.ServerPresetObjectKeyForApplication()
+	serverPresetRevision := session.ServerPresetRevisionForApplication()
 	mission := session.MissionForApplication()
+	missionManifest, err := acceptedMissionManifest(session)
+	if err != nil {
+		return "", err
+	}
 	if rollback {
 		active := session.EffectiveActivePresetRevision()
 		presetObjectKey, presetRevision = active.PresetObjectKey, active.Number
+		serverActive := session.EffectiveActiveServerPresetRevision()
+		serverPresetObjectKey, serverPresetRevision = serverActive.PresetObjectKey, serverActive.Number
 	}
-	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || mission.Template == "" || (!session.Vanilla && presetObjectKey == "" && len(creatorDLCFolders) == 0) {
+	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || mission.Template == "" || (!session.Vanilla && presetObjectKey == "" && serverPresetObjectKey == "" && len(creatorDLCFolders) == 0) {
 		return "", fmt.Errorf("instance, data volume, mission selection, and modded content are required")
 	}
 	values := map[string]string{
-		"SESSION_ID_B64":          session.ID,
-		"DISPLAY_NAME_B64":        session.DisplayName,
-		"DATA_VOLUME_ID_B64":      session.Infrastructure.DataVolumeID,
-		"MISSION_KEY_B64":         mission.ObjectKey,
-		"MISSION_TEMPLATE_B64":    mission.Template,
-		"SERVER_CONFIG_KEY_B64":   session.ServerConfigObjectKey,
-		"SERVER_CONFIG_SHA_B64":   session.ServerConfigSHA256,
-		"SERVER_CONFIG_REV_B64":   fmt.Sprintf("%d", session.ServerConfigRevision),
-		"PRESET_KEY_B64":          presetObjectKey,
-		"PRESET_REVISION_B64":     fmt.Sprintf("%d", presetRevision),
-		"PRESET_ROLLBACK_B64":     fmt.Sprintf("%t", rollback),
-		"CREATOR_DLC_MODS_B64":    strings.Join(creatorDLCFolders, ";"),
-		"MOD_CONFIG_REVISION_B64": fmt.Sprintf("%d", session.ConfigurationRevision),
-		"ASSETS_BUCKET_B64":       runner.config.AssetsBucket,
-		"METADATA_TABLE_B64":      runner.config.MetadataTableName,
-		"STEAM_AUTH_SECRET_B64":   runner.config.SteamAuthSecretID,
-		"AWS_REGION_B64":          runner.config.Region,
-		"TEAMSPEAK_VERSION_B64":   runner.config.TeamSpeakVersion,
+		"SESSION_ID_B64":             session.ID,
+		"WORKFLOW_ID_B64":            session.ActiveWorkflowID,
+		"DISPLAY_NAME_B64":           session.DisplayName,
+		"DATA_VOLUME_ID_B64":         session.Infrastructure.DataVolumeID,
+		"MISSION_KEY_B64":            mission.ObjectKey,
+		"MISSION_TEMPLATE_B64":       mission.Template,
+		"MISSION_MANIFEST_B64":       missionManifest,
+		"SERVER_CONFIG_KEY_B64":      session.ServerConfigObjectKey,
+		"SERVER_CONFIG_SHA_B64":      session.ServerConfigSHA256,
+		"SERVER_CONFIG_REV_B64":      fmt.Sprintf("%d", session.ServerConfigRevision),
+		"PRESET_KEY_B64":             presetObjectKey,
+		"PRESET_REVISION_B64":        fmt.Sprintf("%d", presetRevision),
+		"PRESET_ROLLBACK_B64":        fmt.Sprintf("%t", rollback),
+		"SERVER_PRESET_KEY_B64":      serverPresetObjectKey,
+		"SERVER_PRESET_REVISION_B64": fmt.Sprintf("%d", serverPresetRevision),
+		"CREATOR_DLC_MODS_B64":       strings.Join(creatorDLCFolders, ";"),
+		"MOD_CONFIG_REVISION_B64":    fmt.Sprintf("%d", session.ConfigurationRevision),
+		"ASSETS_BUCKET_B64":          runner.config.AssetsBucket,
+		"METADATA_TABLE_B64":         runner.config.MetadataTableName,
+		"STEAM_AUTH_SECRET_B64":      runner.config.SteamAuthSecretID,
+		"AWS_REGION_B64":             runner.config.Region,
+		"TEAMSPEAK_VERSION_B64":      runner.config.TeamSpeakVersion,
 	}
 	var command strings.Builder
 	command.WriteString("#!/usr/bin/env bash\nset -Eeuo pipefail\numask 077\n")
-	for _, key := range []string{"SESSION_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
+	for _, key := range []string{"SESSION_ID_B64", "WORKFLOW_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "MISSION_MANIFEST_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
 		command.WriteString("export " + key + "='" + base64.StdEncoding.EncodeToString([]byte(values[key])) + "'\n")
 	}
 	if session.TeamSpeakEnabled {
@@ -244,4 +329,27 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	command.WriteString("chmod 700 \"$bootstrap_script\"\n")
 	command.WriteString("\"$bootstrap_script\"\n")
 	return command.String(), nil
+}
+
+func acceptedMissionManifest(session domain.Session) (string, error) {
+	var manifest strings.Builder
+	for _, mission := range session.AcceptedMissionFiles() {
+		base := path.Base(mission.ObjectKey)
+		expectedPrefix := path.Join("sessions", session.ID, "input", "missions") + "/"
+		separator := strings.IndexByte(base, '-')
+		if !strings.HasPrefix(mission.ObjectKey, expectedPrefix) || separator != 64 || len(base) <= 65 || base[65:] != mission.Filename {
+			// Legacy single-mission records predate content-addressed keys and
+			// continue through MISSION_KEY until replaced by a current upload.
+			if mission.ObjectKey == session.MissionForApplication().ObjectKey {
+				continue
+			}
+			return "", fmt.Errorf("accepted mission object key is malformed")
+		}
+		checksum := base[:64]
+		if _, err := hex.DecodeString(checksum); err != nil {
+			return "", fmt.Errorf("accepted mission checksum is malformed")
+		}
+		manifest.WriteString(checksum + "\t" + mission.Filename + "\t" + mission.ObjectKey + "\n")
+	}
+	return manifest.String(), nil
 }

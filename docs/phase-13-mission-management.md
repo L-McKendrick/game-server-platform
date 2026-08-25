@@ -22,9 +22,19 @@ different revisions with the same original filename to coexist. Legacy rows
 with only `mission_object_key` are expanded on read and retain the compatibility
 field on write.
 
-Bootstrap receives both the selected template and optional S3 key. It downloads
-an accepted upload exactly when a key exists; otherwise it launches the built-in
-template. After loading either the generated configuration or an
+Newly accepted uploads are copied to `arma3/mpmissions` on a stable running
+managed host. The artifact worker revalidates the exact accepted object,
+lifecycle, workflow lock, and instance before issuing one bounded SSM copy.
+The command downloads to a temporary file, verifies the content-addressed
+SHA-256, sets `steam:steam` ownership, and atomically renames the file without
+restarting Arma or changing the current mission. Sleeping, archived, changing,
+or instance-less sessions skip the live command and receive every active
+accepted mission through normal bootstrap.
+
+Bootstrap receives the selected template plus a checksum-bound manifest of all
+active accepted uploads. It synchronizes that complete set during start, wake,
+restore, and replacement-host bootstrap while the selected template alone
+remains authoritative for launch. After loading either the generated configuration or an
 Administrator-provided `server.cfg`, bootstrap removes the effective
 `class Missions` block and appends the platform-generated block. Administrator
 settings outside that block remain intact.

@@ -1,6 +1,7 @@
 package sessioncard
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -130,6 +131,71 @@ func TestProgressBarFillsCompletedCheckpointsOnly(t *testing.T) {
 	content := RenderDetailed(projection)
 	if !strings.Contains(content, "Step 4/6") || !strings.Contains(content, "**Elapsed:** 0s") || strings.Contains(content, "Milestone") {
 		t.Fatalf("progress content = %q", content)
+	}
+}
+
+func TestBootstrapActivityAndInactivityDeadlinesRenderFromAuthoritativeState(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	installing := domain.Session{
+		DisplayName: "Install", Slug: "install", GameType: "arma3", LifecycleState: domain.StateInstalling, UpdatedAt: now,
+		Progress: domain.SessionProgress{
+			WorkflowID: "bootstrap-1", WorkflowType: domain.BootstrapWorkflowType,
+			Milestone: domain.ProgressGameServerInstalled, Activity: "Arma 3 server files",
+			State: domain.ProgressActive, StartedAt: now.Add(-time.Minute), LastProgressAt: now,
+		},
+	}
+	card := Project(installing, Options{Now: now})
+	if card.Stage != "Downloading and installing game files" || card.Progress.Activity != "Arma 3 server files" ||
+		!strings.Contains(RenderPublicEmbed(card).Fields[1].Value, "**Current download:** Arma 3 server files") {
+		t.Fatalf("installing projection = %#v embed = %#v", card, RenderPublicEmbed(card))
+	}
+
+	idle := domain.Session{
+		DisplayName: "Idle", Slug: "idle", GameType: "arma3", LifecycleState: domain.StateRunning, UpdatedAt: now,
+		PlayerCountKnown: true, PlayerCount: 0, IdleSince: now.Add(-10 * time.Minute),
+	}
+	idleContent := RenderDetailed(Project(idle, Options{Now: now}))
+	wantSleep := idle.IdleSince.Add(domain.AutomaticSleepAfter).Unix()
+	if !strings.Contains(idleContent, fmt.Sprintf("**Automatic sleep:** <t:%d:F> (<t:%d:R>)", wantSleep, wantSleep)) {
+		t.Fatalf("idle status = %q", idleContent)
+	}
+
+	sleeping := idle
+	sleeping.LifecycleState = domain.StateSleeping
+	sleeping.SleepingSince = now.Add(-time.Hour)
+	sleeping.IdleSince = time.Time{}
+	wantArchive := sleeping.SleepingSince.Add(domain.AutomaticArchiveAfter).Unix()
+	sleepingContent := RenderDetailed(Project(sleeping, Options{Now: now}))
+	if !strings.Contains(sleepingContent, fmt.Sprintf("**Automatic archive:** <t:%d:F> (<t:%d:R>)", wantArchive, wantArchive)) {
+		t.Fatalf("sleeping status = %q", sleepingContent)
+	}
+}
+
+func TestInactivityDeadlinesOmitUnknownInterruptedAndAnomalousEvidence(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name    string
+		session domain.Session
+	}{
+		{name: "unknown players", session: domain.Session{LifecycleState: domain.StateRunning, IdleSince: now.Add(-time.Minute)}},
+		{name: "active players", session: domain.Session{LifecycleState: domain.StateRunning, PlayerCountKnown: true, PlayerCount: 2, IdleSince: now.Add(-time.Minute)}},
+		{name: "idle evidence interrupted", session: domain.Session{LifecycleState: domain.StateRunning, PlayerCountKnown: true, PlayerCount: 0}},
+		{name: "future idle clock", session: domain.Session{LifecycleState: domain.StateRunning, PlayerCountKnown: true, PlayerCount: 0, IdleSince: now.Add(time.Minute)}},
+		{name: "sleep timestamp in wrong state", session: domain.Session{LifecycleState: domain.StateArchived, SleepingSince: now.Add(-time.Hour)}},
+		{name: "future sleep clock", session: domain.Session{LifecycleState: domain.StateSleeping, SleepingSince: now.Add(time.Minute)}},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			test.session.DisplayName, test.session.Slug, test.session.GameType, test.session.UpdatedAt = "Timing", "timing", "arma3", now
+			card := Project(test.session, Options{Now: now})
+			if card.LifecycleTiming.Label != "" || strings.Contains(RenderDetailed(card), "**Automatic sleep:**") || strings.Contains(RenderDetailed(card), "**Automatic archive:**") {
+				t.Fatalf("unexpected timing = %#v content=%q", card.LifecycleTiming, RenderDetailed(card))
+			}
+		})
 	}
 }
 

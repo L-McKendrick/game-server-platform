@@ -46,6 +46,12 @@ func (session *Session) CompleteTermination(workflowID string, now time.Time) er
 	session.PresetRevisionSequence = 0
 	session.ActivePresetRevision = PresetRevision{}
 	session.PendingPresetRevision = PresetRevision{}
+	session.ServerPresetObjectKey = ""
+	session.ServerPresetRevisionSequence = 0
+	session.ActiveServerPresetRevision = PresetRevision{}
+	session.PendingServerPresetRevision = PresetRevision{}
+	session.ServerPresetArtifactStatus = ""
+	session.ServerPresetArtifactIssue = ""
 	session.MonitoringCommandID = ""
 	session.MonitoringStartedAt = time.Time{}
 	session.DesiredState, session.ObservedState, session.LifecycleState = StateDeleted, StateDeleted, StateDeleted

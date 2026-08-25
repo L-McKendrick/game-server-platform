@@ -265,7 +265,7 @@ func TestHandlerOpensAndSubmitsPrivateModsModalForRunningSession(t *testing.T) {
 	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
 	var modal interactionResponse
 	decodeResponse(t, opened, &modal)
-	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, modsModalCustomIDPrefix+modsModeRevision+":session-mods:1:") || modal.Data.Components == nil || len(*modal.Data.Components) != 2 {
+	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, modsModalCustomIDPrefix+modsModeRevision+":session-mods:1:0:") || modal.Data.Components == nil || len(*modal.Data.Components) != 3 {
 		t.Fatalf("mods modal response = %#v body=%s", modal, opened.Body.String())
 	}
 	submitBody := marshalPayload(map[string]any{
@@ -273,9 +273,13 @@ func TestHandlerOpensAndSubmitsPrivateModsModalForRunningSession(t *testing.T) {
 		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
 		"data": map[string]any{
 			"custom_id": modal.Data.CustomID,
-			"resolved":  map[string]any{"attachments": map[string]any{"attachment-mods": map[string]any{"id": "attachment-mods", "filename": "revision.html", "content_type": "text/html", "size": 2048, "url": "https://cdn.discordapp.com/attachments/1/2/revision.html"}}},
+			"resolved": map[string]any{"attachments": map[string]any{
+				"attachment-mods":        map[string]any{"id": "attachment-mods", "filename": "revision.html", "content_type": "text/html", "size": 2048, "url": "https://cdn.discordapp.com/attachments/1/2/revision.html"},
+				"attachment-server-mods": map[string]any{"id": "attachment-server-mods", "filename": "server-revision.html", "content_type": "text/html", "size": 1024, "url": "https://cdn.discordapp.com/attachments/1/2/server-revision.html"},
+			}},
 			"components": []any{
 				map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsPresetCustomID, "values": []string{"attachment-mods"}}},
+				map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsServerPresetCustomID, "values": []string{"attachment-server-mods"}}},
 				map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeCheckboxGroup, "custom_id": modsCreatorDLCsCustomID, "values": []string{domain.CreatorDLCReactionForces}}},
 			},
 		},
@@ -287,7 +291,7 @@ func TestHandlerOpensAndSubmitsPrivateModsModalForRunningSession(t *testing.T) {
 		t.Fatalf("mods submit response = %#v body=%s", response, submitted.Body.String())
 	}
 	requests := queue.Requests()
-	if len(requests) != 1 || requests[0].Purpose != domain.ArtifactPurposePresetRevision || requests[0].ExpectedActivePresetRevision != 1 || requests[0].SessionID != "session-mods" {
+	if len(requests) != 2 || requests[0].Purpose != domain.ArtifactPurposePresetRevision || requests[0].ExpectedActivePresetRevision != 1 || requests[0].SessionID != "session-mods" || requests[1].Kind != domain.ArtifactServerPreset || requests[1].Purpose != domain.ArtifactPurposeServerPresetRevision || requests[1].ExpectedActiveServerPresetRevision != 0 {
 		t.Fatalf("mods queue requests = %#v", requests)
 	}
 }
@@ -421,7 +425,7 @@ func TestHandlerKeepsModdedCreationWithoutPresetRecoverable(t *testing.T) {
 	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
 	var modal interactionResponse
 	decodeResponse(t, opened, &modal)
-	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, modsModalCustomIDPrefix+modsModeCreate) || modal.Data.Components == nil || len(*modal.Data.Components) != 2 {
+	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, modsModalCustomIDPrefix+modsModeCreate) || modal.Data.Components == nil || len(*modal.Data.Components) != 3 {
 		t.Fatalf("creation mod options modal = %#v", modal)
 	}
 	submitBody := marshalPayload(map[string]any{
@@ -430,6 +434,7 @@ func TestHandlerKeepsModdedCreationWithoutPresetRecoverable(t *testing.T) {
 		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
 		"data": map[string]any{"custom_id": modal.Data.CustomID, "components": []any{
 			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsPresetCustomID, "values": []string{}}},
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsServerPresetCustomID, "values": []string{}}},
 			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeCheckboxGroup, "custom_id": modsCreatorDLCsCustomID, "values": []string{domain.CreatorDLCWesternSahara, domain.CreatorDLCReactionForces}}},
 		}},
 	})

@@ -127,6 +127,13 @@ type ArtifactDownloader interface {
 	Download(ctx context.Context, request domain.ArtifactIngestRequest) ([]byte, error)
 }
 
+// LiveMissionCopier places one already-validated mission object on the exact
+// managed instance recorded by the session. Implementations must be
+// idempotent and must not restart or otherwise mutate the game service.
+type LiveMissionCopier interface {
+	Copy(ctx context.Context, session domain.Session, mission domain.MissionRecord) error
+}
+
 type AccessPolicyRepository interface {
 	GetAccessPolicy(ctx context.Context, guildID string) (domain.GuildAccessPolicy, error)
 	SaveAccessPolicy(ctx context.Context, policy domain.GuildAccessPolicy, expectedVersion int64) error
@@ -222,6 +229,9 @@ type BootstrapCommandStatus struct {
 	Status       string
 	ErrorCode    string
 	ErrorMessage string
+	// Activity is one bounded, allowlisted description of the current download
+	// target. Raw managed-command output never crosses this port.
+	Activity string
 	// Checkpoints contains only allowlisted progress facts parsed from the
 	// managed command's output. Raw output never crosses this port.
 	Checkpoints []domain.ProgressMilestone

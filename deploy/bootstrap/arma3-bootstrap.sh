@@ -4,16 +4,20 @@ umask 077
 
 decode() { printf '%s' "$1" | base64 -d; }
 SESSION_ID="$(decode "$SESSION_ID_B64")"
+WORKFLOW_ID="$(decode "$WORKFLOW_ID_B64")"
 DISPLAY_NAME="$(decode "$DISPLAY_NAME_B64")"
 DATA_VOLUME_ID="$(decode "$DATA_VOLUME_ID_B64")"
 MISSION_KEY="$(decode "$MISSION_KEY_B64")"
 MISSION_TEMPLATE="$(decode "$MISSION_TEMPLATE_B64")"
+MISSION_MANIFEST="$(decode "$MISSION_MANIFEST_B64")"
 SERVER_CONFIG_KEY="$(decode "$SERVER_CONFIG_KEY_B64")"
 SERVER_CONFIG_SHA256="$(decode "$SERVER_CONFIG_SHA_B64")"
 SERVER_CONFIG_REVISION="$(decode "$SERVER_CONFIG_REV_B64")"
 PRESET_KEY="$(decode "$PRESET_KEY_B64")"
 PRESET_REVISION="$(decode "$PRESET_REVISION_B64")"
 PRESET_ROLLBACK="$(decode "$PRESET_ROLLBACK_B64")"
+SERVER_PRESET_KEY="$(decode "$SERVER_PRESET_KEY_B64")"
+SERVER_PRESET_REVISION="$(decode "$SERVER_PRESET_REVISION_B64")"
 CREATOR_DLC_MODS="$(decode "$CREATOR_DLC_MODS_B64")"
 MOD_CONFIG_REVISION="$(decode "$MOD_CONFIG_REVISION_B64")"
 ASSETS_BUCKET="$(decode "$ASSETS_BUCKET_B64")"
@@ -38,9 +42,13 @@ STEAM_AUTH_PERSIST_ATTEMPTED=false
 STEAM_AUTH_LOCK_HEARTBEAT_PID=""
 STEAM_AUTH_LOCK_LEASE_SECONDS=900
 STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=300
+PROGRESS_FILE=/run/gsp-bootstrap-progress
+PROGRESS_KEY="sessions/$SESSION_ID/runtime/bootstrap-progress-$WORKFLOW_ID.txt"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
-checkpoint() { printf 'GSP_CHECKPOINT:%s\n' "$1"; }
+publish_progress() { aws s3 cp "$PROGRESS_FILE" "s3://$ASSETS_BUCKET/$PROGRESS_KEY" --region "$AWS_REGION" --only-show-errors >/dev/null 2>&1 || true; }
+checkpoint() { printf 'GSP_CHECKPOINT:%s\n' "$1" | tee -a "$PROGRESS_FILE"; publish_progress; }
+activity() { sed -i '/^GSP_ACTIVITY:/d' "$PROGRESS_FILE"; printf 'GSP_ACTIVITY:%s\n' "$1" | tee -a "$PROGRESS_FILE"; publish_progress; }
 
 prepare_host() {
   command -v apt-get >/dev/null 2>&1 || { log "bootstrap requires the approved Ubuntu game-host image"; return 1; }
@@ -352,6 +360,7 @@ install_arma() (
   else
     printf 'app_update 233780 -beta creatordlc validate\nquit\n' >> "$runfile"
   fi
+  activity ARMA_SERVER
   run_steamcmd "$runfile"
   test -x "$ROOT/arma3/arma3server_x64"
 )
@@ -367,22 +376,37 @@ lowercase_tree() {
 install_workshop() (
   if [ "$VANILLA_MODE" = true ]; then
     : > "$ROOT/config/mods.txt"
+	: > "$ROOT/config/server-mods.txt"
     rm -f "$ROOT/config/preset.html"
-    chown steam:steam "$ROOT/config/mods.txt"
+    chown steam:steam "$ROOT/config/mods.txt" "$ROOT/config/server-mods.txt"
     return 0
   fi
-	local preset_file mods_file mods="" dlc
-	mkdir -p "$ROOT/config/presets" "$ROOT/config/mod-revisions"
+	local preset_file server_preset_file mods_file server_mods_file mods="" server_mods="" dlc
+	mkdir -p "$ROOT/config/presets" "$ROOT/config/server-presets" "$ROOT/config/mod-revisions" "$ROOT/config/server-mod-revisions"
 	preset_file="$ROOT/config/presets/revision-$PRESET_REVISION.html"
 	mods_file="$ROOT/config/mod-revisions/revision-$PRESET_REVISION.txt"
+	server_preset_file="$ROOT/config/server-presets/revision-$SERVER_PRESET_REVISION.html"
+	server_mods_file="$ROOT/config/server-mod-revisions/revision-$SERVER_PRESET_REVISION.txt"
 	ids=()
+	server_ids=()
 	if [ -n "$PRESET_KEY" ]; then
 		aws s3 cp "s3://$ASSETS_BUCKET/$PRESET_KEY" "$preset_file" --region "$AWS_REGION" --only-show-errors
 		mapfile -t ids < <(grep -Eio "id=[0-9]+|data-publishedfileid=[\"'][0-9]+" "$preset_file" | grep -Eo '[0-9]+' | awk '!seen[$0]++')
 	else
 		rm -f -- "$preset_file" "$ROOT/config/preset.html"
 	fi
+	if [ -n "$SERVER_PRESET_KEY" ]; then
+		aws s3 cp "s3://$ASSETS_BUCKET/$SERVER_PRESET_KEY" "$server_preset_file" --region "$AWS_REGION" --only-show-errors
+		mapfile -t server_ids < <(grep -Eio "id=[0-9]+|data-publishedfileid=[\"'][0-9]+" "$server_preset_file" | grep -Eo '[0-9]+' | awk '!seen[$0]++')
+		client_ids=" ${ids[*]} "
+		filtered_server_ids=()
+		for id in "${server_ids[@]}"; do [[ "$client_ids" == *" $id "* ]] || filtered_server_ids+=("$id"); done
+		server_ids=("${filtered_server_ids[@]}")
+	else
+		rm -f -- "$server_preset_file"
+	fi
 	: > "$mods_file"
+	: > "$server_mods_file"
   IFS=';' read -r -a creator_dlcs <<< "$CREATOR_DLC_MODS"
   for dlc in "${creator_dlcs[@]}"; do
     [ -z "$dlc" ] && continue
@@ -391,12 +415,14 @@ install_workshop() (
     mods="${mods:+$mods;}$dlc"
   done
   local runfile id source link
-  if [ "${#ids[@]}" -gt 0 ]; then
+  workshop_count=$((${#ids[@]} + ${#server_ids[@]}))
+  if [ "$workshop_count" -gt 0 ]; then
   runfile="$(mktemp /run/gsp-steam.XXXXXX)"
   trap 'rm -f "$runfile"' EXIT
   steam_login_file "$runfile"
-  for id in "${ids[@]}"; do printf 'workshop_download_item 107410 %s validate\n' "$id" >> "$runfile"; done
+  for id in "${ids[@]}" "${server_ids[@]}"; do [ -z "$id" ] || printf 'workshop_download_item 107410 %s validate\n' "$id" >> "$runfile"; done
   printf 'quit\n' >> "$runfile"
+  activity "WORKSHOP_ITEMS:$workshop_count"
   run_steamcmd "$runfile"
   for id in "${ids[@]}"; do
     source="$ROOT/home/Steam/steamapps/workshop/content/107410/$id"
@@ -406,10 +432,20 @@ install_workshop() (
     ln -sfn "$source" "$link"
     mods="${mods:+$mods;}@workshop_$id"
   done
+	for id in "${server_ids[@]}"; do
+		source="$ROOT/home/Steam/steamapps/workshop/content/107410/$id"
+		[ -d "$source" ] || { log "Server-only Workshop item $id was not downloaded"; return 1; }
+		lowercase_tree "$source"
+		link="$ROOT/arma3/@workshop_$id"
+		ln -sfn "$source" "$link"
+		server_mods="${server_mods:+$server_mods;}@workshop_$id"
+	done
 	fi
 	printf '%s' "$mods" > "$mods_file"
+	printf '%s' "$server_mods" > "$server_mods_file"
 	if [ -n "$PRESET_KEY" ]; then ln -sfn "presets/revision-$PRESET_REVISION.html" "$ROOT/config/preset.html"; fi
 	ln -sfn "mod-revisions/revision-$PRESET_REVISION.txt" "$ROOT/config/mods.txt"
+	ln -sfn "server-mod-revisions/revision-$SERVER_PRESET_REVISION.txt" "$ROOT/config/server-mods.txt"
 	printf '%s' "$PRESET_REVISION" > "$ROOT/config/active-preset-revision"
   mkdir -p "$ROOT/home/Steam/steamapps/workshop"
   chown -R steam:steam "$ROOT/config" "$ROOT/home/Steam/steamapps/workshop" "$ROOT/arma3"
@@ -418,14 +454,22 @@ install_workshop() (
 sqf_escape() { printf '%s' "$1" | sed 's/"/""/g'; }
 
 deploy_content() {
-  local mission_file mission_template safe_mission_template safe_name
+  local mission_checksum mission_file mission_key mission_template pending safe_mission_template safe_name
   mission_template="$MISSION_TEMPLATE"
   mkdir -p "$ROOT/arma3/mpmissions" "$ROOT/home/.local/share/Arma 3 - Other Profiles/server"
-  if [ -n "$MISSION_KEY" ]; then
+  while IFS=$'\t' read -r mission_checksum mission_file mission_key; do
+    [ -n "$mission_key" ] || continue
+    [[ "$mission_checksum" =~ ^[0-9a-f]{64}$ && "$mission_file" =~ ^[A-Za-z0-9_.+-]+\.[pP][bB][oO]$ ]] || { log "accepted mission manifest is invalid"; return 1; }
+    pending="$(mktemp "$ROOT/arma3/mpmissions/.gsp-mission.XXXXXX")"
+    aws s3 cp "s3://$ASSETS_BUCKET/$mission_key" "$pending" --region "$AWS_REGION" --only-show-errors || { rm -f "$pending"; return 1; }
+    printf '%s  %s\n' "$mission_checksum" "$pending" | sha256sum --check --status || { rm -f "$pending"; log "mission checksum mismatch"; return 1; }
+    chown steam:steam "$pending"
+    chmod 0644 "$pending"
+    mv -f "$pending" "$ROOT/arma3/mpmissions/$mission_file"
+  done <<< "$MISSION_MANIFEST"
+  if [ -z "$MISSION_MANIFEST" ] && [ -n "$MISSION_KEY" ]; then
     mission_file="$(basename "$MISSION_KEY")"
-    if [[ "$mission_file" =~ ^[0-9a-f]{64}-(.+\.[pP][bB][oO])$ ]]; then
-      mission_file="${BASH_REMATCH[1]}"
-    fi
+    if [[ "$mission_file" =~ ^[0-9a-f]{64}-(.+\.[pP][bB][oO])$ ]]; then mission_file="${BASH_REMATCH[1]}"; fi
     aws s3 cp "s3://$ASSETS_BUCKET/$MISSION_KEY" "$ROOT/arma3/mpmissions/$mission_file" --region "$AWS_REGION" --only-show-errors
   fi
   safe_name="$(sqf_escape "$DISPLAY_NAME")"
@@ -480,9 +524,11 @@ EOF
 set -Eeuo pipefail
 ROOT=/srv/game-server
 mods="$(cat "$ROOT/config/mods.txt" 2>/dev/null || true)"
+server_mods="$(cat "$ROOT/config/server-mods.txt" 2>/dev/null || true)"
 cd "$ROOT/arma3"
 args=(-name=server -config="$ROOT/config/server.cfg" -port=2302 -steamQueryPort=2303 -autoInit -noSound)
 [ -z "$mods" ] || args+=("-mod=$mods")
+[ -z "$server_mods" ] || args+=("-serverMod=$server_mods")
 exec ./arma3server_x64 "${args[@]}"
 EOF
   chmod 755 "$ROOT/config/launch-arma.sh"
@@ -571,8 +617,9 @@ launch_and_verify() {
 
 exec 8>/run/gsp-bootstrap-host.lock
 flock -w 30 8
-checkpoint HOST_PREPARED
+: > "$PROGRESS_FILE"
 prepare_host
+checkpoint HOST_PREPARED
 mkdir -p "$STATE_DIR" "$LOG_DIR"
 exec 9>"$STATE_DIR/bootstrap.lock"
 flock -w 30 9
@@ -585,7 +632,7 @@ for stage in install_steamcmd install_arma install_workshop deploy_content insta
 	esac
   marker="$STATE_DIR/$stage.complete"
 	if [ "$stage" = install_workshop ] && [ "$VANILLA_MODE" = false ]; then
-		marker="$STATE_DIR/$stage.revision-$PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete"
+		marker="$STATE_DIR/$stage.revision-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete"
 		[ "$PRESET_ROLLBACK" = true ] && rm -f -- "$marker"
 	fi
   if [ -f "$marker" ]; then

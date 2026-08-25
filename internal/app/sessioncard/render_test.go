@@ -63,3 +63,16 @@ func TestRenderModlistMessageAndCardLinkAreSafeAndIdempotent(t *testing.T) {
 		t.Fatalf("untrusted link changed card: %q", got)
 	}
 }
+
+func TestServerModsAppearOnlyInDetailedStatus(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
+	session := domain.Session{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", ServerPresetArtifactStatus: domain.ArtifactRejected, ServerPresetArtifactIssue: "private server preset rejected", UpdatedAt: now}
+	card := Project(session, Options{Now: now})
+	if public := RenderPublic(card); strings.Contains(public, "Server-only mods") || strings.Contains(public, "private server preset") {
+		t.Fatalf("public card leaked server mods: %s", public)
+	}
+	if detailed := RenderDetailed(card); !strings.Contains(detailed, "Server-only mods") || !strings.Contains(detailed, "private server preset rejected") {
+		t.Fatalf("detailed status omitted server mods: %s", detailed)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
@@ -70,6 +71,7 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	runner.WithProgressStore(s3.NewFromConfig(awsConfig))
 	service, err := bootstrap.NewService(
 		repository, repository, repository, runner,
 		sqsnotification.New(sqs.NewFromConfig(awsConfig), baseConfig.NotificationQueueURL),

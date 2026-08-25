@@ -46,6 +46,39 @@ func TestEnqueueProgressUsesMilestoneIdempotencyAndCardRevision(t *testing.T) {
 	}
 }
 
+func TestEnqueueProgressActivityChangesOncePerSafeTarget(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	session := domain.Session{
+		ID: "session-1", Version: 7, DisplayName: "Saturday Arma", Slug: "saturday-arma", GameType: "arma3",
+		GuildID: "guild-1", ChannelID: "channel-1", LifecycleState: domain.StateInstalling,
+		Progress: domain.SessionProgress{
+			WorkflowID: "workflow-1", WorkflowType: domain.BootstrapWorkflowType,
+			Milestone: domain.ProgressGameServerInstalled, Activity: "Arma 3 server files", State: domain.ProgressActive,
+			CompletedMilestones: []domain.ProgressMilestone{domain.ProgressAccepted, domain.ProgressHostPrepared},
+			StartedAt:           now.Add(-time.Minute), LastProgressAt: now,
+		},
+		UpdatedAt: now,
+	}
+	workflow := domain.Workflow{ID: "workflow-1", SessionID: session.ID, Type: domain.BootstrapWorkflowType, Status: domain.WorkflowRunning, CorrelationID: "correlation-1"}
+	queue := memory.NewNotificationQueue()
+	if err := EnqueueProgress(context.Background(), queue, session, workflow, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnqueueProgress(context.Background(), queue, session, workflow, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	session.Progress.Activity = "Workshop content (2 items)"
+	session.Version++
+	if err := EnqueueProgress(context.Background(), queue, session, workflow, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	requests := queue.Requests()
+	if len(requests) != 2 || requests[0].NotificationID == requests[1].NotificationID || !strings.Contains(requests[1].Content, "Workshop content") {
+		t.Fatalf("activity requests = %#v", requests)
+	}
+}
+
 func TestEnqueueProgressSuppressesWaitingNoiseButPublishesActionRequired(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 18, 6, 0, 0, 0, time.UTC)

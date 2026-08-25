@@ -27,6 +27,53 @@ func TestAttachPresetCreatesFirstActiveRevisionAndCompatibilityPointer(t *testin
 	}
 }
 
+func TestServerOnlyPresetCanCompleteModdedDraftReadiness(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{ID: "server-only", Slug: "server-only", DisplayName: "Server Only", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 86400}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.UpdateModOptions(nil, false, true, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateDraft || session.ServerPresetArtifactStatus != ArtifactPending {
+		t.Fatalf("prepared draft = %#v", session)
+	}
+	if err := session.AttachArtifact(ArtifactServerPreset, "sessions/server-only/input/server-presets/server.html", now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateNew || session.ServerPresetArtifactStatus != ArtifactAccepted || session.ActiveServerPresetRevision.Number != 1 {
+		t.Fatalf("ready server-only session = %#v", session)
+	}
+}
+
+func TestEstablishedSessionCanStageItsFirstClientPresetRevision(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{ID: "cdlc-only", Slug: "cdlc-only", DisplayName: "CDLC Only", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 86400, CreatorDLCs: []string{CreatorDLCReactionForces}}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateNew || !session.EffectiveActivePresetRevision().Empty() {
+		t.Fatalf("initial established session = %#v", session)
+	}
+	modlist := PresetModlistMetadata{ObjectKey: "sessions/cdlc-only/input/modlists/v1.html", Filename: "modlist.html", SHA256: strings.Repeat("a", 64), SizeBytes: 128, WorkshopCount: 1}
+	revision, err := session.StagePresetRevision(0, "sessions/cdlc-only/input/presets/v1.html", modlist, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision.Number != 1 || revision.BaseRevision != 0 || revision.Status != PresetRevisionPending || !session.ActivePresetRevision.Empty() {
+		t.Fatalf("first staged client preset = %#v session=%#v", revision, session)
+	}
+}
+
 func TestPendingPresetPromotesOnlyAfterLifecycleHealthSuccess(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 17, 23, 0, 0, 0, time.UTC)
@@ -227,5 +274,57 @@ func TestStagePresetRevisionPreservesRunningServiceAndActiveAuthority(t *testing
 	}
 	if _, err := session.StagePresetRevision(1, "sessions/session-1/input/presets/v3.html", revision.Modlist, now.Add(2*time.Minute)); err == nil {
 		t.Fatal("second pending revision was accepted")
+	}
+}
+
+func TestServerPresetRevisionUsesIndependentLifecycleAuthority(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
+	session := presetLifecycleSession(t, now)
+	session.DesiredState, session.ObservedState, session.LifecycleState = StateRunning, StateRunning, StateRunning
+	revision, err := session.StageServerPresetRevision(0, "sessions/session-1/input/server-presets/server-v1.html", now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision.Number != 1 || revision.BaseRevision != 0 || session.ServerPresetObjectKey != "" || session.PendingServerPresetRevision.Status != PresetRevisionPending {
+		t.Fatalf("staged server preset = %#v session=%#v", revision, session)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateSleeping, StateSleeping, StateSleeping, HealthStopped
+	if err := session.BeginWake("wake-server", time.Hour, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if session.ServerPresetObjectKeyForApplication() != revision.PresetObjectKey || session.PresetObjectKeyForApplication() != session.PendingPresetRevision.PresetObjectKey {
+		t.Fatalf("application selection = %#v", session)
+	}
+	if err := session.CompleteWake("wake-server", "203.0.113.9", now.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if session.ActiveServerPresetRevision.Number != 1 || !session.PendingServerPresetRevision.Empty() || session.ServerPresetObjectKey != revision.PresetObjectKey || session.ActivePresetRevision.Number != 2 {
+		t.Fatalf("promoted revisions = %#v", session)
+	}
+}
+
+func TestFailedServerPresetApplicationKeepsActiveAuthorityAndRollback(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC)
+	session := presetLifecycleSession(t, now)
+	activeKey := "sessions/session-1/input/server-presets/v1.html"
+	session.ServerPresetObjectKey = activeKey
+	session.ServerPresetRevisionSequence = 2
+	session.ActiveServerPresetRevision = PresetRevision{Number: 1, PresetObjectKey: activeKey, Status: PresetRevisionActive, StagedAt: now, ActivatedAt: now}
+	session.PendingServerPresetRevision = PresetRevision{Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/server-presets/v2.html", Status: PresetRevisionPending, StagedAt: now.Add(time.Minute)}
+	session.PendingPresetRevision = PresetRevision{}
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateSleeping, StateSleeping, StateSleeping, HealthStopped
+	if err := session.BeginWake("wake-server", time.Hour, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := session.RecordPresetRevisionRollback("wake-server", true, "", now.Add(3*time.Minute)); err != nil || !changed {
+		t.Fatalf("rollback changed=%v err=%v", changed, err)
+	}
+	if err := session.FailPresetRevisionApplication("wake-server", "server mod health failed", now.Add(4*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if session.ServerPresetObjectKey != activeKey || session.ActiveServerPresetRevision.Number != 1 || session.PendingServerPresetRevision.Status != PresetRevisionFailed || session.PendingServerPresetRevision.RollbackDisposition != PresetRollbackSucceeded {
+		t.Fatalf("failed server preset rollback = %#v", session)
 	}
 }

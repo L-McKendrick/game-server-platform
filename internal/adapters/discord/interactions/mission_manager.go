@@ -15,6 +15,7 @@ import (
 const missionManagerPrefix = "rb:missions:v1:"
 const missionUploadPrefix = "rb:mission-upload:v1:"
 const missionUploadField = "mission:file"
+const maximumMissionButtonLabelRunes = 80
 
 func (payload interactionPayload) isRBEditCommand() bool {
 	if payload.Type != interactionTypeApplicationCommand {
@@ -90,45 +91,86 @@ func writeMissionManager(writer http.ResponseWriter, session domain.Session, pag
 	if configured.Template == "" {
 		configured = session.MissionForApplication()
 	}
-	lines := []string{fmt.Sprintf("**Mission files — %s**\nConfigured default: `%s`\nPage %d/%d", sanitizeInline(session.DisplayName), sanitizeCode(configured.Template), page+1, pages)}
-	rows := []interactionComponent{{Type: componentTypeActionRow, Components: []interactionComponent{
-		{Type: componentTypeButton, Style: buttonStyleSecondary, Label: "Default", CustomID: missionCustomID(session.ID, "default-built-in", -1, page, session.Version)},
-		{Type: componentTypeButton, Style: buttonStylePrimary, Label: "Add mission", CustomID: missionCustomID(session.ID, "add", -1, page, session.Version)},
+	components := []interactionComponent{{
+		Type:    componentTypeTextDisplay,
+		Content: fmt.Sprintf("**Mission files — %s**\nConfigured default: `%s`\nPage %d/%d", sanitizeInline(session.DisplayName), sanitizeCode(configured.Template), page+1, pages),
+	}}
+	builtInRow := interactionComponent{Type: componentTypeActionRow, Components: []interactionComponent{{
+		Type: componentTypeButton, Style: buttonStyleSecondary, Label: missionButtonLabel(domain.DefaultArma3MissionTemplate, "built-in"),
+		CustomID: missionCustomID(session.ID, "label", -1, page, session.Version), Disabled: true,
 	}}}
-	if pages > 1 {
-		rows[0].Components = append(rows[0].Components,
-			interactionComponent{Type: componentTypeButton, Style: buttonStyleSecondary, Label: "Previous", CustomID: missionCustomID(session.ID, "page", -1, page-1, session.Version), Disabled: page == 0},
-			interactionComponent{Type: componentTypeButton, Style: buttonStyleSecondary, Label: "Next", CustomID: missionCustomID(session.ID, "page", -1, page+1, session.Version), Disabled: page+1 >= pages},
-		)
+	if !configured.IsDefault() {
+		builtInRow.Components = append(builtInRow.Components, interactionComponent{
+			Type: componentTypeButton, Style: buttonStyleSecondary, Label: "Default", CustomID: missionCustomID(session.ID, "default-built-in", -1, page, session.Version),
+		})
 	}
+	components = append(components, builtInRow)
+
 	start, end := page*5, page*5+5
 	if end > len(active) {
 		end = len(active)
 	}
-	fileControls := make([]interactionComponent, 0, 10)
 	for _, entry := range active[start:end] {
 		status := string(entry.record.Status)
 		if session.CurrentMission.ObjectKey == entry.record.ObjectKey {
 			status += ", currently loaded"
 		}
-		if session.ConfiguredMission.ObjectKey == entry.record.ObjectKey {
+		if configured.ObjectKey == entry.record.ObjectKey {
 			status += ", configured"
 		}
-		lines = append(lines, fmt.Sprintf("`%s` — %s", sanitizeCode(entry.record.Filename), sanitizeInline(status)))
-		fileControls = append(fileControls, interactionComponent{Type: componentTypeButton, Style: buttonStyleSecondary, Label: "Default", CustomID: missionCustomID(session.ID, "default", entry.index, page, session.Version)})
+		row := interactionComponent{Type: componentTypeActionRow, Components: []interactionComponent{{
+			Type: componentTypeButton, Style: buttonStyleSecondary, Label: missionButtonLabel(entry.record.Filename, status),
+			CustomID: missionCustomID(session.ID, "label", entry.index, page, session.Version), Disabled: true,
+		}}}
+		if entry.record.Status == domain.ArtifactAccepted && configured.ObjectKey != entry.record.ObjectKey {
+			row.Components = append(row.Components, interactionComponent{
+				Type: componentTypeButton, Style: buttonStyleSecondary, Label: "Default", CustomID: missionCustomID(session.ID, "default", entry.index, page, session.Version),
+			})
+		}
 		if session.CurrentMission.ObjectKey != entry.record.ObjectKey {
-			fileControls = append(fileControls, interactionComponent{Type: componentTypeButton, Style: buttonStyleDanger, Label: "Remove", CustomID: missionCustomID(session.ID, "remove", entry.index, page, session.Version)})
+			row.Components = append(row.Components, interactionComponent{
+				Type: componentTypeButton, Style: buttonStyleDanger, Label: "Remove", CustomID: missionCustomID(session.ID, "remove", entry.index, page, session.Version),
+			})
+		}
+		components = append(components, row)
+	}
+	if pages > 1 {
+		components = append(components, interactionComponent{Type: componentTypeActionRow, Components: []interactionComponent{
+			interactionComponent{Type: componentTypeButton, Style: buttonStyleSecondary, Label: "Previous", CustomID: missionCustomID(session.ID, "page", -1, page-1, session.Version), Disabled: page == 0},
+			interactionComponent{Type: componentTypeButton, Style: buttonStyleSecondary, Label: "Next", CustomID: missionCustomID(session.ID, "page", -1, page+1, session.Version), Disabled: page+1 >= pages},
+		}})
+	}
+	components = append(components, interactionComponent{Type: componentTypeActionRow, Components: []interactionComponent{{
+		Type: componentTypeButton, Style: buttonStylePrimary, Label: "Add mission", CustomID: missionCustomID(session.ID, "add", -1, page, session.Version),
+	}}})
+	container := []interactionComponent{{Type: componentTypeContainer, Components: components}}
+	writeJSON(writer, http.StatusOK, interactionResponse{
+		Type: interactionResponseChannelMessageWithSource,
+		Data: renderer.messageData("", messageFlagEphemeral|messageFlagComponentsV2, &container),
+	})
+}
+
+func missionButtonLabel(filename, status string) string {
+	filename = normalizeSingleLine(filename)
+	if filename == "" {
+		filename = "(unnamed)"
+	}
+	status = normalizeSingleLine(status)
+	suffix := " — " + status
+	suffixRunes := []rune(suffix)
+	if len(suffixRunes) >= maximumMissionButtonLabelRunes {
+		return string(suffixRunes[:maximumMissionButtonLabelRunes-1]) + "…"
+	}
+	available := maximumMissionButtonLabelRunes - len(suffixRunes)
+	filenameRunes := []rune(filename)
+	if len(filenameRunes) > available {
+		if available == 1 {
+			filename = "…"
+		} else {
+			filename = string(filenameRunes[:available-1]) + "…"
 		}
 	}
-	for len(fileControls) > 0 {
-		count := 5
-		if len(fileControls) < count {
-			count = len(fileControls)
-		}
-		rows = append(rows, interactionComponent{Type: componentTypeActionRow, Components: append([]interactionComponent(nil), fileControls[:count]...)})
-		fileControls = fileControls[count:]
-	}
-	writeInteractionMessageWithComponents(writer, strings.Join(lines, "\n"), rows)
+	return filename + suffix
 }
 
 func parseMissionCustomID(value string) (action, sessionID string, index, page int, version int64, err error) {

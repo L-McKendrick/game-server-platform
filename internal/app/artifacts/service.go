@@ -31,15 +31,20 @@ func WithAutoStarter(starter AutoStarter) Option {
 	return func(service *Service) { service.autoStarter = starter }
 }
 
+func WithLiveMissionCopier(copier ports.LiveMissionCopier) Option {
+	return func(service *Service) { service.liveMissionCopier = copier }
+}
+
 type Service struct {
-	repository    ports.SessionRepository
-	downloader    ports.ArtifactDownloader
-	objects       ports.ObjectStore
-	notifications ports.NotificationQueue
-	ids           IDGenerator
-	clock         Clock
-	retention     time.Duration
-	autoStarter   AutoStarter
+	repository        ports.SessionRepository
+	downloader        ports.ArtifactDownloader
+	objects           ports.ObjectStore
+	notifications     ports.NotificationQueue
+	ids               IDGenerator
+	clock             Clock
+	retention         time.Duration
+	autoStarter       AutoStarter
+	liveMissionCopier ports.LiveMissionCopier
 }
 
 func NewService(
@@ -84,6 +89,9 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 	if err := validateContent(request, body); err != nil {
 		return service.reject(ctx, session, request, err)
 	}
+	if request.Kind == domain.ArtifactServerPreset && session.Vanilla {
+		return service.reject(ctx, session, request, fmt.Errorf("vanilla sessions cannot load server mods"))
+	}
 	var publicModlist *modlist.Artifact
 	if request.Kind == domain.ArtifactPreset && !session.Vanilla {
 		generated, generateErr := modlist.Generate(body, session.ID, session.DisplayName, session.Slug, len(session.CreatorDLCs) > 0)
@@ -91,6 +99,10 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 			return service.reject(ctx, session, request, generateErr)
 		}
 		publicModlist = &generated
+	} else if request.Kind == domain.ArtifactServerPreset && !session.Vanilla {
+		if _, generateErr := modlist.Generate(body, session.ID, session.DisplayName, session.Slug, false); generateErr != nil {
+			return service.reject(ctx, session, request, generateErr)
+		}
 	}
 
 	digest := sha256.Sum256(body)
@@ -106,6 +118,9 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 		if getErr != nil {
 			return getErr
 		}
+		if err := service.copyMissionLive(ctx, persisted, request, "", digestHex); err != nil {
+			return err
+		}
 		if err := service.autoStart(ctx, persisted, request); err != nil {
 			return err
 		}
@@ -114,6 +129,8 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 	directory := "missions"
 	if request.Kind == domain.ArtifactPreset {
 		directory = "presets"
+	} else if request.Kind == domain.ArtifactServerPreset {
+		directory = "server-presets"
 	}
 	objectFilename := request.Filename
 	if request.Kind == domain.ArtifactMission {
@@ -151,6 +168,9 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 	}
 	if request.IsPresetRevision() {
 		return service.stagePresetRevision(ctx, session, request, objectKey, *publicModlist, requestHash)
+	}
+	if request.IsServerPresetRevision() {
+		return service.stageServerPresetRevision(ctx, session, request, objectKey, requestHash)
 	}
 
 	now := service.clock.Now().UTC()
@@ -191,6 +211,9 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 			if getErr != nil {
 				return getErr
 			}
+			if err := service.copyMissionLive(ctx, persisted, request, objectKey, digestHex); err != nil {
+				return err
+			}
 			if err := service.autoStart(ctx, persisted, request); err != nil {
 				return err
 			}
@@ -198,14 +221,44 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 		}
 		return fmt.Errorf("persist artifact metadata: %w", err)
 	}
+	if err := service.copyMissionLive(ctx, session, request, objectKey, digestHex); err != nil {
+		return err
+	}
 	if err := service.autoStart(ctx, session, request); err != nil {
 		return err
 	}
 	return service.notify(ctx, session, request, publicModlist)
 }
 
+func (service *Service) copyMissionLive(ctx context.Context, session domain.Session, request domain.ArtifactIngestRequest, objectKey, digestHex string) error {
+	if service.liveMissionCopier == nil || request.Kind != domain.ArtifactMission {
+		return nil
+	}
+	if objectKey == "" {
+		filename, err := domain.NormalizeMissionFilename(request.Filename)
+		if err != nil {
+			return err
+		}
+		expectedBase := digestHex + "-" + filename
+		for _, record := range session.AcceptedMissionFiles() {
+			if path.Base(record.ObjectKey) == expectedBase {
+				objectKey = record.ObjectKey
+				break
+			}
+		}
+	}
+	mission, eligible := session.LiveMissionCopyTarget(objectKey)
+	if !eligible {
+		return nil
+	}
+	if err := service.liveMissionCopier.Copy(ctx, session, mission); err != nil {
+		return fmt.Errorf("copy accepted mission to running server: %w", err)
+	}
+	return nil
+}
+
 func (service *Service) autoStart(ctx context.Context, session domain.Session, request domain.ArtifactIngestRequest) error {
-	if service.autoStarter == nil || !session.StartWhenReady || request.IsPresetRevision() || !session.CanStartInfrastructureProvisioning() {
+	if service.autoStarter == nil || !session.StartWhenReady || request.IsModRevision() || !session.CanStartInfrastructureProvisioning() {
 		return nil
 	}
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", session.ID, session.ConfigurationRevision)))
@@ -227,7 +280,7 @@ func (service *Service) reject(
 	request domain.ArtifactIngestRequest,
 	reason error,
 ) error {
-	if request.IsPresetRevision() {
+	if request.IsModRevision() {
 		return service.rejectPresetRevision(ctx, session, request, reason)
 	}
 	now := service.clock.Now().UTC()
@@ -314,6 +367,39 @@ func (service *Service) stagePresetRevision(ctx context.Context, session domain.
 	return service.notify(ctx, session, request, nil)
 }
 
+func (service *Service) stageServerPresetRevision(ctx context.Context, session domain.Session, request domain.ArtifactIngestRequest, objectKey, requestHash string) error {
+	now, expectedVersion := service.clock.Now().UTC(), session.Version
+	revision, err := session.StageServerPresetRevision(request.ExpectedActiveServerPresetRevision, objectKey, now)
+	if err != nil {
+		return fmt.Errorf("stage server preset revision: %w", err)
+	}
+	eventID, err := service.ids.New(now)
+	if err != nil {
+		return fmt.Errorf("generate server preset revision event ID: %w", err)
+	}
+	event := domain.NewPresetRevisionEvent(eventID, domain.EventPresetRevisionStaged, request.CorrelationID, domain.Actor{Type: domain.ActorTypeDiscordUser, ID: request.ActorID}, session, revision, now)
+	event.Data["preset_scope"] = "server"
+	idempotency, err := domain.NewCompletedIdempotencyRecord(artifactIdempotencyKey(request), requestHash, session.ID, now, service.retention)
+	if err != nil {
+		return fmt.Errorf("create server preset revision idempotency: %w", err)
+	}
+	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, idempotency); err != nil {
+		replayed, replayErr := service.replayed(ctx, idempotency.Key, requestHash)
+		if replayErr != nil {
+			return replayErr
+		}
+		if !replayed {
+			return fmt.Errorf("persist server preset revision: %w", err)
+		}
+		persisted, getErr := service.repository.Get(ctx, request.SessionID)
+		if getErr != nil {
+			return getErr
+		}
+		return service.notify(ctx, persisted, request, nil)
+	}
+	return service.notify(ctx, session, request, nil)
+}
+
 func (service *Service) rejectPresetRevision(ctx context.Context, session domain.Session, request domain.ArtifactIngestRequest, reason error) error {
 	now := service.clock.Now().UTC()
 	hash := sha256.Sum256([]byte(reason.Error()))
@@ -324,6 +410,13 @@ func (service *Service) rejectPresetRevision(ctx context.Context, session domain
 		return service.notify(ctx, session, request, nil)
 	}
 	expectedVersion := session.Version
+	if request.IsServerPresetRevision() && session.EffectiveActiveServerPresetRevision().Empty() {
+		session.ServerPresetArtifactStatus = domain.ArtifactRejected
+		session.ServerPresetArtifactIssue = domain.SanitizeDiagnostic(reason.Error())
+		if session.ServerPresetArtifactIssue == "" {
+			session.ServerPresetArtifactIssue = "The uploaded server preset did not pass validation."
+		}
+	}
 	if err := session.RecordMutation(now); err != nil {
 		return err
 	}
@@ -335,6 +428,10 @@ func (service *Service) rejectPresetRevision(ctx context.Context, session domain
 	event.Data["reason"] = domain.SanitizeDiagnostic(reason.Error())
 	event.Data["purpose"] = string(request.Purpose)
 	event.Data["expected_active_preset_revision"] = fmt.Sprintf("%d", request.ExpectedActivePresetRevision)
+	if request.IsServerPresetRevision() {
+		event.Data["preset_scope"] = "server"
+		event.Data["expected_active_server_preset_revision"] = fmt.Sprintf("%d", request.ExpectedActiveServerPresetRevision)
+	}
 	idempotency, err := domain.NewCompletedIdempotencyRecord(artifactIdempotencyKey(request), requestHash, session.ID, now, service.retention)
 	if err != nil {
 		return err
@@ -410,10 +507,10 @@ func artifactIdempotencyKey(request domain.ArtifactIngestRequest) string {
 }
 
 func artifactRequestHash(request domain.ArtifactIngestRequest, contentHash string) string {
-	if !request.IsPresetRevision() {
+	if !request.IsModRevision() {
 		return contentHash
 	}
-	digest := sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%d", contentHash, request.Purpose, request.ExpectedActivePresetRevision)))
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%d\n%d", contentHash, request.Purpose, request.ExpectedActivePresetRevision, request.ExpectedActiveServerPresetRevision)))
 	return hex.EncodeToString(digest[:])
 }
 

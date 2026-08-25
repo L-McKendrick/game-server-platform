@@ -176,6 +176,71 @@ func (session Session) EffectivePresetRevisionSequence() int64 {
 	return sequence
 }
 
+func (session Session) EffectiveActiveServerPresetRevision() PresetRevision {
+	if !session.ActiveServerPresetRevision.Empty() {
+		return session.ActiveServerPresetRevision
+	}
+	if strings.TrimSpace(session.ServerPresetObjectKey) == "" {
+		return PresetRevision{}
+	}
+	when := session.CreatedAt.UTC()
+	return PresetRevision{Number: 1, PresetObjectKey: session.ServerPresetObjectKey, Status: PresetRevisionActive, StagedAt: when, ActivatedAt: when}
+}
+
+func (session Session) EffectiveServerPresetRevisionSequence() int64 {
+	sequence := session.ServerPresetRevisionSequence
+	if active := session.EffectiveActiveServerPresetRevision(); active.Number > sequence {
+		sequence = active.Number
+	}
+	if session.PendingServerPresetRevision.Number > sequence {
+		sequence = session.PendingServerPresetRevision.Number
+	}
+	return sequence
+}
+
+func (session Session) ValidateServerPresetRevisionStaging(expectedActiveRevision int64) error {
+	active := session.EffectiveActiveServerPresetRevision()
+	switch {
+	case session.Vanilla:
+		return fmt.Errorf("%w: vanilla sessions do not have server mods", ErrInvalidTransition)
+	case active.Number != expectedActiveRevision:
+		return fmt.Errorf("%w: active server preset revision changed", ErrConflict)
+	case session.ActiveWorkflowID != "":
+		return fmt.Errorf("%w: wait for the active lifecycle operation before changing mods", ErrWorkflowLocked)
+	case session.LifecycleState == StateDraft || session.LifecycleState == StateDeleting || session.LifecycleState == StateDeleted || session.LifecycleState == StateArchiving || session.LifecycleState == StateDestroying || session.LifecycleState == StateRestoring || session.LifecycleState == StateWaking || session.LifecycleState == StateStopping:
+		return fmt.Errorf("%w: server mods cannot be staged in lifecycle state %s", ErrInvalidTransition, session.LifecycleState)
+	case !session.PendingServerPresetRevision.Empty() && session.PendingServerPresetRevision.Status != PresetRevisionFailed:
+		return fmt.Errorf("%w: server preset revision %d is already %s", ErrConflict, session.PendingServerPresetRevision.Number, session.PendingServerPresetRevision.Status)
+	default:
+		return nil
+	}
+}
+
+func (session *Session) StageServerPresetRevision(expectedActiveRevision int64, objectKey string, now time.Time) (PresetRevision, error) {
+	if err := session.ValidateServerPresetRevisionStaging(expectedActiveRevision); err != nil {
+		return PresetRevision{}, err
+	}
+	objectKey = strings.TrimSpace(objectKey)
+	if objectKey == "" {
+		return PresetRevision{}, fmt.Errorf("server preset revision object key is required")
+	}
+	active := session.EffectiveActiveServerPresetRevision()
+	number := session.EffectiveServerPresetRevisionSequence() + 1
+	revision := PresetRevision{Number: number, BaseRevision: active.Number, PresetObjectKey: objectKey, Status: PresetRevisionPending, StagedAt: now.UTC()}
+	if err := revision.Validate(); err != nil {
+		return PresetRevision{}, err
+	}
+	if session.ActiveServerPresetRevision.Empty() {
+		session.ActiveServerPresetRevision = active
+	}
+	session.PendingServerPresetRevision = revision
+	session.ServerPresetRevisionSequence = number
+	session.ServerPresetArtifactStatus, session.ServerPresetArtifactIssue = ArtifactAccepted, ""
+	session.Version++
+	session.UpdatedAt = now.UTC()
+	return revision, session.Validate()
+}
+
 // ValidatePresetRevisionStaging verifies that a new upload can safely target
 // the current active configuration without mutating lifecycle state.
 func (session Session) ValidatePresetRevisionStaging(expectedActiveRevision int64) error {
@@ -183,8 +248,6 @@ func (session Session) ValidatePresetRevisionStaging(expectedActiveRevision int6
 	switch {
 	case session.Vanilla:
 		return fmt.Errorf("%w: vanilla sessions do not have a mod preset", ErrInvalidTransition)
-	case active.Empty():
-		return fmt.Errorf("%w: an active preset is required before staging a revision", ErrInvalidTransition)
 	case active.Number != expectedActiveRevision:
 		return fmt.Errorf("%w: active preset revision changed", ErrConflict)
 	case session.ActiveWorkflowID != "":
@@ -236,15 +299,20 @@ func (session *Session) StagePresetRevision(expectedActiveRevision int64, preset
 }
 
 func (session *Session) beginPresetRevisionApplication(workflowID string, now time.Time) bool {
-	if session.PendingPresetRevision.Empty() || session.PendingPresetRevision.Status != PresetRevisionPending {
-		return false
+	changed := false
+	if !session.PendingPresetRevision.Empty() && session.PendingPresetRevision.Status == PresetRevisionPending {
+		pending := session.PendingPresetRevision
+		pending.Status, pending.ApplyWorkflowID, pending.ApplyStartedAt = PresetRevisionApplying, strings.TrimSpace(workflowID), now.UTC()
+		session.PendingPresetRevision = pending
+		changed = true
 	}
-	pending := session.PendingPresetRevision
-	pending.Status = PresetRevisionApplying
-	pending.ApplyWorkflowID = strings.TrimSpace(workflowID)
-	pending.ApplyStartedAt = now.UTC()
-	session.PendingPresetRevision = pending
-	return true
+	if !session.PendingServerPresetRevision.Empty() && session.PendingServerPresetRevision.Status == PresetRevisionPending {
+		pending := session.PendingServerPresetRevision
+		pending.Status, pending.ApplyWorkflowID, pending.ApplyStartedAt = PresetRevisionApplying, strings.TrimSpace(workflowID), now.UTC()
+		session.PendingServerPresetRevision = pending
+		changed = true
+	}
+	return changed
 }
 
 // PresetObjectKeyForApplication selects pending content only for the workflow
@@ -266,7 +334,23 @@ func (session Session) PresetRevisionForApplication() int64 {
 }
 
 func (session Session) HasApplyingPresetRevision(workflowID string) bool {
-	return session.PendingPresetRevision.Status == PresetRevisionApplying && session.PendingPresetRevision.ApplyWorkflowID == strings.TrimSpace(workflowID)
+	workflowID = strings.TrimSpace(workflowID)
+	return session.PendingPresetRevision.Status == PresetRevisionApplying && session.PendingPresetRevision.ApplyWorkflowID == workflowID ||
+		session.PendingServerPresetRevision.Status == PresetRevisionApplying && session.PendingServerPresetRevision.ApplyWorkflowID == workflowID
+}
+
+func (session Session) ServerPresetObjectKeyForApplication() string {
+	if session.PendingServerPresetRevision.Status == PresetRevisionApplying && session.PendingServerPresetRevision.ApplyWorkflowID == session.ActiveWorkflowID {
+		return session.PendingServerPresetRevision.PresetObjectKey
+	}
+	return session.EffectiveActiveServerPresetRevision().PresetObjectKey
+}
+
+func (session Session) ServerPresetRevisionForApplication() int64 {
+	if session.PendingServerPresetRevision.Status == PresetRevisionApplying && session.PendingServerPresetRevision.ApplyWorkflowID == session.ActiveWorkflowID {
+		return session.PendingServerPresetRevision.Number
+	}
+	return session.EffectiveActiveServerPresetRevision().Number
 }
 
 // RecordPresetRevisionRollback stores the outcome of the managed rollback
@@ -275,19 +359,27 @@ func (session *Session) RecordPresetRevisionRollback(workflowID string, succeede
 	if !session.HasApplyingPresetRevision(workflowID) {
 		return false, nil
 	}
-	if session.PendingPresetRevision.RollbackDisposition != "" {
+	changed := false
+	for _, pending := range []*PresetRevision{&session.PendingPresetRevision, &session.PendingServerPresetRevision} {
+		if pending.Status != PresetRevisionApplying || pending.ApplyWorkflowID != strings.TrimSpace(workflowID) || pending.RollbackDisposition != "" {
+			continue
+		}
+		if succeeded {
+			pending.RollbackDisposition = PresetRollbackSucceeded
+		} else {
+			pending.RollbackDisposition = PresetRollbackFailed
+		}
+		pending.RollbackAt = now.UTC()
+		rollbackDetail := detail
+		if succeeded {
+			rollbackDetail = "Previous active mod configuration restored and health-checked."
+		}
+		pending.RollbackDetail = boundedPresetRevisionDetail(rollbackDetail, "Rollback did not restore a healthy service.")
+		changed = true
+	}
+	if !changed {
 		return false, nil
 	}
-	pending := session.PendingPresetRevision
-	if succeeded {
-		pending.RollbackDisposition = PresetRollbackSucceeded
-		detail = "Previous active mod configuration restored and health-checked."
-	} else {
-		pending.RollbackDisposition = PresetRollbackFailed
-	}
-	pending.RollbackAt = now.UTC()
-	pending.RollbackDetail = boundedPresetRevisionDetail(detail, "Rollback did not restore a healthy service.")
-	session.PendingPresetRevision = pending
 	session.Version++
 	session.UpdatedAt = now.UTC()
 	return true, session.Validate()
@@ -299,18 +391,18 @@ func (session *Session) FailPresetRevisionApplication(workflowID, detail string,
 	if !session.HasApplyingPresetRevision(workflowID) {
 		return nil
 	}
-	pending := session.PendingPresetRevision
-	pending.Status = PresetRevisionFailed
-	pending.ApplyWorkflowID = ""
-	pending.ApplyStartedAt = time.Time{}
-	pending.FailedAt = now.UTC()
-	pending.FailureDetail = boundedPresetRevisionDetail(detail, "Pending mod revision did not pass installation and health verification.")
-	if pending.RollbackDisposition == "" {
-		pending.RollbackDisposition = PresetRollbackUnverified
-		pending.RollbackAt = now.UTC()
-		pending.RollbackDetail = "Rollback could not be verified before the workflow stopped."
+	for _, pending := range []*PresetRevision{&session.PendingPresetRevision, &session.PendingServerPresetRevision} {
+		if pending.Status != PresetRevisionApplying || pending.ApplyWorkflowID != strings.TrimSpace(workflowID) {
+			continue
+		}
+		pending.Status, pending.ApplyWorkflowID, pending.ApplyStartedAt = PresetRevisionFailed, "", time.Time{}
+		pending.FailedAt = now.UTC()
+		pending.FailureDetail = boundedPresetRevisionDetail(detail, "Pending mod revision did not pass installation and health verification.")
+		if pending.RollbackDisposition == "" {
+			pending.RollbackDisposition, pending.RollbackAt = PresetRollbackUnverified, now.UTC()
+			pending.RollbackDetail = "Rollback could not be verified before the workflow stopped."
+		}
 	}
-	session.PendingPresetRevision = pending
 	return session.Validate()
 }
 
@@ -329,19 +421,32 @@ func boundedPresetRevisionDetail(value, fallback string) string {
 // promotePresetRevision completes the already health-verified application as
 // part of the surrounding lifecycle mutation, without a second version bump.
 func (session *Session) promotePresetRevision(workflowID string, now time.Time) (PresetRevision, bool, error) {
-	if !session.HasApplyingPresetRevision(workflowID) {
-		return PresetRevision{}, false, nil
+	var promoted PresetRevision
+	changed := false
+	if session.PendingPresetRevision.Status == PresetRevisionApplying && session.PendingPresetRevision.ApplyWorkflowID == strings.TrimSpace(workflowID) {
+		promoted = activatePresetRevision(session.PendingPresetRevision, now)
+		if err := promoted.Validate(); err != nil {
+			return PresetRevision{}, false, err
+		}
+		session.ActivePresetRevision, session.PendingPresetRevision, session.PresetObjectKey = promoted, PresetRevision{}, promoted.PresetObjectKey
+		changed = true
 	}
-	promoted := session.PendingPresetRevision
-	promoted.Status = PresetRevisionActive
-	promoted.ApplyWorkflowID = ""
-	promoted.ApplyStartedAt = time.Time{}
-	promoted.ActivatedAt = now.UTC()
-	if err := promoted.Validate(); err != nil {
-		return PresetRevision{}, false, err
+	if session.PendingServerPresetRevision.Status == PresetRevisionApplying && session.PendingServerPresetRevision.ApplyWorkflowID == strings.TrimSpace(workflowID) {
+		serverPromoted := activatePresetRevision(session.PendingServerPresetRevision, now)
+		if err := serverPromoted.Validate(); err != nil {
+			return PresetRevision{}, false, err
+		}
+		session.ActiveServerPresetRevision, session.PendingServerPresetRevision, session.ServerPresetObjectKey = serverPromoted, PresetRevision{}, serverPromoted.PresetObjectKey
+		if !changed {
+			promoted = serverPromoted
+		}
+		changed = true
 	}
-	session.ActivePresetRevision = promoted
-	session.PendingPresetRevision = PresetRevision{}
-	session.PresetObjectKey = promoted.PresetObjectKey
-	return promoted, true, nil
+	return promoted, changed, nil
+}
+
+func activatePresetRevision(revision PresetRevision, now time.Time) PresetRevision {
+	revision.Status, revision.ApplyWorkflowID, revision.ApplyStartedAt = PresetRevisionActive, "", time.Time{}
+	revision.ActivatedAt = now.UTC()
+	return revision
 }

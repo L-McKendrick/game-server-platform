@@ -78,6 +78,9 @@ func render(card Projection, detailed bool) string {
 		if detailed && card.Progress.Guidance != "" {
 			fmt.Fprintf(&builder, "\n**Guidance:** %s", safe(card.Progress.Guidance))
 		}
+		if card.Progress.Activity != "" {
+			fmt.Fprintf(&builder, "\n**Current download:** %s", safe(card.Progress.Activity))
+		}
 	} else {
 		fmt.Fprintf(&builder, "\n**Current stage:** %s", safe(card.Stage))
 	}
@@ -90,6 +93,9 @@ func render(card Projection, detailed bool) string {
 		} else {
 			fmt.Fprintf(&builder, "\n**Started:** %s", timestamp(card.OperationStartedAt))
 		}
+	}
+	if detailed && card.LifecycleTiming.Label != "" && !card.LifecycleTiming.DueAt.IsZero() {
+		fmt.Fprintf(&builder, "\n**%s:** %s", safe(card.LifecycleTiming.Label), detailedTimestamp(card.LifecycleTiming.DueAt))
 	}
 	if card.Endpoints.Game.Available {
 		fmt.Fprintf(&builder, "\n\n%s", connectionLine("Arma", card.Endpoints.Game))
@@ -120,6 +126,15 @@ func render(card Projection, detailed bool) string {
 	}
 	if card.Mods.DownloadURL != "" {
 		fmt.Fprintf(&builder, "\n%s", modlistLinkLine(card.Mods.DownloadURL))
+	}
+	if detailed {
+		fmt.Fprintf(&builder, "\n**Server-only mods:** %s", artifactLine(ArtifactView{Status: card.ServerMods.Status, Issue: card.ServerMods.Issue}))
+		if card.ServerMods.ActiveRevision > 0 {
+			fmt.Fprintf(&builder, "\n**Active server-mod revision:** `%d`", card.ServerMods.ActiveRevision)
+		}
+		if card.ServerMods.PendingRevision > 0 {
+			fmt.Fprintf(&builder, "\n**Pending server-mod revision:** `%d` — %s", card.ServerMods.PendingRevision, safe(card.ServerMods.PendingStatus))
+		}
 	}
 	renderFailure(&builder, card.Failure, detailed)
 

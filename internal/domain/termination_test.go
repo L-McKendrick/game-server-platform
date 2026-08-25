@@ -19,6 +19,9 @@ func TestSessionTerminationLifecycle(t *testing.T) {
 	session.PresetRevisionSequence = 2
 	session.ActivePresetRevision = PresetRevision{Number: 1, PresetObjectKey: session.PresetObjectKey, Status: PresetRevisionActive, StagedAt: now, ActivatedAt: now}
 	session.PendingPresetRevision = PresetRevision{Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/preset-v2.html", Status: PresetRevisionPending, StagedAt: now}
+	session.ServerPresetObjectKey = "sessions/session-1/input/server-presets/v1.html"
+	session.ServerPresetRevisionSequence = 1
+	session.ActiveServerPresetRevision = PresetRevision{Number: 1, PresetObjectKey: session.ServerPresetObjectKey, Status: PresetRevisionActive, StagedAt: now, ActivatedAt: now}
 
 	if err := session.BeginTermination("terminate-1", time.Hour, now); err != nil {
 		t.Fatal(err)
@@ -29,7 +32,7 @@ func TestSessionTerminationLifecycle(t *testing.T) {
 	if err := session.CompleteTermination("terminate-1", now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if session.LifecycleState != StateDeleted || session.HealthStatus != HealthStopped || !session.Infrastructure.Empty() || !session.Archive.Empty() || session.MissionObjectKey != "" || session.PresetObjectKey != "" || session.PresetRevisionSequence != 0 || !session.ActivePresetRevision.Empty() || !session.PendingPresetRevision.Empty() || session.ActiveWorkflowID != "" {
+	if session.LifecycleState != StateDeleted || session.HealthStatus != HealthStopped || !session.Infrastructure.Empty() || !session.Archive.Empty() || session.MissionObjectKey != "" || session.PresetObjectKey != "" || session.PresetRevisionSequence != 0 || !session.ActivePresetRevision.Empty() || !session.PendingPresetRevision.Empty() || session.ServerPresetObjectKey != "" || session.ServerPresetRevisionSequence != 0 || !session.ActiveServerPresetRevision.Empty() || !session.PendingServerPresetRevision.Empty() || session.ActiveWorkflowID != "" {
 		t.Fatalf("terminated session = %#v", session)
 	}
 	if session.CanTerminate() {

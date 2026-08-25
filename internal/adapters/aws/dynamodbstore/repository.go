@@ -39,6 +39,13 @@ func marshalSessionJSON(value any) string {
 	return string(encoded)
 }
 
+func marshalPresetRevisionJSON(revision domain.PresetRevision) string {
+	if revision.Empty() {
+		return ""
+	}
+	return marshalSessionJSON(revision)
+}
+
 // API contains the DynamoDB operations used by the repository.
 type API interface {
 	GetItem(
@@ -147,10 +154,16 @@ type sessionItem struct {
 	PendingPresetRollbackDisposition string   `dynamodbav:"pending_preset_rollback_disposition,omitempty"`
 	PendingPresetRollbackAt          string   `dynamodbav:"pending_preset_rollback_at,omitempty"`
 	PendingPresetRollbackDetail      string   `dynamodbav:"pending_preset_rollback_detail,omitempty"`
+	ServerPresetObjectKey            string   `dynamodbav:"server_preset_object_key,omitempty"`
+	ServerPresetRevisionSequence     int64    `dynamodbav:"server_preset_revision_sequence,omitempty"`
+	ActiveServerPresetJSON           string   `dynamodbav:"active_server_preset_json,omitempty"`
+	PendingServerPresetJSON          string   `dynamodbav:"pending_server_preset_json,omitempty"`
 	MissionArtifactStatus            string   `dynamodbav:"mission_artifact_status,omitempty"`
 	PresetArtifactStatus             string   `dynamodbav:"preset_artifact_status,omitempty"`
+	ServerPresetArtifactStatus       string   `dynamodbav:"server_preset_artifact_status,omitempty"`
 	MissionArtifactIssue             string   `dynamodbav:"mission_artifact_issue,omitempty"`
 	PresetArtifactIssue              string   `dynamodbav:"preset_artifact_issue,omitempty"`
+	ServerPresetArtifactIssue        string   `dynamodbav:"server_preset_artifact_issue,omitempty"`
 	CapacitySlotID                   string   `dynamodbav:"capacity_slot_id,omitempty"`
 	AvailabilityZone                 string   `dynamodbav:"availability_zone,omitempty"`
 	SubnetID                         string   `dynamodbav:"subnet_id,omitempty"`
@@ -178,6 +191,7 @@ type sessionItem struct {
 	ProgressCompletedMilestones      []string `dynamodbav:"progress_completed_milestones,omitempty"`
 	ProgressSkippedMilestones        []string `dynamodbav:"progress_skipped_milestones,omitempty"`
 	ProgressState                    string   `dynamodbav:"progress_state,omitempty"`
+	ProgressActivity                 string   `dynamodbav:"progress_activity,omitempty"`
 	ProgressStartedAt                string   `dynamodbav:"progress_started_at,omitempty"`
 	ProgressLastProgressAt           string   `dynamodbav:"progress_last_progress_at,omitempty"`
 	// ProgressUpdatedAt is retained as a write-through compatibility projection
@@ -1097,10 +1111,16 @@ func toSessionItem(session domain.Session) sessionItem {
 		PendingPresetRollbackDisposition: string(pendingPreset.RollbackDisposition),
 		PendingPresetRollbackAt:          optionalTimestamp(pendingPreset.RollbackAt),
 		PendingPresetRollbackDetail:      pendingPreset.RollbackDetail,
+		ServerPresetObjectKey:            session.ServerPresetObjectKey,
+		ServerPresetRevisionSequence:     session.EffectiveServerPresetRevisionSequence(),
+		ActiveServerPresetJSON:           marshalPresetRevisionJSON(session.EffectiveActiveServerPresetRevision()),
+		PendingServerPresetJSON:          marshalPresetRevisionJSON(session.PendingServerPresetRevision),
 		MissionArtifactStatus:            string(session.MissionArtifactStatus),
 		PresetArtifactStatus:             string(session.PresetArtifactStatus),
+		ServerPresetArtifactStatus:       string(session.ServerPresetArtifactStatus),
 		MissionArtifactIssue:             session.MissionArtifactIssue,
 		PresetArtifactIssue:              session.PresetArtifactIssue,
+		ServerPresetArtifactIssue:        session.ServerPresetArtifactIssue,
 		CapacitySlotID:                   session.Infrastructure.CapacitySlotID,
 		AvailabilityZone:                 session.Infrastructure.AvailabilityZone,
 		SubnetID:                         session.Infrastructure.SubnetID,
@@ -1128,6 +1148,7 @@ func toSessionItem(session domain.Session) sessionItem {
 		ProgressCompletedMilestones:      progressMilestoneStrings(session.Progress.CompletedMilestones),
 		ProgressSkippedMilestones:        progressMilestoneStrings(session.Progress.SkippedMilestones),
 		ProgressState:                    string(session.Progress.State),
+		ProgressActivity:                 session.Progress.Activity,
 		ProgressStartedAt:                optionalTimestamp(session.Progress.StartedAt),
 		ProgressLastProgressAt:           optionalTimestamp(session.Progress.LastProgressAt),
 		ProgressUpdatedAt:                optionalTimestamp(session.Progress.LastProgressAt),
@@ -1305,6 +1326,21 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if presetStatus == "" && strings.TrimSpace(item.PresetObjectKey) != "" {
 		presetStatus = domain.ArtifactAccepted
 	}
+	serverPresetStatus := domain.ArtifactStatus(item.ServerPresetArtifactStatus)
+	if serverPresetStatus == "" && strings.TrimSpace(item.ServerPresetObjectKey) != "" {
+		serverPresetStatus = domain.ArtifactAccepted
+	}
+	var activeServerPreset, pendingServerPreset domain.PresetRevision
+	if item.ActiveServerPresetJSON != "" {
+		if err := json.Unmarshal([]byte(item.ActiveServerPresetJSON), &activeServerPreset); err != nil {
+			return domain.Session{}, fmt.Errorf("decode active server preset: %w", err)
+		}
+	}
+	if item.PendingServerPresetJSON != "" {
+		if err := json.Unmarshal([]byte(item.PendingServerPresetJSON), &pendingServerPreset); err != nil {
+			return domain.Session{}, fmt.Errorf("decode pending server preset: %w", err)
+		}
+	}
 	progressMilestone := legacyProgressMilestone(item.ProgressWorkflowType, item.ProgressMilestone, item.ProgressState)
 	progressCompleted := progressMilestones(item.ProgressCompletedMilestones)
 	if item.ProgressState == "" && len(progressCompleted) == 0 && len(item.ProgressSkippedMilestones) == 0 {
@@ -1343,10 +1379,16 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 			Status:  domain.PresetRevisionStatus(item.PendingPresetStatus), StagedAt: pendingPresetStagedAt, ApplyWorkflowID: item.PendingPresetWorkflowID, ApplyStartedAt: pendingPresetApplyStartedAt, FailedAt: pendingPresetFailedAt, FailureDetail: item.PendingPresetFailureDetail,
 			RollbackDisposition: domain.PresetRollbackDisposition(item.PendingPresetRollbackDisposition), RollbackAt: pendingPresetRollbackAt, RollbackDetail: item.PendingPresetRollbackDetail,
 		},
-		MissionArtifactStatus: missionStatus,
-		PresetArtifactStatus:  presetStatus,
-		MissionArtifactIssue:  item.MissionArtifactIssue,
-		PresetArtifactIssue:   item.PresetArtifactIssue,
+		ServerPresetObjectKey:        item.ServerPresetObjectKey,
+		ServerPresetRevisionSequence: item.ServerPresetRevisionSequence,
+		ActiveServerPresetRevision:   activeServerPreset,
+		PendingServerPresetRevision:  pendingServerPreset,
+		MissionArtifactStatus:        missionStatus,
+		PresetArtifactStatus:         presetStatus,
+		ServerPresetArtifactStatus:   serverPresetStatus,
+		MissionArtifactIssue:         item.MissionArtifactIssue,
+		PresetArtifactIssue:          item.PresetArtifactIssue,
+		ServerPresetArtifactIssue:    item.ServerPresetArtifactIssue,
 		Infrastructure: domain.Infrastructure{
 			CapacitySlotID: item.CapacitySlotID, AvailabilityZone: item.AvailabilityZone,
 			SubnetID: item.SubnetID, SecurityGroupIDs: append([]string(nil), item.SecurityGroupIDs...),
@@ -1368,6 +1410,7 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 			CompletedMilestones: progressCompleted,
 			SkippedMilestones:   progressMilestones(item.ProgressSkippedMilestones),
 			State:               progressState(item.ProgressState, item.ProgressMilestone, item.ActiveWorkflowID),
+			Activity:            item.ProgressActivity,
 			StartedAt:           progressStartedAt, LastProgressAt: progressLastProgressAt,
 		},
 		Failure: domain.FailureRecord{
@@ -1406,6 +1449,12 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		session.ActivePresetRevision = session.EffectiveActivePresetRevision()
 		if !session.ActivePresetRevision.Empty() && session.PresetRevisionSequence < session.ActivePresetRevision.Number {
 			session.PresetRevisionSequence = session.ActivePresetRevision.Number
+		}
+	}
+	if session.ActiveServerPresetRevision.Empty() {
+		session.ActiveServerPresetRevision = session.EffectiveActiveServerPresetRevision()
+		if !session.ActiveServerPresetRevision.Empty() && session.ServerPresetRevisionSequence < session.ActiveServerPresetRevision.Number {
+			session.ServerPresetRevisionSequence = session.ActiveServerPresetRevision.Number
 		}
 	}
 

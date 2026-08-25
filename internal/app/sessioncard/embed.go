@@ -18,6 +18,19 @@ const (
 // retained as the mandatory plain-text fallback and private detail views keep
 // their progressive disclosure.
 func RenderPublicEmbed(card Projection) *domain.NotificationEmbed {
+	if card.Lifecycle == "Terminated" {
+		description := safe(card.Description)
+		if !card.StatusSince.IsZero() {
+			if description != "" {
+				description += "\n\n"
+			}
+			description += "Terminated: " + timestamp(card.StatusSince)
+		}
+		return &domain.NotificationEmbed{
+			Title:       strings.ToUpper(safe(card.Game)) + " | " + safe(card.Name),
+			Description: description, Color: embedColorInactive,
+		}
+	}
 	status, color := publicEmbedStatus(card)
 	description := "**" + strings.ToUpper(safe(card.Game)) + " | " + safe(card.Name) + "**"
 	if strings.TrimSpace(card.Description) != "" {
@@ -31,7 +44,7 @@ func RenderPublicEmbed(card Projection) *domain.NotificationEmbed {
 			Name: "\u200b\nCURRENT MISSION", Value: publicMissionValue(card),
 		}},
 	}
-	if value := publicProgressValue(card); value != "" {
+	if value := publicProgressValue(card); value != "" && card.Lifecycle != "Running" {
 		embed.Fields = append(embed.Fields, domain.NotificationEmbedField{Name: "\u200b\nPROGRESS", Value: value})
 	}
 	if value := publicFailureValue(card); value != "" {
@@ -72,8 +85,8 @@ func publicEmbedStatus(card Projection) (string, int) {
 }
 
 func publicMissionValue(card Projection) string {
-	mission := safe(card.Players.Mission)
-	mapName := safe(card.Players.Map)
+	mission := safeCode(card.Players.Mission)
+	mapName := safeCode(card.Players.Map)
 	switch {
 	case mission != "" && mapName != "" && !strings.EqualFold(mission, mapName):
 		mission += " on " + mapName
@@ -82,6 +95,7 @@ func publicMissionValue(card Projection) string {
 	case mission == "":
 		mission = "Unavailable until the game server reports a live mission."
 	}
+	mission = "```\n" + mission + "\n```"
 	if !card.Players.Available {
 		return mission
 	}
@@ -102,6 +116,9 @@ func publicProgressValue(card Projection) string {
 	value := fmt.Sprintf("`%s` — Step %d/%d\n**Current stage:** %s", safeCode(card.Progress.Bar), card.Progress.Step, card.Progress.Total, safe(card.Stage))
 	if card.Progress.Condition != "" {
 		value += "\n**State:** " + safe(card.Progress.Condition)
+	}
+	if card.Progress.Activity != "" {
+		value += "\n**Current download:** " + safe(card.Progress.Activity)
 	}
 	if !card.OperationStartedAt.IsZero() {
 		value += "\n**Started:** " + timestamp(card.OperationStartedAt)

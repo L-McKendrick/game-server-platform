@@ -2,6 +2,7 @@ package sessioncard
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"strings"
 	"time"
@@ -25,6 +26,10 @@ func EnqueueProgress(ctx context.Context, queue ports.NotificationQueue, session
 	}
 	milestone := strings.ToLower(string(session.Progress.Milestone))
 	notificationKey := strings.ReplaceAll(milestone, "_", "-")
+	if session.Progress.Activity != "" {
+		digest := sha256.Sum256([]byte(session.Progress.Activity))
+		notificationKey += fmt.Sprintf("-activity-%x", digest[:6])
+	}
 	if session.Progress.Milestone != domain.ProgressCompleted {
 		switch session.Progress.State {
 		case domain.ProgressRollingBack, domain.ProgressActionRequired, domain.ProgressCancelled:

@@ -444,13 +444,17 @@ func TestSessionItemRoundTripPreservesPresetRevisions(t *testing.T) {
 		RollbackDisposition: domain.PresetRollbackSucceeded, RollbackAt: now.Add(2 * time.Minute), RollbackDetail: "Previous active mod configuration restored and health-checked.",
 		Modlist: domain.PresetModlistMetadata{ObjectKey: "sessions/session-1/input/modlists/v2/modlist.html", Filename: "session-1-modlist.html", SHA256: strings.Repeat("b", 64), SizeBytes: 1300, WorkshopCount: 4},
 	}
+	session.ServerPresetObjectKey = "sessions/session-1/input/server-presets/v1.html"
+	session.ServerPresetRevisionSequence = 2
+	session.ActiveServerPresetRevision = domain.PresetRevision{Number: 1, PresetObjectKey: session.ServerPresetObjectKey, Status: domain.PresetRevisionActive, StagedAt: now, ActivatedAt: now}
+	session.PendingServerPresetRevision = domain.PresetRevision{Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/server-presets/v2.html", Status: domain.PresetRevisionPending, StagedAt: now.Add(time.Minute)}
 	session.UpdatedAt = now.Add(2 * time.Minute)
 
 	stored, err := fromSessionItem(toSessionItem(session))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.PresetRevisionSequence != session.PresetRevisionSequence || stored.ActivePresetRevision != session.ActivePresetRevision || stored.PendingPresetRevision != session.PendingPresetRevision || stored.PresetObjectKey != session.PresetObjectKey {
+	if stored.PresetRevisionSequence != session.PresetRevisionSequence || stored.ActivePresetRevision != session.ActivePresetRevision || stored.PendingPresetRevision != session.PendingPresetRevision || stored.PresetObjectKey != session.PresetObjectKey || stored.ServerPresetRevisionSequence != session.ServerPresetRevisionSequence || stored.ActiveServerPresetRevision != session.ActiveServerPresetRevision || stored.PendingServerPresetRevision != session.PendingServerPresetRevision || stored.ServerPresetObjectKey != session.ServerPresetObjectKey {
 		t.Fatalf("stored preset revisions = %#v / %#v", stored.ActivePresetRevision, stored.PendingPresetRevision)
 	}
 }
@@ -577,6 +581,9 @@ func TestSessionItemRoundTripPreservesProgressMilestone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := session.AdvanceProgress("workflow-1", domain.ProgressInfrastructureReady, now.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.SetProgressActivity("workflow-1", "Arma 3 server files", now.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 

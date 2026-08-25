@@ -32,8 +32,13 @@ func TestRenderPublicEmbedMatchesApprovedCardAndUsesLiveMission(t *testing.T) {
 		t.Fatalf("embed heading = %#v", embed)
 	}
 	if len(embed.Fields) != 3 || embed.Fields[0].Name != "\u200b\nCURRENT MISSION" ||
-		!strings.Contains(embed.Fields[0].Value, "Liberation RX on Altis\n12 of 40 players · session started <t:") {
+		!strings.Contains(embed.Fields[0].Value, "```\nLiberation RX on Altis\n```\n12 of 40 players · session started <t:") {
 		t.Fatalf("mission field = %#v", embed.Fields)
+	}
+	for _, field := range embed.Fields {
+		if strings.TrimSpace(strings.TrimPrefix(field.Name, "\u200b")) == "PROGRESS" {
+			t.Fatalf("running public card retained completed progress: %#v", embed.Fields)
+		}
 	}
 	if embed.Fields[1].Name != "\u200b\nGame server" || !strings.Contains(embed.Fields[1].Value, "`203.0.113.20:2302`\n\n**Modlist:** [Saturday Operations]") {
 		t.Fatalf("game connection field = %#v", embed.Fields[1])
@@ -69,6 +74,34 @@ func TestRenderPublicEmbedOmitsTeamSpeakAndUsesVanillaModlist(t *testing.T) {
 	}
 }
 
+func TestRenderPublicEmbedReducesCompletedTerminationToTombstone(t *testing.T) {
+	t.Parallel()
+	terminatedAt := time.Date(2026, 8, 24, 7, 30, 0, 0, time.UTC)
+	session := domain.Session{
+		DisplayName: "Test 19", Description: "description goes here", GameType: "arma3",
+		LifecycleState: domain.StateDeleted, HealthStatus: domain.HealthStopped,
+		Progress:  domain.SessionProgress{Milestone: domain.ProgressCompleted, State: domain.ProgressCompletedState, LastProgressAt: terminatedAt},
+		UpdatedAt: terminatedAt.Add(time.Second),
+	}
+	embed := RenderPublicEmbed(Project(session, Options{Now: terminatedAt.Add(56 * time.Second)}))
+	if err := embed.Validate(); err != nil {
+		t.Fatalf("embed validation error = %v", err)
+	}
+	if embed.Title != "ARMA 3 | Test 19" || embed.Description != "description goes here\n\nTerminated: <t:1787556600:R>" || embed.Color != embedColorInactive || len(embed.Fields) != 0 {
+		t.Fatalf("terminated tombstone = %#v", embed)
+	}
+}
+
+func TestRenderPublicEmbedUsesTombstoneUpdateTimeForLegacyTermination(t *testing.T) {
+	t.Parallel()
+	terminatedAt := time.Date(2026, 8, 24, 7, 30, 0, 0, time.UTC)
+	session := domain.Session{DisplayName: "Legacy", GameType: "arma3", LifecycleState: domain.StateDeleted, UpdatedAt: terminatedAt}
+	embed := RenderPublicEmbed(Project(session, Options{Now: terminatedAt.Add(time.Minute)}))
+	if embed.Description != "Terminated: <t:1787556600:R>" || len(embed.Fields) != 0 {
+		t.Fatalf("legacy terminated tombstone = %#v", embed)
+	}
+}
+
 func TestRenderPublicEmbedUsesSetupAndFailureColorsWithTextLabels(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 18, 9, 0, 0, 0, time.UTC)
@@ -79,6 +112,9 @@ func TestRenderPublicEmbedUsesSetupAndFailureColorsWithTextLabels(t *testing.T) 
 	}, Options{Now: now}))
 	if setup.Color != embedColorSetup || !strings.Contains(setup.Title, "SETTING UP") {
 		t.Fatalf("setup embed = %#v", setup)
+	}
+	if len(setup.Fields) < 2 || strings.TrimSpace(strings.TrimPrefix(setup.Fields[1].Name, "\u200b")) != "PROGRESS" {
+		t.Fatalf("setup progress was hidden: %#v", setup.Fields)
 	}
 	failure := RenderPublicEmbed(Project(domain.Session{
 		DisplayName: "Failed", GameType: "arma3", LifecycleState: domain.StateFailed, HealthStatus: domain.HealthUnhealthy,

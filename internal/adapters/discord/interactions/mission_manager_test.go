@@ -27,12 +27,21 @@ func TestWriteMissionManagerPaginatesFiveAndProtectsCurrentMission(t *testing.T)
 	writeMissionManager(recorder, session, 0)
 	var response interactionResponse
 	decodeResponse(t, recorder, &response)
-	if response.Data == nil || !strings.Contains(response.Data.Content, "Page 1/2") || strings.Contains(response.Data.Content, "mission-f") {
+	if response.Data == nil || response.Data.Content != "" || response.Data.Flags != messageFlagEphemeral|messageFlagComponentsV2 || response.Data.Components == nil {
 		t.Fatalf("mission manager content = %#v", response.Data)
 	}
-	defaultButtons, removeButtons, nextButtons := 0, 0, 0
-	for _, row := range *response.Data.Components {
-		for _, control := range row.Components {
+	topLevel := *response.Data.Components
+	if len(topLevel) != 1 || topLevel[0].Type != componentTypeContainer {
+		t.Fatalf("mission manager top-level components = %#v", topLevel)
+	}
+	components := topLevel[0].Components
+	if len(components) != 9 || components[0].Type != componentTypeTextDisplay ||
+		!strings.Contains(components[0].Content, "Page 1/2") || strings.Contains(components[0].Content, "mission-f") {
+		t.Fatalf("mission manager components = %#v", components)
+	}
+	defaultButtons, removeButtons, nextButtons, missionRows := 0, 0, 0, 0
+	for _, row := range components {
+		for index, control := range row.Components {
 			switch control.Label {
 			case "Default":
 				defaultButtons++
@@ -41,13 +50,36 @@ func TestWriteMissionManagerPaginatesFiveAndProtectsCurrentMission(t *testing.T)
 			case "Next":
 				nextButtons++
 			}
+			if index == 0 && strings.Contains(control.Label, "mission-") {
+				missionRows++
+				if !control.Disabled || !strings.Contains(control.Label, string(domain.ArtifactAccepted)) {
+					t.Fatalf("mission filename control = %#v", control)
+				}
+				wantControls := 3
+				if strings.Contains(control.Label, "mission-a") {
+					wantControls = 1
+				}
+				if len(row.Components) != wantControls {
+					t.Fatalf("mission row %q controls = %#v", control.Label, row.Components)
+				}
+			}
 		}
 	}
-	if defaultButtons != 6 || removeButtons != 4 || nextButtons != 1 {
-		t.Fatalf("controls default=%d remove=%d next=%d", defaultButtons, removeButtons, nextButtons)
+	if defaultButtons != 5 || removeButtons != 4 || nextButtons != 1 || missionRows != 5 {
+		t.Fatalf("controls default=%d remove=%d next=%d mission_rows=%d", defaultButtons, removeButtons, nextButtons, missionRows)
 	}
-	if len(*response.Data.Components) > 5 {
-		t.Fatalf("mission manager emitted %d action rows", len(*response.Data.Components))
+	last := components[len(components)-1]
+	if last.Type != componentTypeActionRow || len(last.Components) != 1 || last.Components[0].Label != "Add mission" {
+		t.Fatalf("last mission manager row = %#v", last)
+	}
+}
+
+func TestMissionButtonLabelKeepsStatusWithinDiscordLimit(t *testing.T) {
+	t.Parallel()
+
+	label := missionButtonLabel(strings.Repeat("mission-name-", 10)+".Altis.pbo", "ACCEPTED, configured")
+	if len([]rune(label)) != maximumMissionButtonLabelRunes || !strings.HasSuffix(label, " — ACCEPTED, configured") || !strings.Contains(label, "…") {
+		t.Fatalf("mission button label = %q (%d runes)", label, len([]rune(label)))
 	}
 }
 

@@ -44,19 +44,25 @@ type Session struct {
 	CurrentMission        MissionSelection
 	// PresetObjectKey remains a write-through compatibility projection of the
 	// active preset revision for older workers and persisted rows.
-	PresetObjectKey        string
-	PresetRevisionSequence int64
-	ActivePresetRevision   PresetRevision
-	PendingPresetRevision  PresetRevision
-	MissionArtifactStatus  ArtifactStatus
-	PresetArtifactStatus   ArtifactStatus
-	MissionArtifactIssue   string
-	PresetArtifactIssue    string
-	Infrastructure         Infrastructure
-	Archive                ArchiveMetadata
-	ArchiveSourceState     LifecycleState
-	Progress               SessionProgress
-	Failure                FailureRecord
+	PresetObjectKey              string
+	PresetRevisionSequence       int64
+	ActivePresetRevision         PresetRevision
+	PendingPresetRevision        PresetRevision
+	ServerPresetObjectKey        string
+	ServerPresetRevisionSequence int64
+	ActiveServerPresetRevision   PresetRevision
+	PendingServerPresetRevision  PresetRevision
+	MissionArtifactStatus        ArtifactStatus
+	PresetArtifactStatus         ArtifactStatus
+	ServerPresetArtifactStatus   ArtifactStatus
+	MissionArtifactIssue         string
+	PresetArtifactIssue          string
+	ServerPresetArtifactIssue    string
+	Infrastructure               Infrastructure
+	Archive                      ArchiveMetadata
+	ArchiveSourceState           LifecycleState
+	Progress                     SessionProgress
+	Failure                      FailureRecord
 
 	ActiveWorkflowID             string
 	ActiveWorkflowType           string
@@ -83,7 +89,11 @@ type Session struct {
 // AttachArtifact records a validated durable object and advances a complete
 // draft to NEW without tying session identity to the source attachment URL.
 func (session *Session) AttachArtifact(kind ArtifactKind, objectKey string, now time.Time) error {
-	missionEditable := kind == ArtifactMission && session.ActiveWorkflowID == "" && session.LifecycleState != StateDeleting && session.LifecycleState != StateDeleted && session.LifecycleState != StateArchiving && session.LifecycleState != StateDestroying
+	// A mission upload already admitted by Discord may finish validation after a
+	// lifecycle workflow starts. Recording it is safe because it does not change
+	// CurrentMission; live copy is separately gated and bootstrap picks up every
+	// accepted active record on a compatible host pass.
+	missionEditable := kind == ArtifactMission && session.LifecycleState != StateDeleting && session.LifecycleState != StateDeleted && session.LifecycleState != StateArchiving && session.LifecycleState != StateDestroying
 	if session.LifecycleState != StateDraft && session.LifecycleState != StateNew && !missionEditable {
 		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
 	}
@@ -120,6 +130,17 @@ func (session *Session) AttachArtifact(kind ArtifactKind, objectKey string, now 
 		session.PresetObjectKey = objectKey
 		session.PresetArtifactStatus = ArtifactAccepted
 		session.PresetArtifactIssue = ""
+	case ArtifactServerPreset:
+		if session.Vanilla {
+			return fmt.Errorf("%w: vanilla sessions cannot load server mods", ErrInvalidTransition)
+		}
+		if session.ActiveServerPresetRevision.Empty() {
+			number := session.EffectiveServerPresetRevisionSequence() + 1
+			session.ActiveServerPresetRevision = PresetRevision{Number: number, PresetObjectKey: objectKey, Status: PresetRevisionActive, StagedAt: now.UTC(), ActivatedAt: now.UTC()}
+			session.ServerPresetRevisionSequence = number
+		}
+		session.ServerPresetObjectKey = objectKey
+		session.ServerPresetArtifactStatus, session.ServerPresetArtifactIssue = ArtifactAccepted, ""
 	default:
 		return fmt.Errorf("unsupported artifact kind %q", kind)
 	}
@@ -133,7 +154,7 @@ func (session *Session) AttachArtifact(kind ArtifactKind, objectKey string, now 
 // RejectArtifact records the latest validation outcome while leaving the
 // draft editable and any independently accepted artifact intact.
 func (session *Session) RejectArtifact(kind ArtifactKind, issue string, now time.Time) error {
-	missionEditable := kind == ArtifactMission && session.ActiveWorkflowID == "" && session.LifecycleState != StateDeleting && session.LifecycleState != StateDeleted && session.LifecycleState != StateArchiving && session.LifecycleState != StateDestroying
+	missionEditable := kind == ArtifactMission && session.LifecycleState != StateDeleting && session.LifecycleState != StateDeleted && session.LifecycleState != StateArchiving && session.LifecycleState != StateDestroying
 	if session.LifecycleState != StateDraft && session.LifecycleState != StateNew && !missionEditable {
 		return fmt.Errorf("%w: artifacts are only editable while a session is DRAFT", ErrInvalidTransition)
 	}
@@ -149,6 +170,8 @@ func (session *Session) RejectArtifact(kind ArtifactKind, issue string, now time
 		session.MissionArtifactStatus, session.MissionArtifactIssue = ArtifactRejected, issue
 	case ArtifactPreset:
 		session.PresetArtifactStatus, session.PresetArtifactIssue = ArtifactRejected, issue
+	case ArtifactServerPreset:
+		session.ServerPresetArtifactStatus, session.ServerPresetArtifactIssue = ArtifactRejected, issue
 	default:
 		return fmt.Errorf("unsupported artifact kind %q", kind)
 	}
@@ -386,6 +409,12 @@ func (session Session) Validate() error {
 	if err := session.PendingPresetRevision.Validate(); err != nil {
 		return fmt.Errorf("pending preset revision: %w", err)
 	}
+	if err := session.ActiveServerPresetRevision.Validate(); err != nil {
+		return fmt.Errorf("active server preset revision: %w", err)
+	}
+	if err := session.PendingServerPresetRevision.Validate(); err != nil {
+		return fmt.Errorf("pending server preset revision: %w", err)
+	}
 	if err := session.ConfiguredMission.Validate(); err != nil {
 		return fmt.Errorf("configured mission: %w", err)
 	}
@@ -422,10 +451,14 @@ func (session Session) Validate() error {
 		return fmt.Errorf("invalid mission artifact status %q", session.MissionArtifactStatus)
 	case !session.PresetArtifactStatus.Valid():
 		return fmt.Errorf("invalid preset artifact status %q", session.PresetArtifactStatus)
+	case !session.ServerPresetArtifactStatus.Valid():
+		return fmt.Errorf("invalid server preset artifact status %q", session.ServerPresetArtifactStatus)
 	case session.MissionArtifactStatus != ArtifactRejected && session.MissionArtifactIssue != "":
 		return fmt.Errorf("mission artifact issue requires rejected status")
 	case session.PresetArtifactStatus != ArtifactRejected && session.PresetArtifactIssue != "":
 		return fmt.Errorf("preset artifact issue requires rejected status")
+	case session.ServerPresetArtifactStatus != ArtifactRejected && session.ServerPresetArtifactIssue != "":
+		return fmt.Errorf("server preset artifact issue requires rejected status")
 	case strings.TrimSpace(session.GameProfileID) == "":
 		return fmt.Errorf("game profile ID is required")
 	case session.SleepAfterSeconds < 600:
@@ -440,6 +473,8 @@ func (session Session) Validate() error {
 		return fmt.Errorf("server configuration snapshot is invalid")
 	case session.PresetRevisionSequence < 0:
 		return fmt.Errorf("preset revision sequence cannot be negative")
+	case session.ServerPresetRevisionSequence < 0:
+		return fmt.Errorf("server preset revision sequence cannot be negative")
 	case !session.ActivePresetRevision.Empty() && session.ActivePresetRevision.Status != PresetRevisionActive:
 		return fmt.Errorf("active preset revision must have ACTIVE status")
 	case !session.ActivePresetRevision.Empty() && session.PresetObjectKey != session.ActivePresetRevision.PresetObjectKey:
@@ -454,6 +489,20 @@ func (session Session) Validate() error {
 		return fmt.Errorf("pending preset revision must bind to the active revision")
 	case !session.PendingPresetRevision.Empty() && session.PendingPresetRevision.Number <= session.ActivePresetRevision.Number:
 		return fmt.Errorf("pending preset revision must follow the active revision")
+	case !session.ActiveServerPresetRevision.Empty() && session.ActiveServerPresetRevision.Status != PresetRevisionActive:
+		return fmt.Errorf("active server preset revision must have ACTIVE status")
+	case !session.ActiveServerPresetRevision.Empty() && session.ServerPresetObjectKey != session.ActiveServerPresetRevision.PresetObjectKey:
+		return fmt.Errorf("server preset object key must mirror the active server preset revision")
+	case !session.ActiveServerPresetRevision.Empty() && session.ActiveServerPresetRevision.Number > session.ServerPresetRevisionSequence:
+		return fmt.Errorf("active server preset revision exceeds the server preset revision sequence")
+	case !session.PendingServerPresetRevision.Empty() && session.PendingServerPresetRevision.Status == PresetRevisionActive:
+		return fmt.Errorf("pending server preset revision cannot have ACTIVE status")
+	case !session.PendingServerPresetRevision.Empty() && session.PendingServerPresetRevision.Number > session.ServerPresetRevisionSequence:
+		return fmt.Errorf("pending server preset revision exceeds the server preset revision sequence")
+	case !session.PendingServerPresetRevision.Empty() && session.PendingServerPresetRevision.BaseRevision != session.ActiveServerPresetRevision.Number:
+		return fmt.Errorf("pending server preset revision must bind to the active server preset revision")
+	case !session.PendingServerPresetRevision.Empty() && session.PendingServerPresetRevision.Number <= session.ActiveServerPresetRevision.Number:
+		return fmt.Errorf("pending server preset revision must follow the active server preset revision")
 	case session.ActiveWorkflowID == "" && (session.ActiveWorkflowType != "" || !session.ActiveWorkflowStartedAt.IsZero() || !session.ActiveWorkflowLeaseExpiresAt.IsZero()):
 		return fmt.Errorf("workflow lock fields require an active workflow ID")
 	case session.ActiveWorkflowID != "" && session.ActiveWorkflowType == "":
@@ -591,6 +640,10 @@ func (session *Session) SetDescription(description string, now time.Time) (strin
 // running process changed in place. Lifecycle workers apply it at the next safe
 // start boundary.
 func (session *Session) UpdateCreatorDLCs(values []string, preparePreset bool, now time.Time) error {
+	return session.UpdateModOptions(values, preparePreset, false, now)
+}
+
+func (session *Session) UpdateModOptions(values []string, preparePreset, prepareServerPreset bool, now time.Time) error {
 	if session.Vanilla {
 		return fmt.Errorf("%w: vanilla sessions cannot load Creator DLC", ErrInvalidTransition)
 	}
@@ -611,6 +664,12 @@ func (session *Session) UpdateCreatorDLCs(values []string, preparePreset bool, n
 			return fmt.Errorf("%w: initial preset preparation requires a draft without an active preset", ErrInvalidTransition)
 		}
 		session.PresetArtifactStatus, session.PresetArtifactIssue = ArtifactPending, ""
+	}
+	if prepareServerPreset {
+		if session.LifecycleState != StateDraft || !session.ActiveServerPresetRevision.Empty() {
+			return fmt.Errorf("%w: initial server preset preparation requires a draft without an active server preset", ErrInvalidTransition)
+		}
+		session.ServerPresetArtifactStatus, session.ServerPresetArtifactIssue = ArtifactPending, ""
 	}
 	session.ConfigurationRevision++
 	session.markReadyWhenComplete()
@@ -747,7 +806,11 @@ func (session *Session) markReadyWhenComplete() {
 		(session.ConfiguredMission.IsDefault() || artifactAccepted(session.MissionArtifactStatus, session.MissionObjectKey)) &&
 		((session.Vanilla && session.PresetArtifactStatus != ArtifactPending) ||
 			artifactAccepted(session.PresetArtifactStatus, session.PresetObjectKey) ||
-			(!session.Vanilla && len(session.CreatorDLCs) > 0 && session.PresetArtifactStatus == "")) {
+			(!session.Vanilla && len(session.CreatorDLCs) > 0 && session.PresetArtifactStatus == "") ||
+			(!session.Vanilla && artifactAccepted(session.ServerPresetArtifactStatus, session.ServerPresetObjectKey))) {
+		if session.ServerPresetArtifactStatus == ArtifactPending {
+			return
+		}
 		session.DesiredState = StateNew
 		session.ObservedState = StateNew
 		session.LifecycleState = StateNew

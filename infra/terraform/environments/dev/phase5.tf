@@ -120,6 +120,8 @@ locals {
 }
 
 resource "aws_budgets_budget" "monthly" {
+  provider = aws.billing
+
   name         = "${local.name_prefix}-monthly-cost"
   budget_type  = "COST"
   limit_amount = tostring(var.monthly_budget_limit_usd)
