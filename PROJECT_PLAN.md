@@ -276,3 +276,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **18.7.1** [x] Publish a workflow-scoped, allowlisted progress snapshot from the host to the existing encrypted session-assets bucket and read it during the existing 30-second bootstrap poll, retaining SSM output as a terminal fallback.
       - **18.7.2** [x] Emit `HOST_PREPARED` only after host preparation succeeds, and preserve the public game-file and Workshop stage/activity projection without exposing raw SteamCMD output.
       - **18.7.3** [x] Add focused snapshot/key/parser coverage, review IAM and stale-workflow isolation, run proportional branch validation, and refresh the deployment handoff.
+    - **18.8** [x] Polish the active public session card without changing private status detail.
+      - **18.8.1** [x] Hide the progress field whenever the public card is in the running lifecycle, while retaining progress during setup, wake, restore, failure, and other transitions.
+      - **18.8.2** [x] Present the live mission/map in a compact code-block box while keeping player counts and Discord-native session-start timing readable beneath it.
+      - **18.8.3** [x] Add focused active/setup rendering coverage, update the deployment handoff, validate, commit, and push.

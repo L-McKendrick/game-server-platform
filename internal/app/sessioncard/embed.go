@@ -31,7 +31,7 @@ func RenderPublicEmbed(card Projection) *domain.NotificationEmbed {
 			Name: "\u200b\nCURRENT MISSION", Value: publicMissionValue(card),
 		}},
 	}
-	if value := publicProgressValue(card); value != "" {
+	if value := publicProgressValue(card); value != "" && card.Lifecycle != "Running" {
 		embed.Fields = append(embed.Fields, domain.NotificationEmbedField{Name: "\u200b\nPROGRESS", Value: value})
 	}
 	if value := publicFailureValue(card); value != "" {
@@ -72,8 +72,8 @@ func publicEmbedStatus(card Projection) (string, int) {
 }
 
 func publicMissionValue(card Projection) string {
-	mission := safe(card.Players.Mission)
-	mapName := safe(card.Players.Map)
+	mission := safeCode(card.Players.Mission)
+	mapName := safeCode(card.Players.Map)
 	switch {
 	case mission != "" && mapName != "" && !strings.EqualFold(mission, mapName):
 		mission += " on " + mapName
@@ -82,6 +82,7 @@ func publicMissionValue(card Projection) string {
 	case mission == "":
 		mission = "Unavailable until the game server reports a live mission."
 	}
+	mission = "```\n" + mission + "\n```"
 	if !card.Players.Available {
 		return mission
 	}

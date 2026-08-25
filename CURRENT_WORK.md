@@ -17,6 +17,10 @@ changes and no new worker, queue, state machine, or persistent service. Phase
   visible during the running SSM command instead of waiting for buffered
   command output. Private `/rb status`
   projects automatic sleep/archive times from authoritative lifecycle evidence.
+- The public card removes completed progress once a session is running and
+  boxes the current mission/map while leaving player count and native start
+  timing immediately below it. Transitional cards and private `/rb status`
+  retain progress detail.
 - Creation and `/rb edit ... section:mods` accept a separate private
   server-only preset with independent active/pending revisions. Bootstrap
   installs it through the existing authenticated SteamCMD flow and generates a
@@ -45,6 +49,8 @@ changes and no new worker, queue, state machine, or persistent service. Phase
   least-privilege tagged-instance SSM access.
 - Live-progress review covers workflow-scoped object keys, bounded reads,
   allowlisted parsing, missing-snapshot fallback, and least-privilege S3 access.
+- Public-card rendering coverage verifies running cards omit progress, setup
+  cards retain it, and mission boxing does not break native timestamps.
 - `go test ./...`, `go test -cover ./...`, `go vet ./...`, `go build ./cmd/...`,
   all 13 Lambda packages, Git Bash syntax, Terraform format/validation, and
   `git diff --check` pass after the final review fixes.
