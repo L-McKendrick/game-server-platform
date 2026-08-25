@@ -280,3 +280,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **18.8.1** [x] Hide the progress field whenever the public card is in the running lifecycle, while retaining progress during setup, wake, restore, failure, and other transitions.
       - **18.8.2** [x] Present the live mission/map in a compact code-block box while keeping player counts and Discord-native session-start timing readable beneath it.
       - **18.8.3** [x] Add focused active/setup rendering coverage, update the deployment handoff, validate, commit, and push.
+    - **18.9** [x] Reduce completed termination cards to durable tombstone information.
+      - **18.9.1** [x] Render only game/session identity, retained description, and a Discord-native termination timestamp after the lifecycle reaches terminated.
+      - **18.9.2** [x] Derive termination time from the completed terminal progress evidence with the tombstone update time as a backward-compatible fallback.
+      - **18.9.3** [x] Add focused terminal rendering/timestamp coverage, update the handoff, validate, commit, and push.

@@ -18,6 +18,19 @@ const (
 // retained as the mandatory plain-text fallback and private detail views keep
 // their progressive disclosure.
 func RenderPublicEmbed(card Projection) *domain.NotificationEmbed {
+	if card.Lifecycle == "Terminated" {
+		description := safe(card.Description)
+		if !card.StatusSince.IsZero() {
+			if description != "" {
+				description += "\n\n"
+			}
+			description += "Terminated: " + timestamp(card.StatusSince)
+		}
+		return &domain.NotificationEmbed{
+			Title:       strings.ToUpper(safe(card.Game)) + " | " + safe(card.Name),
+			Description: description, Color: embedColorInactive,
+		}
+	}
 	status, color := publicEmbedStatus(card)
 	description := "**" + strings.ToUpper(safe(card.Game)) + " | " + safe(card.Name) + "**"
 	if strings.TrimSpace(card.Description) != "" {

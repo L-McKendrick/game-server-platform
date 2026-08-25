@@ -21,6 +21,10 @@ changes and no new worker, queue, state machine, or persistent service. Phase
   boxes the current mission/map while leaving player count and native start
   timing immediately below it. Transitional cards and private `/rb status`
   retain progress detail.
+- A completed termination collapses the public card to a durable tombstone:
+  game/session identity, retained description, and a native relative
+  termination timestamp. Legacy records use their final update time when
+  completed-progress timing is unavailable.
 - Creation and `/rb edit ... section:mods` accept a separate private
   server-only preset with independent active/pending revisions. Bootstrap
   installs it through the existing authenticated SteamCMD flow and generates a
@@ -51,6 +55,8 @@ changes and no new worker, queue, state machine, or persistent service. Phase
   allowlisted parsing, missing-snapshot fallback, and least-privilege S3 access.
 - Public-card rendering coverage verifies running cards omit progress, setup
   cards retain it, and mission boxing does not break native timestamps.
+- Terminal-card coverage verifies completed and legacy tombstones omit mission,
+  progress, connection, and other operational fields.
 - `go test ./...`, `go test -cover ./...`, `go vet ./...`, `go build ./cmd/...`,
   all 13 Lambda packages, Git Bash syntax, Terraform format/validation, and
   `git diff --check` pass after the final review fixes.

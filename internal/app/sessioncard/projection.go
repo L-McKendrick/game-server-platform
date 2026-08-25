@@ -188,6 +188,12 @@ func Project(session domain.Session, options Options) Projection {
 			projection.StatusSince = session.Progress.LastProgressAt.UTC()
 		}
 	}
+	if session.LifecycleState == domain.StateDeleted {
+		projection.StatusSince = sessionUpdatedAt
+		if session.Progress.State == domain.ProgressCompletedState && !session.Progress.LastProgressAt.IsZero() {
+			projection.StatusSince = session.Progress.LastProgressAt.UTC()
+		}
+	}
 
 	if projection.Progress.Visible && !session.Progress.StartedAt.IsZero() {
 		projection.OperationStartedAt = session.Progress.StartedAt.UTC()
