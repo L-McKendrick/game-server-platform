@@ -6,6 +6,24 @@ import (
 	"time"
 )
 
+func TestWorkflowCommandDeadlineRequiresBoundCommand(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	workflow := Workflow{
+		ID: "workflow-1", SessionID: "session-1", Type: BootstrapWorkflowType,
+		Status: WorkflowRunning, RequestedBy: "owner-1", CorrelationID: "correlation-1",
+		ExpectedVersion: 1, StartedAt: now, LeaseExpiresAt: now.Add(7 * time.Hour),
+		CommandDeadlineAt: now.Add(6 * time.Hour),
+	}
+	if err := workflow.Validate(); err == nil {
+		t.Fatal("Validate() accepted a command deadline without a command ID")
+	}
+	workflow.CommandID = "command-1"
+	if err := workflow.Validate(); err != nil {
+		t.Fatalf("Validate() rejected bound command deadline: %v", err)
+	}
+}
+
 func TestCommandEnvelopeMapsSupportedCommandToCanonicalWorkflow(t *testing.T) {
 	t.Parallel()
 

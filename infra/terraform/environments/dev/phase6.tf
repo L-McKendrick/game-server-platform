@@ -255,14 +255,8 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
 
   definition = jsonencode({
     Comment = "Phase 6 resumable Arma 3 installation and health boundary."
-    StartAt = "InitializeAttempts"
+    StartAt = "Prepare"
     States = {
-      InitializeAttempts = {
-        Type       = "Pass"
-        Result     = { value = 0 }
-        ResultPath = "$.attempts"
-        Next       = "Prepare"
-      }
       Prepare = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
@@ -327,26 +321,7 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
           { Variable = "$.observation.result.succeeded", BooleanEquals = true, Next = "Complete" },
           { Variable = "$.observation.result.done", BooleanEquals = true, Next = "CaptureCommandFailure" },
         ]
-        Default = "IncrementAttempts"
-      }
-      IncrementAttempts = {
-        Type = "Pass"
-        Parameters = {
-          "value.$" = "States.MathAdd($.attempts.value, 1)"
-        }
-        ResultPath = "$.attempts"
-        Next       = "AttemptsAvailable"
-      }
-      AttemptsAvailable = {
-        Type    = "Choice"
-        Choices = [{ Variable = "$.attempts.value", NumericGreaterThanEquals = local.bootstrap_poll_limit, Next = "CommandTimeout" }]
         Default = "WaitForCommand"
-      }
-      CommandTimeout = {
-        Type       = "Pass"
-        Result     = { Error = "ERR_BOOTSTRAP_TIMEOUT", Cause = "Managed bootstrap command exceeded its bounded runtime." }
-        ResultPath = "$.failure"
-        Next       = "DispatchRollback"
       }
       CaptureCommandFailure = {
         Type = "Pass"

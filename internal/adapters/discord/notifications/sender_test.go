@@ -174,6 +174,39 @@ func TestSenderCreatesCardWithEnforcedNonceAndEditsKnownMessage(t *testing.T) {
 	}
 }
 
+func TestSenderClearsControlsWhenEditingTerminatedCard(t *testing.T) {
+	t.Parallel()
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPatch {
+			t.Errorf("method = %s; want PATCH", request.Method)
+		}
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode payload: %v", err)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"id":"message-1"}`))
+	}))
+	defer server.Close()
+	sender := New(&fakeSecrets{}, "secret")
+	sender.apiBase = server.URL
+	request := domain.NotificationRequest{
+		SchemaVersion: 1, NotificationID: "card-terminated", Kind: domain.NotificationSessionCard,
+		SessionID: "session-1", GuildID: "guild-1", ChannelID: "channel-1", Content: "terminated",
+		CardRevision: 9, SuppressCardControls: true, CorrelationID: "correlation-1", RequestedAt: time.Now().UTC(),
+	}
+	if _, err := sender.SendCard(context.Background(), request, "message-1"); err != nil {
+		t.Fatal(err)
+	}
+	components, exists := payload["components"]
+	if !exists {
+		t.Fatalf("terminated PATCH omitted components: %#v", payload)
+	}
+	if values, ok := components.([]any); !ok || len(values) != 0 {
+		t.Fatalf("terminated components = %#v; want explicit empty array", components)
+	}
+}
+
 func TestSenderRecreatesDeletedCardAndPreservesRevisionControls(t *testing.T) {
 	t.Parallel()
 	var methods []string

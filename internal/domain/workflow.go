@@ -49,6 +49,8 @@ type Workflow struct {
 	CurrentStage      string
 	ErrorCode         string
 	ErrorMessage      string
+	CommandID         string
+	CommandDeadlineAt time.Time
 	StartedAt         time.Time
 	CompletedAt       time.Time
 	LeaseExpiresAt    time.Time
@@ -75,6 +77,10 @@ func (workflow Workflow) Validate() error {
 		return fmt.Errorf("expected session version must be positive")
 	case workflow.StartedAt.IsZero():
 		return fmt.Errorf("workflow start timestamp is required")
+	case (strings.TrimSpace(workflow.CommandID) == "") != workflow.CommandDeadlineAt.IsZero():
+		return fmt.Errorf("workflow command ID and deadline must be set together")
+	case !workflow.CommandDeadlineAt.IsZero() && !workflow.CommandDeadlineAt.After(workflow.StartedAt):
+		return fmt.Errorf("workflow command deadline must follow its start")
 	case workflow.LeaseExpiresAt.IsZero() || !workflow.LeaseExpiresAt.After(workflow.StartedAt):
 		return fmt.Errorf("workflow lease expiration must follow its start")
 	case workflow.CancelRequestedAt.IsZero() != (strings.TrimSpace(workflow.CancelRequestedBy) == ""):

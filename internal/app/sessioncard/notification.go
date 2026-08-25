@@ -46,7 +46,8 @@ func EnqueueProgress(ctx context.Context, queue ports.NotificationQueue, session
 		SchemaVersion: 1, NotificationID: notificationID, Kind: domain.NotificationSessionCard,
 		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
 		Content: RenderPublic(projection), Embed: RenderPublicEmbed(projection), CardRevision: session.Version,
-		CorrelationID: workflow.CorrelationID, RequestedAt: now.UTC(),
+		SuppressCardControls: session.LifecycleState == domain.StateDeleted,
+		CorrelationID:        workflow.CorrelationID, RequestedAt: now.UTC(),
 	}
 	return queue.Enqueue(ctx, request)
 }

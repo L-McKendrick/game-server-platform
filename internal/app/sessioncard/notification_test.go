@@ -46,6 +46,31 @@ func TestEnqueueProgressUsesMilestoneIdempotencyAndCardRevision(t *testing.T) {
 	}
 }
 
+func TestEnqueueTerminatedProgressSuppressesPublicCardControls(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)
+	session := domain.Session{
+		ID: "session-terminated", Version: 12, DisplayName: "Terminated", Slug: "terminated", GameType: "arma3",
+		GuildID: "guild-1", ChannelID: "channel-1", LifecycleState: domain.StateDeleted, HealthStatus: domain.HealthStopped,
+		Progress: domain.SessionProgress{
+			WorkflowID: "destroy-1", WorkflowType: domain.TerminationWorkflowType,
+			Milestone: domain.ProgressCompleted, State: domain.ProgressCompletedState,
+			CompletedMilestones: []domain.ProgressMilestone{domain.ProgressAccepted, domain.ProgressCompleted},
+			StartedAt:           now.Add(-time.Minute), LastProgressAt: now,
+		},
+		CreatedAt: now.Add(-time.Hour), UpdatedAt: now,
+	}
+	workflow := domain.Workflow{ID: "destroy-1", SessionID: session.ID, Type: domain.TerminationWorkflowType, Status: domain.WorkflowSucceeded, CorrelationID: "correlation-1", StartedAt: now.Add(-time.Minute), CompletedAt: now}
+	queue := memory.NewNotificationQueue()
+	if err := EnqueueProgress(context.Background(), queue, session, workflow, now); err != nil {
+		t.Fatal(err)
+	}
+	requests := queue.Requests()
+	if len(requests) != 1 || !requests[0].SuppressCardControls || requests[0].CardRevision != session.Version {
+		t.Fatalf("terminated card request = %#v", requests)
+	}
+}
+
 func TestEnqueueProgressActivityChangesOncePerSafeTarget(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
