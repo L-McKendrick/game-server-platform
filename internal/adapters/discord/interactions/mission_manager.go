@@ -15,6 +15,7 @@ import (
 const missionManagerPrefix = "rb:missions:v1:"
 const missionUploadPrefix = "rb:mission-upload:v1:"
 const missionUploadField = "mission:file"
+const missionWorkshopField = "mission:workshop"
 const maximumMissionButtonLabelRunes = 80
 
 func (payload interactionPayload) isRBEditCommand() bool {
@@ -241,9 +242,12 @@ func (handler *Handler) handleMissionManagerComponent(ctx context.Context, write
 }
 
 func writeMissionUploadModal(writer http.ResponseWriter, sessionID string, version int64) error {
-	required := true
-	one := 1
-	components := []interactionComponent{{Type: componentTypeLabel, Label: "Mission file", Description: "Upload one Arma 3 .pbo file (maximum 100 MiB).", Component: &interactionComponent{Type: componentTypeFileUpload, CustomID: missionUploadField, Required: &required, MinValues: &one, MaxValues: &one}}}
+	optional := false
+	zero, one, maximumURL := 0, 1, 200
+	components := []interactionComponent{
+		{Type: componentTypeLabel, Label: "Mission file", Description: "Optional .pbo upload; do not also provide a Workshop link.", Component: &interactionComponent{Type: componentTypeFileUpload, CustomID: missionUploadField, Required: &optional, MinValues: &zero, MaxValues: &one}},
+		{Type: componentTypeLabel, Label: "Steam Workshop link", Description: "Optional public Arma 3 scenario item or collection.", Component: &interactionComponent{Type: componentTypeTextInput, CustomID: missionWorkshopField, Style: textInputStyleShort, Placeholder: "https://steamcommunity.com/sharedfiles/filedetails/?id=...", MaxLength: &maximumURL, Required: &optional}},
+	}
 	writeJSON(writer, http.StatusOK, interactionResponse{Type: interactionResponseModal, Data: &interactionResponseData{CustomID: fmt.Sprintf("%s%s:%d", missionUploadPrefix, sessionID, version), Title: "Add mission file", Components: &components}})
 	return nil
 }
@@ -268,12 +272,24 @@ func (handler *Handler) submitMissionUpload(ctx context.Context, payload interac
 	if session.Version != version || session.ActiveWorkflowID != "" {
 		return "", domain.ErrConflict
 	}
-	if len(payload.Data.Components) != 1 || payload.Data.Components[0].Component == nil {
-		return "", newUserError("Upload one .pbo file.")
+	if len(payload.Data.Components) != 2 || payload.Data.Components[0].Component == nil || payload.Data.Components[1].Component == nil {
+		return "", newUserError("Provide one .pbo file or Workshop link.")
 	}
-	attachment, err := resolveModalAttachment(payload.Data, payload.Data.Components[0].Component, true)
+	attachment, err := resolveModalAttachment(payload.Data, payload.Data.Components[0].Component, false)
 	if err != nil {
-		return "", newUserError("Upload one .pbo file.")
+		return "", newUserError("Provide one .pbo file or Workshop link.")
+	}
+	workshopURL := strings.TrimSpace(payload.Data.Components[1].Component.Value)
+	if (attachment == nil) == (workshopURL == "") {
+		return "", newUserError("Provide either one .pbo file or one Workshop link, not both.")
+	}
+	if workshopURL != "" {
+		request := createWorkshopRequest(payload, actor, correlationID, sessionID, domain.WorkshopTargetMission, workshopURL, "discord:"+payload.ID+":mission-workshop", handler.clock.Now().UTC())
+		request.ChannelID = session.ChannelID
+		if err := requestWorkshopResolve(ctx, handler.service, actor, request); err != nil {
+			return "", err
+		}
+		return "Workshop scenario link queued for metadata validation. Accepted scenarios will be added as mission choices in the download phase.", nil
 	}
 	request := createArtifactRequest(payload, actor, correlationID, sessionID, domain.ArtifactMission, *attachment, "discord:"+payload.ID+":mission-upload", handler.clock.Now().UTC())
 	request.ChannelID = session.ChannelID

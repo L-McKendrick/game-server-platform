@@ -23,19 +23,24 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmlivemission"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/httpartifact"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/steamworkshop"
 	"github.com/L-McKendrick/game-server-platform/internal/app/artifacts"
 	"github.com/L-McKendrick/game-server-platform/internal/app/serverconfig"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
+	appworkshop "github.com/L-McKendrick/game-server-platform/internal/app/workshop"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/identity"
 	"github.com/L-McKendrick/game-server-platform/internal/logging"
+	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
 type handler struct {
-	service      *artifacts.Service
-	serverConfig *serverconfig.Processor
-	logger       *slog.Logger
+	service       *artifacts.Service
+	serverConfig  *serverconfig.Processor
+	workshop      *appworkshop.Service
+	notifications ports.NotificationQueue
+	logger        *slog.Logger
 }
 
 func main() {
@@ -89,12 +94,49 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &handler{service: service, serverConfig: serverConfig, logger: logger}, nil
+	workshopService, err := appworkshop.New(steamworkshop.New(), clock)
+	if err != nil {
+		return nil, err
+	}
+	return &handler{service: service, serverConfig: serverConfig, workshop: workshopService, notifications: sqsnotification.New(queueClient, cfg.NotificationQueueURL), logger: logger}, nil
 }
 
 func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (events.SQSEventResponse, error) {
 	response := events.SQSEventResponse{}
 	for _, message := range event.Records {
+		var envelope struct {
+			MessageType string `json:"message_type"`
+		}
+		if err := json.Unmarshal([]byte(message.Body), &envelope); err == nil && envelope.MessageType == "workshop_resolution" {
+			var request domain.WorkshopSourceRequest
+			if err := json.Unmarshal([]byte(message.Body), &request); err != nil {
+				response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+				continue
+			}
+			resolution, resolveErr := handler.workshop.Resolve(ctx, request)
+			if resolveErr != nil {
+				var metadataErr domain.WorkshopMetadataError
+				if errors.As(resolveErr, &metadataErr) && metadataErr.Retryable {
+					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+					continue
+				}
+				if err := handler.notifyWorkshop(ctx, request, "Workshop link rejected: "+resolveErr.Error()); err != nil {
+					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+				}
+				continue
+			}
+			matched := 0
+			for _, item := range resolution.Items {
+				if item.MatchesTarget {
+					matched++
+				}
+			}
+			content := fmt.Sprintf("Workshop link validated: %d matching %s item(s), %d excluded. Download is not enabled yet.", matched, request.Target, len(resolution.Items)-matched)
+			if err := handler.notifyWorkshop(ctx, request, content); err != nil {
+				response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+			}
+			continue
+		}
 		var request domain.ArtifactIngestRequest
 		if err := json.Unmarshal([]byte(message.Body), &request); err != nil {
 			handler.logger.Error("invalid artifact queue message", slog.String("message_id", message.MessageId), slog.Any("error", err))
@@ -125,4 +167,12 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 		handler.logger.Info("artifact processed", slog.String("session_id", request.SessionID), slog.String("correlation_id", request.CorrelationID))
 	}
 	return response, nil
+}
+
+func (handler *handler) notifyWorkshop(ctx context.Context, request domain.WorkshopSourceRequest, content string) error {
+	return handler.notifications.Enqueue(ctx, domain.NotificationRequest{
+		SchemaVersion: 1, NotificationID: "workshop-resolution-" + request.IdempotencyKey,
+		SessionID: request.SessionID, GuildID: request.GuildID, ChannelID: request.ChannelID,
+		Content: domain.SanitizeDiagnostic(content), CorrelationID: request.CorrelationID, RequestedAt: appsession.SystemClock{}.Now(),
+	})
 }

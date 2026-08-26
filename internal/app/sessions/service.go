@@ -43,6 +43,7 @@ func (SystemClock) Now() time.Time {
 type Service struct {
 	repository           ports.SessionRepository
 	artifactQueue        ports.ArtifactQueue
+	workshopQueue        ports.WorkshopQueue
 	commandQueue         ports.CommandQueue
 	confirmations        ports.ConfirmationRepository
 	serverConfigs        ports.GuildServerConfigRepository
@@ -59,6 +60,10 @@ type Option func(*Service)
 // WithArtifactQueue enables asynchronous Discord attachment ingestion.
 func WithArtifactQueue(queue ports.ArtifactQueue) Option {
 	return func(service *Service) { service.artifactQueue = queue }
+}
+
+func WithWorkshopQueue(queue ports.WorkshopQueue) Option {
+	return func(service *Service) { service.workshopQueue = queue }
 }
 
 // WithCommandQueue enables asynchronous lifecycle command dispatch.
@@ -1047,6 +1052,40 @@ func (service *Service) RequestArtifactIngest(ctx context.Context, actor domain.
 	}
 	if err := service.artifactQueue.Enqueue(ctx, request); err != nil {
 		return fmt.Errorf("enqueue artifact ingestion: %w", err)
+	}
+	return nil
+}
+
+// RequestWorkshopResolve authorizes and queues public Workshop metadata
+// resolution. It does not mutate mission or mod configuration.
+func (service *Service) RequestWorkshopResolve(ctx context.Context, actor domain.Actor, request domain.WorkshopSourceRequest) error {
+	if err := actor.Validate(); err != nil {
+		return fmt.Errorf("validate actor: %w", err)
+	}
+	if service.workshopQueue == nil {
+		return fmt.Errorf("Workshop resolution is not configured")
+	}
+	if request.ActorID != actor.ID {
+		return fmt.Errorf("Workshop actor does not match command actor: %w", domain.ErrForbidden)
+	}
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(request.SessionID))
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+	if err := authorizeOwner(actor, session); err != nil {
+		return err
+	}
+	if session.GuildID != request.GuildID || session.ChannelID != request.ChannelID {
+		return fmt.Errorf("Workshop request context does not match session: %w", domain.ErrForbidden)
+	}
+	if session.LifecycleState == domain.StateDeleting || session.LifecycleState == domain.StateDeleted || session.LifecycleState == domain.StateArchiving || session.LifecycleState == domain.StateDestroying {
+		return fmt.Errorf("Workshop content cannot be changed in the current lifecycle: %w", domain.ErrInvalidTransition)
+	}
+	if err := service.workshopQueue.EnqueueWorkshop(ctx, request); err != nil {
+		return fmt.Errorf("enqueue Workshop resolution: %w", err)
 	}
 	return nil
 }

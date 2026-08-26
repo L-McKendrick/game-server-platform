@@ -17,6 +17,7 @@ const (
 	createDescriptionCustomID = "create:description"
 	createFeaturesCustomID    = "create:features"
 	createMissionCustomID     = "create:mission"
+	createMissionWorkshopID   = "create:mission-workshop"
 	createPresetCustomID      = "create:preset"
 
 	createFeatureModded    = "modded"
@@ -125,7 +126,14 @@ func writeSessionSetupModal(writer http.ResponseWriter, customID, title string, 
 			},
 		},
 	}
-	if !creation {
+	if creation {
+		maximumURL := 200
+		components = append(components, interactionComponent{
+			Type: componentTypeLabel, Label: "Mission Workshop link",
+			Description: "Optional public Arma 3 scenario item or collection; do not also upload a mission file.",
+			Component:   &interactionComponent{Type: componentTypeTextInput, CustomID: createMissionWorkshopID, Style: textInputStyleShort, Placeholder: "https://steamcommunity.com/sharedfiles/filedetails/?id=...", MaxLength: &maximumURL, Required: &optional},
+		})
+	} else {
 		components = append(components, interactionComponent{
 			Type: componentTypeLabel, Label: "Launcher preset",
 			Description: setupArtifactDescription("preset", session.PresetArtifactStatus, session.PresetObjectKey, false),

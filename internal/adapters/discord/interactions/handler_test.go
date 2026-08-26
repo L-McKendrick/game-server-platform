@@ -265,7 +265,7 @@ func TestHandlerOpensAndSubmitsPrivateModsModalForRunningSession(t *testing.T) {
 	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
 	var modal interactionResponse
 	decodeResponse(t, opened, &modal)
-	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, modsModalCustomIDPrefix+modsModeRevision+":session-mods:1:0:") || modal.Data.Components == nil || len(*modal.Data.Components) != 3 {
+	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, modsModalCustomIDPrefix+modsModeRevision+":session-mods:1:0:") || modal.Data.Components == nil || len(*modal.Data.Components) != 4 {
 		t.Fatalf("mods modal response = %#v body=%s", modal, opened.Body.String())
 	}
 	submitBody := marshalPayload(map[string]any{
@@ -469,7 +469,7 @@ func TestHandlerKeepsModdedCreationWithoutPresetRecoverable(t *testing.T) {
 	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
 	var modal interactionResponse
 	decodeResponse(t, opened, &modal)
-	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, modsModalCustomIDPrefix+modsModeCreate) || modal.Data.Components == nil || len(*modal.Data.Components) != 3 {
+	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, modsModalCustomIDPrefix+modsModeCreate) || modal.Data.Components == nil || len(*modal.Data.Components) != 4 {
 		t.Fatalf("creation mod options modal = %#v", modal)
 	}
 	submitBody := marshalPayload(map[string]any{
@@ -830,11 +830,11 @@ func TestHandlerOpensCreateModalWithoutPersistingSession(t *testing.T) {
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
 	if decoded.Type != interactionResponseModal || decoded.Data == nil || decoded.Data.CustomID != createModalCustomID ||
-		decoded.Data.Title != "Create Arma 3 session" || decoded.Data.Components == nil || len(*decoded.Data.Components) != 4 {
+		decoded.Data.Title != "Create Arma 3 session" || decoded.Data.Components == nil || len(*decoded.Data.Components) != 5 {
 		t.Fatalf("create modal response = %#v", decoded)
 	}
 	components := *decoded.Data.Components
-	wantTypes := []int{componentTypeTextInput, componentTypeTextInput, componentTypeCheckboxGroup, componentTypeFileUpload}
+	wantTypes := []int{componentTypeTextInput, componentTypeTextInput, componentTypeCheckboxGroup, componentTypeFileUpload, componentTypeTextInput}
 	for index, component := range components {
 		if component.Type != componentTypeLabel || component.Component == nil || component.Component.Type != wantTypes[index] {
 			t.Fatalf("modal component %d = %#v; want label wrapping type %d", index, component, wantTypes[index])

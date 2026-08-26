@@ -13,14 +13,15 @@ import (
 )
 
 type createModalSubmission struct {
-	gameType    string
-	name        string
-	description string
-	modded      bool
-	teamSpeak   bool
-	autoStart   bool
-	mission     *interactionAttachment
-	preset      *interactionAttachment
+	gameType        string
+	name            string
+	description     string
+	modded          bool
+	teamSpeak       bool
+	autoStart       bool
+	mission         *interactionAttachment
+	missionWorkshop string
+	preset          *interactionAttachment
 }
 
 type createModalResult struct {
@@ -103,6 +104,13 @@ func (handler *Handler) submitCreateModal(
 			return createModalResult{}, fmt.Errorf("queue creation mission: %w", err)
 		}
 		queued = "Mission queued for validation."
+	} else if submission.missionWorkshop != "" {
+		request := createWorkshopRequest(payload, actor, correlationID, session.ID, domain.WorkshopTargetMission, submission.missionWorkshop, keyPrefix+":mission-workshop", now)
+		request.ChannelID = session.ChannelID
+		if err := requestWorkshopResolve(ctx, handler.service, actor, request); err != nil {
+			return createModalResult{}, fmt.Errorf("queue creation Workshop mission: %w", err)
+		}
+		queued = "Workshop mission link queued for metadata validation."
 	}
 	components := []interactionComponent(nil)
 	if submission.modded {
@@ -152,7 +160,7 @@ func parseCreateModalSubmission(
 	keyPrefix string,
 	requestedAt time.Time,
 ) (createModalSubmission, error) {
-	if payload.Data == nil || payload.Data.CustomID != createModalCustomID || len(payload.Data.Components) != 4 {
+	if payload.Data == nil || payload.Data.CustomID != createModalCustomID || (len(payload.Data.Components) != 4 && len(payload.Data.Components) != 5) {
 		return createModalSubmission{}, newUserError("The creation form is malformed or expired. Run `/rb create` again.")
 	}
 
@@ -210,6 +218,11 @@ func parseCreateModalSubmission(
 				return createModalSubmission{}, newUserError("Upload at most one mission .pbo file.")
 			}
 			submission.mission = attachment
+		case createMissionWorkshopID:
+			if component.Type != componentTypeTextInput {
+				return createModalSubmission{}, newUserError("The Workshop link field is invalid.")
+			}
+			submission.missionWorkshop = strings.TrimSpace(component.Value)
 		default:
 			return createModalSubmission{}, newUserError("The creation form contains an unsupported field. Run `/rb create` again.")
 		}
@@ -223,6 +236,9 @@ func parseCreateModalSubmission(
 			return createModalSubmission{}, newUserError("The creation form is incomplete. Run `/rb create` again.")
 		}
 	}
+	if len(payload.Data.Components) == 5 && !seen[createMissionWorkshopID] {
+		return createModalSubmission{}, newUserError("The creation form is incomplete. Run `/rb create` again.")
+	}
 	if count := utf8.RuneCountInString(submission.name); count < 1 || count > 100 {
 		return createModalSubmission{}, newUserError("The session name must contain 1 to 100 characters.")
 	}
@@ -233,7 +249,31 @@ func parseCreateModalSubmission(
 			return createModalSubmission{}, newUserError("The mission upload must be a .pbo file no larger than 100 MiB from Discord.")
 		}
 	}
+	if submission.mission != nil && submission.missionWorkshop != "" {
+		return createModalSubmission{}, newUserError("Provide either a mission upload or Workshop link, not both.")
+	}
+	if submission.missionWorkshop != "" {
+		if _, err := domain.ParseWorkshopURL(submission.missionWorkshop); err != nil {
+			return createModalSubmission{}, newUserError("Provide a canonical public Steam Workshop link.")
+		}
+	}
 	return submission, nil
+}
+
+type workshopRequester interface {
+	RequestWorkshopResolve(context.Context, domain.Actor, domain.WorkshopSourceRequest) error
+}
+
+func requestWorkshopResolve(ctx context.Context, service SessionService, actor domain.Actor, request domain.WorkshopSourceRequest) error {
+	requester, ok := service.(workshopRequester)
+	if !ok {
+		return fmt.Errorf("Workshop resolution is not configured")
+	}
+	return requester.RequestWorkshopResolve(ctx, actor, request)
+}
+
+func createWorkshopRequest(payload interactionPayload, actor domain.Actor, correlationID, sessionID string, target domain.WorkshopTarget, sourceURL, idempotencyKey string, requestedAt time.Time) domain.WorkshopSourceRequest {
+	return domain.WorkshopSourceRequest{MessageType: "workshop_resolution", SchemaVersion: 1, SessionID: sessionID, Target: target, SourceURL: sourceURL, ActorID: actor.ID, GuildID: strings.TrimSpace(payload.GuildID), ChannelID: strings.TrimSpace(payload.ChannelID), CorrelationID: correlationID, IdempotencyKey: idempotencyKey, RequestedAt: requestedAt.UTC()}
 }
 
 func resolveModalAttachment(

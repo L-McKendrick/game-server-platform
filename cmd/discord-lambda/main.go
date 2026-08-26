@@ -75,6 +75,7 @@ func build(ctx context.Context) (*lambdahttp.Adapter, error) {
 	clock := appsession.SystemClock{}
 	serviceOptions := []appsession.Option{
 		appsession.WithArtifactQueue(artifactQueue),
+		appsession.WithWorkshopQueue(artifactQueue),
 		appsession.WithNotificationQueue(sqsnotification.New(sqs.NewFromConfig(awsConfiguration), baseConfig.NotificationQueueURL)),
 		appsession.WithServerConfigRepository(repository),
 	}
