@@ -112,3 +112,29 @@ func TestClearRolesRejectsStalePolicyRevision(t *testing.T) {
 		t.Fatalf("roles after stale clear = %#v, error = %v", roles, err)
 	}
 }
+
+func TestGuildManagerConfiguresPublicCardChannelWithoutChangingAccessRoles(t *testing.T) {
+	t.Parallel()
+	repository := memory.NewAccessPolicyRepository()
+	service, err := NewService(repository, nil, nil, accessClock{time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Configure(context.Background(), "guild-1", "manager-1", true, []string{"role-1"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := service.ConfigurePublicCardChannel(context.Background(), "guild-1", "manager-1", true, "channel-public")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.PublicCardChannelID != "channel-public" || len(policy.AllowedRoleIDs) != 1 || policy.AllowedRoleIDs[0] != "role-1" || policy.Version != 2 {
+		t.Fatalf("policy = %#v", policy)
+	}
+	channelID, err := service.PublicCardChannel(context.Background(), "guild-1")
+	if err != nil || channelID != "channel-public" {
+		t.Fatalf("PublicCardChannel() = %q, %v", channelID, err)
+	}
+	if _, err := service.ConfigurePublicCardChannel(context.Background(), "guild-1", "member-1", false, "channel-other"); !errors.Is(err, domain.ErrForbidden) {
+		t.Fatalf("ConfigurePublicCardChannel(non-admin) error = %v", err)
+	}
+}

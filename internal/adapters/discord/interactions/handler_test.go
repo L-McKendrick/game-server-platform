@@ -349,6 +349,50 @@ func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testi
 	}
 }
 
+func TestHandlerAdministratorSelectsPublicCardChannelForNewSession(t *testing.T) {
+	t.Parallel()
+
+	handler, repository, _, cards, privateKey := newTestHandlerWithQueues(
+		t,
+		[]string{"correlation-admin-channel", "correlation-invalid-channel", "correlation-create"},
+		[]string{"session-public-channel", "event-created", "event-configured", "event-artifacts"},
+	)
+	selected := executeSignedRequest(t, handler, privateKey, adminChannelSelectionBody(
+		"admin-public-channel", "manager-1", "guild-1", "channel-other", "channel-public", 0,
+	), testNow)
+	var selectedResponse interactionResponse
+	decodeResponse(t, selected, &selectedResponse)
+	if selectedResponse.Type != interactionResponseUpdateMessage || selectedResponse.Data == nil ||
+		!strings.Contains(selectedResponse.Data.Content, "<#channel-public>") {
+		t.Fatalf("public channel selection response = %#v", selectedResponse)
+	}
+	invalid := executeSignedRequest(t, handler, privateKey, adminChannelSelectionBody(
+		"admin-voice-channel", "manager-1", "guild-1", "channel-other", "channel-voice", 2,
+	), testNow)
+	var invalidResponse interactionResponse
+	decodeResponse(t, invalid, &invalidResponse)
+	if invalidResponse.Data == nil || !strings.Contains(invalidResponse.Data.Content, "could not verify the selected channel") {
+		t.Fatalf("invalid channel response = %#v", invalidResponse)
+	}
+
+	created := executeSignedRequest(t, handler, privateKey, createModalSubmissionBody(
+		"create-public-channel", "Public Channel Session", nil, true, "mission.pbo",
+	), testNow)
+	var createdResponse interactionResponse
+	decodeResponse(t, created, &createdResponse)
+	if created.Code != http.StatusOK || createdResponse.Data == nil || !strings.Contains(createdResponse.Data.Content, "Draft session created") {
+		t.Fatalf("create response = %#v body=%s", createdResponse, created.Body.String())
+	}
+	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+	if err != nil || len(sessions) != 1 || sessions[0].ChannelID != "channel-public" {
+		t.Fatalf("sessions = %#v, error = %v", sessions, err)
+	}
+	requests := cards.Requests()
+	if len(requests) != 1 || requests[0].ChannelID != "channel-public" || requests[0].Kind != domain.NotificationSessionCard {
+		t.Fatalf("card requests = %#v", requests)
+	}
+}
+
 func TestHandlerAcceptsVanillaCreationWithoutPreset(t *testing.T) {
 	t.Parallel()
 
@@ -2036,14 +2080,14 @@ func TestHandlerRBAdminMenuNavigatesOnlyImplementedPolicyAreas(t *testing.T) {
 		t.Fatalf("admin menu = %#v", menu)
 	}
 	navigation := (*menu.Data.Components)[0].Components[0]
-	if navigation.CustomID != adminMenuCustomID || navigation.Type != componentTypeStringSelect || len(navigation.Options) != 2 {
+	if navigation.CustomID != adminMenuCustomID || navigation.Type != componentTypeStringSelect || len(navigation.Options) != 3 {
 		t.Fatalf("admin navigation = %#v", navigation)
 	}
 	values := map[string]bool{}
 	for _, option := range navigation.Options {
 		values[option.Value] = true
 	}
-	if !values[adminMenuAccess] || !values[adminMenuRepair] || values[adminMenuReset] || values[adminMenuServerConfig] || values["costs"] || values["schedule"] || values["duration"] {
+	if !values[adminMenuAccess] || !values[adminMenuPublicCard] || !values[adminMenuRepair] || values[adminMenuReset] || values[adminMenuServerConfig] || values["costs"] || values["schedule"] || values["duration"] {
 		t.Fatalf("admin menu options = %#v", navigation.Options)
 	}
 
@@ -2089,7 +2133,7 @@ func TestHandlerAdministratorResetFlowIsTypedReplaySafeAndFreezesSessionCommands
 	menuResponse := executeSignedRequest(t, handler, privateKey, adminMenuCommandBody("reset-menu", "admin-1", "8"), testNow)
 	var menu interactionResponse
 	decodeResponse(t, menuResponse, &menu)
-	if menu.Data == nil || menu.Data.Components == nil || len((*menu.Data.Components)[0].Components[0].Options) != 4 {
+	if menu.Data == nil || menu.Data.Components == nil || len((*menu.Data.Components)[0].Components[0].Options) != 5 {
 		t.Fatalf("Administrator menu = %#v", menu)
 	}
 
@@ -2296,6 +2340,18 @@ func adminRoleSelectionBody(interactionID, ownerID, guildID, channelID string, r
 		"data": map[string]any{
 			"custom_id": adminRoleSelectCustomID, "component_type": componentTypeRoleSelect, "values": roleIDs,
 			"resolved": map[string]any{"roles": resolved},
+		},
+	})
+}
+
+func adminChannelSelectionBody(interactionID, ownerID, guildID, channelID, selectedChannelID string, selectedChannelType int) []byte {
+	return marshalPayload(map[string]any{
+		"id": interactionID, "application_id": "app-1", "type": interactionTypeMessageComponent,
+		"guild_id": guildID, "channel_id": channelID,
+		"member": map[string]any{"user": map[string]any{"id": ownerID}, "roles": []string{}, "permissions": "32"},
+		"data": map[string]any{
+			"custom_id": adminPublicCardChannelCustomID, "component_type": componentTypeChannelSelect, "values": []string{selectedChannelID},
+			"resolved": map[string]any{"channels": map[string]any{selectedChannelID: map[string]any{"id": selectedChannelID, "type": selectedChannelType}}},
 		},
 	})
 }

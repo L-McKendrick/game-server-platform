@@ -78,6 +78,51 @@ func (service *Service) AllowedRoles(ctx context.Context, guildID string) ([]str
 	return roles, 0, nil
 }
 
+// PublicCardChannel returns the configured destination for new public cards.
+// An empty value means the channel where the session is created.
+func (service *Service) PublicCardChannel(ctx context.Context, guildID string) (string, error) {
+	policy, err := service.repository.GetAccessPolicy(ctx, strings.TrimSpace(guildID))
+	if errors.Is(err, domain.ErrNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(policy.PublicCardChannelID), nil
+}
+
+func (service *Service) ConfigurePublicCardChannel(ctx context.Context, guildID, userID string, canManageGuild bool, channelID string) (domain.GuildAccessPolicy, error) {
+	if !canManageGuild {
+		return domain.GuildAccessPolicy{}, domain.ErrForbidden
+	}
+	guildID, userID, channelID = strings.TrimSpace(guildID), strings.TrimSpace(userID), strings.TrimSpace(channelID)
+	current, err := service.repository.GetAccessPolicy(ctx, guildID)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return domain.GuildAccessPolicy{}, err
+	}
+	if err == nil && current.PublicCardChannelID == channelID {
+		return current, nil
+	}
+	policy := current
+	if errors.Is(err, domain.ErrNotFound) {
+		policy.AllowedRoleIDs = sortedKeys(service.fallbackRoles)
+		policy.AllowedChannelIDs = sortedKeys(service.fallbackChannels)
+	}
+	policy.GuildID = guildID
+	policy.PublicCardChannelID = channelID
+	policy.Version++
+	policy.UpdatedBy = userID
+	policy.UpdatedAt = service.clock.Now().UTC()
+	if err := policy.Validate(); err != nil {
+		return domain.GuildAccessPolicy{}, err
+	}
+	expectedVersion := policy.Version - 1
+	if err := service.repository.SaveAccessPolicy(ctx, policy, expectedVersion); err != nil {
+		return domain.GuildAccessPolicy{}, err
+	}
+	return policy, nil
+}
+
 // ClearRoles removes normal-member access only when the policy revision shown
 // by the confirmation is still current. Version zero binds the deployment
 // fallback before the guild has persisted its first policy.
@@ -99,6 +144,10 @@ func (service *Service) ClearRoles(ctx context.Context, guildID, userID string, 
 		GuildID: strings.TrimSpace(guildID), Version: expectedVersion + 1,
 		UpdatedBy: strings.TrimSpace(userID), UpdatedAt: service.clock.Now().UTC(),
 	}
+	if err == nil {
+		policy.AllowedChannelIDs = append([]string(nil), current.AllowedChannelIDs...)
+		policy.PublicCardChannelID = current.PublicCardChannelID
+	}
 	if err := policy.Validate(); err != nil {
 		return domain.GuildAccessPolicy{}, err
 	}
@@ -114,7 +163,8 @@ func (service *Service) Configure(ctx context.Context, guildID string, userID st
 	}
 	expectedVersion := int64(0)
 	normalizedRoles, normalizedChannels := unique(roleIDs), unique(channelIDs)
-	if current, err := service.repository.GetAccessPolicy(ctx, guildID); err == nil {
+	current, err := service.repository.GetAccessPolicy(ctx, guildID)
+	if err == nil {
 		if slices.Equal(unique(current.AllowedRoleIDs), normalizedRoles) && slices.Equal(unique(current.AllowedChannelIDs), normalizedChannels) {
 			return current, nil
 		}
@@ -125,6 +175,9 @@ func (service *Service) Configure(ctx context.Context, guildID string, userID st
 	policy := domain.GuildAccessPolicy{
 		GuildID: strings.TrimSpace(guildID), AllowedRoleIDs: normalizedRoles, AllowedChannelIDs: normalizedChannels,
 		Version: expectedVersion + 1, UpdatedBy: strings.TrimSpace(userID), UpdatedAt: service.clock.Now().UTC(),
+	}
+	if expectedVersion > 0 {
+		policy.PublicCardChannelID = current.PublicCardChannelID
 	}
 	if err := policy.Validate(); err != nil {
 		return domain.GuildAccessPolicy{}, err
@@ -161,6 +214,15 @@ func unique(values []string) []string {
 	set := stringSet(values)
 	result := make([]string, 0, len(set))
 	for value := range set {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func sortedKeys(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
 		result = append(result, value)
 	}
 	sort.Strings(result)

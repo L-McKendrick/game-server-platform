@@ -102,6 +102,7 @@ func (handler *Handler) submitSetupModal(ctx context.Context, payload interactio
 	queued := []string{}
 	if submission.mission != nil {
 		request := createArtifactRequest(payload, actor, correlationID, session.ID, domain.ArtifactMission, *submission.mission, keyPrefix+":mission", now)
+		request.ChannelID = session.ChannelID
 		if err := handler.service.RequestArtifactIngest(ctx, actor, request); err != nil {
 			return "", fmt.Errorf("queue replacement mission: %w", err)
 		}
@@ -109,6 +110,7 @@ func (handler *Handler) submitSetupModal(ctx context.Context, payload interactio
 	}
 	if submission.preset != nil {
 		request := createArtifactRequest(payload, actor, correlationID, session.ID, domain.ArtifactPreset, *submission.preset, keyPrefix+":preset", now)
+		request.ChannelID = session.ChannelID
 		if err := handler.service.RequestArtifactIngest(ctx, actor, request); err != nil {
 			return "", fmt.Errorf("queue replacement preset: %w", err)
 		}

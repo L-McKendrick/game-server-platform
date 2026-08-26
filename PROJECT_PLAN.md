@@ -231,24 +231,6 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **14.5.2** [x] Reject start and wake before queue dispatch when the single slot belongs to another session, and return a concise Discord capacity message.
       - **14.5.3** [x] Add focused available, same-session, occupied-session, creation, and adapter regressions; run proportional validation and refresh the Phase 14 handoff.
 
-15. **Maximum Session Duration Guardrails — Pending**
-    - **15.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
-
-16. **Production Hardening and Optimization — Pending**
-    - **16.1** [ ] Complete least-privilege and threat-model reviews across Discord, AWS, artifacts, workflows, and destructive lifecycle boundaries.
-    - **16.2** [ ] Add OIDC deployment, staging, dashboards, alert validation, and tested production and disaster-recovery runbooks.
-    - **16.3** [ ] Verify costs, quotas, failure recovery, backup restoration, and operational readiness against explicit release gates.
-    - **16.4** [ ] Benchmark bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements, then optimize only demonstrated bottlenecks within cost and reliability guardrails.
-    - **16.5** [ ] Reduce measured AWS orchestration overhead without weakening bounded lifecycle behavior, progress visibility, or recovery safeguards.
-      - **16.5.1** [x] Reduce bootstrap Step Functions polling transitions by enforcing the persisted command deadline in the existing observer and removing counter-only workflow states, while preserving 30-second progress, terminal SSM results, rollback, replay, and backward compatibility.
-
-17. **Potential Enhancements — Pending**
-    - **17.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.
-    - **17.2** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; extend `/rb create` beyond Arma 3 through explicit game-specific setup contracts.
-    - **17.3** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.
-    - **17.4** [ ] Provide options of different EC2 instance types (weaker or more powerful options with explanations).
-    - **17.5** [ ] Let administrators configure the active-session capacity limit while preserving atomic slot enforcement and clear start/wake feedback.
-
 18. **Miscellaneous Fixes and Quality of Life — Complete (approved out of order)**
     - Deliver on `codex/misc-fixes` by extending existing Discord, artifact,
       bootstrap, and SSM paths. Avoid new workers, queues, state machines, or
@@ -288,3 +270,27 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **18.9.3** [x] Add focused terminal rendering/timestamp coverage, update the handoff, validate, commit, and push.
     - **18.10** [x] Remove inapplicable public-card controls after termination.
       - **18.10.1** [x] Clear `Show players` and `Refresh` from terminated public cards through an explicit terminal notification contract, including termination, refresh, repair, Discord PATCH, backward-compatibility, and focused regression coverage.
+
+19. **Discord Public Card Channel Configuration — Done**
+    - **19.1** [x] Let an authorized guild administrator choose the channel where new public session cards are posted, using the existing `/rb admin` infrastructure.
+      - **19.1.1** [x] Add one guild configuration field for the public-card channel ID and expose a channel-selection action through the existing `/rb admin` menu.
+      - **19.1.2** [x] Use the configured channel when creating a public card and its linked public modlist message; continue storing the created message references so existing update and repair paths work unchanged.
+      - **19.1.3** [x] Add focused admin-authorization, setting persistence, selected-channel delivery, and Discord failure coverage; update the relevant admin documentation and run proportional validation.
+
+15. **Maximum Session Duration Guardrails — Pending**
+    - **15.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
+
+16. **Production Hardening and Optimization — Pending**
+    - **16.1** [ ] Complete least-privilege and threat-model reviews across Discord, AWS, artifacts, workflows, and destructive lifecycle boundaries.
+    - **16.2** [ ] Add OIDC deployment, staging, dashboards, alert validation, and tested production and disaster-recovery runbooks.
+    - **16.3** [ ] Verify costs, quotas, failure recovery, backup restoration, and operational readiness against explicit release gates.
+    - **16.4** [ ] Benchmark bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements, then optimize only demonstrated bottlenecks within cost and reliability guardrails.
+    - **16.5** [ ] Reduce measured AWS orchestration overhead without weakening bounded lifecycle behavior, progress visibility, or recovery safeguards.
+      - **16.5.1** [x] Reduce bootstrap Step Functions polling transitions by enforcing the persisted command deadline in the existing observer and removing counter-only workflow states, while preserving 30-second progress, terminal SSM results, rollback, replay, and backward compatibility.
+
+17. **Potential Enhancements — Pending**
+    - **17.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.
+    - **17.2** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; extend `/rb create` beyond Arma 3 through explicit game-specific setup contracts.
+    - **17.3** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.
+    - **17.4** [ ] Provide options of different EC2 instance types (weaker or more powerful options with explanations).
+    - **17.5** [ ] Let administrators configure the active-session capacity limit while preserving atomic slot enforcement and clear start/wake feedback.

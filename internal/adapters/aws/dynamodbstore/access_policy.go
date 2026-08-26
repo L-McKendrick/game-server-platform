@@ -19,16 +19,17 @@ import (
 var _ ports.AccessPolicyRepository = (*Repository)(nil)
 
 type accessPolicyItem struct {
-	PK                string   `dynamodbav:"pk"`
-	SK                string   `dynamodbav:"sk"`
-	EntityType        string   `dynamodbav:"entity_type"`
-	SchemaVersion     int      `dynamodbav:"schema_version"`
-	GuildID           string   `dynamodbav:"guild_id"`
-	AllowedRoleIDs    []string `dynamodbav:"allowed_role_ids"`
-	AllowedChannelIDs []string `dynamodbav:"allowed_channel_ids"`
-	Version           int64    `dynamodbav:"version"`
-	UpdatedBy         string   `dynamodbav:"updated_by"`
-	UpdatedAt         string   `dynamodbav:"updated_at"`
+	PK                  string   `dynamodbav:"pk"`
+	SK                  string   `dynamodbav:"sk"`
+	EntityType          string   `dynamodbav:"entity_type"`
+	SchemaVersion       int      `dynamodbav:"schema_version"`
+	GuildID             string   `dynamodbav:"guild_id"`
+	AllowedRoleIDs      []string `dynamodbav:"allowed_role_ids"`
+	AllowedChannelIDs   []string `dynamodbav:"allowed_channel_ids"`
+	PublicCardChannelID string   `dynamodbav:"public_card_channel_id,omitempty"`
+	Version             int64    `dynamodbav:"version"`
+	UpdatedBy           string   `dynamodbav:"updated_by"`
+	UpdatedAt           string   `dynamodbav:"updated_at"`
 }
 
 func (repository *Repository) GetAccessPolicy(ctx context.Context, guildID string) (domain.GuildAccessPolicy, error) {
@@ -56,7 +57,7 @@ func (repository *Repository) GetAccessPolicy(ctx context.Context, guildID strin
 	}
 	policy := domain.GuildAccessPolicy{
 		GuildID: item.GuildID, AllowedRoleIDs: item.AllowedRoleIDs,
-		AllowedChannelIDs: item.AllowedChannelIDs, Version: item.Version,
+		AllowedChannelIDs: item.AllowedChannelIDs, PublicCardChannelID: item.PublicCardChannelID, Version: item.Version,
 		UpdatedBy: item.UpdatedBy, UpdatedAt: updatedAt.UTC(),
 	}
 	return policy, policy.Validate()
@@ -69,7 +70,7 @@ func (repository *Repository) SaveAccessPolicy(ctx context.Context, policy domai
 	attributes, err := attributevalue.MarshalMap(accessPolicyItem{
 		PK: "GUILD#" + policy.GuildID, SK: "ACCESS#CURRENT", EntityType: "GuildAccessPolicy",
 		SchemaVersion: schemaVersion, GuildID: policy.GuildID,
-		AllowedRoleIDs: policy.AllowedRoleIDs, AllowedChannelIDs: policy.AllowedChannelIDs,
+		AllowedRoleIDs: policy.AllowedRoleIDs, AllowedChannelIDs: policy.AllowedChannelIDs, PublicCardChannelID: policy.PublicCardChannelID,
 		Version: policy.Version, UpdatedBy: policy.UpdatedBy, UpdatedAt: policy.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	})
 	if err != nil {

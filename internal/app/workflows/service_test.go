@@ -260,6 +260,7 @@ func TestStart_ResumesTrustedBootstrapContinuationWithoutDiscordRoleReplay(t *te
 	t.Parallel()
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	repository, command := seedBootstrapContinuation(t, now)
+	command.Actor.ChannelID = "channel-where-start-was-invoked"
 	starter := &workflowStarter{arn: "arn:aws:states:us-west-2:123456789012:execution:BootstrapGameServer:" + command.CommandID}
 	service, err := NewService(repository, repository, starter, rejectAuthorizer{}, &workflowIDs{}, workflowClock{now}, 8*time.Hour)
 	if err != nil {
