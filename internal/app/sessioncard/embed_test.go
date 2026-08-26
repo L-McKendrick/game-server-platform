@@ -43,7 +43,7 @@ func TestRenderPublicEmbedMatchesApprovedCardAndUsesLiveMission(t *testing.T) {
 	if embed.Fields[1].Name != "\u200b\nGame server" || !strings.Contains(embed.Fields[1].Value, "`203.0.113.20:2302`\n\n**Modlist:** [Saturday Operations]") {
 		t.Fatalf("game connection field = %#v", embed.Fields[1])
 	}
-	if embed.Fields[2].Name != "TeamSpeak" || embed.Fields[2].Value != "`203.0.113.20:9987`" {
+	if embed.Fields[2].Name != "\u200b\nTeamSpeak" || embed.Fields[2].Value != "`203.0.113.20:9987`" {
 		t.Fatalf("TeamSpeak field = %#v", embed.Fields[2])
 	}
 	for _, removed := range []string{"Guidance", "Last updated", "View details", "Help"} {
