@@ -344,6 +344,31 @@ func TestAcquireWorkflowConditionallyWritesLockWorkflowAndEvent(t *testing.T) {
 	}
 }
 
+func TestWorkflowCommandDeadlineRoundTripsBackwardCompatibly(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	workflow := domain.Workflow{
+		ID: "bootstrap-1", SessionID: "session-1", Type: domain.BootstrapWorkflowType,
+		Status: domain.WorkflowRunning, RequestedBy: "owner-1", CorrelationID: "correlation-1",
+		ExpectedVersion: 1, StartedAt: now, LeaseExpiresAt: now.Add(7 * time.Hour),
+		CommandID: "command-1", CommandDeadlineAt: now.Add(6 * time.Hour),
+	}
+	stored, err := fromWorkflowItem(toWorkflowItem(workflow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.CommandID != workflow.CommandID || !stored.CommandDeadlineAt.Equal(workflow.CommandDeadlineAt) {
+		t.Fatalf("stored workflow = %#v", stored)
+	}
+
+	workflow.CommandID = ""
+	workflow.CommandDeadlineAt = time.Time{}
+	legacy, err := fromWorkflowItem(toWorkflowItem(workflow))
+	if err != nil || legacy.CommandID != "" || !legacy.CommandDeadlineAt.IsZero() {
+		t.Fatalf("legacy workflow = %#v, err = %v", legacy, err)
+	}
+}
+
 func TestGetIdempotencyDecodesStoredRecord(t *testing.T) {
 	t.Parallel()
 

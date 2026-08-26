@@ -137,7 +137,9 @@ func (sender *Sender) SendCard(ctx context.Context, request domain.NotificationR
 	if err != nil {
 		return "", err
 	}
-	if len(components) > 0 {
+	if request.SuppressCardControls {
+		payload["components"] = []map[string]any{}
+	} else if len(components) > 0 {
 		payload["components"] = components
 	}
 	messageID = strings.TrimSpace(messageID)
@@ -229,7 +231,7 @@ func (sender *Sender) sendCardRequest(
 }
 
 func sessionCardControls(request domain.NotificationRequest) ([]map[string]any, error) {
-	if request.CardRevision < 1 {
+	if request.SuppressCardControls || request.CardRevision < 1 {
 		return nil, nil
 	}
 	token := sessioncard.ControlToken(request.SessionID)

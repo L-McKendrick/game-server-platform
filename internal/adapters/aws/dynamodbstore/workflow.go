@@ -33,6 +33,8 @@ type workflowItem struct {
 	CurrentStage       string `dynamodbav:"current_stage,omitempty"`
 	ErrorCode          string `dynamodbav:"error_code,omitempty"`
 	ErrorMessage       string `dynamodbav:"error_message,omitempty"`
+	CommandID          string `dynamodbav:"command_id,omitempty"`
+	CommandDeadlineAt  string `dynamodbav:"command_deadline_at,omitempty"`
 	StartedAt          string `dynamodbav:"started_at"`
 	CompletedAt        string `dynamodbav:"completed_at,omitempty"`
 	LeaseExpiresAt     string `dynamodbav:"lease_expires_at"`
@@ -224,6 +226,7 @@ func toWorkflowItem(workflow domain.Workflow) workflowItem {
 		CorrelationID: workflow.CorrelationID, ExpectedVersion: workflow.ExpectedVersion,
 		ExecutionARN: workflow.ExecutionARN, CurrentStage: workflow.CurrentStage,
 		ErrorCode: workflow.ErrorCode, ErrorMessage: workflow.ErrorMessage,
+		CommandID: workflow.CommandID, CommandDeadlineAt: optionalTimestamp(workflow.CommandDeadlineAt),
 		StartedAt: optionalTimestamp(workflow.StartedAt), CompletedAt: optionalTimestamp(workflow.CompletedAt),
 		LeaseExpiresAt:    optionalTimestamp(workflow.LeaseExpiresAt),
 		CancelRequestedAt: optionalTimestamp(workflow.CancelRequestedAt), CancelRequestedBy: workflow.CancelRequestedBy,
@@ -238,6 +241,10 @@ func fromWorkflowItem(item workflowItem) (domain.Workflow, error) {
 		return domain.Workflow{}, err
 	}
 	completedAt, err := parseOptionalTimestamp(item.CompletedAt)
+	if err != nil {
+		return domain.Workflow{}, err
+	}
+	commandDeadlineAt, err := parseOptionalTimestamp(item.CommandDeadlineAt)
 	if err != nil {
 		return domain.Workflow{}, err
 	}
@@ -263,6 +270,7 @@ func fromWorkflowItem(item workflowItem) (domain.Workflow, error) {
 		CorrelationID: item.CorrelationID, ExpectedVersion: item.ExpectedVersion,
 		ExecutionARN: item.ExecutionARN, CurrentStage: item.CurrentStage,
 		ErrorCode: item.ErrorCode, ErrorMessage: item.ErrorMessage,
+		CommandID: item.CommandID, CommandDeadlineAt: commandDeadlineAt,
 		StartedAt: startedAt, CompletedAt: completedAt, LeaseExpiresAt: leaseExpiresAt,
 		CancelRequestedAt: cancelRequestedAt, CancelRequestedBy: item.CancelRequestedBy,
 		Retry: domain.WorkflowRetry{Attempt: item.RetryAttempt, MaxAttempts: item.RetryMaxAttempts, LastAttemptAt: retryLastAttemptAt, NextAttemptAt: retryNextAttemptAt},

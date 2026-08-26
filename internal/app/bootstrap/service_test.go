@@ -63,7 +63,7 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 	repository, workflow := seedBootstrap(t, now)
 	runner := &testRunner{commandID: "command-1", status: ports.BootstrapCommandStatus{Status: "Success"}}
 	notifications := &testNotifications{}
-	service, err := NewService(repository, repository, repository, runner, notifications, &testIDs{values: []string{"stage-event", "health-event", "ready-event"}}, testClock{now})
+	service, err := NewService(repository, repository, repository, runner, notifications, &testIDs{values: []string{"stage-event", "health-event", "ready-event"}}, testClock{now}, 6*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,6 +77,17 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 	dispatched, err := service.Handle(context.Background(), request)
 	if err != nil || dispatched.CommandID != "command-1" || runner.starts != 1 {
 		t.Fatalf("dispatch = %#v, err = %v", dispatched, err)
+	}
+	persistedWorkflow, err := repository.GetWorkflow(context.Background(), workflow.SessionID, workflow.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persistedWorkflow.CommandID != "command-1" || !persistedWorkflow.CommandDeadlineAt.Equal(now.Add(6*time.Hour)) {
+		t.Fatalf("persisted command deadline = %#v", persistedWorkflow)
+	}
+	replayed, err := service.Handle(context.Background(), request)
+	if err != nil || replayed.CommandID != dispatched.CommandID || runner.starts != 1 {
+		t.Fatalf("replayed dispatch = %#v, starts = %d, err = %v", replayed, runner.starts, err)
 	}
 	prePromotion, err := repository.Get(context.Background(), workflow.SessionID)
 	if err != nil {
@@ -121,6 +132,75 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 	}
 }
 
+func TestObserveTimesOutPersistedNonterminalCommandWithoutStepFunctionCounter(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	repository, workflow := seedBootstrap(t, now)
+	runner := &testRunner{commandID: "command-1", status: ports.BootstrapCommandStatus{Status: "InProgress"}}
+	clock := &testClock{now: now}
+	service, err := NewService(repository, repository, repository, runner, nil, &testIDs{values: []string{"prepare-event", "progress-event"}}, clock, 6*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Handle(context.Background(), TaskRequest{Action: ActionPrepare, SessionID: workflow.SessionID, WorkflowID: workflow.ID}); err != nil {
+		t.Fatal(err)
+	}
+	dispatched, err := service.Handle(context.Background(), TaskRequest{Action: ActionDispatch, SessionID: workflow.SessionID, WorkflowID: workflow.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.now = now.Add(6 * time.Hour)
+	result, err := service.Handle(context.Background(), TaskRequest{Action: ActionObserve, SessionID: workflow.SessionID, WorkflowID: workflow.ID, CommandID: dispatched.CommandID})
+	if err != nil || !result.Done || result.Succeeded || result.ErrorCode != "ERR_BOOTSTRAP_TIMEOUT" {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+}
+
+func TestObserveHonorsTerminalSSMResultAtPersistedDeadline(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	repository, workflow := seedBootstrap(t, now)
+	runner := &testRunner{commandID: "command-1", status: ports.BootstrapCommandStatus{Status: "Success"}}
+	clock := &testClock{now: now}
+	service, err := NewService(repository, repository, repository, runner, nil, &testIDs{values: []string{"prepare-event", "progress-event"}}, clock, 6*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Handle(context.Background(), TaskRequest{Action: ActionPrepare, SessionID: workflow.SessionID, WorkflowID: workflow.ID}); err != nil {
+		t.Fatal(err)
+	}
+	dispatched, err := service.Handle(context.Background(), TaskRequest{Action: ActionDispatch, SessionID: workflow.SessionID, WorkflowID: workflow.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.now = now.Add(6 * time.Hour)
+	result, err := service.Handle(context.Background(), TaskRequest{Action: ActionObserve, SessionID: workflow.SessionID, WorkflowID: workflow.ID, CommandID: dispatched.CommandID})
+	if err != nil || !result.Done || !result.Succeeded {
+		t.Fatalf("result = %#v, err = %v", result, err)
+	}
+}
+
+func TestObserveRejectsCommandDriftFromPersistedDispatch(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	repository, workflow := seedBootstrap(t, now)
+	runner := &testRunner{commandID: "command-1", status: ports.BootstrapCommandStatus{Status: "InProgress"}}
+	service, err := NewService(repository, repository, repository, runner, nil, &testIDs{values: []string{"prepare-event"}}, testClock{now}, 6*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Handle(context.Background(), TaskRequest{Action: ActionPrepare, SessionID: workflow.SessionID, WorkflowID: workflow.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Handle(context.Background(), TaskRequest{Action: ActionDispatch, SessionID: workflow.SessionID, WorkflowID: workflow.ID}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Handle(context.Background(), TaskRequest{Action: ActionObserve, SessionID: workflow.SessionID, WorkflowID: workflow.ID, CommandID: "different-command"})
+	if err == nil || !strings.Contains(err.Error(), domain.ErrConflict.Error()) {
+		t.Fatalf("err = %v; want command conflict", err)
+	}
+}
+
 func progressIDPart(milestone domain.ProgressMilestone) string {
 	value := strings.ToLower(string(milestone))
 	return strings.ReplaceAll(value, "_", "-")
@@ -131,7 +211,7 @@ func TestObserveSanitizesFailedCommand(t *testing.T) {
 	now := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC)
 	repository, workflow := seedBootstrap(t, now)
 	runner := &testRunner{status: ports.BootstrapCommandStatus{Status: "Failed", ErrorMessage: "installer exited"}}
-	service, err := NewService(repository, repository, repository, runner, nil, &testIDs{values: []string{"stage-event"}}, testClock{now})
+	service, err := NewService(repository, repository, repository, runner, nil, &testIDs{values: []string{"stage-event"}}, testClock{now}, 6*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +243,7 @@ func TestObservePreservesStableSteamReauthorizationCode(t *testing.T) {
 	now := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC)
 	repository, workflow := seedBootstrap(t, now)
 	runner := &testRunner{status: ports.BootstrapCommandStatus{Status: "Failed", ErrorCode: "ERR_STEAM_REAUTH_REQUIRED", ErrorMessage: "Steam authorization requires operator re-enrollment."}}
-	service, err := NewService(repository, repository, repository, runner, nil, &testIDs{values: []string{"stage-event"}}, testClock{now})
+	service, err := NewService(repository, repository, repository, runner, nil, &testIDs{values: []string{"stage-event"}}, testClock{now}, 6*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +268,7 @@ func TestObservePersistsManagedBootstrapCheckpointsInOneProgressMutation(t *test
 		},
 	}}
 	notifications := &testNotifications{}
-	service, err := NewService(repository, repository, repository, runner, notifications, &testIDs{values: []string{"prepare-event", "progress-event"}}, testClock{now})
+	service, err := NewService(repository, repository, repository, runner, notifications, &testIDs{values: []string{"prepare-event", "progress-event"}}, testClock{now}, 6*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +306,7 @@ func TestObservePersistsSafeBootstrapActivity(t *testing.T) {
 		Checkpoints: []domain.ProgressMilestone{domain.ProgressHostPrepared, domain.ProgressGameServerInstalled},
 	}}
 	notifications := &testNotifications{}
-	service, err := NewService(repository, repository, repository, runner, notifications, &testIDs{values: []string{"prepare-event", "progress-event", "activity-event"}}, testClock{now})
+	service, err := NewService(repository, repository, repository, runner, notifications, &testIDs{values: []string{"prepare-event", "progress-event", "activity-event"}}, testClock{now}, 6*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +332,7 @@ func TestBootstrapFailureRollsBackAndRetainsFailedPendingRevision(t *testing.T) 
 	now := time.Date(2026, 8, 18, 0, 0, 0, 0, time.UTC)
 	repository, workflow := seedBootstrap(t, now)
 	runner := &testRunner{commandID: "rollback-command-1", status: ports.BootstrapCommandStatus{Status: "Success"}}
-	service, err := NewService(repository, repository, repository, runner, nil, &testIDs{values: []string{"rollback-progress-event", "rollback-event", "failure-event"}}, testClock{now})
+	service, err := NewService(repository, repository, repository, runner, nil, &testIDs{values: []string{"rollback-progress-event", "rollback-event", "failure-event"}}, testClock{now}, 6*time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}

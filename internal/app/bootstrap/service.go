@@ -52,20 +52,21 @@ type TaskResult struct {
 }
 
 type Service struct {
-	sessions      ports.SessionRepository
-	stages        ports.BootstrapRepository
-	workflows     ports.WorkflowRepository
-	runner        ports.PresetRevisionRunner
-	notifications ports.NotificationQueue
-	ids           IDGenerator
-	clock         Clock
+	sessions       ports.SessionRepository
+	stages         ports.BootstrapRepository
+	workflows      ports.WorkflowRepository
+	runner         ports.PresetRevisionRunner
+	notifications  ports.NotificationQueue
+	ids            IDGenerator
+	clock          Clock
+	commandTimeout time.Duration
 }
 
-func NewService(sessions ports.SessionRepository, stages ports.BootstrapRepository, workflows ports.WorkflowRepository, runner ports.PresetRevisionRunner, notifications ports.NotificationQueue, ids IDGenerator, clock Clock) (*Service, error) {
-	if sessions == nil || stages == nil || workflows == nil || runner == nil || ids == nil || clock == nil {
+func NewService(sessions ports.SessionRepository, stages ports.BootstrapRepository, workflows ports.WorkflowRepository, runner ports.PresetRevisionRunner, notifications ports.NotificationQueue, ids IDGenerator, clock Clock, commandTimeout time.Duration) (*Service, error) {
+	if sessions == nil || stages == nil || workflows == nil || runner == nil || ids == nil || clock == nil || commandTimeout <= 0 {
 		return nil, fmt.Errorf("bootstrap dependencies are required")
 	}
-	return &Service{sessions: sessions, stages: stages, workflows: workflows, runner: runner, notifications: notifications, ids: ids, clock: clock}, nil
+	return &Service{sessions: sessions, stages: stages, workflows: workflows, runner: runner, notifications: notifications, ids: ids, clock: clock, commandTimeout: commandTimeout}, nil
 }
 
 func (service *Service) Handle(ctx context.Context, request TaskRequest) (TaskResult, error) {
@@ -200,9 +201,21 @@ func (service *Service) dispatch(ctx context.Context, request TaskRequest) (Task
 	if session.LifecycleState != domain.StateInstalling || session.Infrastructure.InstanceID == "" {
 		return TaskResult{}, fmt.Errorf("%w: bootstrap dispatch requires an installing managed instance", domain.ErrInvalidTransition)
 	}
+	if workflow.CommandID != "" {
+		result := taskResult(session, workflow)
+		result.CommandID = workflow.CommandID
+		result.Status = "PENDING"
+		return result, nil
+	}
 	commandID, err := service.runner.Start(ctx, session)
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("start bootstrap command: %w", err)
+	}
+	now := service.clock.Now()
+	workflow.CommandID = commandID
+	workflow.CommandDeadlineAt = now.Add(service.commandTimeout)
+	if err := service.workflows.SetWorkflowExecution(ctx, workflow, domain.WorkflowRunning); err != nil {
+		return TaskResult{}, fmt.Errorf("persist bootstrap command deadline: %w", err)
 	}
 	result := taskResult(session, workflow)
 	result.CommandID = commandID
@@ -218,6 +231,9 @@ func (service *Service) observe(ctx context.Context, request TaskRequest) (TaskR
 	commandID := strings.TrimSpace(request.CommandID)
 	if commandID == "" {
 		return TaskResult{}, fmt.Errorf("bootstrap command ID is required")
+	}
+	if workflow.CommandID != "" && workflow.CommandID != commandID {
+		return TaskResult{}, fmt.Errorf("%w: bootstrap command does not match the active workflow command", domain.ErrConflict)
 	}
 	var status ports.BootstrapCommandStatus
 	if live, ok := service.runner.(interface {
@@ -278,6 +294,12 @@ func (service *Service) observe(ctx context.Context, request TaskRequest) (TaskR
 			result.ErrorCode = "ERR_BOOTSTRAP_COMMAND_" + strings.ToUpper(status.Status)
 		}
 		result.ErrorMessage = bounded(status.ErrorMessage, 500, "managed bootstrap command failed")
+	default:
+		if !workflow.CommandDeadlineAt.IsZero() && !service.clock.Now().Before(workflow.CommandDeadlineAt) {
+			result.Done = true
+			result.ErrorCode = "ERR_BOOTSTRAP_TIMEOUT"
+			result.ErrorMessage = "Managed bootstrap command exceeded its bounded runtime."
+		}
 	}
 	return result, nil
 }

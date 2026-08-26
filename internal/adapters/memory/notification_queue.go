@@ -47,7 +47,7 @@ func sameNotificationPayload(left domain.NotificationRequest, right domain.Notif
 		left.ChannelID == right.ChannelID &&
 		left.Content == right.Content &&
 		left.Kind == right.Kind &&
-		left.CardRevision == right.CardRevision &&
+		left.CardRevision == right.CardRevision && left.SuppressCardControls == right.SuppressCardControls &&
 		sameNotificationAttachment(left.Attachment, right.Attachment)
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -76,6 +77,7 @@ func build(ctx context.Context) (*handler, error) {
 		repository, repository, repository, runner,
 		sqsnotification.New(sqs.NewFromConfig(awsConfig), baseConfig.NotificationQueueURL),
 		identity.Generator{}, appsession.SystemClock{},
+		time.Duration(timeout)*time.Second,
 	)
 	if err != nil {
 		return nil, err

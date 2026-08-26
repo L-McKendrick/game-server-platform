@@ -155,18 +155,19 @@ func (attachment NotificationAttachment) Validate() error {
 }
 
 type NotificationRequest struct {
-	SchemaVersion  int                     `json:"schema_version"`
-	NotificationID string                  `json:"notification_id"`
-	SessionID      string                  `json:"session_id"`
-	GuildID        string                  `json:"guild_id"`
-	ChannelID      string                  `json:"channel_id"`
-	Content        string                  `json:"content"`
-	Kind           NotificationKind        `json:"kind,omitempty"`
-	CardRevision   int64                   `json:"card_revision,omitempty"`
-	Embed          *NotificationEmbed      `json:"embed,omitempty"`
-	Attachment     *NotificationAttachment `json:"attachment,omitempty"`
-	CorrelationID  string                  `json:"correlation_id"`
-	RequestedAt    time.Time               `json:"requested_at"`
+	SchemaVersion        int                     `json:"schema_version"`
+	NotificationID       string                  `json:"notification_id"`
+	SessionID            string                  `json:"session_id"`
+	GuildID              string                  `json:"guild_id"`
+	ChannelID            string                  `json:"channel_id"`
+	Content              string                  `json:"content"`
+	Kind                 NotificationKind        `json:"kind,omitempty"`
+	CardRevision         int64                   `json:"card_revision,omitempty"`
+	SuppressCardControls bool                    `json:"suppress_card_controls,omitempty"`
+	Embed                *NotificationEmbed      `json:"embed,omitempty"`
+	Attachment           *NotificationAttachment `json:"attachment,omitempty"`
+	CorrelationID        string                  `json:"correlation_id"`
+	RequestedAt          time.Time               `json:"requested_at"`
 }
 
 func (request NotificationRequest) Validate() error {
@@ -189,6 +190,8 @@ func (request NotificationRequest) Validate() error {
 		return fmt.Errorf("card revision cannot be negative")
 	case request.Kind != NotificationSessionCard && request.CardRevision != 0:
 		return fmt.Errorf("card revision is only valid for session-card notifications")
+	case request.Kind != NotificationSessionCard && request.SuppressCardControls:
+		return fmt.Errorf("card-control suppression is only valid for session-card notifications")
 	case request.Kind != NotificationSessionCard && request.Embed != nil:
 		return fmt.Errorf("notification embed is only valid for session-card notifications")
 	case request.Kind == NotificationSessionModlist && request.Attachment == nil:

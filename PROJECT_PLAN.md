@@ -239,6 +239,8 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **16.2** [ ] Add OIDC deployment, staging, dashboards, alert validation, and tested production and disaster-recovery runbooks.
     - **16.3** [ ] Verify costs, quotas, failure recovery, backup restoration, and operational readiness against explicit release gates.
     - **16.4** [ ] Benchmark bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements, then optimize only demonstrated bottlenecks within cost and reliability guardrails.
+    - **16.5** [ ] Reduce measured AWS orchestration overhead without weakening bounded lifecycle behavior, progress visibility, or recovery safeguards.
+      - **16.5.1** [x] Reduce bootstrap Step Functions polling transitions by enforcing the persisted command deadline in the existing observer and removing counter-only workflow states, while preserving 30-second progress, terminal SSM results, rollback, replay, and backward compatibility.
 
 17. **Potential Enhancements — Pending**
     - **17.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.
@@ -284,3 +286,5 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **18.9.1** [x] Render only game/session identity, retained description, and a Discord-native termination timestamp after the lifecycle reaches terminated.
       - **18.9.2** [x] Derive termination time from the completed terminal progress evidence with the tombstone update time as a backward-compatible fallback.
       - **18.9.3** [x] Add focused terminal rendering/timestamp coverage, update the handoff, validate, commit, and push.
+    - **18.10** [x] Remove inapplicable public-card controls after termination.
+      - **18.10.1** [x] Clear `Show players` and `Refresh` from terminated public cards through an explicit terminal notification contract, including termination, refresh, repair, Discord PATCH, backward-compatibility, and focused regression coverage.
