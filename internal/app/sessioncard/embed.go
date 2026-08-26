@@ -57,7 +57,7 @@ func RenderPublicEmbed(card Projection) *domain.NotificationEmbed {
 	}
 	if card.Endpoints.TeamSpeak.Available {
 		embed.Fields = append(embed.Fields, domain.NotificationEmbedField{
-			Name: "TeamSpeak", Value: connectionAddress(card.Endpoints.TeamSpeak), Inline: true,
+			Name: "\u200b\nTeamSpeak", Value: connectionAddress(card.Endpoints.TeamSpeak), Inline: true,
 		})
 	}
 	return embed

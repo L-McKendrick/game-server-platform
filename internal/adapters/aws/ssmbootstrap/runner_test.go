@@ -153,11 +153,58 @@ func TestCommandSynchronizesEveryAcceptedActiveMissionWithoutChangingSelection(t
 	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(manifest))) {
 		t.Fatal("command omitted accepted mission manifest")
 	}
+	revision := contentDeploymentRevision(session, manifest, testConfig().BootstrapScriptKey)
+	if !strings.Contains(script, "CONTENT_REVISION_B64='"+base64.StdEncoding.EncodeToString([]byte(revision))+"'") {
+		t.Fatal("command omitted content deployment revision")
+	}
 	if strings.Contains(script, base64.StdEncoding.EncodeToString([]byte("rejected"))) {
 		t.Fatal("command included rejected mission")
 	}
 	if session.CurrentMission.ObjectKey != firstKey {
 		t.Fatal("manifest construction changed current mission")
+	}
+}
+
+func TestContentDeploymentRevisionChangesWhenSleepingSessionMissionChanges(t *testing.T) {
+	firstKey := "sessions/session-1/input/missions/" + strings.Repeat("a", 64) + "-First.Altis.pbo"
+	secondKey := "sessions/session-1/input/missions/" + strings.Repeat("b", 64) + "-Second.Stratis.pbo"
+	session := domain.Session{
+		ID: "session-1", DisplayName: "Sleeping", LifecycleState: domain.StateSleeping,
+		ConfiguredMission: domain.UploadedMissionSelection(firstKey), CurrentMission: domain.UploadedMissionSelection(firstKey),
+		MissionFiles: []domain.MissionRecord{{ObjectKey: firstKey, Filename: "First.Altis.pbo", Status: domain.ArtifactAccepted}},
+	}
+	firstManifest, err := acceptedMissionManifest(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstRevision := contentDeploymentRevision(session, firstManifest, testConfig().BootstrapScriptKey)
+	if replayRevision := contentDeploymentRevision(session, firstManifest, testConfig().BootstrapScriptKey); replayRevision != firstRevision {
+		t.Fatalf("unchanged content revision = %q; want %q", replayRevision, firstRevision)
+	}
+
+	session.MissionFiles = append(session.MissionFiles, domain.MissionRecord{ObjectKey: secondKey, Filename: "Second.Stratis.pbo", Status: domain.ArtifactAccepted})
+	secondManifest, err := acceptedMissionManifest(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedRevision := contentDeploymentRevision(session, secondManifest, testConfig().BootstrapScriptKey); changedRevision == firstRevision {
+		t.Fatal("accepted sleeping-session mission did not change content deployment revision")
+	}
+}
+
+func TestContentDeploymentRevisionChangesWithServerConfigurationAndBootstrapRevision(t *testing.T) {
+	session := domain.Session{DisplayName: "Session", ConfiguredMission: domain.DefaultMissionSelection(), CurrentMission: domain.DefaultMissionSelection()}
+	baseline := contentDeploymentRevision(session, "", "platform/bootstrap/arma3-old.sh")
+
+	configured := session
+	configured.ServerConfigObjectKey = "guilds/guild/server-config/revisions/000001/config.cfg"
+	configured.ServerConfigSHA256 = strings.Repeat("c", 64)
+	configured.ServerConfigRevision = 1
+	if revision := contentDeploymentRevision(configured, "", "platform/bootstrap/arma3-old.sh"); revision == baseline {
+		t.Fatal("server configuration did not change content deployment revision")
+	}
+	if revision := contentDeploymentRevision(session, "", "platform/bootstrap/arma3-new.sh"); revision == baseline {
+		t.Fatal("bootstrap artifact did not change content deployment revision")
 	}
 }
 
@@ -338,7 +385,7 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"get-secret-value", "put-secret-value", "AWSCURRENT", "source_version_id", "config_sha256", "STEAM_AUTH#CACHE", "lease_expires_at < :now", "refresh_steam_auth_lock", "start_steam_auth_lock_heartbeat", "STEAM_AUTH_LOCK_LEASE_SECONDS=900", "STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=300", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "VANILLA_MODE", "PRESET_REVISION", "SERVER_PRESET_REVISION", "PRESET_ROLLBACK", "MOD_CONFIG_REVISION", "SERVER_CONFIG_KEY", "SERVER_CONFIG_SHA256", "server.cfg.pending", "sha256sum --check --status", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "revision-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete", "mod-revisions/revision-", "server-mod-revisions/revision-", "-serverMod=$server_mods", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "safe_mission_template=\"$(sqf_escape \"$mission_template\")\"", "template = \"$safe_mission_template\";", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
+	for _, required := range []string{"get-secret-value", "put-secret-value", "AWSCURRENT", "source_version_id", "config_sha256", "STEAM_AUTH#CACHE", "lease_expires_at < :now", "refresh_steam_auth_lock", "start_steam_auth_lock_heartbeat", "STEAM_AUTH_LOCK_LEASE_SECONDS=900", "STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=300", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "VANILLA_MODE", "PRESET_REVISION", "SERVER_PRESET_REVISION", "PRESET_ROLLBACK", "MOD_CONFIG_REVISION", "CONTENT_REVISION", "SERVER_CONFIG_KEY", "SERVER_CONFIG_SHA256", "server.cfg.pending", "sha256sum --check --status", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "revision-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete", "$stage.revision-$CONTENT_REVISION.complete", "rm -f -- \"$STATE_DIR/deploy_content.complete\" \"$STATE_DIR\"/deploy_content.revision-*.complete", "mod-revisions/revision-", "server-mod-revisions/revision-", "-serverMod=$server_mods", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "safe_mission_template=\"$(sqf_escape \"$mission_template\")\"", "template = \"$safe_mission_template\";", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
 		if !strings.Contains(string(script), required) {
 			t.Errorf("script missing %q", required)
 		}

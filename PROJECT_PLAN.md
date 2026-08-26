@@ -277,6 +277,10 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **19.1.2** [x] Use the configured channel when creating a public card and its linked public modlist message; continue storing the created message references so existing update and repair paths work unchanged.
       - **19.1.3** [x] Add focused admin-authorization, setting persistence, selected-channel delivery, and Discord failure coverage; update the relevant admin documentation and run proportional validation.
 
+20. **Mission Wake Synchronization Repair — Done (approved out of order)**
+    - **20.1** [x] Make wake/bootstrap content deployment replay when its exact mission or server-configuration inputs change instead of trusting the stale host-wide completion marker.
+      - **20.1.1** [x] Bind the resumable content marker to a deterministic digest of the accepted mission manifest, selected mission, server configuration, display identity, and bootstrap revision; add regression coverage for unchanged replay and changed sleeping-session content.
+
 15. **Maximum Session Duration Guardrails — Pending**
     - **15.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
 

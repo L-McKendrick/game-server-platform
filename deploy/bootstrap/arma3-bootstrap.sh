@@ -10,6 +10,7 @@ DATA_VOLUME_ID="$(decode "$DATA_VOLUME_ID_B64")"
 MISSION_KEY="$(decode "$MISSION_KEY_B64")"
 MISSION_TEMPLATE="$(decode "$MISSION_TEMPLATE_B64")"
 MISSION_MANIFEST="$(decode "$MISSION_MANIFEST_B64")"
+CONTENT_REVISION="$(decode "$CONTENT_REVISION_B64")"
 SERVER_CONFIG_KEY="$(decode "$SERVER_CONFIG_KEY_B64")"
 SERVER_CONFIG_SHA256="$(decode "$SERVER_CONFIG_SHA_B64")"
 SERVER_CONFIG_REVISION="$(decode "$SERVER_CONFIG_REV_B64")"
@@ -635,6 +636,10 @@ for stage in install_steamcmd install_arma install_workshop deploy_content insta
 		marker="$STATE_DIR/$stage.revision-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete"
 		[ "$PRESET_ROLLBACK" = true ] && rm -f -- "$marker"
 	fi
+	if [ "$stage" = deploy_content ]; then
+		[[ "$CONTENT_REVISION" =~ ^[0-9a-f]{64}$ ]] || { log "content deployment revision is invalid"; exit 1; }
+		marker="$STATE_DIR/$stage.revision-$CONTENT_REVISION.complete"
+	fi
   if [ -f "$marker" ]; then
     log "stage $stage already complete"
     if [ "$stage" = install_workshop ] && $STEAM_AUTH_ACTIVE; then persist_steam_auth; cleanup_steam_auth; fi
@@ -642,6 +647,11 @@ for stage in install_steamcmd install_arma install_workshop deploy_content insta
   fi
   log "starting stage $stage"
   "$stage"
+  if [ "$stage" = deploy_content ]; then
+    # Keep only the revision that is actually installed. If interrupted after
+    # deployment but before the new marker, the next attempt safely replays.
+    rm -f -- "$STATE_DIR/deploy_content.complete" "$STATE_DIR"/deploy_content.revision-*.complete
+  fi
   touch "$marker"
   log "completed stage $stage"
 	if [ "$stage" = install_workshop ] && $STEAM_AUTH_ACTIVE; then persist_steam_auth; cleanup_steam_auth; fi
