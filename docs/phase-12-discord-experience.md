@@ -256,9 +256,11 @@ Normal platform access follows Discord's role model, while every admin command
 and component rechecks the invoking member's current Administrator or Manage
 Server permission. Only expose controls backed by implemented policies. Phase
 12 includes access and card repair; the access view replaces the complete role
-set and offers a separately confirmed remove-all action. An empty persisted set
-disables normal-role access while Administrator or Manage Server remains the
-recovery path. Contextual help remains under `/rb help`.
+set and offers a separately confirmed remove-all action. The same menu lets an
+administrator choose the text channel used for newly created public session
+cards and linked modlist messages. An empty persisted role set disables
+normal-role access while Administrator or Manage Server remains the recovery
+path. Contextual help remains under `/rb help`.
 The wishlist cost command is omitted entirely, so Discord makes no Cost
 Explorer requests and the Lambda role needs no Billing permissions. Existing
 AWS budget alerts remain an operator concern outside Discord. Later scheduling

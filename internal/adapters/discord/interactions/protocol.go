@@ -78,6 +78,7 @@ const (
 	adminRoleClearConfirmCustomID  = "rb:admin:access:clear-confirm:v1"
 	adminRoleClearCancelCustomID   = "rb:admin:access:clear-cancel:v1"
 	adminRepairSelectCustomID      = "rb:admin:repair:session:v1"
+	adminPublicCardChannelCustomID = "rb:admin:public-card:channel:v1"
 	adminResetPrepareCustomID      = "rb:admin:reset:prepare:v1"
 	adminResetModalPrefix          = "rb:admin:reset:confirm:v1:"
 	adminResetPhraseCustomID       = "reset:phrase"
@@ -89,6 +90,7 @@ const (
 
 	adminMenuAccess       = "access"
 	adminMenuRepair       = "repair-card"
+	adminMenuPublicCard   = "public-card-channel"
 	adminMenuReset        = "reset-platform"
 	adminMenuServerConfig = "server-config"
 )

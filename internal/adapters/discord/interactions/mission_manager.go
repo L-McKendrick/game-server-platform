@@ -276,6 +276,7 @@ func (handler *Handler) submitMissionUpload(ctx context.Context, payload interac
 		return "", newUserError("Upload one .pbo file.")
 	}
 	request := createArtifactRequest(payload, actor, correlationID, sessionID, domain.ArtifactMission, *attachment, "discord:"+payload.ID+":mission-upload", handler.clock.Now().UTC())
+	request.ChannelID = session.ChannelID
 	if err := request.Validate(); err != nil {
 		return "", newUserError("The mission must be a .pbo file no larger than 100 MiB.")
 	}

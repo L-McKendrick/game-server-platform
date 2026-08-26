@@ -530,7 +530,7 @@ Initial command set:
 | `/session delete` | Permanently delete metadata and retained artifacts according to policy |
 | `/session logs` | Retrieve a diagnostic summary or signed log link |
 | `/session cancel` | Request cancellation of a cancellable workflow |
-| `/rb admin` | Open a protected component menu for implemented administration actions |
+| `/rb admin` | Open a protected component menu for access, public-card channel selection, card repair, and other implemented administration actions |
 
 Permissions are based on Discord guild, role, channel, user identity, and session ownership.
 

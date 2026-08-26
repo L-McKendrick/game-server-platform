@@ -209,8 +209,10 @@ Run these checks in Discord:
 
 1. Enter `/rb help`. The bot must return a private response.
 2. Enter `/rb admin` as a server Administrator or member with Manage Server.
-3. Add the roles allowed to use the platform.
-4. Enter `/rb create` as an allowed member. Stop after creating the session.
+3. Add the roles allowed to use the platform and choose the **Public card
+   channel** for newly created session cards.
+4. Enter `/rb create` as an allowed member. Confirm its public card appears in
+   the selected channel, then stop after creating the session.
    Creation does not allocate a game server while provisioning is disabled.
 
 Check the deployed bootstrap worker before enabling game servers:

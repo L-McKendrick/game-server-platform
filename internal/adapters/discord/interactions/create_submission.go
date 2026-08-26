@@ -40,6 +40,13 @@ func (handler *Handler) submitCreateModal(
 	if err != nil {
 		return createModalResult{}, err
 	}
+	cardChannelID, err := handler.access.PublicCardChannel(ctx, payload.GuildID)
+	if err != nil {
+		return createModalResult{}, fmt.Errorf("read public card channel: %w", err)
+	}
+	if cardChannelID == "" {
+		cardChannelID = strings.TrimSpace(payload.ChannelID)
+	}
 
 	session, err := handler.service.Create(ctx, appsession.CreateCommand{
 		Actor:          actor,
@@ -49,7 +56,7 @@ func (handler *Handler) submitCreateModal(
 		Description:    submission.description,
 		GameType:       submission.gameType,
 		GuildID:        strings.TrimSpace(payload.GuildID),
-		ChannelID:      strings.TrimSpace(payload.ChannelID),
+		ChannelID:      cardChannelID,
 	})
 	if err != nil {
 		return createModalResult{}, fmt.Errorf("create modal draft: %w", err)
@@ -81,7 +88,7 @@ func (handler *Handler) submitCreateModal(
 	}
 	cardProjection := sessioncard.Project(session, sessioncard.Options{Now: handler.clock.Now().UTC()})
 	if err := handler.service.RequestSessionCard(ctx, appsession.SessionCardCommand{
-		Actor: actor, SessionID: session.ID, GuildID: payload.GuildID, ChannelID: payload.ChannelID,
+		Actor: actor, SessionID: session.ID, GuildID: payload.GuildID, ChannelID: cardChannelID,
 		CorrelationID: correlationID, NotificationID: keyPrefix + ":card",
 		Content: sessioncard.RenderPublic(cardProjection), Embed: sessioncard.RenderPublicEmbed(cardProjection), CardRevision: session.Version,
 	}); err != nil {
@@ -91,6 +98,7 @@ func (handler *Handler) submitCreateModal(
 	queued := "Default mission: `MP_ZGM_m12.Stratis`."
 	if submission.mission != nil {
 		missionRequest := createArtifactRequest(payload, actor, correlationID, session.ID, domain.ArtifactMission, *submission.mission, keyPrefix+":mission", now)
+		missionRequest.ChannelID = session.ChannelID
 		if err := handler.service.RequestArtifactIngest(ctx, actor, missionRequest); err != nil {
 			return createModalResult{}, fmt.Errorf("queue creation mission: %w", err)
 		}

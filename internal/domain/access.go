@@ -7,12 +7,13 @@ import (
 )
 
 type GuildAccessPolicy struct {
-	GuildID           string
-	AllowedRoleIDs    []string
-	AllowedChannelIDs []string
-	Version           int64
-	UpdatedBy         string
-	UpdatedAt         time.Time
+	GuildID             string
+	AllowedRoleIDs      []string
+	AllowedChannelIDs   []string
+	PublicCardChannelID string
+	Version             int64
+	UpdatedBy           string
+	UpdatedAt           time.Time
 }
 
 func (policy GuildAccessPolicy) Validate() error {

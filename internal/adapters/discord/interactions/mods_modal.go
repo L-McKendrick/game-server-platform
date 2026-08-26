@@ -220,6 +220,7 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 	var serverPresetRequest *domain.ArtifactIngestRequest
 	if attachment != nil {
 		request := createArtifactRequest(payload, actor, correlationID, state.sessionID, domain.ArtifactPreset, *attachment, keyPrefix+":preset", handler.clock.Now().UTC())
+		request.ChannelID = current.ChannelID
 		if clientRevision {
 			request.Purpose = domain.ArtifactPurposePresetRevision
 			request.ExpectedActivePresetRevision = state.activeRevision
@@ -231,6 +232,7 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 	}
 	if serverAttachment != nil {
 		request := createArtifactRequest(payload, actor, correlationID, state.sessionID, domain.ArtifactServerPreset, *serverAttachment, keyPrefix+":server-preset", handler.clock.Now().UTC())
+		request.ChannelID = current.ChannelID
 		if serverRevision {
 			request.Purpose = domain.ArtifactPurposeServerPresetRevision
 			request.ExpectedActiveServerPresetRevision = state.activeServerRevision

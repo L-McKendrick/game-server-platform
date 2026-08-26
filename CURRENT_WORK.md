@@ -2,90 +2,78 @@
 
 ## State and Objective
 
-The branch `codex/reduce-bootstrap-state-transitions` is based on current
-`main`. Tasks 16.5.1 and the explicitly requested side fix 18.10.1 are
-complete. Bootstrap keeps its 30-second progress polling but no longer pays for
-counter-only Step Functions states on every incomplete poll, and terminated
-public cards no longer retain interactive controls.
+The branch `codex/public-card-channel` completes Phase 19.1. The implementation
+and full review pass are complete and ready for deployment review. The branch
+has not been pushed.
 
 ## Completed Development
 
-- Bootstrap dispatch persists the exact SSM command ID and an absolute command
-  deadline derived from `BOOTSTRAP_COMMAND_TIMEOUT_SECONDS`.
-- Replayed dispatch returns the persisted command instead of launching a
-  duplicate SSM command.
-- The observer rejects command drift, honors terminal SSM status at the
-  deadline boundary, and returns the existing `ERR_BOOTSTRAP_TIMEOUT` failure
-  only when a persisted command remains nonterminal at or after its deadline.
-- Workflow persistence remains backward-compatible with records that predate
-  command metadata.
-- The bootstrap state machine now loops through only wait, observe, and result
-  choice states. It removes the initial counter state and two counter-management
-  states from every incomplete poll while preserving rollback behavior.
-- Terminated-card notifications carry an explicit, backward-compatible control
-  suppression flag derived from authoritative `DELETED` session state.
-- Discord card edits send `components: []` for terminal tombstones, actively
-  removing existing `Show players` and `Refresh` buttons instead of merely
-  omitting new components. Termination progress, refresh, and repair requests
-  all derive the flag from current session state.
+- Added `PublicCardChannelID` to the existing guild access-policy record and
+  preserved it when access roles change or are cleared.
+- Added a **Public card channel** area to `/rb admin` for members with current
+  Administrator or Manage Server permission. It uses Discord's text-channel
+  selector and persists the selected channel.
+- New session creation resolves the guild setting before creating the session.
+  The selected channel becomes the session's existing durable channel, so card
+  creation, linked modlist publishing, lifecycle edits, and repair continue
+  through unchanged delivery paths.
+- When no channel has been selected, creation continues to use the invoking
+  channel. Persisting the first channel selection also preserves deployment
+  fallback access roles and channels.
+- Updated deployment verification, architecture, and Discord experience
+  documentation.
+- Review fixes reject crafted non-text channel selections and allow the trusted
+  provisioning-to-bootstrap continuation to retain its guild, owner, workflow,
+  correlation, and lock bindings when the command invocation channel differs
+  from the configured card channel.
 
 ## Review and Validation
 
 - `go test ./...` passes.
+- `go test -cover ./...` passes.
 - `go vet ./...` passes.
 - `go build ./cmd/...` passes.
+- `./scripts/package-discord-lambda.ps1` passes and rebuilds the Lambda set.
 - `terraform fmt -check -recursive infra/terraform` passes.
+- `terraform -chdir=infra/terraform/bootstrap validate` passes.
 - `terraform -chdir=infra/terraform/environments/dev validate` passes.
 - `git diff --check` passes with only expected LF-to-CRLF working-tree
   warnings.
-- Focused coverage verifies deadline persistence, dispatch replay, command
-  drift rejection, nonterminal timeout, terminal SSM precedence at the
-  deadline, DynamoDB round trips, and legacy records without command metadata.
-- Focused card coverage verifies terminated progress suppresses controls and a
-  Discord PATCH contains an explicit empty component array, while existing
-  nonterminal control rendering remains covered.
+- Focused coverage verifies authorization, guild-setting persistence, role
+  preservation, admin channel selection, selected-channel session/card
+  delivery, rejection of non-text selections, artifact routing, existing admin
+  menu behavior, DynamoDB adapter compilation, and cross-channel bootstrap
+  continuation.
+- Local race coverage was not run because `CGO_ENABLED=0` and no C compiler is
+  installed. The required GitHub CI job remains responsible for the race pass.
 
 ## Next Development Task
 
-- Review measured Step Functions `StateTransition` usage after deployment
-  before applying the same observer-owned deadline pattern to restore, wake,
-  archive, rollback, or termination loops.
-- Verify a development termination edits the durable tombstone in place and
-  removes both public buttons.
-- Phase 15 remains next in the primary delivery order unless another Phase 16
-  optimization is explicitly approved out of order.
+- Phase 15 maximum session duration guardrails are next unless another task is
+  explicitly approved out of order.
 
 ## Commands to Apply Current Changes
 
-From the repository root in PowerShell:
+From the repository root in PowerShell, after the deferred validation pass is
+complete:
 
 ```powershell
 $env:AWS_PROFILE = "game-server-dev"
 $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 
-# Rebuild the Lambda set because the shared notification contract affects card
-# producers and the notification delivery worker.
+# Rebuild the Discord Lambda packages containing the interaction and shared
+# guild-access changes.
 ./scripts/package-discord-lambda.ps1
 
-# Create and review a fresh plan. Expect the affected Lambda packages plus any
-# bootstrap state-machine/package difference not already deployed.
-$PlanFile = "bootstrap-transitions-terminal-controls-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
+# Create and review a fresh plan containing the rebuilt Lambda artifacts.
+$PlanFile = "public-card-channel-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
 terraform -chdir=infra/terraform/environments/dev plan -out $PlanFile
 terraform -chdir=infra/terraform/environments/dev show $PlanFile
-# Apply only after confirming that the reviewed plan contains no unrelated
-# infrastructure mutations.
 terraform -chdir=infra/terraform/environments/dev apply $PlanFile
-
-# Verify the deployed bootstrap worker package and runtime configuration when
-# the reviewed plan includes it.
-./scripts/verify-bootstrap-worker-deployment.ps1
-
-$BootstrapStateMachineArn = terraform -chdir=infra/terraform/environments/dev output -json workflow_state_machine_arns | ConvertFrom-Json | Select-Object -ExpandProperty BootstrapGameServer
-aws stepfunctions describe-state-machine --state-machine-arn $BootstrapStateMachineArn
 ```
 
-No Discord command registration is required. Verify one development bootstrap
-completes with normal 30-second progress updates, then terminate a disposable
-development session and confirm its existing public message becomes the
-minimal tombstone with neither `Show players` nor `Refresh` present.
+No Discord command registration is required because the `/rb` command schema
+did not change. After deployment, choose **Public card channel** in `/rb admin`,
+create a non-billable draft from another allowed channel, and confirm its card
+appears in the selected channel.

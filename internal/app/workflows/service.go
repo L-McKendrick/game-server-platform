@@ -199,7 +199,7 @@ func (service *Service) validateBootstrapContinuation(ctx context.Context, comma
 		return false, err
 	}
 	if session.OwnerDiscordUserID != command.Actor.DiscordUserID || session.GuildID != command.Actor.GuildID ||
-		session.ChannelID != command.Actor.ChannelID || session.ActiveWorkflowID != command.CommandID ||
+		session.ActiveWorkflowID != command.CommandID ||
 		session.ActiveWorkflowType != domain.BootstrapWorkflowType {
 		return false, domain.ErrForbidden
 	}

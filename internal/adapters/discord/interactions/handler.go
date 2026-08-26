@@ -84,6 +84,8 @@ type AccessService interface {
 	AllowedRoles(ctx context.Context, guildID string) ([]string, int64, error)
 	Configure(ctx context.Context, guildID string, userID string, canManageGuild bool, roleIDs []string, channelIDs []string) (domain.GuildAccessPolicy, error)
 	ClearRoles(ctx context.Context, guildID string, userID string, canManageGuild bool, expectedVersion int64) (domain.GuildAccessPolicy, error)
+	PublicCardChannel(ctx context.Context, guildID string) (string, error)
+	ConfigurePublicCardChannel(ctx context.Context, guildID, userID string, canManageGuild bool, channelID string) (domain.GuildAccessPolicy, error)
 }
 
 type ResetService interface {
@@ -756,7 +758,7 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 	if payload.Data == nil {
 		return newUserError("This administration control is invalid or has expired.")
 	}
-	if handler.reset != nil && (payload.Data.CustomID == adminRoleSelectCustomID || payload.Data.CustomID == adminRepairSelectCustomID || strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix)) {
+	if handler.reset != nil && (payload.Data.CustomID == adminRoleSelectCustomID || payload.Data.CustomID == adminRepairSelectCustomID || payload.Data.CustomID == adminPublicCardChannelCustomID || strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix)) {
 		if operation, active, err := handler.reset.Active(ctx); err != nil {
 			return fmt.Errorf("check reset mutation lock: %w", err)
 		} else if active {
@@ -812,6 +814,8 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 			return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "", payload.memberIsAdministrator())
 		case adminMenuRepair:
 			return handler.writeAdminRepairView(ctx, writer, payload, actorID)
+		case adminMenuPublicCard:
+			return handler.writeAdminPublicCardView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "", payload.memberIsAdministrator())
 		case adminMenuReset:
 			if !payload.memberIsAdministrator() {
 				return domain.ErrForbidden
@@ -842,6 +846,19 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 		}
 		return handler.writeAdminAccessView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID,
 			fmt.Sprintf("Access settings updated to revision `%d`: %s.", policy.Version, strings.Join(mentions, ", ")), payload.memberIsAdministrator())
+	case adminPublicCardChannelCustomID:
+		if payload.Data.ComponentType != componentTypeChannelSelect || len(payload.Data.Values) != 1 {
+			return newUserError("Choose one Discord text channel.")
+		}
+		if payload.Data.Resolved == nil || !resolvedTextChannelsContain(payload.Data.Resolved.Channels, payload.Data.Values) {
+			return newUserError("Discord could not verify the selected channel. Reopen `/rb admin` and try again.")
+		}
+		policy, err := handler.access.ConfigurePublicCardChannel(ctx, payload.GuildID, actorID, true, payload.Data.Values[0])
+		if err != nil {
+			return fmt.Errorf("configure public card channel: %w", err)
+		}
+		return handler.writeAdminPublicCardView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID,
+			fmt.Sprintf("New public session cards will be posted in <#%s> at revision `%d`.", policy.PublicCardChannelID, policy.Version), payload.memberIsAdministrator())
 	case adminRoleClearPromptCustomID:
 		if payload.Data.ComponentType != componentTypeButton {
 			return newUserError("This administration control is invalid or has expired.")
@@ -912,6 +929,30 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 		}
 		return newUserError("This administration control is invalid or has expired.")
 	}
+}
+
+func (handler *Handler) writeAdminPublicCardView(ctx context.Context, writer http.ResponseWriter, responseType int, guildID, status string, showReset bool) error {
+	channelID, err := handler.access.PublicCardChannel(ctx, guildID)
+	if err != nil {
+		return fmt.Errorf("read public card channel: %w", err)
+	}
+	minimum, maximum := 1, 1
+	selector := interactionComponent{
+		Type: componentTypeChannelSelect, CustomID: adminPublicCardChannelCustomID,
+		Placeholder: "Choose the public session-card channel", MinValues: &minimum, MaxValues: &maximum,
+		ChannelTypes: []int{0},
+	}
+	current := "Not set — new cards use the channel where `/rb create` is submitted."
+	if channelID != "" {
+		current = "<#" + channelID + ">"
+		selector.DefaultValues = []interactionSelectDefaultValue{{ID: channelID, Type: "channel"}}
+	}
+	content := "**Public session-card channel**\nCurrent channel: " + current + "\n\nChoose the text channel where new public session cards and their linked modlist messages should be posted."
+	if strings.TrimSpace(status) != "" {
+		content = "**Saved**\n" + status + "\n\n" + content
+	}
+	handler.writeAdminView(writer, responseType, content, adminMenuPublicCard, []interactionComponent{{Type: componentTypeActionRow, Components: []interactionComponent{selector}}}, showReset)
+	return nil
 }
 
 func (handler *Handler) writeAdminAccessView(ctx context.Context, writer http.ResponseWriter, responseType int, guildID, status string, showReset bool) error {
@@ -998,6 +1039,7 @@ func (handler *Handler) writeAdminView(writer http.ResponseWriter, responseType 
 			Placeholder: "Choose an administration area", MinValues: &minimum, MaxValues: &maximum,
 			Options: []interactionSelectOption{
 				{Label: "Access", Value: adminMenuAccess, Description: "Configure allowed Discord roles", Default: selected == adminMenuAccess},
+				{Label: "Public card channel", Value: adminMenuPublicCard, Description: "Choose where new session cards are posted", Default: selected == adminMenuPublicCard},
 				{Label: "Repair card", Value: adminMenuRepair, Description: "Refresh or recreate a session card", Default: selected == adminMenuRepair},
 			},
 		}},
@@ -1115,7 +1157,7 @@ func (payload interactionPayload) isAdminComponent() bool {
 		return false
 	}
 	switch payload.Data.CustomID {
-	case adminMenuCustomID, adminRoleSelectCustomID, adminRoleClearPromptCustomID, adminRoleClearCancelCustomID, adminRepairSelectCustomID, adminResetPrepareCustomID, adminServerConfigCancelID:
+	case adminMenuCustomID, adminRoleSelectCustomID, adminRoleClearPromptCustomID, adminRoleClearCancelCustomID, adminRepairSelectCustomID, adminPublicCardChannelCustomID, adminResetPrepareCustomID, adminServerConfigCancelID:
 		return true
 	default:
 		return strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigRemovePrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix)
@@ -1144,6 +1186,22 @@ func (payload interactionPayload) memberCanManageGuild() bool {
 func resolvedRolesContain(resolved map[string]json.RawMessage, selected []string) bool {
 	for _, roleID := range selected {
 		if _, ok := resolved[strings.TrimSpace(roleID)]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func resolvedTextChannelsContain(resolved map[string]json.RawMessage, selected []string) bool {
+	for _, channelID := range selected {
+		raw, ok := resolved[strings.TrimSpace(channelID)]
+		if !ok {
+			return false
+		}
+		var channel struct {
+			Type int `json:"type"`
+		}
+		if json.Unmarshal(raw, &channel) != nil || channel.Type != 0 {
 			return false
 		}
 	}
