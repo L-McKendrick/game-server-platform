@@ -2,78 +2,72 @@
 
 ## State and Objective
 
-The branch `codex/public-card-channel` completes Phase 19.1. The implementation
-and full review pass are complete and ready for deployment review. The branch
-has not been pushed.
+Phase 20 is complete on `codex/mission-wake-sync-fix`. The fix addresses the
+verified `test-26-2` wake failure where an accepted sleeping-session mission
+was present in metadata and S3 but the host reused `deploy_content.complete`,
+leaving no `.pbo` in `mpmissions` and retaining the built-in mission in
+`server.cfg`.
 
 ## Completed Development
 
-- Added `PublicCardChannelID` to the existing guild access-policy record and
-  preserved it when access roles change or are cleared.
-- Added a **Public card channel** area to `/rb admin` for members with current
-  Administrator or Manage Server permission. It uses Discord's text-channel
-  selector and persists the selected channel.
-- New session creation resolves the guild setting before creating the session.
-  The selected channel becomes the session's existing durable channel, so card
-  creation, linked modlist publishing, lifecycle edits, and repair continue
-  through unchanged delivery paths.
-- When no channel has been selected, creation continues to use the invoking
-  channel. Persisting the first channel selection also preserves deployment
-  fallback access roles and channels.
-- Updated deployment verification, architecture, and Discord experience
-  documentation.
-- Review fixes reject crafted non-text channel selections and allow the trusted
-  provisioning-to-bootstrap continuation to retain its guild, owner, workflow,
-  correlation, and lock bindings when the command invocation channel differs
-  from the configured card channel.
+- Bootstrap commands now carry a deterministic SHA-256 content revision bound
+  to the bootstrap artifact, display identity, selected mission, complete
+  accepted mission manifest, and custom server-configuration identity.
+- The host keys the resumable `deploy_content` marker by that revision. An
+  unchanged replay remains skipped, while adding/removing/selecting a mission,
+  changing server configuration, changing display identity, or deploying a new
+  bootstrap artifact reruns checksum-verified mission synchronization and
+  regenerates the effective `class Missions` block before service restart.
+- Focused coverage verifies unchanged replay stability, changed accepted
+  missions on a sleeping session, server-configuration changes, bootstrap
+  revision changes, command transport, and the revisioned Bash marker.
 
 ## Review and Validation
 
-- `go test ./...` passes.
-- `go test -cover ./...` passes.
-- `go vet ./...` passes.
-- `go build ./cmd/...` passes.
-- `./scripts/package-discord-lambda.ps1` passes and rebuilds the Lambda set.
-- `terraform fmt -check -recursive infra/terraform` passes.
-- `terraform -chdir=infra/terraform/bootstrap validate` passes.
-- `terraform -chdir=infra/terraform/environments/dev validate` passes.
-- `git diff --check` passes with only expected LF-to-CRLF working-tree
-  warnings.
-- Focused coverage verifies authorization, guild-setting persistence, role
-  preservation, admin channel selection, selected-channel session/card
-  delivery, rejection of non-text selections, artifact routing, existing admin
-  menu behavior, DynamoDB adapter compilation, and cross-channel bootstrap
-  continuation.
-- Local race coverage was not run because `CGO_ENABLED=0` and no C compiler is
-  installed. The required GitHub CI job remains responsible for the race pass.
+- `go test ./internal/adapters/aws/ssmbootstrap ./cmd/bootstrap-worker` passes.
+- `go vet ./internal/adapters/aws/ssmbootstrap ./cmd/bootstrap-worker` passes.
+- `go build ./cmd/bootstrap-worker` passes.
+- Lambda packaging, Git Bash syntax validation, and `git diff --check` pass.
+- `go test ./...` reaches an unrelated pre-existing failure in
+  `internal/app/sessioncard`: the user-owned `embed.go` edit changes the
+  TeamSpeak field name expected by `embed_test.go`. That file and the existing
+  `internal/adapters/aws/ssmmonitor/runner.go` edit are preserved and excluded
+  from this phase.
 
 ## Next Development Task
 
-- Phase 15 maximum session duration guardrails are next unless another task is
-  explicitly approved out of order.
+- Deploy through a fresh reviewed Terraform plan, then sleep and wake the
+  active “Test 26” session and verify `ZGMv2-Stratis.Stratis.pbo` exists on the
+  host and the effective `class Missions` selects `ZGMv2-Stratis.Stratis`.
+- Resolve or finish the two unrelated user-owned edits separately before using
+  a full-suite result as a branch-wide release gate.
 
 ## Commands to Apply Current Changes
 
-From the repository root in PowerShell, after the deferred validation pass is
-complete:
+From the repository root in PowerShell:
 
 ```powershell
 $env:AWS_PROFILE = "game-server-dev"
 $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 
-# Rebuild the Discord Lambda packages containing the interaction and shared
-# guild-access changes.
+# Rebuild the Lambda set containing the bootstrap worker and publish the new
+# content-addressed bootstrap artifact through one fresh reviewed plan.
 ./scripts/package-discord-lambda.ps1
-
-# Create and review a fresh plan containing the rebuilt Lambda artifacts.
-$PlanFile = "public-card-channel-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
+$PlanFile = "mission-wake-sync-fix-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
 terraform -chdir=infra/terraform/environments/dev plan -out $PlanFile
 terraform -chdir=infra/terraform/environments/dev show $PlanFile
+# Apply only after confirming the reviewed plan contains the expected
+# bootstrap-worker and bootstrap-artifact changes and no unrelated mutations.
 terraform -chdir=infra/terraform/environments/dev apply $PlanFile
+
+$BootstrapBucket = terraform -chdir=infra/terraform/environments/dev output -raw session_assets_bucket_name
+$BootstrapContent = (Get-Content -Raw "deploy/bootstrap/arma3-bootstrap.sh").Replace("`r`n", "`n")
+$BootstrapHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($BootstrapContent))).ToLowerInvariant()
+$BootstrapKey = "platform/bootstrap/arma3-$($BootstrapHash.Substring(0, 16)).sh"
+aws s3api head-object --bucket $BootstrapBucket --key $BootstrapKey
 ```
 
-No Discord command registration is required because the `/rb` command schema
-did not change. After deployment, choose **Public card channel** in `/rb admin`,
-create a non-billable draft from another allowed channel, and confirm its card
-appears in the selected channel.
+No Discord command registration is required. After deployment, sleep and wake
+the active `test-26-2` session, then verify the uploaded mission is present and
+selected before considering the incident resolved.

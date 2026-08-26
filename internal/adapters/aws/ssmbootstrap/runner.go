@@ -2,6 +2,7 @@ package ssmbootstrap
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -280,6 +281,7 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 		"MISSION_KEY_B64":            mission.ObjectKey,
 		"MISSION_TEMPLATE_B64":       mission.Template,
 		"MISSION_MANIFEST_B64":       missionManifest,
+		"CONTENT_REVISION_B64":       contentDeploymentRevision(session, missionManifest, runner.config.BootstrapScriptKey),
 		"SERVER_CONFIG_KEY_B64":      session.ServerConfigObjectKey,
 		"SERVER_CONFIG_SHA_B64":      session.ServerConfigSHA256,
 		"SERVER_CONFIG_REV_B64":      fmt.Sprintf("%d", session.ServerConfigRevision),
@@ -298,7 +300,7 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	}
 	var command strings.Builder
 	command.WriteString("#!/usr/bin/env bash\nset -Eeuo pipefail\numask 077\n")
-	for _, key := range []string{"SESSION_ID_B64", "WORKFLOW_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "MISSION_MANIFEST_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
+	for _, key := range []string{"SESSION_ID_B64", "WORKFLOW_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "MISSION_MANIFEST_B64", "CONTENT_REVISION_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
 		command.WriteString("export " + key + "='" + base64.StdEncoding.EncodeToString([]byte(values[key])) + "'\n")
 	}
 	if session.TeamSpeakEnabled {
@@ -329,6 +331,25 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	command.WriteString("chmod 700 \"$bootstrap_script\"\n")
 	command.WriteString("\"$bootstrap_script\"\n")
 	return command.String(), nil
+}
+
+func contentDeploymentRevision(session domain.Session, missionManifest, bootstrapScriptKey string) string {
+	mission := session.MissionForApplication()
+	digest := sha256.New()
+	for _, value := range []string{
+		bootstrapScriptKey,
+		session.DisplayName,
+		mission.Template,
+		mission.ObjectKey,
+		missionManifest,
+		session.ServerConfigObjectKey,
+		session.ServerConfigSHA256,
+		strconv.FormatInt(session.ServerConfigRevision, 10),
+	} {
+		fmt.Fprintf(digest, "%d:", len(value))
+		_, _ = io.WriteString(digest, value)
+	}
+	return hex.EncodeToString(digest.Sum(nil))
 }
 
 func acceptedMissionManifest(session domain.Session) (string, error) {
