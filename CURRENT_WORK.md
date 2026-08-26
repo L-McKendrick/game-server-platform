@@ -14,10 +14,14 @@ leaving no `.pbo` in `mpmissions` and retaining the built-in mission in
   to the bootstrap artifact, display identity, selected mission, complete
   accepted mission manifest, and custom server-configuration identity.
 - The host keys the resumable `deploy_content` marker by that revision. An
-  unchanged replay remains skipped, while adding/removing/selecting a mission,
+  unchanged replay remains skipped, while changing/selecting a mission,
   changing server configuration, changing display identity, or deploying a new
   bootstrap artifact reruns checksum-verified mission synchronization and
   regenerates the effective `class Missions` block before service restart.
+- Successful content deployment removes prior content markers before recording
+  the installed revision. An interruption before that final marker leaves no
+  false completion evidence, so retry safely replays; reverting to an earlier
+  content digest cannot match a stale historical marker.
 - Focused coverage verifies unchanged replay stability, changed accepted
   missions on a sleeping session, server-configuration changes, bootstrap
   revision changes, command transport, and the revisioned Bash marker.

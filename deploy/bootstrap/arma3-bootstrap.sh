@@ -647,6 +647,11 @@ for stage in install_steamcmd install_arma install_workshop deploy_content insta
   fi
   log "starting stage $stage"
   "$stage"
+  if [ "$stage" = deploy_content ]; then
+    # Keep only the revision that is actually installed. If interrupted after
+    # deployment but before the new marker, the next attempt safely replays.
+    rm -f -- "$STATE_DIR/deploy_content.complete" "$STATE_DIR"/deploy_content.revision-*.complete
+  fi
   touch "$marker"
   log "completed stage $stage"
 	if [ "$stage" = install_workshop ] && $STEAM_AUTH_ACTIVE; then persist_steam_auth; cleanup_steam_auth; fi
