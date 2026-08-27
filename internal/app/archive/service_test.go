@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"slices"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -135,7 +135,7 @@ func TestService_VerifiesManifestBeforeCompletingDestruction(t *testing.T) {
 	}
 	if manifest.SchemaVersion != 1 || manifest.SourceInstanceID != "i-1" || manifest.SourceDataVolumeID != "vol-1" || manifest.Vanilla || manifest.SessionName != session.DisplayName || manifest.SessionSlug != session.Slug || manifest.Description != session.Description ||
 		manifest.PresetRevisionSequence != 2 || manifest.ActivePresetRevision == nil || manifest.ActivePresetRevision.Number != 1 || manifest.PendingPresetRevision == nil || manifest.PendingPresetRevision.Number != 2 || manifest.PendingPresetRevision.Status != domain.PresetRevisionPending ||
-		!slices.Equal(manifest.MissionFiles, session.MissionFiles) || manifest.ConfiguredMission != session.ConfiguredMission || manifest.CurrentMission != session.CurrentMission {
+		!reflect.DeepEqual(manifest.MissionFiles, session.MissionFiles) || manifest.ConfiguredMission != session.ConfiguredMission || manifest.CurrentMission != session.CurrentMission {
 		t.Fatalf("manifest = %#v", manifest)
 	}
 

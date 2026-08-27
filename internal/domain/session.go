@@ -19,29 +19,30 @@ const (
 
 // Session represents the persistent platform identity of a game server.
 type Session struct {
-	ID                    string
-	Slug                  string
-	DisplayName           string
-	Description           string
-	GameType              string
-	OwnerDiscordUserID    string
-	GuildID               string
-	ChannelID             string
-	GameProfileID         string
-	SleepAfterSeconds     int64
-	ArchiveAfterSeconds   int64
-	TeamSpeakEnabled      bool
-	Vanilla               bool
-	CreatorDLCs           []string
-	StartWhenReady        bool
-	ConfigurationRevision int64
-	ServerConfigRevision  int64
-	ServerConfigObjectKey string
-	ServerConfigSHA256    string
-	MissionObjectKey      string
-	MissionFiles          []MissionRecord
-	ConfiguredMission     MissionSelection
-	CurrentMission        MissionSelection
+	ID                     string
+	Slug                   string
+	DisplayName            string
+	Description            string
+	GameType               string
+	OwnerDiscordUserID     string
+	GuildID                string
+	ChannelID              string
+	GameProfileID          string
+	SleepAfterSeconds      int64
+	ArchiveAfterSeconds    int64
+	TeamSpeakEnabled       bool
+	Vanilla                bool
+	CreatorDLCs            []string
+	StartWhenReady         bool
+	ConfigurationRevision  int64
+	ServerConfigRevision   int64
+	ServerConfigObjectKey  string
+	ServerConfigSHA256     string
+	MissionObjectKey       string
+	MissionFiles           []MissionRecord
+	ConfiguredMission      MissionSelection
+	CurrentMission         MissionSelection
+	WorkshopMissionSources []WorkshopMissionSource
 	// PresetObjectKey remains a write-through compatibility projection of the
 	// active preset revision for older workers and persisted rows.
 	PresetObjectKey              string
@@ -421,6 +422,17 @@ func (session Session) Validate() error {
 	if session.CurrentMission.Template != "" {
 		if err := session.CurrentMission.Validate(); err != nil {
 			return fmt.Errorf("current mission: %w", err)
+		}
+	}
+	if len(session.WorkshopMissionSources) > MaximumWorkshopMissionSources {
+		return fmt.Errorf("too many Workshop mission sources")
+	}
+	if workshopMissionSnapshotItemCount(session.WorkshopMissionSources) > MaximumWorkshopMissionSnapshotItems || workshopMissionItemCount(session.WorkshopMissionSources) > MaximumWorkshopMissionItems {
+		return fmt.Errorf("Workshop mission snapshot limits exceeded")
+	}
+	for _, source := range session.WorkshopMissionSources {
+		if err := source.Validate(); err != nil {
+			return fmt.Errorf("Workshop mission source: %w", err)
 		}
 	}
 	switch {

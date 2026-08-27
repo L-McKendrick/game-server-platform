@@ -113,6 +113,9 @@ func writeMissionManager(writer http.ResponseWriter, session domain.Session, pag
 	}
 	for _, entry := range active[start:end] {
 		status := string(entry.record.Status)
+		if entry.record.WorkshopItemID != 0 {
+			status += fmt.Sprintf(", Workshop #%d", entry.record.WorkshopItemID)
+		}
 		if session.CurrentMission.ObjectKey == entry.record.ObjectKey {
 			status += ", currently loaded"
 		}

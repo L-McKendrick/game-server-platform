@@ -539,7 +539,7 @@ func TestSessionItemRoundTripPreservesMissionHistoryAndSelections(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(stored.MissionFiles, session.MissionFiles) || stored.ConfiguredMission != session.ConfiguredMission || stored.CurrentMission != session.CurrentMission {
+	if !reflect.DeepEqual(stored.MissionFiles, session.MissionFiles) || stored.ConfiguredMission != session.ConfiguredMission || stored.CurrentMission != session.CurrentMission {
 		t.Fatalf("mission round trip = %#v / %#v / %#v", stored.MissionFiles, stored.ConfiguredMission, stored.CurrentMission)
 	}
 }

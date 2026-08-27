@@ -71,6 +71,15 @@ data "aws_iam_policy_document" "game_instance_bootstrap" {
   }
 
   statement {
+    sid     = "PublishResolvedWorkshopMissions"
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.session_assets.arn}/sessions/*/input/missions/*",
+      "${aws_s3_bucket.session_assets.arn}/sessions/*/workshop-resolutions/*.tsv",
+    ]
+  }
+
+  statement {
     sid       = "UseSteamAuthorizationCache"
     actions   = ["secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
     resources = [aws_secretsmanager_secret.steam_authorization_cache.arn]
@@ -141,6 +150,12 @@ data "aws_iam_policy_document" "bootstrap_worker" {
     sid       = "ReadBootstrapProgress"
     actions   = ["s3:GetObject"]
     resources = ["${aws_s3_bucket.session_assets.arn}/sessions/*/runtime/bootstrap-progress-*.txt"]
+  }
+
+  statement {
+    sid       = "ReadWorkshopMissionManifests"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.session_assets.arn}/sessions/*/workshop-resolutions/*.tsv"]
   }
 
   statement {

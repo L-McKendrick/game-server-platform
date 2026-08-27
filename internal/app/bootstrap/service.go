@@ -27,6 +27,11 @@ type Clock interface{ Now() time.Time }
 type IDGenerator interface {
 	New(time.Time) (string, error)
 }
+type Option func(*Service)
+
+func WithWorkshopMissionManifest(reader ports.ObjectReader) Option {
+	return func(service *Service) { service.workshopMissionManifest = reader }
+}
 
 type TaskRequest struct {
 	Action        string `json:"action"`
@@ -52,21 +57,26 @@ type TaskResult struct {
 }
 
 type Service struct {
-	sessions       ports.SessionRepository
-	stages         ports.BootstrapRepository
-	workflows      ports.WorkflowRepository
-	runner         ports.PresetRevisionRunner
-	notifications  ports.NotificationQueue
-	ids            IDGenerator
-	clock          Clock
-	commandTimeout time.Duration
+	sessions                ports.SessionRepository
+	stages                  ports.BootstrapRepository
+	workflows               ports.WorkflowRepository
+	runner                  ports.PresetRevisionRunner
+	notifications           ports.NotificationQueue
+	ids                     IDGenerator
+	clock                   Clock
+	commandTimeout          time.Duration
+	workshopMissionManifest ports.ObjectReader
 }
 
-func NewService(sessions ports.SessionRepository, stages ports.BootstrapRepository, workflows ports.WorkflowRepository, runner ports.PresetRevisionRunner, notifications ports.NotificationQueue, ids IDGenerator, clock Clock, commandTimeout time.Duration) (*Service, error) {
+func NewService(sessions ports.SessionRepository, stages ports.BootstrapRepository, workflows ports.WorkflowRepository, runner ports.PresetRevisionRunner, notifications ports.NotificationQueue, ids IDGenerator, clock Clock, commandTimeout time.Duration, options ...Option) (*Service, error) {
 	if sessions == nil || stages == nil || workflows == nil || runner == nil || ids == nil || clock == nil || commandTimeout <= 0 {
 		return nil, fmt.Errorf("bootstrap dependencies are required")
 	}
-	return &Service{sessions: sessions, stages: stages, workflows: workflows, runner: runner, notifications: notifications, ids: ids, clock: clock, commandTimeout: commandTimeout}, nil
+	service := &Service{sessions: sessions, stages: stages, workflows: workflows, runner: runner, notifications: notifications, ids: ids, clock: clock, commandTimeout: commandTimeout}
+	for _, option := range options {
+		option(service)
+	}
+	return service, nil
 }
 
 func (service *Service) Handle(ctx context.Context, request TaskRequest) (TaskResult, error) {
@@ -321,6 +331,9 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 	}
 	expectedVersion := session.Version
 	now := service.clock.Now().UTC()
+	if err := service.importWorkshopMissions(ctx, &session, now); err != nil {
+		return TaskResult{}, err
+	}
 	session.ClearFailure()
 	if err := session.CompleteBootstrap(workflow.ID, now); err != nil {
 		return TaskResult{}, err

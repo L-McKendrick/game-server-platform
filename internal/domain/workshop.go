@@ -12,8 +12,11 @@ import (
 )
 
 const (
-	Arma3WorkshopAppID      uint32 = 107410
-	MaximumWorkshopChildren        = 500
+	Arma3WorkshopAppID                  uint32 = 107410
+	MaximumWorkshopChildren                    = 500
+	MaximumWorkshopMissionItems                = 20
+	MaximumWorkshopMissionSources              = 20
+	MaximumWorkshopMissionSnapshotItems        = 1000
 )
 
 type WorkshopTarget string
@@ -147,6 +150,190 @@ type WorkshopResolution struct {
 	Items            []WorkshopItem     `json:"items"`
 	ResolvedAt       time.Time          `json:"resolved_at"`
 	ResolutionSHA256 string             `json:"resolution_sha256"`
+}
+
+type WorkshopResolutionItem struct {
+	PublishedFileID uint64            `json:"published_file_id"`
+	Class           WorkshopItemClass `json:"class"`
+}
+
+type WorkshopMissionSource struct {
+	Source           WorkshopReference        `json:"source"`
+	SourceKind       WorkshopSourceKind       `json:"source_kind"`
+	ResolutionSHA256 string                   `json:"resolution_sha256"`
+	AcceptedItemIDs  []uint64                 `json:"accepted_item_ids"`
+	ExcludedItems    []WorkshopResolutionItem `json:"excluded_items,omitempty"`
+	ResolvedAt       time.Time                `json:"resolved_at"`
+}
+
+func NewWorkshopMissionSource(resolution WorkshopResolution) (WorkshopMissionSource, error) {
+	if resolution.Target != WorkshopTargetMission || resolution.SchemaVersion != 1 || resolution.Source.PublishedFileID == 0 || !validHexSHA256(resolution.ResolutionSHA256) || resolution.ResolvedAt.IsZero() {
+		return WorkshopMissionSource{}, fmt.Errorf("Workshop mission resolution is invalid")
+	}
+	source := WorkshopMissionSource{Source: resolution.Source, SourceKind: resolution.SourceKind, ResolutionSHA256: resolution.ResolutionSHA256, ResolvedAt: resolution.ResolvedAt.UTC()}
+	for _, item := range resolution.Items {
+		if item.MatchesTarget && item.Class == WorkshopItemMultiplayerScenario {
+			source.AcceptedItemIDs = append(source.AcceptedItemIDs, item.PublishedFileID)
+		} else {
+			source.ExcludedItems = append(source.ExcludedItems, WorkshopResolutionItem{PublishedFileID: item.PublishedFileID, Class: item.Class})
+		}
+	}
+	if err := source.Validate(); err != nil {
+		return WorkshopMissionSource{}, err
+	}
+	return source, nil
+}
+
+func (source WorkshopMissionSource) Validate() error {
+	if source.Source.PublishedFileID == 0 || source.Source.CanonicalURL == "" || (source.SourceKind != WorkshopSourceItem && source.SourceKind != WorkshopSourceCollection) || !validHexSHA256(source.ResolutionSHA256) || source.ResolvedAt.IsZero() {
+		return fmt.Errorf("Workshop mission source metadata is invalid")
+	}
+	reference, err := ParseWorkshopURL(source.Source.CanonicalURL)
+	if err != nil || reference.PublishedFileID != source.Source.PublishedFileID || reference.CanonicalURL != source.Source.CanonicalURL {
+		return fmt.Errorf("Workshop mission source reference is invalid")
+	}
+	if len(source.AcceptedItemIDs) == 0 || len(source.AcceptedItemIDs) > MaximumWorkshopMissionItems {
+		return fmt.Errorf("Workshop mission source must contain 1 to %d accepted scenarios", MaximumWorkshopMissionItems)
+	}
+	seen := make(map[uint64]struct{}, len(source.AcceptedItemIDs)+len(source.ExcludedItems))
+	for _, id := range source.AcceptedItemIDs {
+		if id == 0 {
+			return fmt.Errorf("Workshop mission source contains an invalid item")
+		}
+		if _, exists := seen[id]; exists {
+			return fmt.Errorf("Workshop mission source contains duplicate items")
+		}
+		seen[id] = struct{}{}
+	}
+	if source.SourceKind == WorkshopSourceItem && (len(source.AcceptedItemIDs) != 1 || source.AcceptedItemIDs[0] != source.Source.PublishedFileID || len(source.ExcludedItems) != 0) {
+		return fmt.Errorf("Workshop mission item source must resolve only itself")
+	}
+	for _, item := range source.ExcludedItems {
+		if item.PublishedFileID == 0 || item.Class == "" {
+			return fmt.Errorf("Workshop mission exclusion is invalid")
+		}
+		if _, exists := seen[item.PublishedFileID]; exists {
+			return fmt.Errorf("Workshop mission source contains duplicate items")
+		}
+		seen[item.PublishedFileID] = struct{}{}
+	}
+	return nil
+}
+
+func (session *Session) RecordWorkshopMissionSource(source WorkshopMissionSource, now time.Time) error {
+	if err := source.Validate(); err != nil {
+		return err
+	}
+	if session.LifecycleState == StateDeleting || session.LifecycleState == StateDeleted || session.LifecycleState == StateArchiving || session.LifecycleState == StateDestroying {
+		return fmt.Errorf("%w: Workshop missions cannot change in the current lifecycle", ErrInvalidTransition)
+	}
+	for index, existing := range session.WorkshopMissionSources {
+		if existing.Source.PublishedFileID == source.Source.PublishedFileID && existing.SourceKind == source.SourceKind {
+			if existing.ResolutionSHA256 == source.ResolutionSHA256 {
+				return nil
+			}
+			updated := append([]WorkshopMissionSource(nil), session.WorkshopMissionSources...)
+			updated[index] = source
+			if workshopMissionItemCount(updated) > MaximumWorkshopMissionItems || workshopMissionSnapshotItemCount(updated) > MaximumWorkshopMissionSnapshotItems {
+				return fmt.Errorf("Workshop mission item limit reached")
+			}
+			session.WorkshopMissionSources = updated
+			return session.RecordMutation(now)
+		}
+	}
+	if len(session.WorkshopMissionSources) >= MaximumWorkshopMissionSources {
+		return fmt.Errorf("Workshop mission source limit reached")
+	}
+	if workshopMissionSnapshotItemCount(append(append([]WorkshopMissionSource(nil), session.WorkshopMissionSources...), source)) > MaximumWorkshopMissionSnapshotItems {
+		return fmt.Errorf("Workshop mission snapshot limit reached")
+	}
+	if workshopMissionItemCount(append(append([]WorkshopMissionSource(nil), session.WorkshopMissionSources...), source)) > MaximumWorkshopMissionItems {
+		return fmt.Errorf("Workshop mission item limit reached")
+	}
+	session.WorkshopMissionSources = append(session.WorkshopMissionSources, source)
+	return session.RecordMutation(now)
+}
+
+func workshopMissionItemCount(sources []WorkshopMissionSource) int {
+	seen := map[uint64]struct{}{}
+	for _, source := range sources {
+		for _, id := range source.AcceptedItemIDs {
+			seen[id] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
+func workshopMissionSnapshotItemCount(sources []WorkshopMissionSource) int {
+	total := 0
+	for _, source := range sources {
+		total += len(source.AcceptedItemIDs) + len(source.ExcludedItems)
+	}
+	return total
+}
+
+func (session Session) WorkshopMissionItemIDs() []uint64 {
+	seen := map[uint64]struct{}{}
+	for _, source := range session.WorkshopMissionSources {
+		for _, id := range source.AcceptedItemIDs {
+			seen[id] = struct{}{}
+		}
+	}
+	ids := make([]uint64, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+func (session Session) WorkshopSourcesForItem(itemID uint64) []WorkshopReference {
+	var result []WorkshopReference
+	for _, source := range session.WorkshopMissionSources {
+		if slices.Contains(source.AcceptedItemIDs, itemID) {
+			result = append(result, source.Source)
+		}
+	}
+	slices.SortFunc(result, func(a, b WorkshopReference) int {
+		if a.PublishedFileID < b.PublishedFileID {
+			return -1
+		}
+		if a.PublishedFileID > b.PublishedFileID {
+			return 1
+		}
+		return strings.Compare(a.CanonicalURL, b.CanonicalURL)
+	})
+	return result
+}
+
+func (session Session) WorkshopMissionRevision() (string, error) {
+	type snapshot struct {
+		id     uint64
+		digest string
+	}
+	var snapshots []snapshot
+	for _, source := range session.WorkshopMissionSources {
+		if err := source.Validate(); err != nil {
+			return "", err
+		}
+		for _, id := range source.AcceptedItemIDs {
+			snapshots = append(snapshots, snapshot{id, source.ResolutionSHA256})
+		}
+	}
+	slices.SortFunc(snapshots, func(a, b snapshot) int {
+		if a.id < b.id {
+			return -1
+		}
+		if a.id > b.id {
+			return 1
+		}
+		return strings.Compare(a.digest, b.digest)
+	})
+	digest := sha256.New()
+	for _, item := range snapshots {
+		fmt.Fprintf(digest, "%d:%s\n", item.id, item.digest)
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
 func (resolution *WorkshopResolution) Finalize(now time.Time) error {

@@ -297,36 +297,37 @@ func (session Session) requireRestoreWorkflow(workflowID string) error {
 
 // ArchiveManifest is the versioned, portable description stored beside an archive.
 type ArchiveManifest struct {
-	SchemaVersion                int                    `json:"schema_version"`
-	ArchiveID                    string                 `json:"archive_id"`
-	SessionID                    string                 `json:"session_id"`
-	SessionName                  string                 `json:"session_name,omitempty"`
-	SessionSlug                  string                 `json:"session_slug,omitempty"`
-	Description                  string                 `json:"description,omitempty"`
-	CreatedAt                    string                 `json:"created_at"`
-	Format                       string                 `json:"format"`
-	ObjectKey                    string                 `json:"object_key"`
-	SHA256                       string                 `json:"sha256"`
-	SizeBytes                    int64                  `json:"size_bytes"`
-	ContentRoots                 []string               `json:"content_roots"`
-	GameProfileID                string                 `json:"game_profile_id"`
-	ConfigurationRevision        int64                  `json:"configuration_revision"`
-	MissionObjectKey             string                 `json:"mission_object_key"`
-	MissionFiles                 []MissionRecord        `json:"mission_files,omitempty"`
-	ConfiguredMission            MissionSelection       `json:"configured_mission"`
-	CurrentMission               MissionSelection       `json:"current_mission,omitempty"`
-	PresetObjectKey              string                 `json:"preset_object_key"`
-	PresetRevisionSequence       int64                  `json:"preset_revision_sequence,omitempty"`
-	ActivePresetRevision         *ArchivePresetRevision `json:"active_preset_revision,omitempty"`
-	PendingPresetRevision        *ArchivePresetRevision `json:"pending_preset_revision,omitempty"`
-	ServerPresetObjectKey        string                 `json:"server_preset_object_key,omitempty"`
-	ServerPresetRevisionSequence int64                  `json:"server_preset_revision_sequence,omitempty"`
-	ActiveServerPresetRevision   *ArchivePresetRevision `json:"active_server_preset_revision,omitempty"`
-	PendingServerPresetRevision  *ArchivePresetRevision `json:"pending_server_preset_revision,omitempty"`
-	Vanilla                      bool                   `json:"vanilla"`
-	CreatorDLCs                  []string               `json:"creator_dlcs,omitempty"`
-	SourceInstanceID             string                 `json:"source_instance_id"`
-	SourceDataVolumeID           string                 `json:"source_data_volume_id"`
+	SchemaVersion                int                     `json:"schema_version"`
+	ArchiveID                    string                  `json:"archive_id"`
+	SessionID                    string                  `json:"session_id"`
+	SessionName                  string                  `json:"session_name,omitempty"`
+	SessionSlug                  string                  `json:"session_slug,omitempty"`
+	Description                  string                  `json:"description,omitempty"`
+	CreatedAt                    string                  `json:"created_at"`
+	Format                       string                  `json:"format"`
+	ObjectKey                    string                  `json:"object_key"`
+	SHA256                       string                  `json:"sha256"`
+	SizeBytes                    int64                   `json:"size_bytes"`
+	ContentRoots                 []string                `json:"content_roots"`
+	GameProfileID                string                  `json:"game_profile_id"`
+	ConfigurationRevision        int64                   `json:"configuration_revision"`
+	MissionObjectKey             string                  `json:"mission_object_key"`
+	MissionFiles                 []MissionRecord         `json:"mission_files,omitempty"`
+	WorkshopMissionSources       []WorkshopMissionSource `json:"workshop_mission_sources,omitempty"`
+	ConfiguredMission            MissionSelection        `json:"configured_mission"`
+	CurrentMission               MissionSelection        `json:"current_mission,omitempty"`
+	PresetObjectKey              string                  `json:"preset_object_key"`
+	PresetRevisionSequence       int64                   `json:"preset_revision_sequence,omitempty"`
+	ActivePresetRevision         *ArchivePresetRevision  `json:"active_preset_revision,omitempty"`
+	PendingPresetRevision        *ArchivePresetRevision  `json:"pending_preset_revision,omitempty"`
+	ServerPresetObjectKey        string                  `json:"server_preset_object_key,omitempty"`
+	ServerPresetRevisionSequence int64                   `json:"server_preset_revision_sequence,omitempty"`
+	ActiveServerPresetRevision   *ArchivePresetRevision  `json:"active_server_preset_revision,omitempty"`
+	PendingServerPresetRevision  *ArchivePresetRevision  `json:"pending_server_preset_revision,omitempty"`
+	Vanilla                      bool                    `json:"vanilla"`
+	CreatorDLCs                  []string                `json:"creator_dlcs,omitempty"`
+	SourceInstanceID             string                  `json:"source_instance_id"`
+	SourceDataVolumeID           string                  `json:"source_data_volume_id"`
 }
 
 // ArchivePresetRevision is a redacted, portable snapshot of revision intent.

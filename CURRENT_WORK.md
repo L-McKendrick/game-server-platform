@@ -2,63 +2,43 @@
 
 ## State and Objective
 
-Phase 17.6 Workshop backend development is complete on
-`codex/workshop-content-sources`. The objective is one safe metadata and
-resolution boundary for Arma 3 missions and mods supplied as either a public
-Workshop item or collection.
+Phase 17.7 Workshop scenario ingestion is complete on
+`codex/workshop-content-sources`. Public scenario items and one-level
+collections now enter the existing immutable mission-file lifecycle without
+automatically changing the configured or currently loaded mission.
 
 ## Completed Development
 
-- Added consolidated roadmap steps 17.6-17.8 covering one shared Workshop
-  item-or-collection metadata boundary, scenario-to-immutable-mission
-  resolution, and mod-to-preset-revision resolution.
-- The plan defaults to immutable snapshots: accepted scenarios become
-  checksum-addressed S3 mission objects, and collections become deterministic
-  generated preset revisions. Publisher changes require explicit new
-  resolution rather than silently changing active sessions.
-- Submission context supplies the requested target (`mission` or `mods`). A
-  direct item takes the shared item path; a collection expands one level and
-  sends every child through that same path. Mission-targeted collections add
-  accepted scenarios as mission-manager choices without changing the selected
-  mission, while mod-targeted collections generate one immutable mod revision.
-- Mixed collections are classified child-by-child. Items matching the requested
-  target are processed and other types receive explicit per-item feedback; no
-  mismatched child silently changes session content.
-- The plan reuses the existing Discord, SQS, DynamoDB, S3, Steam authorization,
-  SteamCMD, bootstrap, mission, preset revision, rollback, archive, and restore
-  paths; it does not assume a new persistent service.
-- Added versioned Workshop request, target, source, item classification,
-  immutable resolution snapshot, provenance, timestamp, and deterministic
-  SHA-256 contracts under `internal/domain`.
-- Added a strict canonical Steam Community URL parser, Arma 3 app ID and
-  collection-size bounds, normalized tag classification, mixed-collection
-  handling, deterministic child ordering, and duplicate rejection.
-- Added a read-only Steam Workshop catalog adapter for Valve's public published
-  file and collection metadata endpoints. HTTP responses are bounded and
-  rate-limit, transient, rejected, unavailable, and malformed-response failures
-  have stable retry metadata without exposing response bodies.
-- Added an application resolver that treats a direct item as one child or
-  expands a collection once, deduplicates child IDs, classifies every child for
-  the requested target, and produces the immutable resolution digest. It does
-  not download, subscribe to, or install Workshop content.
-- Focused domain, resolver, adapter, mixed-collection, and rate-limit tests pass.
-- The existing FIFO artifact queue now carries an explicitly typed Workshop
-  resolution request without weakening the Discord-CDN-only attachment
-  downloader. Session ownership, guild/channel context, lifecycle state,
-  idempotency, and canonical URL validation run before enqueue.
-- The artifact worker dispatches Workshop messages to the metadata resolver,
-  retries only typed transient/rate-limit/malformed Steam failures, and sends a
-  bounded completion or permanent-rejection notification. It still performs no
-  Workshop download or session content mutation.
-- `/rb create` accepts either an optional mission upload or mission Workshop
-  link. The mission manager accepts either a `.pbo` or scenario item/collection
-  link, and mod options accept either a Launcher preset or mod item/collection
-  link. Existing modal submissions remain backward compatible.
+- Mission resolutions accept only Arma 3 `Scenario` items tagged
+  `Multiplayer` or `Coop`, retain classified exclusions for mixed collections,
+  and persist bounded immutable source snapshots with replay protection.
+- The serialized cached-auth SteamCMD path downloads each accepted item in an
+  isolated operation, retries only recognized transient failures, and rejects
+  authentication failures, symlinks, unsafe metadata, invalid sizes, and
+  missing or ambiguous PBO layouts.
+- Staging is item/revision scoped and atomic. Successful collection siblings
+  remain reusable after another child fails; an incomplete collection never
+  publishes its completion manifest or changes mission metadata.
+- Original safe PBO filenames are retained. Successful content is checksummed,
+  published under content-addressed session-assets keys, copied safely into
+  `mpmissions`, and described by a bounded revision manifest.
+- Bootstrap completion verifies the manifest against authoritative session
+  source intent before appending accepted mission records. Duplicate item
+  snapshots are replay-safe, superseded item versions are retained as removed
+  history, and configured/current mission selection is untouched.
+- Mission records retain Workshop item and parent source provenance. The
+  mission manager identifies Workshop choices, archive/restore preserves and
+  verifies provenance, and termination removes all objects through the existing
+  session-prefix cleanup.
+- EC2 and bootstrap-worker IAM now permit only the required mission snapshot
+  publication and manifest-read paths.
+- Full `go test ./...`, `go vet ./...`, recursive Terraform formatting checks,
+  bootstrap shell syntax validation, and diff whitespace checks pass.
 
 ## Next Development Task
 
-- Implement **17.7.1** only: apply the shared resolver's `mission` policy and
-  prepare accepted scenario items for the later authenticated download stage.
+- Implement **17.8.1** only: apply the shared resolver's `mods` policy and
+  define deterministic collection-to-preset classification and feedback.
 
 ## Commands to Apply Current Changes
 
@@ -70,14 +50,14 @@ $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 
 ./scripts/package-discord-lambda.ps1
-$PlanFile = "workshop-resolution-backend-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
+$PlanFile = "workshop-scenario-lifecycle-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
 terraform -chdir=infra/terraform/environments/dev plan -out $PlanFile
 terraform -chdir=infra/terraform/environments/dev show $PlanFile
-# Apply only after confirming the reviewed plan updates the Discord and
-# artifact-worker Lambda packages without unrelated infrastructure mutations.
+# Apply only after confirming the reviewed plan updates the artifact/bootstrap
+# worker packages, bootstrap script object, and narrowly scoped IAM statements
+# without unrelated infrastructure mutations.
 terraform -chdir=infra/terraform/environments/dev apply $PlanFile
 ```
 
 No Discord command registration is required because command definitions did
-not change. Workshop downloads and session content mutation remain disabled
-until Phases 17.7 and 17.8 are implemented.
+not change.

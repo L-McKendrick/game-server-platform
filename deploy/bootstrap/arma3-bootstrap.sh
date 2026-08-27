@@ -11,6 +11,9 @@ MISSION_KEY="$(decode "$MISSION_KEY_B64")"
 MISSION_TEMPLATE="$(decode "$MISSION_TEMPLATE_B64")"
 MISSION_MANIFEST="$(decode "$MISSION_MANIFEST_B64")"
 CONTENT_REVISION="$(decode "$CONTENT_REVISION_B64")"
+WORKSHOP_MISSION_MANIFEST="$(decode "${WORKSHOP_MISSION_MANIFEST_B64:-}")"
+WORKSHOP_MISSION_REVISION="$(decode "${WORKSHOP_MISSION_REVISION_B64:-}")"
+[ -n "$WORKSHOP_MISSION_REVISION" ] || WORKSHOP_MISSION_REVISION="$(printf '' | sha256sum | awk '{print $1}')"
 SERVER_CONFIG_KEY="$(decode "$SERVER_CONFIG_KEY_B64")"
 SERVER_CONFIG_SHA256="$(decode "$SERVER_CONFIG_SHA_B64")"
 SERVER_CONFIG_REVISION="$(decode "$SERVER_CONFIG_REV_B64")"
@@ -335,12 +338,71 @@ run_steamcmd() {
   fi
   if grep -Eqi 'Logged in OK|Waiting for user info.*OK' "$output_file"; then STEAM_AUTH_VALID=true; fi
   if [ "$code" -eq 0 ]; then STEAM_AUTH_VALID=true; fi
-  rm -f -- "$output_file"
   if [ "$code" -ne 0 ]; then
+	if grep -Eqi 'timeout|timed out|connection|network|content server|rate limit|temporarily unavailable|service unavailable' "$output_file"; then
+	  rm -f -- "$output_file"; log "SteamCMD transient download failure"; return 75
+	fi
     log "SteamCMD download failed without exposing its raw output"
-    return "$code"
+	rm -f -- "$output_file"
+	return 1
   fi
+	rm -f -- "$output_file"
 }
+
+install_workshop_missions() (
+	local id revision extra source pbo size parent pending='' final attempt code checksum runfile filename object_key manifest_file
+  local -a ids=() pbos=()
+  declare -A seen=()
+	declare -A filename_seen=()
+  [[ "$WORKSHOP_MISSION_REVISION" =~ ^[0-9a-f]{64}$ ]] || { log "Workshop mission revision is invalid"; return 1; }
+  while IFS=$'\t' read -r id revision extra; do
+    [ -z "$id" ] && continue
+    [[ "$id" =~ ^[1-9][0-9]{0,19}$ && "$revision" = "$WORKSHOP_MISSION_REVISION" && -z "$extra" ]] || { log "Workshop mission manifest is invalid"; return 1; }
+    [ -z "${seen[$id]+x}" ] || { log "Workshop mission manifest contains duplicates"; return 1; }
+    seen[$id]=1; ids+=("$id")
+  done <<< "$WORKSHOP_MISSION_MANIFEST"
+  [ "${#ids[@]}" -le 20 ] || { log "Workshop mission item limit exceeded"; return 1; }
+	[ "${#ids[@]}" -gt 0 ] || return 0
+	manifest_file="$(mktemp /run/gsp-workshop-missions.XXXXXX)"
+	trap '[ -z "$pending" ] || rm -rf -- "$pending"; rm -f -- "$manifest_file"' EXIT
+  for id in "${ids[@]}"; do
+    parent="$ROOT/workshop-missions/$id"; final="$parent/$WORKSHOP_MISSION_REVISION"
+	if ! { [ -f "$final/mission.pbo" ] && [ -f "$final/mission.sha256" ] && [ -f "$final/metadata" ] && (cd "$final" && sha256sum --check --status mission.sha256); }; then
+	  [ ! -e "$final" ] || { log "Workshop mission staging destination is inconsistent"; return 1; }
+	  code=1
+	  for attempt in 1 2 3; do
+		runfile="$(mktemp /run/gsp-steam-mission.XXXXXX)"; steam_login_file "$runfile"
+		printf 'workshop_download_item 107410 %s validate\nquit\n' "$id" >> "$runfile"
+		if run_steamcmd "$runfile"; then code=0; else code=$?; fi
+		rm -f -- "$runfile"; [ "$code" -eq 0 ] && break; [ "$code" -eq 75 ] || return "$code"
+		log "Retrying transient Workshop mission download"
+	  done
+	  [ "$code" -eq 0 ] || { log "Workshop mission download retries exhausted"; return 1; }
+	  source="$ROOT/home/Steam/steamapps/workshop/content/107410/$id"
+	  [ -d "$source" ] || { log "Workshop mission content was not downloaded"; return 1; }
+	  ! find "$source" -type l -print -quit | grep -q . || { log "Workshop mission content contains a symbolic link"; return 1; }
+	  mapfile -d '' pbos < <(find "$source" -maxdepth 4 -type f -iname '*.pbo' -print0)
+	  [ "${#pbos[@]}" -eq 1 ] || { log "Workshop mission must contain exactly one deployable PBO"; return 1; }
+	  pbo="${pbos[0]}"; size="$(stat -c %s -- "$pbo")"; filename="$(basename -- "$pbo")"
+	  [[ "$filename" =~ ^[A-Za-z0-9._-]{1,251}\.[pP][bB][oO]$ ]] || { log "Workshop mission PBO filename is unsafe"; return 1; }
+	  filename="${filename%.*}.pbo"
+	  [ "$size" -ge 16 ] && [ "$size" -le 104857600 ] || { log "Workshop mission PBO size is outside the allowed range"; return 1; }
+	  mkdir -p "$parent"; pending="$(mktemp -d "$parent/.pending.XXXXXX")"; cp -- "$pbo" "$pending/mission.pbo"
+	  checksum="$(sha256sum "$pending/mission.pbo" | awk '{print $1}')"; printf '%s  mission.pbo\n' "$checksum" > "$pending/mission.sha256"
+	  printf 'item_id=%s\nsize_bytes=%s\nfilename=%s\n' "$id" "$size" "$filename" > "$pending/metadata"
+	  chown -R steam:steam "$pending"; chmod 0750 "$pending"; chmod 0640 "$pending"/*; mv -- "$pending" "$final"; pending=''
+	fi
+	checksum="$(awk 'NR==1 {print $1}' "$final/mission.sha256")"; filename="$(sed -n 's/^filename=//p' "$final/metadata")"
+	[[ "$checksum" =~ ^[0-9a-f]{64}$ && "$filename" =~ ^[A-Za-z0-9._-]{1,251}\.pbo$ ]] || { log "Workshop mission staging metadata is invalid"; return 1; }
+	[ -z "${filename_seen[${filename,,}]+x}" ] || { log "Workshop scenarios contain duplicate mission filenames"; return 1; }
+	filename_seen[${filename,,}]=1
+	object_key="sessions/$SESSION_ID/input/missions/$checksum-$filename"
+	aws s3 cp "$final/mission.pbo" "s3://$ASSETS_BUCKET/$object_key" --region "$AWS_REGION" --only-show-errors --checksum-algorithm SHA256
+	mkdir -p "$ROOT/arma3/mpmissions"; cp -- "$final/mission.pbo" "$ROOT/arma3/mpmissions/.workshop-$id.pending"; chown steam:steam "$ROOT/arma3/mpmissions/.workshop-$id.pending"; chmod 0644 "$ROOT/arma3/mpmissions/.workshop-$id.pending"; mv -f -- "$ROOT/arma3/mpmissions/.workshop-$id.pending" "$ROOT/arma3/mpmissions/$filename"
+	printf '%s\t%s\t%s\t%s\n' "$checksum" "$filename" "$object_key" "$id" >> "$manifest_file"
+  done
+	aws s3 cp "$manifest_file" "s3://$ASSETS_BUCKET/sessions/$SESSION_ID/workshop-resolutions/$WORKSHOP_MISSION_REVISION.tsv" --region "$AWS_REGION" --only-show-errors --content-type text/tab-separated-values
+)
 
 install_steamcmd() {
   if [ ! -x "$ROOT/steamcmd/steamcmd.sh" ]; then
@@ -624,7 +686,7 @@ checkpoint HOST_PREPARED
 mkdir -p "$STATE_DIR" "$LOG_DIR"
 exec 9>"$STATE_DIR/bootstrap.lock"
 flock -w 30 9
-for stage in install_steamcmd install_arma install_workshop deploy_content install_teamspeak; do
+for stage in install_steamcmd install_arma install_workshop_missions install_workshop deploy_content install_teamspeak; do
 	if [ "$stage" = install_arma ] && ! $STEAM_AUTH_ACTIVE; then begin_steam_auth; fi
 	case "$stage" in
 		install_steamcmd) checkpoint GAME_SERVER_INSTALLED;;
@@ -635,6 +697,9 @@ for stage in install_steamcmd install_arma install_workshop deploy_content insta
 	if [ "$stage" = install_workshop ] && [ "$VANILLA_MODE" = false ]; then
 		marker="$STATE_DIR/$stage.revision-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete"
 		[ "$PRESET_ROLLBACK" = true ] && rm -f -- "$marker"
+	fi
+	if [ "$stage" = install_workshop_missions ]; then
+		marker="$STATE_DIR/$stage.revision-$WORKSHOP_MISSION_REVISION.complete"
 	fi
 	if [ "$stage" = deploy_content ]; then
 		[[ "$CONTENT_REVISION" =~ ^[0-9a-f]{64}$ ]] || { log "content deployment revision is invalid"; exit 1; }
@@ -652,6 +717,7 @@ for stage in install_steamcmd install_arma install_workshop deploy_content insta
     # deployment but before the new marker, the next attempt safely replays.
     rm -f -- "$STATE_DIR/deploy_content.complete" "$STATE_DIR"/deploy_content.revision-*.complete
   fi
+	if [ "$stage" = install_workshop_missions ]; then rm -f -- "$STATE_DIR/install_workshop_missions.complete" "$STATE_DIR"/install_workshop_missions.revision-*.complete; fi
   touch "$marker"
   log "completed stage $stage"
 	if [ "$stage" = install_workshop ] && $STEAM_AUTH_ACTIVE; then persist_steam_auth; cleanup_steam_auth; fi

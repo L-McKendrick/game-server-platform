@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -13,12 +14,50 @@ const DefaultArma3MissionTemplate = "MP_ZGM_m12.Stratis"
 var missionHashPrefix = regexp.MustCompile(`^[0-9a-fA-F]{64}-`)
 
 type MissionRecord struct {
-	ObjectKey string         `json:"object_key"`
-	Filename  string         `json:"filename"`
-	Status    ArtifactStatus `json:"status"`
-	Issue     string         `json:"issue,omitempty"`
-	AddedAt   time.Time      `json:"added_at"`
-	RemovedAt time.Time      `json:"removed_at,omitempty"`
+	ObjectKey       string              `json:"object_key"`
+	Filename        string              `json:"filename"`
+	Status          ArtifactStatus      `json:"status"`
+	Issue           string              `json:"issue,omitempty"`
+	AddedAt         time.Time           `json:"added_at"`
+	RemovedAt       time.Time           `json:"removed_at,omitempty"`
+	WorkshopItemID  uint64              `json:"workshop_item_id,omitempty"`
+	WorkshopSources []WorkshopReference `json:"workshop_sources,omitempty"`
+}
+
+func (session *Session) AttachWorkshopMission(record MissionRecord, now time.Time) error {
+	if record.WorkshopItemID == 0 || len(record.WorkshopSources) == 0 || record.Status != ArtifactAccepted || strings.TrimSpace(record.ObjectKey) == "" {
+		return fmt.Errorf("Workshop mission record is invalid")
+	}
+	filename, err := NormalizeMissionFilename(record.Filename)
+	if err != nil || filename != record.Filename || missionFilenameFromObjectKey(record.ObjectKey) != filename {
+		return fmt.Errorf("Workshop mission filename or object key is invalid")
+	}
+	if session.LifecycleState == StateDeleting || session.LifecycleState == StateDeleted || session.LifecycleState == StateArchiving || session.LifecycleState == StateDestroying {
+		return fmt.Errorf("%w: Workshop missions cannot change in the current lifecycle", ErrInvalidTransition)
+	}
+	for _, source := range record.WorkshopSources {
+		matched := false
+		for _, persisted := range session.WorkshopMissionSources {
+			if persisted.Source == source && slices.Contains(persisted.AcceptedItemIDs, record.WorkshopItemID) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("Workshop mission provenance is not authorized")
+		}
+	}
+	for index := range session.MissionFiles {
+		if session.MissionFiles[index].ObjectKey == record.ObjectKey {
+			return nil
+		}
+		if session.MissionFiles[index].WorkshopItemID == record.WorkshopItemID && session.MissionFiles[index].Active() {
+			session.MissionFiles[index].RemovedAt = now.UTC()
+		}
+	}
+	record.AddedAt = now.UTC()
+	session.MissionFiles = append(session.MissionFiles, record)
+	return session.RecordMutation(now)
 }
 
 func (record MissionRecord) Active() bool { return record.RemovedAt.IsZero() }

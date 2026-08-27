@@ -36,11 +36,12 @@ import (
 )
 
 type handler struct {
-	service       *artifacts.Service
-	serverConfig  *serverconfig.Processor
-	workshop      *appworkshop.Service
-	notifications ports.NotificationQueue
-	logger        *slog.Logger
+	service          *artifacts.Service
+	serverConfig     *serverconfig.Processor
+	workshop         *appworkshop.Service
+	workshopRecorder *appworkshop.Recorder
+	notifications    ports.NotificationQueue
+	logger           *slog.Logger
 }
 
 func main() {
@@ -98,7 +99,11 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &handler{service: service, serverConfig: serverConfig, workshop: workshopService, notifications: sqsnotification.New(queueClient, cfg.NotificationQueueURL), logger: logger}, nil
+	workshopRecorder, err := appworkshop.NewRecorder(repository, identity.Generator{}, clock, cfg.IdempotencyRetention)
+	if err != nil {
+		return nil, err
+	}
+	return &handler{service: service, serverConfig: serverConfig, workshop: workshopService, workshopRecorder: workshopRecorder, notifications: sqsnotification.New(queueClient, cfg.NotificationQueueURL), logger: logger}, nil
 }
 
 func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (events.SQSEventResponse, error) {
@@ -121,6 +126,24 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 					continue
 				}
 				if err := handler.notifyWorkshop(ctx, request, "Workshop link rejected: "+resolveErr.Error()); err != nil {
+					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+				}
+				continue
+			}
+			if request.Target == domain.WorkshopTargetMission {
+				source, recordErr := handler.workshopRecorder.RecordMissionResolution(ctx, request, resolution)
+				if recordErr != nil {
+					if errors.Is(recordErr, domain.ErrPermanentWorkshopRejection) || errors.Is(recordErr, domain.ErrForbidden) || errors.Is(recordErr, domain.ErrIdempotencyConflict) {
+						if err := handler.notifyWorkshop(ctx, request, "Workshop mission source rejected: "+recordErr.Error()); err != nil {
+							response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+						}
+					} else {
+						response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+					}
+					continue
+				}
+				content := fmt.Sprintf("Workshop mission source accepted: %d scenario(s), %d excluded. Download will be staged without changing the current mission.", len(source.AcceptedItemIDs), len(source.ExcludedItems))
+				if err := handler.notifyWorkshop(ctx, request, content); err != nil {
 					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
 				}
 				continue

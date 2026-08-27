@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -264,6 +265,10 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	if err != nil {
 		return "", err
 	}
+	workshopMissionManifest, workshopMissionRevision, err := resolvedWorkshopMissionManifest(session)
+	if err != nil {
+		return "", err
+	}
 	if rollback {
 		active := session.EffectiveActivePresetRevision()
 		presetObjectKey, presetRevision = active.PresetObjectKey, active.Number
@@ -274,33 +279,35 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 		return "", fmt.Errorf("instance, data volume, mission selection, and modded content are required")
 	}
 	values := map[string]string{
-		"SESSION_ID_B64":             session.ID,
-		"WORKFLOW_ID_B64":            session.ActiveWorkflowID,
-		"DISPLAY_NAME_B64":           session.DisplayName,
-		"DATA_VOLUME_ID_B64":         session.Infrastructure.DataVolumeID,
-		"MISSION_KEY_B64":            mission.ObjectKey,
-		"MISSION_TEMPLATE_B64":       mission.Template,
-		"MISSION_MANIFEST_B64":       missionManifest,
-		"CONTENT_REVISION_B64":       contentDeploymentRevision(session, missionManifest, runner.config.BootstrapScriptKey),
-		"SERVER_CONFIG_KEY_B64":      session.ServerConfigObjectKey,
-		"SERVER_CONFIG_SHA_B64":      session.ServerConfigSHA256,
-		"SERVER_CONFIG_REV_B64":      fmt.Sprintf("%d", session.ServerConfigRevision),
-		"PRESET_KEY_B64":             presetObjectKey,
-		"PRESET_REVISION_B64":        fmt.Sprintf("%d", presetRevision),
-		"PRESET_ROLLBACK_B64":        fmt.Sprintf("%t", rollback),
-		"SERVER_PRESET_KEY_B64":      serverPresetObjectKey,
-		"SERVER_PRESET_REVISION_B64": fmt.Sprintf("%d", serverPresetRevision),
-		"CREATOR_DLC_MODS_B64":       strings.Join(creatorDLCFolders, ";"),
-		"MOD_CONFIG_REVISION_B64":    fmt.Sprintf("%d", session.ConfigurationRevision),
-		"ASSETS_BUCKET_B64":          runner.config.AssetsBucket,
-		"METADATA_TABLE_B64":         runner.config.MetadataTableName,
-		"STEAM_AUTH_SECRET_B64":      runner.config.SteamAuthSecretID,
-		"AWS_REGION_B64":             runner.config.Region,
-		"TEAMSPEAK_VERSION_B64":      runner.config.TeamSpeakVersion,
+		"SESSION_ID_B64":                session.ID,
+		"WORKFLOW_ID_B64":               session.ActiveWorkflowID,
+		"DISPLAY_NAME_B64":              session.DisplayName,
+		"DATA_VOLUME_ID_B64":            session.Infrastructure.DataVolumeID,
+		"MISSION_KEY_B64":               mission.ObjectKey,
+		"MISSION_TEMPLATE_B64":          mission.Template,
+		"MISSION_MANIFEST_B64":          missionManifest,
+		"CONTENT_REVISION_B64":          contentDeploymentRevision(session, missionManifest, runner.config.BootstrapScriptKey),
+		"WORKSHOP_MISSION_MANIFEST_B64": workshopMissionManifest,
+		"WORKSHOP_MISSION_REVISION_B64": workshopMissionRevision,
+		"SERVER_CONFIG_KEY_B64":         session.ServerConfigObjectKey,
+		"SERVER_CONFIG_SHA_B64":         session.ServerConfigSHA256,
+		"SERVER_CONFIG_REV_B64":         fmt.Sprintf("%d", session.ServerConfigRevision),
+		"PRESET_KEY_B64":                presetObjectKey,
+		"PRESET_REVISION_B64":           fmt.Sprintf("%d", presetRevision),
+		"PRESET_ROLLBACK_B64":           fmt.Sprintf("%t", rollback),
+		"SERVER_PRESET_KEY_B64":         serverPresetObjectKey,
+		"SERVER_PRESET_REVISION_B64":    fmt.Sprintf("%d", serverPresetRevision),
+		"CREATOR_DLC_MODS_B64":          strings.Join(creatorDLCFolders, ";"),
+		"MOD_CONFIG_REVISION_B64":       fmt.Sprintf("%d", session.ConfigurationRevision),
+		"ASSETS_BUCKET_B64":             runner.config.AssetsBucket,
+		"METADATA_TABLE_B64":            runner.config.MetadataTableName,
+		"STEAM_AUTH_SECRET_B64":         runner.config.SteamAuthSecretID,
+		"AWS_REGION_B64":                runner.config.Region,
+		"TEAMSPEAK_VERSION_B64":         runner.config.TeamSpeakVersion,
 	}
 	var command strings.Builder
 	command.WriteString("#!/usr/bin/env bash\nset -Eeuo pipefail\numask 077\n")
-	for _, key := range []string{"SESSION_ID_B64", "WORKFLOW_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "MISSION_MANIFEST_B64", "CONTENT_REVISION_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
+	for _, key := range []string{"SESSION_ID_B64", "WORKFLOW_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "MISSION_MANIFEST_B64", "CONTENT_REVISION_B64", "WORKSHOP_MISSION_MANIFEST_B64", "WORKSHOP_MISSION_REVISION_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
 		command.WriteString("export " + key + "='" + base64.StdEncoding.EncodeToString([]byte(values[key])) + "'\n")
 	}
 	if session.TeamSpeakEnabled {
@@ -373,4 +380,49 @@ func acceptedMissionManifest(session domain.Session) (string, error) {
 		manifest.WriteString(checksum + "\t" + mission.Filename + "\t" + mission.ObjectKey + "\n")
 	}
 	return manifest.String(), nil
+}
+
+func resolvedWorkshopMissionManifest(session domain.Session) (string, string, error) {
+	type snapshot struct {
+		id     uint64
+		digest string
+	}
+	snapshots := make([]snapshot, 0, len(session.WorkshopMissionSources))
+	for _, source := range session.WorkshopMissionSources {
+		if err := source.Validate(); err != nil {
+			return "", "", fmt.Errorf("Workshop mission source: %w", err)
+		}
+		for _, id := range source.AcceptedItemIDs {
+			snapshots = append(snapshots, snapshot{id: id, digest: source.ResolutionSHA256})
+		}
+	}
+	slices.SortFunc(snapshots, func(a, b snapshot) int {
+		if a.id < b.id {
+			return -1
+		}
+		if a.id > b.id {
+			return 1
+		}
+		return strings.Compare(a.digest, b.digest)
+	})
+	revision, err := session.WorkshopMissionRevision()
+	if err != nil {
+		return "", "", err
+	}
+	ids := make([]uint64, 0, len(snapshots))
+	var prior uint64
+	for _, item := range snapshots {
+		if item.id != prior {
+			ids = append(ids, item.id)
+			prior = item.id
+		}
+	}
+	var manifest strings.Builder
+	for _, id := range ids {
+		fmt.Fprintf(&manifest, "%d\t%s\n", id, revision)
+	}
+	if len(ids) > domain.MaximumWorkshopMissionItems {
+		return "", "", fmt.Errorf("Workshop mission item limit exceeded")
+	}
+	return manifest.String(), revision, nil
 }
