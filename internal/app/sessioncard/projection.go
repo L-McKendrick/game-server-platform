@@ -172,7 +172,7 @@ func Project(session domain.Session, options Options) Projection {
 		Mods:       modProjection(session, options.ModlistURL),
 		ServerMods: serverModProjection(session),
 		Artifacts: ArtifactProjection{
-			Mission: artifactView(session.MissionArtifactStatus, session.MissionObjectKey, session.MissionArtifactIssue, false),
+			Mission: missionArtifactView(session),
 			Preset:  presetArtifactView(session),
 		},
 		Freshness: FreshnessProjection{
@@ -671,6 +671,14 @@ func artifactView(status domain.ArtifactStatus, objectKey, issue string, notRequ
 		}
 	}
 	return ArtifactView{Status: label, Issue: strings.TrimSpace(issue)}
+}
+
+func missionArtifactView(session domain.Session) ArtifactView {
+	view := artifactView(session.MissionArtifactStatus, session.MissionObjectKey, session.MissionArtifactIssue, false)
+	if view.Status == "Awaiting upload" && len(session.WorkshopMissionSources) > 0 {
+		view.Status = "Workshop source accepted; downloads on next start"
+	}
+	return view
 }
 
 func modStatus(session domain.Session) string {

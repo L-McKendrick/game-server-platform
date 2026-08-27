@@ -150,9 +150,7 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 					continue
 				}
 				content := fmt.Sprintf("Workshop mission source accepted: %d scenario(s), %d excluded. Download will be staged without changing the current mission.", len(source.AcceptedItemIDs), len(source.ExcludedItems))
-				if err := handler.notifyWorkshop(ctx, request, content); err != nil {
-					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
-				}
+				handler.logger.Info("Workshop mission resolution recorded", slog.String("session_id", request.SessionID), slog.String("source_kind", string(source.SourceKind)), slog.Int("accepted_count", len(source.AcceptedItemIDs)), slog.Int("excluded_count", len(source.ExcludedItems)), slog.String("status_summary", content), slog.String("correlation_id", request.CorrelationID))
 				continue
 			}
 			if request.Target == domain.WorkshopTargetMods {
@@ -182,9 +180,6 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 						continue
 					}
 				}
-				if err := handler.notifyWorkshop(ctx, request, content); err != nil {
-					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
-				}
 				handler.logger.Info("Workshop mod resolution recorded", slog.String("session_id", request.SessionID), slog.String("source_kind", string(source.SourceKind)), slog.Int("accepted_count", len(source.AcceptedItems)), slog.Int("excluded_count", len(source.ExcludedItems)), slog.Int64("preset_revision", result.Revision.Number), slog.String("revision_status", string(result.Revision.Status)), slog.String("correlation_id", request.CorrelationID))
 				continue
 			}
@@ -194,10 +189,7 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 					matched++
 				}
 			}
-			content := fmt.Sprintf("Workshop link validated: %d matching %s item(s), %d excluded. Download is not enabled yet.", matched, request.Target, len(resolution.Items)-matched)
-			if err := handler.notifyWorkshop(ctx, request, content); err != nil {
-				response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
-			}
+			handler.logger.Info("Workshop link validated", slog.String("session_id", request.SessionID), slog.String("target", string(request.Target)), slog.Int("accepted_count", matched), slog.Int("excluded_count", len(resolution.Items)-matched), slog.String("correlation_id", request.CorrelationID))
 			continue
 		}
 		var request domain.ArtifactIngestRequest

@@ -49,6 +49,12 @@ performed for that repair.
   The metadata adapter now accepts both string and numeric non-negative values;
   focused coverage uses the live response shape. This prevents a retrying
   mission resolution from blocking the same session's mod resolution in FIFO.
+- Successful Workshop resolution no longer posts a standalone channel message.
+  `/rb status` reports an accepted mission source as downloading on the next
+  start, while mod revisions remain visible through their existing active or
+  pending status. Asynchronous ephemeral follow-ups are intentionally not used
+  because the worker does not retain short-lived interaction tokens. Rejection
+  notices remain actionable so user-correctable failures are not silently lost.
 
 ## Validation
 
@@ -84,7 +90,7 @@ $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 
 ./scripts/package-discord-lambda.ps1
-$PlanFile = "workshop-metadata-decoding-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
+$PlanFile = "private-workshop-status-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
 terraform -chdir=infra/terraform/environments/dev plan -out $PlanFile
 terraform -chdir=infra/terraform/environments/dev show $PlanFile
 # Apply only after confirming the reviewed plan updates the artifact-worker

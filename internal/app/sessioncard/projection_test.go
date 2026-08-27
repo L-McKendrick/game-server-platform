@@ -134,6 +134,16 @@ func TestProgressBarFillsCompletedCheckpointsOnly(t *testing.T) {
 	}
 }
 
+func TestProjectShowsAcceptedWorkshopMissionSourceBeforeBootstrapDownload(t *testing.T) {
+	now := time.Date(2026, 8, 27, 4, 0, 0, 0, time.UTC)
+	session := domain.Session{DisplayName: "Workshop", Slug: "workshop", GameType: "arma3", LifecycleState: domain.StateDraft, UpdatedAt: now,
+		WorkshopMissionSources: []domain.WorkshopMissionSource{{Source: domain.WorkshopReference{PublishedFileID: 42, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=42"}, SourceKind: domain.WorkshopSourceItem, ResolutionSHA256: strings.Repeat("a", 64), AcceptedItemIDs: []uint64{42}, ResolvedAt: now}}}
+	projection := Project(session, Options{Now: now})
+	if projection.Artifacts.Mission.Status != "Workshop source accepted; downloads on next start" || projection.Artifacts.Mission.Issue != "" {
+		t.Fatalf("mission projection = %#v", projection.Artifacts.Mission)
+	}
+}
+
 func TestBootstrapActivityAndInactivityDeadlinesRenderFromAuthoritativeState(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
