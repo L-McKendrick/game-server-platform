@@ -263,15 +263,15 @@ func workshopRecordUserMessage(err error, target domain.WorkshopTarget, exhauste
 		return "The session changed state while this Workshop link was processing. Wait for the current start, wake, restore, archive, or stop operation to finish, then submit the link again."
 	}
 	if errors.Is(err, domain.ErrWorkshopSnapshotLimit) {
-		return "This session has reached its bounded Workshop source-history limit. Its active content was left unchanged. Use an uploaded preset for the next revision or create a new session; contact an operator if history must be retained differently."
+		return "This session has reached its bounded Workshop source-history limit. Its active content was left unchanged. Use an uploaded preset for the next revision or create a new session; contact an administrator if history must be retained differently."
 	}
 	if exhausted && !errors.Is(err, domain.ErrPermanentWorkshopRejection) && !errors.Is(err, domain.ErrIdempotencyConflict) {
-		return "The Workshop content was validated, but the platform could not safely save it after several attempts. Your active content was left unchanged. Submit the link again; if it repeats, contact an operator."
+		return "The Workshop content was validated, but the platform could not safely save it after several attempts. Your active content was left unchanged. Submit the link again; if it repeats, contact an administrator."
 	}
 	if target == domain.WorkshopTargetMods {
-		return "No usable client-mod preset could be created from this Workshop source. Confirm it contains public Arma 3 client mods; scenarios are not mods, and server-only items must use the server-mod workflow."
+		return "No usable mod preset could be created from this Workshop source. Confirm it contains public Arma 3 mods (not scenarios)."
 	}
-	return "No usable multiplayer scenario could be created from this Workshop source. Confirm each desired item is public, has Data Type `Scenario`, and includes the `Multiplayer` or `Coop` gameplay tag."
+	return "No usable multiplayer scenario could be created from this Workshop source. Confirm each desired item is public, has Data Type `Scenario`, and includes the `Multiplayer` gameplay tag."
 }
 
 func (handler *handler) enqueueWorkshopModlist(ctx context.Context, request domain.WorkshopSourceRequest, result appworkshop.ModResolutionResult) error {
