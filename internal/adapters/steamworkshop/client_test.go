@@ -21,7 +21,7 @@ func TestClientReadsPublishedFileAndCollectionMetadata(t *testing.T) {
 		writer.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/GetPublishedFileDetails/v1/":
-			fmt.Fprint(writer, `{"response":{"publishedfiledetails":[{"publishedfileid":"42","result":1,"file_type":0,"consumer_app_id":107410,"title":"Coop Night","file_size":123,"time_updated":1700000000,"tags":[{"tag":"Scenario"},{"tag":"Coop"}]}]}}`)
+			fmt.Fprint(writer, `{"response":{"publishedfiledetails":[{"publishedfileid":"42","result":1,"file_type":0,"consumer_app_id":107410,"title":"Coop Night","file_size":"123","time_updated":1700000000,"tags":[{"tag":"Scenario"},{"tag":"Coop"}]}]}}`)
 		case "/GetCollectionDetails/v1/":
 			fmt.Fprint(writer, `{"response":{"collectiondetails":[{"result":1,"children":[{"publishedfileid":"42"}]}]}}`)
 		default:
@@ -37,7 +37,7 @@ func TestClientReadsPublishedFileAndCollectionMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !item.Available || item.ConsumerAppID != domain.Arma3WorkshopAppID || len(item.Tags) != 2 {
+	if !item.Available || item.ConsumerAppID != domain.Arma3WorkshopAppID || item.FileSize != 123 || len(item.Tags) != 2 {
 		t.Fatalf("item = %#v", item)
 	}
 	children, err := client.CollectionChildren(context.Background(), 9)

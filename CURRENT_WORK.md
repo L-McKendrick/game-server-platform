@@ -5,7 +5,9 @@
 Workshop content-source development through Phase 17.8 is complete on
 `codex/workshop-content-sources`. Public Arma 3 scenarios and client mods can
 now use individual Workshop items or collections without replacing the existing
-upload workflows. No deployment or pull request has been performed.
+upload workflows. Live testing of Test 27 exposed and repaired Steam's
+string-encoded `file_size` response. No deployment or pull request has been
+performed for that repair.
 
 ## Completed Development
 
@@ -43,6 +45,10 @@ upload workflows. No deployment or pull request has been performed.
   schedule was added. Session-prefix cleanup covers safe retry orphans.
 - User and operator behavior, cost/performance bounds, and recovery steps are
   documented in `docs/workshop-content-sources.md`.
+- Live Steam verification confirmed `file_size` is encoded as a JSON string.
+  The metadata adapter now accepts both string and numeric non-negative values;
+  focused coverage uses the live response shape. This prevents a retrying
+  mission resolution from blocking the same session's mod resolution in FIFO.
 
 ## Validation
 
@@ -78,12 +84,11 @@ $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 
 ./scripts/package-discord-lambda.ps1
-$PlanFile = "workshop-content-sources-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
+$PlanFile = "workshop-metadata-decoding-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
 terraform -chdir=infra/terraform/environments/dev plan -out $PlanFile
 terraform -chdir=infra/terraform/environments/dev show $PlanFile
-# Apply only after confirming the reviewed plan updates the affected Lambda
-# packages, artifact-worker timeout, artifact FIFO visibility, and bootstrap
-# script object without unrelated infrastructure changes.
+# Apply only after confirming the reviewed plan updates the artifact-worker
+# package and contains no unrelated infrastructure changes.
 terraform -chdir=infra/terraform/environments/dev apply $PlanFile
 ```
 

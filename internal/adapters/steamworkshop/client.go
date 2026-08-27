@@ -91,7 +91,7 @@ func (client *Client) publishedFiles(ctx context.Context, values url.Values, exp
 		if err != nil || id == 0 {
 			return nil, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataInvalidResponse, Retryable: true, Detail: "Steam returned mismatched item metadata"}
 		}
-		item := domain.WorkshopItem{PublishedFileID: id, ConsumerAppID: detail.ConsumerAppID, Title: strings.TrimSpace(detail.Title), FileSize: detail.FileSize, Available: detail.Result == 1, Collection: detail.FileType == 2}
+		item := domain.WorkshopItem{PublishedFileID: id, ConsumerAppID: detail.ConsumerAppID, Title: strings.TrimSpace(detail.Title), FileSize: int64(detail.FileSize), Available: detail.Result == 1, Collection: detail.FileType == 2}
 		if detail.TimeUpdated > 0 {
 			item.UpdatedAt = time.Unix(detail.TimeUpdated, 0).UTC()
 		}
@@ -168,18 +168,43 @@ func (client *Client) post(ctx context.Context, endpoint string, values url.Valu
 type publishedFileResponse struct {
 	Response struct {
 		Details []struct {
-			PublishedFileID string `json:"publishedfileid"`
-			Result          int    `json:"result"`
-			FileType        int    `json:"file_type"`
-			ConsumerAppID   uint32 `json:"consumer_app_id"`
-			Title           string `json:"title"`
-			FileSize        int64  `json:"file_size"`
-			TimeUpdated     int64  `json:"time_updated"`
+			PublishedFileID string        `json:"publishedfileid"`
+			Result          int           `json:"result"`
+			FileType        int           `json:"file_type"`
+			ConsumerAppID   uint32        `json:"consumer_app_id"`
+			Title           string        `json:"title"`
+			FileSize        flexibleInt64 `json:"file_size"`
+			TimeUpdated     int64         `json:"time_updated"`
 			Tags            []struct {
 				Tag string `json:"tag"`
 			} `json:"tags"`
 		} `json:"publishedfiledetails"`
 	} `json:"response"`
+}
+
+// flexibleInt64 accepts Steam's observed string-encoded sizes while retaining
+// compatibility with numeric fixtures and any numeric responses.
+type flexibleInt64 int64
+
+func (value *flexibleInt64) UnmarshalJSON(body []byte) error {
+	raw := strings.TrimSpace(string(body))
+	if raw == "" || raw == "null" {
+		*value = 0
+		return nil
+	}
+	if strings.HasPrefix(raw, `"`) {
+		var encoded string
+		if err := json.Unmarshal(body, &encoded); err != nil {
+			return err
+		}
+		raw = encoded
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || parsed < 0 {
+		return fmt.Errorf("invalid non-negative integer")
+	}
+	*value = flexibleInt64(parsed)
+	return nil
 }
 
 type collectionResponse struct {
