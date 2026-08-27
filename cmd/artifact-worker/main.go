@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -26,6 +27,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/steamworkshop"
 	"github.com/L-McKendrick/game-server-platform/internal/app/artifacts"
 	"github.com/L-McKendrick/game-server-platform/internal/app/serverconfig"
+	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	appworkshop "github.com/L-McKendrick/game-server-platform/internal/app/workshop"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
@@ -99,7 +101,7 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	workshopRecorder, err := appworkshop.NewRecorder(repository, identity.Generator{}, clock, cfg.IdempotencyRetention)
+	workshopRecorder, err := appworkshop.NewRecorder(repository, objects, identity.Generator{}, clock, cfg.IdempotencyRetention)
 	if err != nil {
 		return nil, err
 	}
@@ -121,11 +123,16 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 			resolution, resolveErr := handler.workshop.Resolve(ctx, request)
 			if resolveErr != nil {
 				var metadataErr domain.WorkshopMetadataError
-				if errors.As(resolveErr, &metadataErr) && metadataErr.Retryable {
+				code, retryable := "WORKSHOP_REJECTED", false
+				if errors.As(resolveErr, &metadataErr) {
+					code, retryable = string(metadataErr.Code), metadataErr.Retryable
+				}
+				handler.logger.Warn("Workshop resolution failed", slog.String("session_id", request.SessionID), slog.String("target", string(request.Target)), slog.String("error_code", code), slog.Bool("retryable", retryable), slog.String("correlation_id", request.CorrelationID))
+				if errors.As(resolveErr, &metadataErr) && metadataErr.Retryable && !workshopFinalAttempt(message) {
 					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
 					continue
 				}
-				if err := handler.notifyWorkshop(ctx, request, "Workshop link rejected: "+resolveErr.Error()); err != nil {
+				if err := handler.notifyWorkshop(ctx, request, workshopResolutionUserMessage(resolveErr, workshopFinalAttempt(message))); err != nil {
 					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
 				}
 				continue
@@ -133,8 +140,8 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 			if request.Target == domain.WorkshopTargetMission {
 				source, recordErr := handler.workshopRecorder.RecordMissionResolution(ctx, request, resolution)
 				if recordErr != nil {
-					if errors.Is(recordErr, domain.ErrPermanentWorkshopRejection) || errors.Is(recordErr, domain.ErrForbidden) || errors.Is(recordErr, domain.ErrIdempotencyConflict) {
-						if err := handler.notifyWorkshop(ctx, request, "Workshop mission source rejected: "+recordErr.Error()); err != nil {
+					if permanentWorkshopRecordError(recordErr) || workshopFinalAttempt(message) {
+						if err := handler.notifyWorkshop(ctx, request, workshopRecordUserMessage(recordErr, domain.WorkshopTargetMission, workshopFinalAttempt(message))); err != nil {
 							response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
 						}
 					} else {
@@ -146,6 +153,39 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 				if err := handler.notifyWorkshop(ctx, request, content); err != nil {
 					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
 				}
+				continue
+			}
+			if request.Target == domain.WorkshopTargetMods {
+				result, recordErr := handler.workshopRecorder.RecordModResolution(ctx, request, resolution)
+				if recordErr != nil {
+					if permanentWorkshopRecordError(recordErr) || workshopFinalAttempt(message) {
+						if err := handler.notifyWorkshop(ctx, request, workshopRecordUserMessage(recordErr, domain.WorkshopTargetMods, workshopFinalAttempt(message))); err != nil {
+							response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+						}
+					} else {
+						response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+					}
+					continue
+				}
+				source := result.Source
+				content := fmt.Sprintf("Workshop mod source accepted: %d client mod(s), %d excluded. Mod revision %d is %s.", len(source.AcceptedItems), len(source.ExcludedItems), result.Revision.Number, strings.ToLower(string(result.Revision.Status)))
+				if summary := domain.WorkshopExclusionSummary(source.ExcludedItems, 8); summary != "" {
+					content += " Excluded: " + summary + "."
+				}
+				if err := handler.enqueueWorkshopCard(ctx, request, result); err != nil {
+					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+					continue
+				}
+				if result.Revision.Status == domain.PresetRevisionActive {
+					if err := handler.enqueueWorkshopModlist(ctx, request, result); err != nil {
+						response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+						continue
+					}
+				}
+				if err := handler.notifyWorkshop(ctx, request, content); err != nil {
+					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+				}
+				handler.logger.Info("Workshop mod resolution recorded", slog.String("session_id", request.SessionID), slog.String("source_kind", string(source.SourceKind)), slog.Int("accepted_count", len(source.AcceptedItems)), slog.Int("excluded_count", len(source.ExcludedItems)), slog.Int64("preset_revision", result.Revision.Number), slog.String("revision_status", string(result.Revision.Status)), slog.String("correlation_id", request.CorrelationID))
 				continue
 			}
 			matched := 0
@@ -190,6 +230,68 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 		handler.logger.Info("artifact processed", slog.String("session_id", request.SessionID), slog.String("correlation_id", request.CorrelationID))
 	}
 	return response, nil
+}
+
+const maximumWorkshopReceiveCount = 5
+
+func permanentWorkshopRecordError(err error) bool {
+	return errors.Is(err, domain.ErrPermanentWorkshopRejection) || errors.Is(err, domain.ErrForbidden) || errors.Is(err, domain.ErrIdempotencyConflict) || errors.Is(err, domain.ErrConflict) || errors.Is(err, domain.ErrWorkflowLocked) || errors.Is(err, domain.ErrInvalidTransition) || errors.Is(err, domain.ErrWorkshopSnapshotLimit)
+}
+
+func workshopFinalAttempt(message events.SQSMessage) bool {
+	count, err := strconv.Atoi(message.Attributes["ApproximateReceiveCount"])
+	return err == nil && count >= maximumWorkshopReceiveCount
+}
+
+func workshopResolutionUserMessage(err error, exhausted bool) string {
+	var metadataErr domain.WorkshopMetadataError
+	if errors.As(err, &metadataErr) {
+		switch metadataErr.Code {
+		case domain.WorkshopMetadataUnavailable:
+			return "Workshop link could not be used because the item or collection is unavailable or private. Make it Public in Steam Workshop, confirm the link opens while signed out, then submit it again."
+		case domain.WorkshopMetadataRateLimited, domain.WorkshopMetadataTransient, domain.WorkshopMetadataInvalidResponse:
+			if exhausted {
+				return "Steam Workshop metadata could not be read after several automatic attempts. Your session was left unchanged. Wait a few minutes, confirm the Workshop page is public, then submit the link again."
+			}
+		case domain.WorkshopMetadataRejected:
+			return "Steam rejected the Workshop metadata request. Confirm this is a canonical public Steam Community shared-file link for an Arma 3 item or collection, then submit it again."
+		}
+	}
+	return "Workshop link could not be accepted. Use the canonical public Steam Community shared-file link and confirm the item or collection is for Arma 3."
+}
+
+func workshopRecordUserMessage(err error, target domain.WorkshopTarget, exhausted bool) string {
+	if errors.Is(err, domain.ErrForbidden) {
+		return "This Workshop request no longer matches the session owner or channel. Open the session in its configured server and channel, then submit the link again."
+	}
+	if errors.Is(err, domain.ErrIdempotencyConflict) || errors.Is(err, domain.ErrConflict) {
+		return "The session's content changed while this Workshop link was processing. Review `/rb status`, then submit the link again to create a revision from the current state."
+	}
+	if errors.Is(err, domain.ErrWorkflowLocked) || errors.Is(err, domain.ErrInvalidTransition) {
+		return "The session changed state while this Workshop link was processing. Wait for the current start, wake, restore, archive, or stop operation to finish, then submit the link again."
+	}
+	if errors.Is(err, domain.ErrWorkshopSnapshotLimit) {
+		return "This session has reached its bounded Workshop source-history limit. Its active content was left unchanged. Use an uploaded preset for the next revision or create a new session; contact an operator if history must be retained differently."
+	}
+	if exhausted && !errors.Is(err, domain.ErrPermanentWorkshopRejection) && !errors.Is(err, domain.ErrIdempotencyConflict) {
+		return "The Workshop content was validated, but the platform could not safely save it after several attempts. Your active content was left unchanged. Submit the link again; if it repeats, contact an operator."
+	}
+	if target == domain.WorkshopTargetMods {
+		return "No usable client-mod preset could be created from this Workshop source. Confirm it contains public Arma 3 client mods; scenarios are not mods, and server-only items must use the server-mod workflow."
+	}
+	return "No usable multiplayer scenario could be created from this Workshop source. Confirm each desired item is public, has Data Type `Scenario`, and includes the `Multiplayer` or `Coop` gameplay tag."
+}
+
+func (handler *handler) enqueueWorkshopModlist(ctx context.Context, request domain.WorkshopSourceRequest, result appworkshop.ModResolutionResult) error {
+	revision := result.Revision
+	now := appsession.SystemClock{}.Now()
+	return handler.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: fmt.Sprintf("modlist-workshop-%s-r%d", result.Session.ID, revision.Number), SessionID: result.Session.ID, GuildID: result.Session.GuildID, ChannelID: result.Session.ChannelID, Content: sessioncard.RenderModlistMessage(result.Session, revision.Modlist.Filename, revision.Modlist.WorkshopCount, now), Kind: domain.NotificationSessionModlist, Attachment: &domain.NotificationAttachment{ObjectKey: revision.Modlist.ObjectKey, Filename: revision.Modlist.Filename, ContentType: "text/html; charset=utf-8", SHA256: revision.Modlist.SHA256, SizeBytes: revision.Modlist.SizeBytes, Revision: result.Session.Version}, CorrelationID: request.CorrelationID, RequestedAt: now})
+}
+
+func (handler *handler) enqueueWorkshopCard(ctx context.Context, request domain.WorkshopSourceRequest, result appworkshop.ModResolutionResult) error {
+	now := appsession.SystemClock{}.Now()
+	projection := sessioncard.Project(result.Session, sessioncard.Options{Now: now})
+	return handler.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: fmt.Sprintf("card-workshop-%s-r%d", result.Session.ID, result.Revision.Number), SessionID: result.Session.ID, GuildID: result.Session.GuildID, ChannelID: result.Session.ChannelID, Content: sessioncard.RenderPublic(projection), Embed: sessioncard.RenderPublicEmbed(projection), Kind: domain.NotificationSessionCard, CardRevision: result.Session.Version, CorrelationID: request.CorrelationID, RequestedAt: now})
 }
 
 func (handler *handler) notifyWorkshop(ctx context.Context, request domain.WorkshopSourceRequest, content string) error {

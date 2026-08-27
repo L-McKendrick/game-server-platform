@@ -92,15 +92,17 @@ type EndpointProjection struct {
 }
 
 type ModsProjection struct {
-	Required        bool
-	Status          string
-	ActiveRevision  int64
-	ActiveSince     time.Time
-	PendingRevision int64
-	PendingStatus   string
-	PendingSince    time.Time
-	DownloadURL     string
-	CreatorDLCs     []string
+	Required                bool
+	Status                  string
+	ActiveRevision          int64
+	ActiveSince             time.Time
+	PendingRevision         int64
+	PendingStatus           string
+	PendingSince            time.Time
+	DownloadURL             string
+	CreatorDLCs             []string
+	ActiveWorkshopSourceID  uint64
+	PendingWorkshopSourceID uint64
 }
 
 type ServerModsProjection struct {
@@ -697,12 +699,14 @@ func modProjection(session domain.Session, modlistURL string) ModsProjection {
 	if !active.Empty() {
 		projection.ActiveRevision = active.Number
 		projection.ActiveSince = active.ActivatedAt.UTC()
+		projection.ActiveWorkshopSourceID = active.WorkshopSourceID
 	}
 	pending := session.PendingPresetRevision
 	if pending.Empty() {
 		return projection
 	}
 	projection.PendingRevision = pending.Number
+	projection.PendingWorkshopSourceID = pending.WorkshopSourceID
 	switch pending.Status {
 	case domain.PresetRevisionPending:
 		projection.Status = "Revision staged for next start"

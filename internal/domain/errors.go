@@ -27,6 +27,7 @@ var (
 	ErrConfirmationDispatchUncertain = errors.New("confirmed action queue delivery is uncertain")
 	ErrPermanentArtifactRejection    = errors.New("artifact permanently rejected")
 	ErrPermanentWorkshopRejection    = errors.New("Workshop source permanently rejected")
+	ErrWorkshopSnapshotLimit         = errors.New("Workshop source history limit reached")
 )
 
 // OperationInProgressError returns safe progress for a repeated lifecycle

@@ -38,3 +38,20 @@ func TestBootstrapScriptContainsIsolatedWorkshopMissionGuards(t *testing.T) {
 		}
 	}
 }
+
+func TestBootstrapScriptDownloadsPresetModsPerItemWithBoundedFailureHandling(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "..", "deploy", "bootstrap", "arma3-bootstrap.sh")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(contents)
+	for _, required := range []string{"download_workshop_item", "for attempt in 1 2 3", "[ \"$code\" -eq 75 ] || return", "Workshop mod content contains a symbolic link", "21474836480", "Workshop mod count exceeds the supported limit"} {
+		if !strings.Contains(script, required) {
+			t.Errorf("bootstrap script missing %q", required)
+		}
+	}
+	if strings.Contains(script, "for id in \"${ids[@]}\" \"${server_ids[@]}\"; do [ -z \"$id\" ] || printf 'workshop_download_item") {
+		t.Error("preset mods are still batched into one SteamCMD operation")
+	}
+}

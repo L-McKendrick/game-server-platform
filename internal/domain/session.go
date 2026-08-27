@@ -43,6 +43,7 @@ type Session struct {
 	ConfiguredMission      MissionSelection
 	CurrentMission         MissionSelection
 	WorkshopMissionSources []WorkshopMissionSource
+	WorkshopModSources     []WorkshopModSource
 	// PresetObjectKey remains a write-through compatibility projection of the
 	// active preset revision for older workers and persisted rows.
 	PresetObjectKey              string
@@ -433,6 +434,17 @@ func (session Session) Validate() error {
 	for _, source := range session.WorkshopMissionSources {
 		if err := source.Validate(); err != nil {
 			return fmt.Errorf("Workshop mission source: %w", err)
+		}
+	}
+	if len(session.WorkshopModSources) > MaximumWorkshopMissionSources {
+		return fmt.Errorf("too many Workshop mod sources")
+	}
+	if workshopModSnapshotItemCount(session.WorkshopModSources) > MaximumWorkshopModSnapshotItems {
+		return fmt.Errorf("Workshop mod snapshot limits exceeded")
+	}
+	for _, source := range session.WorkshopModSources {
+		if err := source.Validate(); err != nil {
+			return fmt.Errorf("Workshop mod source: %w", err)
 		}
 	}
 	switch {

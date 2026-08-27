@@ -349,6 +349,19 @@ run_steamcmd() {
 	rm -f -- "$output_file"
 }
 
+download_workshop_item() {
+	local id="$1" runfile code=1 attempt
+	[[ "$id" =~ ^[1-9][0-9]{5,19}$ ]] || { log "Workshop mod item ID is invalid"; return 1; }
+	for attempt in 1 2 3; do
+		runfile="$(mktemp /run/gsp-steam-mod.XXXXXX)"; steam_login_file "$runfile"
+		printf 'workshop_download_item 107410 %s validate\nquit\n' "$id" >> "$runfile"
+		if run_steamcmd "$runfile"; then code=0; else code=$?; fi
+		rm -f -- "$runfile"; [ "$code" -eq 0 ] && return 0; [ "$code" -eq 75 ] || return "$code"
+		log "Retrying transient Workshop mod download"
+	done
+	log "Workshop mod download retries exhausted"; return 1
+}
+
 install_workshop_missions() (
 	local id revision extra source pbo size parent pending='' final attempt code checksum runfile filename object_key manifest_file
   local -a ids=() pbos=()
@@ -477,19 +490,17 @@ install_workshop() (
     [ -d "$ROOT/arma3/$dlc" ] || { log "Selected Creator DLC $dlc was not installed"; return 1; }
     mods="${mods:+$mods;}$dlc"
   done
-  local runfile id source link
+	local id source link source_size
   workshop_count=$((${#ids[@]} + ${#server_ids[@]}))
+	[ "$workshop_count" -le 250 ] || { log "Workshop mod count exceeds the supported limit"; return 1; }
   if [ "$workshop_count" -gt 0 ]; then
-  runfile="$(mktemp /run/gsp-steam.XXXXXX)"
-  trap 'rm -f "$runfile"' EXIT
-  steam_login_file "$runfile"
-  for id in "${ids[@]}" "${server_ids[@]}"; do [ -z "$id" ] || printf 'workshop_download_item 107410 %s validate\n' "$id" >> "$runfile"; done
-  printf 'quit\n' >> "$runfile"
   activity "WORKSHOP_ITEMS:$workshop_count"
-  run_steamcmd "$runfile"
+	for id in "${ids[@]}" "${server_ids[@]}"; do [ -z "$id" ] || download_workshop_item "$id"; done
   for id in "${ids[@]}"; do
     source="$ROOT/home/Steam/steamapps/workshop/content/107410/$id"
     [ -d "$source" ] || { log "Workshop item $id was not downloaded"; return 1; }
+	! find "$source" -type l -print -quit | grep -q . || { log "Workshop mod content contains a symbolic link"; return 1; }
+	source_size="$(du -sb "$source" | awk '{print $1}')"; [ "$source_size" -gt 0 ] && [ "$source_size" -le 21474836480 ] || { log "Workshop mod content size is outside the allowed range"; return 1; }
     lowercase_tree "$source"
     link="$ROOT/arma3/@workshop_$id"
     ln -sfn "$source" "$link"
@@ -498,6 +509,7 @@ install_workshop() (
 	for id in "${server_ids[@]}"; do
 		source="$ROOT/home/Steam/steamapps/workshop/content/107410/$id"
 		[ -d "$source" ] || { log "Server-only Workshop item $id was not downloaded"; return 1; }
+		! find "$source" -type l -print -quit | grep -q . || { log "Server-only Workshop content contains a symbolic link"; return 1; }
 		lowercase_tree "$source"
 		link="$ROOT/arma3/@workshop_$id"
 		ln -sfn "$source" "$link"

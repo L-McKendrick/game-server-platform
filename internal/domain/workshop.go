@@ -17,6 +17,8 @@ const (
 	MaximumWorkshopMissionItems                = 20
 	MaximumWorkshopMissionSources              = 20
 	MaximumWorkshopMissionSnapshotItems        = 1000
+	MaximumWorkshopModItems                    = 250
+	MaximumWorkshopModSnapshotItems            = 1000
 )
 
 type WorkshopTarget string
@@ -70,17 +72,18 @@ func (err WorkshopMetadataError) Error() string {
 }
 
 type WorkshopSourceRequest struct {
-	MessageType    string         `json:"message_type"`
-	SchemaVersion  int            `json:"schema_version"`
-	SessionID      string         `json:"session_id"`
-	Target         WorkshopTarget `json:"target"`
-	SourceURL      string         `json:"source_url"`
-	ActorID        string         `json:"actor_id"`
-	GuildID        string         `json:"guild_id"`
-	ChannelID      string         `json:"channel_id"`
-	CorrelationID  string         `json:"correlation_id"`
-	IdempotencyKey string         `json:"idempotency_key"`
-	RequestedAt    time.Time      `json:"requested_at"`
+	MessageType                  string         `json:"message_type"`
+	SchemaVersion                int            `json:"schema_version"`
+	SessionID                    string         `json:"session_id"`
+	Target                       WorkshopTarget `json:"target"`
+	SourceURL                    string         `json:"source_url"`
+	ActorID                      string         `json:"actor_id"`
+	GuildID                      string         `json:"guild_id"`
+	ChannelID                    string         `json:"channel_id"`
+	CorrelationID                string         `json:"correlation_id"`
+	IdempotencyKey               string         `json:"idempotency_key"`
+	RequestedAt                  time.Time      `json:"requested_at"`
+	ExpectedActivePresetRevision int64          `json:"expected_active_preset_revision,omitempty"`
 }
 
 func (request WorkshopSourceRequest) Validate() error {
@@ -99,6 +102,8 @@ func (request WorkshopSourceRequest) Validate() error {
 		return fmt.Errorf("Workshop request identity is required")
 	case request.RequestedAt.IsZero():
 		return fmt.Errorf("Workshop request time is required")
+	case request.ExpectedActivePresetRevision < 0:
+		return fmt.Errorf("expected active preset revision cannot be negative")
 	}
 	_, err := ParseWorkshopURL(request.SourceURL)
 	return err
@@ -164,6 +169,184 @@ type WorkshopMissionSource struct {
 	AcceptedItemIDs  []uint64                 `json:"accepted_item_ids"`
 	ExcludedItems    []WorkshopResolutionItem `json:"excluded_items,omitempty"`
 	ResolvedAt       time.Time                `json:"resolved_at"`
+}
+
+type WorkshopModItem struct {
+	PublishedFileID uint64 `json:"published_file_id"`
+	Title           string `json:"title"`
+}
+type WorkshopModSource struct {
+	Source            WorkshopReference        `json:"source"`
+	SourceKind        WorkshopSourceKind       `json:"source_kind"`
+	ResolutionSHA256  string                   `json:"resolution_sha256"`
+	AcceptedItems     []WorkshopModItem        `json:"accepted_items"`
+	ExcludedItems     []WorkshopResolutionItem `json:"excluded_items,omitempty"`
+	ResolvedAt        time.Time                `json:"resolved_at"`
+	PresetObjectKey   string                   `json:"preset_object_key"`
+	ModlistObjectKey  string                   `json:"modlist_object_key"`
+	ManifestObjectKey string                   `json:"manifest_object_key"`
+	ArtifactSHA256    string                   `json:"artifact_sha256"`
+}
+
+// PersistenceProjection omits untrusted display titles from the hot session
+// row. The immutable S3 source manifest retains them for artifact provenance.
+func (source WorkshopModSource) PersistenceProjection() WorkshopModSource {
+	projection := source
+	projection.AcceptedItems = append([]WorkshopModItem(nil), source.AcceptedItems...)
+	for index := range projection.AcceptedItems {
+		projection.AcceptedItems[index].Title = ""
+	}
+	projection.ExcludedItems = append([]WorkshopResolutionItem(nil), source.ExcludedItems...)
+	return projection
+}
+
+func NewWorkshopModSource(resolution WorkshopResolution) (WorkshopModSource, error) {
+	if resolution.Target != WorkshopTargetMods || resolution.SchemaVersion != 1 || !validHexSHA256(resolution.ResolutionSHA256) || resolution.ResolvedAt.IsZero() {
+		return WorkshopModSource{}, fmt.Errorf("Workshop mod resolution is invalid")
+	}
+	source := WorkshopModSource{Source: resolution.Source, SourceKind: resolution.SourceKind, ResolutionSHA256: resolution.ResolutionSHA256, ResolvedAt: resolution.ResolvedAt.UTC()}
+	for _, item := range resolution.Items {
+		if item.MatchesTarget && item.Class == WorkshopItemClientMod {
+			source.AcceptedItems = append(source.AcceptedItems, WorkshopModItem{PublishedFileID: item.PublishedFileID, Title: boundedWorkshopTitle(item.Title)})
+		} else {
+			source.ExcludedItems = append(source.ExcludedItems, WorkshopResolutionItem{PublishedFileID: item.PublishedFileID, Class: item.Class})
+		}
+	}
+	if len(source.AcceptedItems) == 0 || len(source.AcceptedItems) > MaximumWorkshopModItems {
+		return WorkshopModSource{}, fmt.Errorf("Workshop mod source must contain 1 to %d client mods", MaximumWorkshopModItems)
+	}
+	return source, nil
+}
+
+func boundedWorkshopTitle(value string) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) > 100 {
+		runes = runes[:100]
+	}
+	return string(runes)
+}
+
+func (source WorkshopModSource) Validate() error {
+	ref, err := ParseWorkshopURL(source.Source.CanonicalURL)
+	if err != nil || ref != source.Source || (source.SourceKind != WorkshopSourceItem && source.SourceKind != WorkshopSourceCollection) || !validHexSHA256(source.ResolutionSHA256) || source.ResolvedAt.IsZero() || len(source.AcceptedItems) == 0 || len(source.AcceptedItems) > MaximumWorkshopModItems {
+		return fmt.Errorf("Workshop mod source metadata is invalid")
+	}
+	seen := map[uint64]bool{}
+	for _, item := range source.AcceptedItems {
+		if item.PublishedFileID == 0 || seen[item.PublishedFileID] || item.Title != boundedWorkshopTitle(item.Title) {
+			return fmt.Errorf("Workshop mod item is invalid")
+		}
+		seen[item.PublishedFileID] = true
+	}
+	for _, item := range source.ExcludedItems {
+		if item.PublishedFileID == 0 || item.Class == "" || seen[item.PublishedFileID] {
+			return fmt.Errorf("Workshop mod exclusion is invalid")
+		}
+		seen[item.PublishedFileID] = true
+	}
+	if source.SourceKind == WorkshopSourceItem && (len(source.AcceptedItems) != 1 || source.AcceptedItems[0].PublishedFileID != source.Source.PublishedFileID || len(source.ExcludedItems) != 0) {
+		return fmt.Errorf("Workshop mod item source must resolve only itself")
+	}
+	if source.PresetObjectKey != "" || source.ModlistObjectKey != "" || source.ManifestObjectKey != "" || source.ArtifactSHA256 != "" {
+		keys := source.PresetObjectKey + source.ModlistObjectKey + source.ManifestObjectKey
+		if source.PresetObjectKey == "" || source.ModlistObjectKey == "" || source.ManifestObjectKey == "" || !validHexSHA256(source.ArtifactSHA256) || !strings.Contains(source.PresetObjectKey, source.ArtifactSHA256) || !strings.Contains(source.ModlistObjectKey, source.ArtifactSHA256) || !strings.Contains(source.ManifestObjectKey, source.ResolutionSHA256) || strings.Contains(keys, "..") {
+			return fmt.Errorf("Workshop mod artifacts are incomplete")
+		}
+	}
+	return nil
+}
+
+func (session *Session) RecordWorkshopModSource(source WorkshopModSource, now time.Time) error {
+	if err := source.Validate(); err != nil {
+		return err
+	}
+	source = source.PersistenceProjection()
+	if session.LifecycleState == StateDeleting || session.LifecycleState == StateDeleted || session.LifecycleState == StateArchiving || session.LifecycleState == StateDestroying {
+		return fmt.Errorf("%w: Workshop mods cannot change in the current lifecycle", ErrInvalidTransition)
+	}
+	for _, existing := range session.WorkshopModSources {
+		if existing.Source == source.Source && existing.ResolutionSHA256 == source.ResolutionSHA256 && existing.ArtifactSHA256 == source.ArtifactSHA256 {
+			return nil
+		}
+	}
+	if len(session.WorkshopModSources) >= MaximumWorkshopMissionSources {
+		return ErrWorkshopSnapshotLimit
+	}
+	if workshopModSnapshotItemCount(append(append([]WorkshopModSource(nil), session.WorkshopModSources...), source)) > MaximumWorkshopModSnapshotItems {
+		return ErrWorkshopSnapshotLimit
+	}
+	session.WorkshopModSources = append(session.WorkshopModSources, source)
+	return session.RecordMutation(now)
+}
+
+func workshopModSnapshotItemCount(sources []WorkshopModSource) int {
+	count := 0
+	for _, source := range sources {
+		count += len(source.AcceptedItems) + len(source.ExcludedItems)
+	}
+	return count
+}
+
+// AttachWorkshopModSource records immutable Workshop provenance and routes its
+// generated artifacts through the same active/pending revision authority used
+// by uploaded presets. Resolving metadata alone never refreshes this state.
+func (session *Session) AttachWorkshopModSource(source WorkshopModSource, expectedActiveRevision int64, modlist PresetModlistMetadata, now time.Time) (PresetRevision, error) {
+	if err := source.Validate(); err != nil {
+		return PresetRevision{}, err
+	}
+	if source.PresetObjectKey == "" || source.ModlistObjectKey != modlist.ObjectKey || source.ArtifactSHA256 != modlist.SHA256 {
+		return PresetRevision{}, fmt.Errorf("Workshop mod artifacts do not match revision metadata")
+	}
+	if session.Vanilla {
+		return PresetRevision{}, fmt.Errorf("%w: vanilla sessions do not have a mod preset", ErrInvalidTransition)
+	}
+	active := session.EffectiveActivePresetRevision()
+	if active.Number != expectedActiveRevision {
+		return PresetRevision{}, fmt.Errorf("%w: active preset revision changed", ErrConflict)
+	}
+	if session.LifecycleState == StateDraft || session.LifecycleState == StateNew {
+		if active.Number != 0 {
+			return PresetRevision{}, fmt.Errorf("%w: initial Workshop preset already exists", ErrConflict)
+		}
+		if err := session.AttachArtifact(ArtifactPreset, source.PresetObjectKey, now); err != nil {
+			return PresetRevision{}, err
+		}
+		session.ActivePresetRevision.Modlist = modlist
+		session.ActivePresetRevision.WorkshopResolutionSHA256 = source.ResolutionSHA256
+		session.ActivePresetRevision.WorkshopSourceID = source.Source.PublishedFileID
+		if err := session.RecordWorkshopModSource(source, now); err != nil {
+			return PresetRevision{}, err
+		}
+		return session.ActivePresetRevision, session.Validate()
+	}
+	revision, err := session.StagePresetRevision(expectedActiveRevision, source.PresetObjectKey, modlist, now)
+	if err != nil {
+		return PresetRevision{}, err
+	}
+	revision.WorkshopResolutionSHA256 = source.ResolutionSHA256
+	revision.WorkshopSourceID = source.Source.PublishedFileID
+	session.PendingPresetRevision = revision
+	if err := session.RecordWorkshopModSource(source, now); err != nil {
+		return PresetRevision{}, err
+	}
+	return revision, session.Validate()
+}
+
+func WorkshopExclusionSummary(items []WorkshopResolutionItem, limit int) string {
+	if limit <= 0 || len(items) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, min(len(items), limit))
+	for index, item := range items {
+		if index >= limit {
+			break
+		}
+		parts = append(parts, fmt.Sprintf("%d (%s)", item.PublishedFileID, item.Class))
+	}
+	if len(items) > limit {
+		parts = append(parts, fmt.Sprintf("and %d more", len(items)-limit))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func NewWorkshopMissionSource(resolution WorkshopResolution) (WorkshopMissionSource, error) {
@@ -398,7 +581,7 @@ func ClassifyWorkshopItem(item WorkshopItem, target WorkshopTarget) WorkshopItem
 		item.Class, item.Issue = WorkshopItemScenario, "Scenario is not tagged Multiplayer or Coop."
 	case server:
 		item.Class = WorkshopItemServerMod
-		item.MatchesTarget = target == WorkshopTargetMods
+		item.Issue = "Server-only Workshop items require the separate server-mod workflow and are excluded from client presets."
 	case mod:
 		item.Class = WorkshopItemClientMod
 		item.MatchesTarget = target == WorkshopTargetMods

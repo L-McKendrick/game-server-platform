@@ -2,43 +2,71 @@
 
 ## State and Objective
 
-Phase 17.7 Workshop scenario ingestion is complete on
-`codex/workshop-content-sources`. Public scenario items and one-level
-collections now enter the existing immutable mission-file lifecycle without
-automatically changing the configured or currently loaded mission.
+Workshop content-source development through Phase 17.8 is complete on
+`codex/workshop-content-sources`. Public Arma 3 scenarios and client mods can
+now use individual Workshop items or collections without replacing the existing
+upload workflows. No deployment or pull request has been performed.
 
 ## Completed Development
 
-- Mission resolutions accept only Arma 3 `Scenario` items tagged
-  `Multiplayer` or `Coop`, retain classified exclusions for mixed collections,
-  and persist bounded immutable source snapshots with replay protection.
-- The serialized cached-auth SteamCMD path downloads each accepted item in an
-  isolated operation, retries only recognized transient failures, and rejects
-  authentication failures, symlinks, unsafe metadata, invalid sizes, and
-  missing or ambiguous PBO layouts.
-- Staging is item/revision scoped and atomic. Successful collection siblings
-  remain reusable after another child fails; an incomplete collection never
-  publishes its completion manifest or changes mission metadata.
-- Original safe PBO filenames are retained. Successful content is checksummed,
-  published under content-addressed session-assets keys, copied safely into
-  `mpmissions`, and described by a bounded revision manifest.
-- Bootstrap completion verifies the manifest against authoritative session
-  source intent before appending accepted mission records. Duplicate item
-  snapshots are replay-safe, superseded item versions are retained as removed
-  history, and configured/current mission selection is untouched.
-- Mission records retain Workshop item and parent source provenance. The
-  mission manager identifies Workshop choices, archive/restore preserves and
-  verifies provenance, and termination removes all objects through the existing
-  session-prefix cleanup.
-- EC2 and bootstrap-worker IAM now permit only the required mission snapshot
-  publication and manifest-read paths.
-- Full `go test ./...`, `go vet ./...`, recursive Terraform formatting checks,
-  bootstrap shell syntax validation, and diff whitespace checks pass.
+- One bounded resolver validates canonical public Steam links, Arma 3 app ID,
+  item/collection type, tags, one-level collection membership, ordering,
+  deduplication, availability, and retry disposition.
+- Scenario sources require Data Type `Scenario` plus `Multiplayer` or `Coop`.
+  Accepted `.pbo` files enter the existing immutable mission manager without
+  changing the configured/current mission.
+- Client-mod sources generate sanitized content-addressed internal presets,
+  public modlists, and immutable source manifests. Server-only children are
+  explicitly excluded from the client preset and mixed collections retain
+  eligible client items.
+- Workshop mod results use the existing active/pending revision lifecycle.
+  Requests bind to the active revision seen at submission; start, wake, restore,
+  promotion, rollback, card/status, archive/restore, and termination reuse the
+  established paths. Publisher changes require explicit resubmission.
+- Steam child metadata is fetched in batches of 100. A maximum-size collection
+  now needs at most seven metadata calls instead of approximately 502, reducing
+  Lambda duration, rate-limit exposure, and request cost. The worker timeout is
+  90 seconds and FIFO visibility is 540 seconds.
+- The hot DynamoDB projection omits untrusted titles and caps aggregate Workshop
+  mod history at 1,000 classified items, avoiding per-item size growth that
+  could disrupt ordinary session reads and writes. Full generated provenance
+  remains in the immutable S3 manifest.
+- Per-session FIFO serialization prevents Workshop and upload mutations from
+  racing while leaving other sessions independent. Ordinary uploads do not call
+  Steam and retain their previous processing path.
+- Permanent errors explain the exact correction: public visibility, canonical
+  link, scenario tags, client/server mod type, current lifecycle operation, or
+  stale revision. Exhausted transient retries send a final actionable notice
+  instead of silently ending in the DLQ. Active content remains unchanged.
+- Existing artifact-worker S3 scope already covers the three generated objects;
+  no IAM expansion, new worker, service, cache, database, NAT Gateway, or
+  schedule was added. Session-prefix cleanup covers safe retry orphans.
+- User and operator behavior, cost/performance bounds, and recovery steps are
+  documented in `docs/workshop-content-sources.md`.
 
-## Next Development Task
+## Validation
 
-- Implement **17.8.1** only: apply the shared resolver's `mods` policy and
-  define deterministic collection-to-preset classification and feedback.
+- Changed Go files pass `gofmt -l`; unrelated pre-existing formatting findings
+  were not rewritten.
+- `go test -cover ./...`, `go vet ./...`, and `go build ./cmd/...` pass.
+- All Lambda archives package successfully.
+- Bootstrap Bash syntax and focused SteamCMD/bootstrap tests pass.
+- Discord command registration and interaction contract tests pass; command
+  definitions did not change, so re-registration is unnecessary.
+- Terraform recursive format and development-environment validation pass.
+- `git diff --check` passes. The Windows checkout reports only expected LF/CRLF
+  conversion warnings.
+
+## Proposed Pull Request
+
+Title: `feat: add Steam Workshop content sources`
+
+Summary: add bounded item/collection resolution for Arma 3 scenarios and client
+mods, immutable provenance and generated artifacts, existing mission/mod
+lifecycle integration, per-item authenticated SteamCMD safeguards, actionable
+Discord recovery messages, metadata batching, persistence bounds, and the
+minimal artifact-worker timeout/queue visibility changes. No new persistent
+service or IAM grant is introduced.
 
 ## Commands to Apply Current Changes
 
@@ -50,14 +78,13 @@ $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 
 ./scripts/package-discord-lambda.ps1
-$PlanFile = "workshop-scenario-lifecycle-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
+$PlanFile = "workshop-content-sources-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
 terraform -chdir=infra/terraform/environments/dev plan -out $PlanFile
 terraform -chdir=infra/terraform/environments/dev show $PlanFile
-# Apply only after confirming the reviewed plan updates the artifact/bootstrap
-# worker packages, bootstrap script object, and narrowly scoped IAM statements
-# without unrelated infrastructure mutations.
+# Apply only after confirming the reviewed plan updates the affected Lambda
+# packages, artifact-worker timeout, artifact FIFO visibility, and bootstrap
+# script object without unrelated infrastructure changes.
 terraform -chdir=infra/terraform/environments/dev apply $PlanFile
 ```
 
-No Discord command registration is required because command definitions did
-not change.
+No Discord command registration is required.

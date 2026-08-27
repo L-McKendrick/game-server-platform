@@ -20,6 +20,13 @@ type testCatalog struct {
 func (catalog testCatalog) Item(_ context.Context, id uint64) (domain.WorkshopItem, error) {
 	return catalog.items[id], nil
 }
+func (catalog testCatalog) Items(_ context.Context, ids []uint64) ([]domain.WorkshopItem, error) {
+	items := make([]domain.WorkshopItem, 0, len(ids))
+	for _, id := range ids {
+		items = append(items, catalog.items[id])
+	}
+	return items, nil
+}
 func (catalog testCatalog) CollectionChildren(_ context.Context, id uint64) ([]uint64, error) {
 	return catalog.children[id], nil
 }

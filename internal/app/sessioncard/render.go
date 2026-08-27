@@ -111,6 +111,9 @@ func render(card Projection, detailed bool) string {
 	)
 	if card.Mods.ActiveRevision > 0 {
 		fmt.Fprintf(&builder, "\n**Active mod revision:** `%d`", card.Mods.ActiveRevision)
+		if card.Mods.ActiveWorkshopSourceID > 0 {
+			fmt.Fprintf(&builder, " — Workshop `%d`", card.Mods.ActiveWorkshopSourceID)
+		}
 		if !card.Mods.ActiveSince.IsZero() {
 			fmt.Fprintf(&builder, " — active %s", timestamp(card.Mods.ActiveSince))
 		}
@@ -120,6 +123,9 @@ func render(card Projection, detailed bool) string {
 	}
 	if card.Mods.PendingRevision > 0 {
 		fmt.Fprintf(&builder, "\n**Pending mod revision:** `%d` — %s", card.Mods.PendingRevision, safe(card.Mods.PendingStatus))
+		if card.Mods.PendingWorkshopSourceID > 0 {
+			fmt.Fprintf(&builder, " — Workshop `%d`", card.Mods.PendingWorkshopSourceID)
+		}
 		if !card.Mods.PendingSince.IsZero() {
 			fmt.Fprintf(&builder, " %s", timestamp(card.Mods.PendingSince))
 		}

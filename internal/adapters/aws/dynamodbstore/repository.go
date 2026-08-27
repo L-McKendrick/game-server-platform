@@ -127,6 +127,7 @@ type sessionItem struct {
 	ConfiguredMissionJSON            string   `dynamodbav:"configured_mission_json,omitempty"`
 	CurrentMissionJSON               string   `dynamodbav:"current_mission_json,omitempty"`
 	WorkshopMissionSourcesJSON       string   `dynamodbav:"workshop_mission_sources_json,omitempty"`
+	WorkshopModSourcesJSON           string   `dynamodbav:"workshop_mod_sources_json,omitempty"`
 	PresetObjectKey                  string   `dynamodbav:"preset_object_key,omitempty"`
 	PresetRevisionSequence           int64    `dynamodbav:"preset_revision_sequence,omitempty"`
 	ActivePresetRevision             int64    `dynamodbav:"active_preset_revision,omitempty"`
@@ -1085,6 +1086,7 @@ func toSessionItem(session domain.Session) sessionItem {
 		ConfiguredMissionJSON:            marshalSessionJSON(session.ConfiguredMission),
 		CurrentMissionJSON:               marshalSessionJSON(session.CurrentMission),
 		WorkshopMissionSourcesJSON:       marshalSessionJSON(session.WorkshopMissionSources),
+		WorkshopModSourcesJSON:           marshalSessionJSON(session.WorkshopModSources),
 		PresetObjectKey:                  session.PresetObjectKey,
 		PresetRevisionSequence:           presetSequence,
 		ActivePresetRevision:             activePreset.Number,
@@ -1300,6 +1302,7 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	var missionFiles []domain.MissionRecord
 	var configuredMission, currentMission domain.MissionSelection
 	var workshopMissionSources []domain.WorkshopMissionSource
+	var workshopModSources []domain.WorkshopModSource
 	if item.MissionFilesJSON != "" {
 		if err := json.Unmarshal([]byte(item.MissionFilesJSON), &missionFiles); err != nil {
 			return domain.Session{}, fmt.Errorf("decode mission files: %w", err)
@@ -1318,6 +1321,11 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if item.WorkshopMissionSourcesJSON != "" {
 		if err := json.Unmarshal([]byte(item.WorkshopMissionSourcesJSON), &workshopMissionSources); err != nil {
 			return domain.Session{}, fmt.Errorf("decode Workshop mission sources: %w", err)
+		}
+	}
+	if item.WorkshopModSourcesJSON != "" {
+		if err := json.Unmarshal([]byte(item.WorkshopModSourcesJSON), &workshopModSources); err != nil {
+			return domain.Session{}, fmt.Errorf("decode Workshop mod sources: %w", err)
 		}
 	}
 	if configuredMission.Template == "" {
@@ -1380,6 +1388,7 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		ConfiguredMission:      configuredMission,
 		CurrentMission:         currentMission,
 		WorkshopMissionSources: workshopMissionSources,
+		WorkshopModSources:     workshopModSources,
 		PresetObjectKey:        item.PresetObjectKey,
 		PresetRevisionSequence: item.PresetRevisionSequence,
 		PendingPresetRevision: domain.PresetRevision{

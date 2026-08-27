@@ -59,6 +59,36 @@ var entries = map[string]entry{
 		"The platform invalidated automated authenticated downloads and removed authentication material from the game host.",
 		"Ask an operator to run the Steam authorization enrollment procedure. Do not send a password or Steam Guard code through Discord.",
 	},
+	"ERR_WORKSHOP_UNAVAILABLE": {
+		"The Steam Workshop source could not be used.",
+		"The item or collection is unavailable, private, deleted, or inaccessible to Steam's public metadata service.",
+		"The platform rejected the source without changing the active mission or mod revision.",
+		"Confirm the Workshop page is public and submit its canonical shared-file link again.",
+	},
+	"ERR_WORKSHOP_RATE_LIMITED": {
+		"Steam temporarily limited Workshop metadata requests.",
+		"Steam asked the platform to slow down while resolving the item or collection.",
+		"The platform retained the request for a bounded retry and did not change the active revision.",
+		"Wait for the automatic retry. If it ultimately fails, submit the link again later.",
+	},
+	"ERR_WORKSHOP_TRANSIENT": {
+		"Steam Workshop metadata could not be resolved yet.",
+		"A temporary Steam service or network failure interrupted metadata resolution.",
+		"The platform retained the request for a bounded retry and did not change the active revision.",
+		"Wait for the automatic retry. If it ultimately fails, submit the link again later.",
+	},
+	"ERR_WORKSHOP_REJECTED": {
+		"The Steam Workshop source was rejected.",
+		"The page or its contents did not satisfy the platform's public Arma 3 content policy.",
+		"The platform left the active content unchanged.",
+		"Review the source type and tags, then submit an eligible public Arma 3 item or collection.",
+	},
+	"ERR_WORKSHOP_INVALID_RESPONSE": {
+		"Steam returned incomplete Workshop metadata.",
+		"The response could not be safely matched to the requested item or collection.",
+		"The platform retained the request for a bounded retry and did not change the active revision.",
+		"Wait for the automatic retry. If it continues, give the support reference to an operator.",
+	},
 	"ERR_ARCHIVE_COMMAND": {
 		"The archive could not be created and verified.",
 		"The managed backup command stopped before a portable archive was verified.",

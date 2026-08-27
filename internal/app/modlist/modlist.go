@@ -37,6 +37,35 @@ type workshopMod struct {
 	Name string
 }
 
+type WorkshopMod struct {
+	ID   uint64
+	Name string
+}
+
+func GenerateWorkshop(mods []WorkshopMod, sessionID, sessionName, sessionSlug string) (Artifact, error) {
+	if len(mods) == 0 || len(mods) > 250 {
+		return Artifact{}, fmt.Errorf("Workshop mod count must be between 1 and 250")
+	}
+	normalized := make([]workshopMod, 0, len(mods))
+	seen := map[uint64]bool{}
+	for _, mod := range mods {
+		if mod.ID == 0 || seen[mod.ID] {
+			return Artifact{}, fmt.Errorf("Workshop mod identity is invalid or duplicated")
+		}
+		seen[mod.ID] = true
+		name := normalizedPlainName(mod.Name)
+		if name == "" {
+			name = fmt.Sprintf("Steam Workshop item %d", mod.ID)
+		}
+		normalized = append(normalized, workshopMod{ID: fmt.Sprintf("%d", mod.ID), Name: name})
+	}
+	filename := modlistFilename(sessionSlug)
+	body := renderPreset(sessionName, normalized)
+	digest := sha256.Sum256(body)
+	digestHex := hex.EncodeToString(digest[:])
+	return Artifact{ObjectKey: fmt.Sprintf("sessions/%s/input/modlists/%s/%s", strings.TrimSpace(sessionID), digestHex, filename), Filename: filename, ContentType: contentType, Body: body, SHA256Hex: digestHex, SHA256Base64: base64.StdEncoding.EncodeToString(digest[:]), WorkshopCount: len(normalized)}, nil
+}
+
 // Generate extracts only Steam Workshop identity and a bounded display name,
 // then rebuilds a deterministic launcher-compatible file from scratch.
 func Generate(source []byte, sessionID, sessionName, sessionSlug string, allowEmpty bool) (Artifact, error) {

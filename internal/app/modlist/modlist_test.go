@@ -41,6 +41,20 @@ func TestGenerateRebuildsSanitizedLauncherPreset(t *testing.T) {
 	}
 }
 
+func TestGenerateWorkshopIsDeterministicAndSanitizesNames(t *testing.T) {
+	first, err := GenerateWorkshop([]WorkshopMod{{ID: 222222, Name: "<unsafe>\u0000 Mod"}, {ID: 111111, Name: "Second"}}, "session-1", "Session", "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := GenerateWorkshop([]WorkshopMod{{ID: 222222, Name: "<unsafe>\u0000 Mod"}, {ID: 111111, Name: "Second"}}, "session-1", "Session", "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.SHA256Hex != second.SHA256Hex || first.WorkshopCount != 2 || strings.Contains(string(first.Body), "\u0000") || !strings.Contains(string(first.Body), "id=222222") {
+		t.Fatalf("artifact = %#v", first)
+	}
+}
+
 func TestGenerateIgnoresWorkshopLookingIDsOutsideModRows(t *testing.T) {
 	t.Parallel()
 	source := []byte(`<html><body>

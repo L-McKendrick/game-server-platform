@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"sync/atomic"
 	"testing"
 
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
@@ -41,6 +43,46 @@ func TestClientReadsPublishedFileAndCollectionMetadata(t *testing.T) {
 	children, err := client.CollectionChildren(context.Background(), 9)
 	if err != nil || len(children) != 1 || children[0] != 42 {
 		t.Fatalf("children = %v, %v", children, err)
+	}
+}
+
+func TestClientBatchesPublishedFilesAndRestoresRequestedOrder(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		if err := request.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		count, _ := strconv.Atoi(request.FormValue("itemcount"))
+		fmt.Fprint(writer, `{"response":{"publishedfiledetails":[`)
+		for index := count - 1; index >= 0; index-- {
+			if index != count-1 {
+				fmt.Fprint(writer, ",")
+			}
+			fmt.Fprintf(writer, `{"publishedfileid":%q,"result":1,"consumer_app_id":107410,"title":"Mod","tags":[{"tag":"Mod"}]}`, request.FormValue(fmt.Sprintf("publishedfileids[%d]", index)))
+		}
+		fmt.Fprint(writer, `]}}`)
+	}))
+	defer server.Close()
+	client, err := NewWithClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]uint64, 101)
+	for index := range ids {
+		ids[index] = uint64(index + 1)
+	}
+	items, err := client.Items(context.Background(), ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 || len(items) != len(ids) {
+		t.Fatalf("calls = %d, items = %d", calls.Load(), len(items))
+	}
+	for index, item := range items {
+		if item.PublishedFileID != ids[index] {
+			t.Fatalf("item %d ID = %d, want %d", index, item.PublishedFileID, ids[index])
+		}
 	}
 }
 

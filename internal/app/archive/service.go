@@ -230,6 +230,7 @@ func (service *Service) verify(ctx context.Context, session domain.Session, work
 		ConfigurationRevision: session.ConfigurationRevision, MissionObjectKey: session.MissionObjectKey,
 		MissionFiles: append([]domain.MissionRecord(nil), session.MissionFiles...), ConfiguredMission: session.ConfiguredMission, CurrentMission: session.CurrentMission,
 		WorkshopMissionSources: append([]domain.WorkshopMissionSource(nil), session.WorkshopMissionSources...),
+		WorkshopModSources:     append([]domain.WorkshopModSource(nil), session.WorkshopModSources...),
 		PresetObjectKey:        session.PresetObjectKey, SourceInstanceID: session.Infrastructure.InstanceID,
 		PresetRevisionSequence:       session.EffectivePresetRevisionSequence(),
 		ActivePresetRevision:         domain.ArchivePresetRevisionSnapshot(session.EffectiveActivePresetRevision()),

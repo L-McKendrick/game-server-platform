@@ -53,6 +53,7 @@ const (
 	EventPresetRevisionRolledBack  EventType = "PresetRevisionRolledBack"
 	EventPlayerActivityObserved    EventType = "PlayerActivityObserved"
 	EventWorkshopMissionResolved   EventType = "WorkshopMissionResolved"
+	EventWorkshopModResolved       EventType = "WorkshopModResolved"
 )
 
 func NewWorkshopMissionResolvedEvent(eventID, correlationID string, actor Actor, session Session, source WorkshopMissionSource, now time.Time) SessionEvent {
@@ -60,6 +61,10 @@ func NewWorkshopMissionResolvedEvent(eventID, correlationID string, actor Actor,
 		"source_kind": string(source.SourceKind), "source_item_id": fmt.Sprintf("%d", source.Source.PublishedFileID), "resolution_sha256": source.ResolutionSHA256,
 		"accepted_items": fmt.Sprintf("%d", len(source.AcceptedItemIDs)), "excluded_items": fmt.Sprintf("%d", len(source.ExcludedItems)),
 	}}
+}
+
+func NewWorkshopModResolvedEvent(eventID, correlationID string, actor Actor, session Session, source WorkshopModSource, now time.Time) SessionEvent {
+	return SessionEvent{ID: eventID, SessionID: session.ID, Type: EventWorkshopModResolved, OccurredAt: now.UTC(), ActorType: string(actor.Type), ActorID: actor.ID, CorrelationID: correlationID, Data: map[string]string{"source_kind": string(source.SourceKind), "source_item_id": fmt.Sprintf("%d", source.Source.PublishedFileID), "resolution_sha256": source.ResolutionSHA256, "artifact_sha256": source.ArtifactSHA256, "accepted_items": fmt.Sprintf("%d", len(source.AcceptedItems)), "excluded_items": fmt.Sprintf("%d", len(source.ExcludedItems))}}
 }
 
 func NewTerminationEvent(eventID string, eventType EventType, stage string, workflow Workflow, session Session, objectsDeleted int, now time.Time) SessionEvent {

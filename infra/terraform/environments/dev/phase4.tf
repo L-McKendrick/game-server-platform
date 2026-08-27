@@ -205,7 +205,7 @@ resource "aws_lambda_function" "artifact_worker" {
   architectures    = ["x86_64"]
   filename         = local.artifact_worker_package_path
   source_code_hash = var.artifact_worker_lambda_source_hash != null ? var.artifact_worker_lambda_source_hash : try(filebase64sha256(local.artifact_worker_package_path), null)
-  timeout          = 45
+  timeout          = 90
   memory_size      = 512
 
   environment {

@@ -16,6 +16,7 @@ import (
 )
 
 const apiBaseURL = "https://api.steampowered.com/ISteamRemoteStorage"
+const maximumPublishedFileBatch = 100
 
 type Client struct {
 	httpClient *http.Client
@@ -39,29 +40,78 @@ func (client *Client) Item(ctx context.Context, publishedFileID uint64) (domain.
 	if publishedFileID == 0 {
 		return domain.WorkshopItem{}, fmt.Errorf("published file ID is required")
 	}
-	values := url.Values{"itemcount": {"1"}, "publishedfileids[0]": {strconv.FormatUint(publishedFileID, 10)}}
-	var response publishedFileResponse
-	if err := client.post(ctx, "/GetPublishedFileDetails/v1/", values, &response); err != nil {
+	items, err := client.Items(ctx, []uint64{publishedFileID})
+	if err != nil {
 		return domain.WorkshopItem{}, err
 	}
-	if len(response.Response.Details) != 1 {
-		return domain.WorkshopItem{}, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataInvalidResponse, Retryable: true, Detail: "Steam returned no item metadata"}
+	return items[0], nil
+}
+
+// Items batches Steam's published-file endpoint to bound collection latency,
+// request count, and Lambda cost while preserving caller order exactly.
+func (client *Client) Items(ctx context.Context, publishedFileIDs []uint64) ([]domain.WorkshopItem, error) {
+	if len(publishedFileIDs) == 0 || len(publishedFileIDs) > domain.MaximumWorkshopChildren {
+		return nil, fmt.Errorf("published file batch must contain 1 to %d IDs", domain.MaximumWorkshopChildren)
 	}
-	detail := response.Response.Details[0]
-	item := domain.WorkshopItem{PublishedFileID: publishedFileID, ConsumerAppID: detail.ConsumerAppID, Title: strings.TrimSpace(detail.Title), FileSize: detail.FileSize, Available: detail.Result == 1, Collection: detail.FileType == 2}
-	if detail.PublishedFileID != "" {
-		id, err := strconv.ParseUint(detail.PublishedFileID, 10, 64)
-		if err != nil || id != publishedFileID {
-			return domain.WorkshopItem{}, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataInvalidResponse, Retryable: true, Detail: "Steam returned mismatched item metadata"}
+	seen := make(map[uint64]struct{}, len(publishedFileIDs))
+	items := make([]domain.WorkshopItem, 0, len(publishedFileIDs))
+	for offset := 0; offset < len(publishedFileIDs); offset += maximumPublishedFileBatch {
+		end := min(offset+maximumPublishedFileBatch, len(publishedFileIDs))
+		values := url.Values{"itemcount": {strconv.Itoa(end - offset)}}
+		for index, id := range publishedFileIDs[offset:end] {
+			if id == 0 {
+				return nil, fmt.Errorf("published file ID is required")
+			}
+			if _, duplicate := seen[id]; duplicate {
+				return nil, fmt.Errorf("published file IDs must be unique")
+			}
+			seen[id] = struct{}{}
+			values.Set(fmt.Sprintf("publishedfileids[%d]", index), strconv.FormatUint(id, 10))
 		}
+		batch, err := client.publishedFiles(ctx, values, publishedFileIDs[offset:end])
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, batch...)
 	}
-	if detail.TimeUpdated > 0 {
-		item.UpdatedAt = time.Unix(detail.TimeUpdated, 0).UTC()
+	return items, nil
+}
+
+func (client *Client) publishedFiles(ctx context.Context, values url.Values, expected []uint64) ([]domain.WorkshopItem, error) {
+	var response publishedFileResponse
+	if err := client.post(ctx, "/GetPublishedFileDetails/v1/", values, &response); err != nil {
+		return nil, err
 	}
-	for _, tag := range detail.Tags {
-		item.Tags = append(item.Tags, tag.Tag)
+	if len(response.Response.Details) != len(expected) {
+		return nil, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataInvalidResponse, Retryable: true, Detail: "Steam returned incomplete item metadata"}
 	}
-	return item, nil
+	byID := make(map[uint64]domain.WorkshopItem, len(expected))
+	for _, detail := range response.Response.Details {
+		id, err := strconv.ParseUint(detail.PublishedFileID, 10, 64)
+		if err != nil || id == 0 {
+			return nil, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataInvalidResponse, Retryable: true, Detail: "Steam returned mismatched item metadata"}
+		}
+		item := domain.WorkshopItem{PublishedFileID: id, ConsumerAppID: detail.ConsumerAppID, Title: strings.TrimSpace(detail.Title), FileSize: detail.FileSize, Available: detail.Result == 1, Collection: detail.FileType == 2}
+		if detail.TimeUpdated > 0 {
+			item.UpdatedAt = time.Unix(detail.TimeUpdated, 0).UTC()
+		}
+		for _, tag := range detail.Tags {
+			item.Tags = append(item.Tags, tag.Tag)
+		}
+		if _, duplicate := byID[id]; duplicate {
+			return nil, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataInvalidResponse, Retryable: true, Detail: "Steam returned duplicate item metadata"}
+		}
+		byID[id] = item
+	}
+	items := make([]domain.WorkshopItem, 0, len(expected))
+	for _, id := range expected {
+		item, ok := byID[id]
+		if !ok {
+			return nil, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataInvalidResponse, Retryable: true, Detail: "Steam omitted requested item metadata"}
+		}
+		items = append(items, item)
+	}
+	return items, nil
 }
 
 func (client *Client) CollectionChildren(ctx context.Context, publishedFileID uint64) ([]uint64, error) {

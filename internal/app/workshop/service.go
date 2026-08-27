@@ -43,6 +43,7 @@ func (service *Service) Resolve(ctx context.Context, request domain.WorkshopSour
 			return domain.WorkshopResolution{}, fmt.Errorf("Workshop collection must contain between 1 and %d children", domain.MaximumWorkshopChildren)
 		}
 		seen := make(map[uint64]struct{}, len(children))
+		uniqueChildren := make([]uint64, 0, len(children))
 		for _, childID := range children {
 			if childID == 0 {
 				return domain.WorkshopResolution{}, fmt.Errorf("Workshop collection contains an invalid child ID")
@@ -51,10 +52,16 @@ func (service *Service) Resolve(ctx context.Context, request domain.WorkshopSour
 				continue
 			}
 			seen[childID] = struct{}{}
-			item, itemErr := service.catalog.Item(ctx, childID)
-			if itemErr != nil {
-				return domain.WorkshopResolution{}, fmt.Errorf("resolve Workshop child %d: %w", childID, itemErr)
-			}
+			uniqueChildren = append(uniqueChildren, childID)
+		}
+		items, itemErr := service.catalog.Items(ctx, uniqueChildren)
+		if itemErr != nil {
+			return domain.WorkshopResolution{}, fmt.Errorf("resolve Workshop collection children: %w", itemErr)
+		}
+		if len(items) != len(uniqueChildren) {
+			return domain.WorkshopResolution{}, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataInvalidResponse, Retryable: true, Detail: "Steam returned incomplete collection metadata"}
+		}
+		for _, item := range items {
 			resolution.Items = append(resolution.Items, domain.ClassifyWorkshopItem(item, request.Target))
 		}
 	} else {

@@ -215,6 +215,9 @@ func (service *Service) verifyArchive(ctx context.Context, session domain.Sessio
 	if manifest.ConfiguredMission.Template != "" && (manifest.ConfiguredMission != session.ConfiguredMission || manifest.CurrentMission != session.CurrentMission || !reflect.DeepEqual(manifest.MissionFiles, session.MissionFiles) || !reflect.DeepEqual(manifest.WorkshopMissionSources, session.WorkshopMissionSources)) {
 		return TaskResult{}, fmt.Errorf("archive mission history does not match authoritative session metadata")
 	}
+	if manifest.WorkshopModSources != nil && !reflect.DeepEqual(manifest.WorkshopModSources, session.WorkshopModSources) {
+		return TaskResult{}, fmt.Errorf("archive Workshop mod history does not match authoritative session metadata")
+	}
 	if err := service.store.Verify(ctx, ports.ArchiveObject{Key: archive.ObjectKey, SHA256: archive.SHA256, SizeBytes: archive.SizeBytes, ContentType: "application/gzip"}); err != nil {
 		return TaskResult{}, err
 	}

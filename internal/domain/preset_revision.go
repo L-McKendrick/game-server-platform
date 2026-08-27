@@ -72,24 +72,26 @@ func (metadata PresetModlistMetadata) Validate() error {
 // PresetRevision is one immutable preset input plus its application state.
 // BaseRevision binds a pending change to the active configuration it replaces.
 type PresetRevision struct {
-	Number              int64
-	BaseRevision        int64
-	PresetObjectKey     string
-	Modlist             PresetModlistMetadata
-	Status              PresetRevisionStatus
-	StagedAt            time.Time
-	ApplyWorkflowID     string
-	ApplyStartedAt      time.Time
-	ActivatedAt         time.Time
-	FailedAt            time.Time
-	FailureDetail       string
-	RollbackDisposition PresetRollbackDisposition
-	RollbackAt          time.Time
-	RollbackDetail      string
+	Number                   int64
+	BaseRevision             int64
+	PresetObjectKey          string
+	Modlist                  PresetModlistMetadata
+	Status                   PresetRevisionStatus
+	StagedAt                 time.Time
+	ApplyWorkflowID          string
+	ApplyStartedAt           time.Time
+	ActivatedAt              time.Time
+	FailedAt                 time.Time
+	FailureDetail            string
+	RollbackDisposition      PresetRollbackDisposition
+	RollbackAt               time.Time
+	RollbackDetail           string
+	WorkshopResolutionSHA256 string
+	WorkshopSourceID         uint64
 }
 
 func (revision PresetRevision) Empty() bool {
-	return revision.Number == 0 && revision.BaseRevision == 0 && strings.TrimSpace(revision.PresetObjectKey) == "" && revision.Modlist.Empty() && revision.Status == "" && revision.StagedAt.IsZero() && strings.TrimSpace(revision.ApplyWorkflowID) == "" && revision.ApplyStartedAt.IsZero() && revision.ActivatedAt.IsZero() && revision.FailedAt.IsZero() && strings.TrimSpace(revision.FailureDetail) == "" && revision.RollbackDisposition == "" && revision.RollbackAt.IsZero() && strings.TrimSpace(revision.RollbackDetail) == ""
+	return revision.Number == 0 && revision.BaseRevision == 0 && strings.TrimSpace(revision.PresetObjectKey) == "" && revision.Modlist.Empty() && revision.Status == "" && revision.StagedAt.IsZero() && strings.TrimSpace(revision.ApplyWorkflowID) == "" && revision.ApplyStartedAt.IsZero() && revision.ActivatedAt.IsZero() && revision.FailedAt.IsZero() && strings.TrimSpace(revision.FailureDetail) == "" && revision.RollbackDisposition == "" && revision.RollbackAt.IsZero() && strings.TrimSpace(revision.RollbackDetail) == "" && revision.WorkshopResolutionSHA256 == "" && revision.WorkshopSourceID == 0
 }
 
 func (revision PresetRevision) Validate() error {
@@ -136,6 +138,10 @@ func (revision PresetRevision) Validate() error {
 		return fmt.Errorf("preset revision rollback detail exceeds %d characters", MaximumPresetRevisionFailureRunes)
 	case revision.RollbackDetail != "" && revision.RollbackDetail != boundedPresetRevisionDetail(revision.RollbackDetail, revision.RollbackDetail):
 		return fmt.Errorf("preset revision rollback detail must be redacted and normalized")
+	case (revision.WorkshopResolutionSHA256 == "") != (revision.WorkshopSourceID == 0):
+		return fmt.Errorf("preset revision Workshop provenance is incomplete")
+	case revision.WorkshopResolutionSHA256 != "" && !presetRevisionSHA256Pattern.MatchString(revision.WorkshopResolutionSHA256):
+		return fmt.Errorf("preset revision Workshop resolution digest is invalid")
 	case !revision.StagedAt.Equal(revision.StagedAt.UTC()):
 		return fmt.Errorf("preset revision staged timestamp must be UTC")
 	case !revision.ApplyStartedAt.IsZero() && !revision.ApplyStartedAt.Equal(revision.ApplyStartedAt.UTC()):

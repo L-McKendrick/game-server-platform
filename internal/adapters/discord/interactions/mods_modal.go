@@ -278,6 +278,7 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 	} else if workshopURL != "" {
 		request := createWorkshopRequest(payload, actor, correlationID, state.sessionID, domain.WorkshopTargetMods, workshopURL, keyPrefix+":workshop", handler.clock.Now().UTC())
 		request.ChannelID = current.ChannelID
+		request.ExpectedActivePresetRevision = state.activeRevision
 		if err := requestWorkshopResolve(ctx, handler.service, actor, request); err != nil {
 			return "", modsStagingUserError(err)
 		}

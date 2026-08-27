@@ -241,9 +241,10 @@ resource "aws_sqs_queue" "artifact_ingest_dlq" {
 }
 
 resource "aws_sqs_queue" "artifact_ingest" {
-  name                       = "${local.name_prefix}-artifact-ingest.fifo"
-  fifo_queue                 = true
-  visibility_timeout_seconds = 300
+  name       = "${local.name_prefix}-artifact-ingest.fifo"
+  fifo_queue = true
+  # Keep the FIFO message invisible for six Lambda timeouts to avoid overlap.
+  visibility_timeout_seconds = 540
   message_retention_seconds  = 1209600
   sqs_managed_sse_enabled    = true
   redrive_policy = jsonencode({
