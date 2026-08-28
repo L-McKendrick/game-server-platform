@@ -363,22 +363,25 @@ download_workshop_item() {
 }
 
 install_workshop_missions() (
-	local id revision extra source pbo size parent pending='' final attempt code checksum runfile filename object_key manifest_file
+	local id revision expected_filename expected_size extra source pbo size parent pending='' final attempt code checksum runfile filename object_key manifest_file candidate_name
   local -a ids=() pbos=()
   declare -A seen=()
 	declare -A filename_seen=()
+	declare -A expected_filenames=()
+	declare -A expected_sizes=()
   [[ "$WORKSHOP_MISSION_REVISION" =~ ^[0-9a-f]{64}$ ]] || { log "Workshop mission revision is invalid"; return 1; }
-  while IFS=$'\t' read -r id revision extra; do
-    [ -z "$id" ] && continue
-    [[ "$id" =~ ^[1-9][0-9]{0,19}$ && "$revision" = "$WORKSHOP_MISSION_REVISION" && -z "$extra" ]] || { log "Workshop mission manifest is invalid"; return 1; }
+	  while IFS=$'\t' read -r id revision expected_filename expected_size extra; do
+	    [ -z "$id" ] && continue
+	    [[ "$id" =~ ^[1-9][0-9]{0,19}$ && "$revision" = "$WORKSHOP_MISSION_REVISION" && "$expected_filename" =~ ^[A-Za-z0-9._-]{1,251}\.[pP][bB][oO]$ && "$expected_size" =~ ^[1-9][0-9]*$ && "$expected_size" -ge 16 && "$expected_size" -le 104857600 && -z "$extra" ]] || { log "Workshop mission manifest is invalid or predates canonical filename support; resubmit the Workshop source"; return 1; }
     [ -z "${seen[$id]+x}" ] || { log "Workshop mission manifest contains duplicates"; return 1; }
-    seen[$id]=1; ids+=("$id")
+	    seen[$id]=1; ids+=("$id"); expected_filenames[$id]="$expected_filename"; expected_sizes[$id]="$expected_size"
   done <<< "$WORKSHOP_MISSION_MANIFEST"
   [ "${#ids[@]}" -le 20 ] || { log "Workshop mission item limit exceeded"; return 1; }
 	[ "${#ids[@]}" -gt 0 ] || return 0
 	manifest_file="$(mktemp /run/gsp-workshop-missions.XXXXXX)"
 	trap '[ -z "$pending" ] || rm -rf -- "$pending"; rm -f -- "$manifest_file"' EXIT
   for id in "${ids[@]}"; do
+	expected_filename="${expected_filenames[$id]}"; expected_size="${expected_sizes[$id]}"
     parent="$ROOT/workshop-missions/$id"; final="$parent/$WORKSHOP_MISSION_REVISION"
 	if ! { [ -f "$final/mission.pbo" ] && [ -f "$final/mission.sha256" ] && [ -f "$final/metadata" ] && (cd "$final" && sha256sum --check --status mission.sha256); }; then
 	  [ ! -e "$final" ] || { log "Workshop mission staging destination is inconsistent"; return 1; }
@@ -392,14 +395,17 @@ install_workshop_missions() (
 	  done
 	  [ "$code" -eq 0 ] || { log "Workshop mission download retries exhausted"; return 1; }
 	  source="$ROOT/home/Steam/steamapps/workshop/content/107410/$id"
-	  [ -d "$source" ] || { log "Workshop mission content was not downloaded"; return 1; }
-	  ! find "$source" -type l -print -quit | grep -q . || { log "Workshop mission content contains a symbolic link"; return 1; }
-	  mapfile -d '' pbos < <(find "$source" -maxdepth 4 -type f -iname '*.pbo' -print0)
-	  [ "${#pbos[@]}" -eq 1 ] || { log "Workshop mission must contain exactly one deployable PBO"; return 1; }
-	  pbo="${pbos[0]}"; size="$(stat -c %s -- "$pbo")"; filename="$(basename -- "$pbo")"
-	  [[ "$filename" =~ ^[A-Za-z0-9._-]{1,251}\.[pP][bB][oO]$ ]] || { log "Workshop mission PBO filename is unsafe"; return 1; }
-	  filename="${filename%.*}.pbo"
-	  [ "$size" -ge 16 ] && [ "$size" -le 104857600 ] || { log "Workshop mission PBO size is outside the allowed range"; return 1; }
+	  [ -d "$source" ] || { printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario content was not downloaded.\n' >&2; return 1; }
+	  ! find "$source" -type l -print -quit | grep -q . || { printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario content contains a symbolic link.\n' >&2; return 1; }
+	  mapfile -d '' pbos < <(find "$source" -maxdepth 4 -type f \( -iname '*.pbo' -o -iname '*_legacy.bin' \) -print0)
+	  [ "${#pbos[@]}" -eq 1 ] || { printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario must contain exactly one PBO or legacy payload.\n' >&2; return 1; }
+	  pbo="${pbos[0]}"; size="$(stat -c %s -- "$pbo")"; candidate_name="$(basename -- "$pbo")"
+	  if [[ ! "$candidate_name" =~ \.[pP][bB][oO]$ && ! "$candidate_name" =~ ^[0-9]+_legacy\.[bB][iI][nN]$ ]]; then
+	    printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario legacy payload filename is invalid.\n' >&2; return 1
+	  fi
+	  filename="${expected_filename%.*}.pbo"
+	  [ "$size" -ge 16 ] && [ "$size" -le 104857600 ] || { printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario size is outside the allowed range.\n' >&2; return 1; }
+	  [ "$size" -eq "$expected_size" ] || { printf 'ERR_WORKSHOP_SCENARIO_RESUBMIT: Workshop scenario changed after it was resolved.\n' >&2; return 1; }
 	  mkdir -p "$parent"; pending="$(mktemp -d "$parent/.pending.XXXXXX")"; cp -- "$pbo" "$pending/mission.pbo"
 	  checksum="$(sha256sum "$pending/mission.pbo" | awk '{print $1}')"; printf '%s  mission.pbo\n' "$checksum" > "$pending/mission.sha256"
 	  printf 'item_id=%s\nsize_bytes=%s\nfilename=%s\n' "$id" "$size" "$filename" > "$pending/metadata"

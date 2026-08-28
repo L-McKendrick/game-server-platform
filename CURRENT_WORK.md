@@ -5,9 +5,10 @@
 Workshop content-source development through Phase 17.8 is complete on
 `codex/workshop-content-sources`. Public Arma 3 scenarios and client mods can
 now use individual Workshop items or collections without replacing the existing
-upload workflows. Live testing of Test 27 exposed and repaired Steam's
-string-encoded `file_size` response. No deployment or pull request has been
-performed for that repair.
+upload workflows. Live testing through Test 30 exposed and repaired Steam's
+string-encoded `file_size` response and its normal numeric `*_legacy.bin`
+scenario delivery format. No deployment or pull request has been performed for
+these repairs.
 
 ## Completed Development
 
@@ -55,12 +56,23 @@ performed for that repair.
   pending status. Asynchronous ephemeral follow-ups are intentionally not used
   because the worker does not retain short-lived interaction tokens. Rejection
   notices remain actionable so user-correctable failures are not silently lost.
+- New scenario resolutions retain Steam's decoded, normalized canonical PBO
+  filename and expected size in the immutable digest and source snapshot.
+  Bootstrap accepts exactly one regular PBO or numeric `*_legacy.bin`, verifies
+  its resolved size, and stages it under the canonical name without trusting a
+  mutable Workshop title. Pre-fix records and publisher changes require an
+  explicit link resubmission, which `/rb status` now explains. Stable scenario
+  payload failure codes keep raw host output private while providing the exact
+  user recovery action.
+- Workshop mods need no equivalent rename: their existing path mounts the
+  downloaded item directory, and resolver classification prevents scenario
+  payloads from entering client-mod revisions.
 
 ## Validation
 
 - Changed Go files pass `gofmt -l`; unrelated pre-existing formatting findings
   were not rewritten.
-- `go test -cover ./...`, `go vet ./...`, and `go build ./cmd/...` pass.
+- `go test ./...`, `go vet ./...`, and `go build ./cmd/...` pass.
 - All Lambda archives package successfully.
 - Bootstrap Bash syntax and focused SteamCMD/bootstrap tests pass.
 - Discord command registration and interaction contract tests pass; command
@@ -90,11 +102,12 @@ $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 
 ./scripts/package-discord-lambda.ps1
-$PlanFile = "private-workshop-status-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
+$PlanFile = "legacy-workshop-scenario-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
 terraform -chdir=infra/terraform/environments/dev plan -out $PlanFile
 terraform -chdir=infra/terraform/environments/dev show $PlanFile
-# Apply only after confirming the reviewed plan updates the artifact-worker
-# package and contains no unrelated infrastructure changes.
+# Apply only after confirming the reviewed plan updates the affected Discord,
+# artifact-worker, and bootstrap-worker packages plus the bootstrap script, and
+# contains no unrelated infrastructure changes.
 terraform -chdir=infra/terraform/environments/dev apply $PlanFile
 ```
 

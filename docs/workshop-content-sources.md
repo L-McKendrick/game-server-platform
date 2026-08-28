@@ -12,6 +12,14 @@ For scenarios, each accepted item must be an Arma 3 item with Data Type
 accepted item must classify as a public Arma 3 client mod. Server-only items are
 reported separately and are not added to the client modlist.
 
+Steam commonly delivers a scenario as a numeric `*_legacy.bin` file even
+though its public metadata supplies the canonical `.terrain.pbo` filename.
+The platform records that decoded, normalized filename and expected size in
+the immutable resolution, accepts exactly one regular `.pbo` or numeric legacy
+payload, and stages it under the recorded `.pbo` name. A size change requires
+the Workshop link to be resubmitted; records accepted before canonical
+filename support must also be resubmitted rather than guessed or re-resolved.
+
 A mixed collection does not fail merely because some children are ineligible.
 The completion message reports accepted and excluded counts and a bounded list
 of excluded item IDs and classifications. A collection with no eligible items
@@ -29,6 +37,8 @@ Common recovery actions:
   be opened while signed out, and submit the canonical link again;
 - wrong content type: correct the scenario Data Type/gameplay tags or choose a
   collection containing eligible Arma 3 client mods;
+- legacy scenario record or changed scenario payload: resubmit the Workshop
+  mission link, then retry the failed operation;
 - session changed or busy: wait for the active lifecycle operation to finish,
   review `/rb status`, and resubmit;
 - temporary Steam failure: allow the bounded automatic retries to finish, then

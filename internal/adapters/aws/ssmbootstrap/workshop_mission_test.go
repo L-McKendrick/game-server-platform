@@ -13,15 +13,27 @@ import (
 func TestResolvedWorkshopMissionManifestIsDeterministicAndDeduplicated(t *testing.T) {
 	now := time.Now().UTC()
 	session := domain.Session{WorkshopMissionSources: []domain.WorkshopMissionSource{
-		{Source: domain.WorkshopReference{PublishedFileID: 2, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=2"}, SourceKind: domain.WorkshopSourceCollection, ResolutionSHA256: strings.Repeat("b", 64), AcceptedItemIDs: []uint64{30, 20}, ResolvedAt: now},
-		{Source: domain.WorkshopReference{PublishedFileID: 1, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=1"}, SourceKind: domain.WorkshopSourceCollection, ResolutionSHA256: strings.Repeat("a", 64), AcceptedItemIDs: []uint64{20}, ResolvedAt: now},
+		{Source: domain.WorkshopReference{PublishedFileID: 2, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=2"}, SourceKind: domain.WorkshopSourceCollection, ResolutionSHA256: strings.Repeat("b", 64), AcceptedItemIDs: []uint64{30, 20}, AcceptedItems: []domain.WorkshopMissionItem{{PublishedFileID: 30, Filename: "Thirty.Altis.pbo", FileSize: 300}, {PublishedFileID: 20, Filename: "Twenty.Stratis.pbo", FileSize: 200}}, ResolvedAt: now},
+		{Source: domain.WorkshopReference{PublishedFileID: 1, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=1"}, SourceKind: domain.WorkshopSourceCollection, ResolutionSHA256: strings.Repeat("a", 64), AcceptedItemIDs: []uint64{20}, AcceptedItems: []domain.WorkshopMissionItem{{PublishedFileID: 20, Filename: "Twenty.Stratis.pbo", FileSize: 200}}, ResolvedAt: now},
 	}}
 	manifest, revision, err := resolvedWorkshopMissionManifest(session)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(manifest, "20\t"+revision+"\n30\t"+revision+"\n") || len(revision) != 64 {
+	if !strings.HasPrefix(manifest, "20\t"+revision+"\tTwenty.Stratis.pbo\t200\n30\t"+revision+"\tThirty.Altis.pbo\t300\n") || len(revision) != 64 {
 		t.Fatalf("manifest %q revision %q", manifest, revision)
+	}
+}
+
+func TestResolvedWorkshopMissionManifestRequiresCanonicalMetadataForLegacyRecords(t *testing.T) {
+	now := time.Now().UTC()
+	session := domain.Session{WorkshopMissionSources: []domain.WorkshopMissionSource{{
+		Source:     domain.WorkshopReference{PublishedFileID: 10, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=10"},
+		SourceKind: domain.WorkshopSourceItem, ResolutionSHA256: strings.Repeat("a", 64), AcceptedItemIDs: []uint64{10}, ResolvedAt: now,
+	}}}
+	_, _, err := resolvedWorkshopMissionManifest(session)
+	if err == nil || !strings.Contains(err.Error(), "resubmitted") {
+		t.Fatalf("legacy manifest error = %v", err)
 	}
 }
 
@@ -32,7 +44,7 @@ func TestBootstrapScriptContainsIsolatedWorkshopMissionGuards(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := string(contents)
-	for _, required := range []string{"install_workshop_missions", "Workshop mission must contain exactly one deployable PBO", "Workshop mission content contains a symbolic link", "return 75", "workshop-missions/$id", "104857600", "install_workshop_missions.revision-"} {
+	for _, required := range []string{"install_workshop_missions", "Workshop scenario must contain exactly one PBO or legacy payload", "_legacy\\.[bB][iI][nN]", "expected_filename", "expected_size", "Workshop scenario content contains a symbolic link", "ERR_WORKSHOP_SCENARIO_RESUBMIT", "ERR_WORKSHOP_SCENARIO_PAYLOAD", "return 75", "workshop-missions/$id", "104857600", "install_workshop_missions.revision-"} {
 		if !strings.Contains(script, required) {
 			t.Errorf("bootstrap script missing %q", required)
 		}

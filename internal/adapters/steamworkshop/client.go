@@ -91,7 +91,17 @@ func (client *Client) publishedFiles(ctx context.Context, values url.Values, exp
 		if err != nil || id == 0 {
 			return nil, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataInvalidResponse, Retryable: true, Detail: "Steam returned mismatched item metadata"}
 		}
-		item := domain.WorkshopItem{PublishedFileID: id, ConsumerAppID: detail.ConsumerAppID, Title: strings.TrimSpace(detail.Title), FileSize: int64(detail.FileSize), Available: detail.Result == 1, Collection: detail.FileType == 2}
+		filename := strings.TrimSpace(detail.Filename)
+		if filename != "" {
+			filename, err = url.PathUnescape(filename)
+			if err != nil {
+				return nil, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataInvalidResponse, Retryable: true, Detail: "Steam returned a malformed item filename"}
+			}
+			if normalized, normalizeErr := domain.NormalizeMissionFilename(filename); normalizeErr == nil {
+				filename = normalized
+			}
+		}
+		item := domain.WorkshopItem{PublishedFileID: id, ConsumerAppID: detail.ConsumerAppID, Title: strings.TrimSpace(detail.Title), Filename: filename, FileSize: int64(detail.FileSize), Available: detail.Result == 1, Collection: detail.FileType == 2}
 		if detail.TimeUpdated > 0 {
 			item.UpdatedAt = time.Unix(detail.TimeUpdated, 0).UTC()
 		}
@@ -173,6 +183,7 @@ type publishedFileResponse struct {
 			FileType        int           `json:"file_type"`
 			ConsumerAppID   uint32        `json:"consumer_app_id"`
 			Title           string        `json:"title"`
+			Filename        string        `json:"filename"`
 			FileSize        flexibleInt64 `json:"file_size"`
 			TimeUpdated     int64         `json:"time_updated"`
 			Tags            []struct {

@@ -17,6 +17,7 @@ const (
 	MaximumWorkshopMissionItems                = 20
 	MaximumWorkshopMissionSources              = 20
 	MaximumWorkshopMissionSnapshotItems        = 1000
+	MaximumWorkshopMissionBytes         int64  = 100 * 1024 * 1024
 	MaximumWorkshopModItems                    = 250
 	MaximumWorkshopModSnapshotItems            = 1000
 )
@@ -137,6 +138,7 @@ type WorkshopItem struct {
 	PublishedFileID uint64            `json:"published_file_id"`
 	ConsumerAppID   uint32            `json:"consumer_app_id"`
 	Title           string            `json:"title"`
+	Filename        string            `json:"filename,omitempty"`
 	Tags            []string          `json:"tags,omitempty"`
 	UpdatedAt       time.Time         `json:"updated_at,omitempty"`
 	FileSize        int64             `json:"file_size,omitempty"`
@@ -167,8 +169,17 @@ type WorkshopMissionSource struct {
 	SourceKind       WorkshopSourceKind       `json:"source_kind"`
 	ResolutionSHA256 string                   `json:"resolution_sha256"`
 	AcceptedItemIDs  []uint64                 `json:"accepted_item_ids"`
+	AcceptedItems    []WorkshopMissionItem    `json:"accepted_items,omitempty"`
 	ExcludedItems    []WorkshopResolutionItem `json:"excluded_items,omitempty"`
 	ResolvedAt       time.Time                `json:"resolved_at"`
+}
+
+// WorkshopMissionItem freezes the Steam-provided deployment identity used by
+// the host. AcceptedItemIDs remains populated for backward-compatible reads.
+type WorkshopMissionItem struct {
+	PublishedFileID uint64 `json:"published_file_id"`
+	Filename        string `json:"filename"`
+	FileSize        int64  `json:"file_size"`
 }
 
 type WorkshopModItem struct {
@@ -356,7 +367,15 @@ func NewWorkshopMissionSource(resolution WorkshopResolution) (WorkshopMissionSou
 	source := WorkshopMissionSource{Source: resolution.Source, SourceKind: resolution.SourceKind, ResolutionSHA256: resolution.ResolutionSHA256, ResolvedAt: resolution.ResolvedAt.UTC()}
 	for _, item := range resolution.Items {
 		if item.MatchesTarget && item.Class == WorkshopItemMultiplayerScenario {
+			filename, err := NormalizeMissionFilename(item.Filename)
+			if err != nil || filename != item.Filename {
+				return WorkshopMissionSource{}, fmt.Errorf("Workshop scenario %d has no safe canonical PBO filename", item.PublishedFileID)
+			}
+			if item.FileSize < 16 || item.FileSize > MaximumWorkshopMissionBytes {
+				return WorkshopMissionSource{}, fmt.Errorf("Workshop scenario %d size is outside the allowed range", item.PublishedFileID)
+			}
 			source.AcceptedItemIDs = append(source.AcceptedItemIDs, item.PublishedFileID)
+			source.AcceptedItems = append(source.AcceptedItems, WorkshopMissionItem{PublishedFileID: item.PublishedFileID, Filename: filename, FileSize: item.FileSize})
 		} else {
 			source.ExcludedItems = append(source.ExcludedItems, WorkshopResolutionItem{PublishedFileID: item.PublishedFileID, Class: item.Class})
 		}
@@ -387,6 +406,17 @@ func (source WorkshopMissionSource) Validate() error {
 			return fmt.Errorf("Workshop mission source contains duplicate items")
 		}
 		seen[id] = struct{}{}
+	}
+	if len(source.AcceptedItems) > 0 {
+		if len(source.AcceptedItems) != len(source.AcceptedItemIDs) {
+			return fmt.Errorf("Workshop mission deployment metadata is incomplete")
+		}
+		for index, item := range source.AcceptedItems {
+			filename, filenameErr := NormalizeMissionFilename(item.Filename)
+			if item.PublishedFileID != source.AcceptedItemIDs[index] || filenameErr != nil || filename != item.Filename || item.FileSize < 16 || item.FileSize > MaximumWorkshopMissionBytes {
+				return fmt.Errorf("Workshop mission deployment metadata is invalid")
+			}
+		}
 	}
 	if source.SourceKind == WorkshopSourceItem && (len(source.AcceptedItemIDs) != 1 || source.AcceptedItemIDs[0] != source.Source.PublishedFileID || len(source.ExcludedItems) != 0) {
 		return fmt.Errorf("Workshop mission item source must resolve only itself")
@@ -548,7 +578,7 @@ func (resolution *WorkshopResolution) Finalize(now time.Time) error {
 		}
 		seen[item.PublishedFileID] = struct{}{}
 		item.Tags = normalizeWorkshopTags(item.Tags)
-		digestInput.WriteString(fmt.Sprintf("%d\t%d\t%s\t%t\t%d\t%s\n", item.PublishedFileID, item.ConsumerAppID, item.Class, item.MatchesTarget, item.UpdatedAt.Unix(), strings.Join(item.Tags, ",")))
+		digestInput.WriteString(fmt.Sprintf("%d\t%d\t%s\t%s\t%d\t%t\t%d\t%s\n", item.PublishedFileID, item.ConsumerAppID, item.Class, item.Filename, item.FileSize, item.MatchesTarget, item.UpdatedAt.Unix(), strings.Join(item.Tags, ",")))
 	}
 	digest := sha256.Sum256([]byte(digestInput.String()))
 	resolution.ResolvedAt = now.UTC()

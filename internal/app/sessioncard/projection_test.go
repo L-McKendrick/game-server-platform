@@ -368,6 +368,26 @@ func TestUnknownPersistedFailureRendersSafeFallbackWithBillingAndReference(t *te
 	}
 }
 
+func TestLegacyWorkshopMissionBootstrapFailureRequestsResubmission(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 28, 1, 0, 0, 0, time.UTC)
+	failure, err := domain.NewFailureRecord(domain.FailureRecordInput{
+		Code: "ERR_BOOTSTRAP_COMMAND_FAILED", Stage: "Started", RetryDisposition: domain.RetryNotScheduled,
+		ResourceImpact: domain.ResourceCostRetained, Detail: "setup stopped", FailedAt: now, SupportReference: "ref_legacy123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := domain.Session{LifecycleState: domain.StateFailed, Failure: failure, WorkshopMissionSources: []domain.WorkshopMissionSource{{
+		Source:     domain.WorkshopReference{PublishedFileID: 10, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=10"},
+		SourceKind: domain.WorkshopSourceItem, ResolutionSHA256: strings.Repeat("a", 64), AcceptedItemIDs: []uint64{10}, ResolvedAt: now,
+	}}}
+	projection := failureProjection(session, nil)
+	if !strings.Contains(projection.UserAction, "Resubmit the Workshop mission link") || projection.SupportReference != "ref_legacy123" || !strings.Contains(projection.BillingImpact, "incur cost") {
+		t.Fatalf("failure projection = %#v", projection)
+	}
+}
+
 func TestProjectPrefersDNSAndFallsBackToPublicIPv4(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 16, 8, 0, 0, 0, time.UTC)

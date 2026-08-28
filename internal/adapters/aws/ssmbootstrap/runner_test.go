@@ -448,6 +448,24 @@ func TestObserveMapsSteamGuardChallengeToStableReauthorizationFailure(t *testing
 	}
 }
 
+func TestObserveMapsWorkshopScenarioFailuresToActionableCodes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		stderr, code, message string
+	}{
+		{"package noise\nERR_WORKSHOP_SCENARIO_RESUBMIT: private detail", "ERR_WORKSHOP_SCENARIO_RESUBMIT", "The Workshop scenario changed after metadata resolution."},
+		{"package noise\nERR_WORKSHOP_SCENARIO_PAYLOAD: private detail", "ERR_WORKSHOP_SCENARIO_PAYLOAD", "The Workshop scenario download did not contain one safe deployable mission payload."},
+	}
+	for _, test := range tests {
+		client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{Status: types.CommandInvocationStatusFailed, StandardErrorContent: aws.String(test.stderr)}}
+		runner, _ := New(client, testConfig())
+		status, err := runner.Observe(context.Background(), "i-1", "command-1")
+		if err != nil || status.ErrorCode != test.code || status.ErrorMessage != test.message || strings.Contains(status.ErrorMessage, "private detail") {
+			t.Fatalf("status = %#v, err = %v", status, err)
+		}
+	}
+}
+
 func assertBashSyntax(t *testing.T, script []byte) {
 	t.Helper()
 	bash, err := exec.LookPath("bash")

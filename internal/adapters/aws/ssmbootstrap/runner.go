@@ -216,6 +216,12 @@ func bootstrapFailure(stderr string) (string, string) {
 	if strings.Contains(stderr, "ERR_STEAM_REAUTH_REQUIRED") {
 		return "ERR_STEAM_REAUTH_REQUIRED", "Steam authorization requires operator re-enrollment."
 	}
+	if strings.Contains(stderr, "ERR_WORKSHOP_SCENARIO_RESUBMIT") {
+		return "ERR_WORKSHOP_SCENARIO_RESUBMIT", "The Workshop scenario changed after metadata resolution."
+	}
+	if strings.Contains(stderr, "ERR_WORKSHOP_SCENARIO_PAYLOAD") {
+		return "ERR_WORKSHOP_SCENARIO_PAYLOAD", "The Workshop scenario download did not contain one safe deployable mission payload."
+	}
 	return "", domain.SanitizeDiagnostic(stderr)
 }
 
@@ -384,16 +390,21 @@ func acceptedMissionManifest(session domain.Session) (string, error) {
 
 func resolvedWorkshopMissionManifest(session domain.Session) (string, string, error) {
 	type snapshot struct {
-		id     uint64
-		digest string
+		id       uint64
+		digest   string
+		filename string
+		fileSize int64
 	}
 	snapshots := make([]snapshot, 0, len(session.WorkshopMissionSources))
 	for _, source := range session.WorkshopMissionSources {
 		if err := source.Validate(); err != nil {
 			return "", "", fmt.Errorf("Workshop mission source: %w", err)
 		}
-		for _, id := range source.AcceptedItemIDs {
-			snapshots = append(snapshots, snapshot{id: id, digest: source.ResolutionSHA256})
+		if len(source.AcceptedItems) == 0 {
+			return "", "", fmt.Errorf("Workshop mission source must be resubmitted to capture its canonical filename")
+		}
+		for _, item := range source.AcceptedItems {
+			snapshots = append(snapshots, snapshot{id: item.PublishedFileID, digest: source.ResolutionSHA256, filename: item.Filename, fileSize: item.FileSize})
 		}
 	}
 	slices.SortFunc(snapshots, func(a, b snapshot) int {
@@ -403,25 +414,31 @@ func resolvedWorkshopMissionManifest(session domain.Session) (string, string, er
 		if a.id > b.id {
 			return 1
 		}
-		return strings.Compare(a.digest, b.digest)
+		if compared := strings.Compare(a.digest, b.digest); compared != 0 {
+			return compared
+		}
+		return strings.Compare(a.filename, b.filename)
 	})
 	revision, err := session.WorkshopMissionRevision()
 	if err != nil {
 		return "", "", err
 	}
-	ids := make([]uint64, 0, len(snapshots))
-	var prior uint64
+	items := make([]snapshot, 0, len(snapshots))
 	for _, item := range snapshots {
-		if item.id != prior {
-			ids = append(ids, item.id)
-			prior = item.id
+		if len(items) > 0 && items[len(items)-1].id == item.id {
+			prior := items[len(items)-1]
+			if prior.filename != item.filename || prior.fileSize != item.fileSize {
+				return "", "", fmt.Errorf("Workshop scenario %d has conflicting immutable metadata; resubmit its sources", item.id)
+			}
+			continue
 		}
+		items = append(items, item)
 	}
 	var manifest strings.Builder
-	for _, id := range ids {
-		fmt.Fprintf(&manifest, "%d\t%s\n", id, revision)
+	for _, item := range items {
+		fmt.Fprintf(&manifest, "%d\t%s\t%s\t%d\n", item.id, revision, item.filename, item.fileSize)
 	}
-	if len(ids) > domain.MaximumWorkshopMissionItems {
+	if len(items) > domain.MaximumWorkshopMissionItems {
 		return "", "", fmt.Errorf("Workshop mission item limit exceeded")
 	}
 	return manifest.String(), revision, nil

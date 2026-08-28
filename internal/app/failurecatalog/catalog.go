@@ -89,6 +89,18 @@ var entries = map[string]entry{
 		"The platform retained the request for a bounded retry and did not change the active revision.",
 		"Wait for the automatic retry. If it continues, give the support reference to an operator.",
 	},
+	"ERR_WORKSHOP_SCENARIO_RESUBMIT": {
+		"The Workshop scenario could not be installed from its recorded snapshot.",
+		"The publisher changed its filename or content size after the platform resolved the source.",
+		"The platform rejected the changed download and retained the previously authoritative mission state.",
+		"Resubmit the Workshop link, then retry the failed operation.",
+	},
+	"ERR_WORKSHOP_SCENARIO_PAYLOAD": {
+		"The Workshop scenario download was not deployable.",
+		"Steam returned no mission payload, more than one possible payload, an unsafe link, or a payload outside the allowed size.",
+		"The platform did not install the ambiguous or unsafe scenario and retained the server for recovery.",
+		"Confirm the item is a public multiplayer Arma 3 scenario. Resubmit its link, or upload a correctly named mission PBO instead.",
+	},
 	"ERR_ARCHIVE_COMMAND": {
 		"The archive could not be created and verified.",
 		"The managed backup command stopped before a portable archive was verified.",

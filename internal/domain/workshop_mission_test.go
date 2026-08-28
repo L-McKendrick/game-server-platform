@@ -8,11 +8,11 @@ import (
 
 func TestNewWorkshopMissionSourceFiltersMixedCollection(t *testing.T) {
 	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
-	source, err := NewWorkshopMissionSource(WorkshopResolution{SchemaVersion: 1, Target: WorkshopTargetMission, SourceKind: WorkshopSourceCollection, Source: WorkshopReference{PublishedFileID: 10, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=10"}, ResolvedAt: now, ResolutionSHA256: strings.Repeat("a", 64), Items: []WorkshopItem{{PublishedFileID: 20, Class: WorkshopItemClientMod}, {PublishedFileID: 30, Class: WorkshopItemMultiplayerScenario, MatchesTarget: true}, {PublishedFileID: 40, Class: WorkshopItemScenario}}})
+	source, err := NewWorkshopMissionSource(WorkshopResolution{SchemaVersion: 1, Target: WorkshopTargetMission, SourceKind: WorkshopSourceCollection, Source: WorkshopReference{PublishedFileID: 10, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=10"}, ResolvedAt: now, ResolutionSHA256: strings.Repeat("a", 64), Items: []WorkshopItem{{PublishedFileID: 20, Class: WorkshopItemClientMod}, {PublishedFileID: 30, Filename: "Coop.Altis.pbo", FileSize: 123, Class: WorkshopItemMultiplayerScenario, MatchesTarget: true}, {PublishedFileID: 40, Class: WorkshopItemScenario}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(source.AcceptedItemIDs) != 1 || source.AcceptedItemIDs[0] != 30 || len(source.ExcludedItems) != 2 {
+	if len(source.AcceptedItemIDs) != 1 || source.AcceptedItemIDs[0] != 30 || len(source.AcceptedItems) != 1 || source.AcceptedItems[0].Filename != "Coop.Altis.pbo" || len(source.ExcludedItems) != 2 {
 		t.Fatalf("source = %#v", source)
 	}
 }

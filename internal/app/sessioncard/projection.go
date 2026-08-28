@@ -628,6 +628,16 @@ func failureProjection(session domain.Session, workflow *domain.Workflow) Failur
 	}
 	if !session.Failure.Empty() {
 		presentation := failurecatalog.Lookup(session.Failure)
+		if hasLegacyWorkshopMissionSource(session) && strings.HasPrefix(session.Failure.Code, "ERR_BOOTSTRAP") {
+			return FailureProjection{
+				Present: true, Summary: "A Workshop scenario source must be submitted again before setup can continue.",
+				Reason:           "The source was accepted before canonical Steam scenario filenames were recorded.",
+				PlatformAction:   "The platform stopped without guessing a mission filename or changing the current mission.",
+				UserAction:       "Resubmit the Workshop mission link, then retry the failed operation.",
+				RetryDisposition: presentation.RetryDisposition, BillingImpact: presentation.BillingImpact,
+				SupportReference: presentation.SupportReference, OccurredAt: session.Failure.FailedAt,
+			}
+		}
 		return FailureProjection{
 			Present: true, Summary: presentation.WhatHappened, Reason: presentation.LikelyReason,
 			PlatformAction: presentation.PlatformAction, UserAction: presentation.UserAction,
@@ -645,6 +655,15 @@ func failureProjection(session domain.Session, workflow *domain.Workflow) Failur
 		}
 	}
 	return FailureProjection{}
+}
+
+func hasLegacyWorkshopMissionSource(session domain.Session) bool {
+	for _, source := range session.WorkshopMissionSources {
+		if len(source.AcceptedItemIDs) > 0 && len(source.AcceptedItems) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func legacyBillingImpact(session domain.Session) string {
