@@ -54,6 +54,8 @@ const (
 	EventPlayerActivityObserved    EventType = "PlayerActivityObserved"
 	EventWorkshopMissionResolved   EventType = "WorkshopMissionResolved"
 	EventWorkshopModResolved       EventType = "WorkshopModResolved"
+	EventWorkshopResolutionQueued  EventType = "WorkshopResolutionQueued"
+	EventWorkshopResolutionCleared EventType = "WorkshopResolutionCleared"
 )
 
 func NewWorkshopMissionResolvedEvent(eventID, correlationID string, actor Actor, session Session, source WorkshopMissionSource, now time.Time) SessionEvent {

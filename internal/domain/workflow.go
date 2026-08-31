@@ -51,6 +51,9 @@ type Workflow struct {
 	ErrorMessage      string
 	CommandID         string
 	CommandDeadlineAt time.Time
+	ContentTarget     string
+	ContentDigest     string
+	InstanceID        string
 	StartedAt         time.Time
 	CompletedAt       time.Time
 	LeaseExpiresAt    time.Time
@@ -81,6 +84,12 @@ func (workflow Workflow) Validate() error {
 		return fmt.Errorf("workflow command ID and deadline must be set together")
 	case !workflow.CommandDeadlineAt.IsZero() && !workflow.CommandDeadlineAt.After(workflow.StartedAt):
 		return fmt.Errorf("workflow command deadline must follow its start")
+	case workflow.Type == WorkshopContentSyncWorkflowType && (workflow.ContentTarget != string(WorkshopTargetMission) && workflow.ContentTarget != string(WorkshopTargetMods)):
+		return fmt.Errorf("Workshop content workflow target is invalid")
+	case workflow.Type == WorkshopContentSyncWorkflowType && !validHexSHA256(workflow.ContentDigest):
+		return fmt.Errorf("Workshop content workflow digest is invalid")
+	case workflow.Type == WorkshopContentSyncWorkflowType && strings.TrimSpace(workflow.InstanceID) == "":
+		return fmt.Errorf("Workshop content workflow instance is required")
 	case workflow.LeaseExpiresAt.IsZero() || !workflow.LeaseExpiresAt.After(workflow.StartedAt):
 		return fmt.Errorf("workflow lease expiration must follow its start")
 	case workflow.CancelRequestedAt.IsZero() != (strings.TrimSpace(workflow.CancelRequestedBy) == ""):

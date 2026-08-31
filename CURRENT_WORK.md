@@ -2,13 +2,99 @@
 
 ## State and Objective
 
-Workshop content-source development through Phase 17.8 is complete on
-`codex/workshop-content-sources`. Public Arma 3 scenarios and client mods can
-now use individual Workshop items or collections without replacing the existing
-upload workflows. Live testing through Test 30 exposed and repaired Steam's
-string-encoded `file_size` response and its normal numeric `*_legacy.bin`
-scenario delivery format. No deployment or pull request has been performed for
-these repairs.
+Phase 17.9 and the Steam Workshop content-source implementation are complete on
+`codex/workshop-content-sources`. Resolved Workshop missions and mods now use
+one bounded host synchronization path across live edits, initial bootstrap,
+wake, and restore while reusing the existing workflow, SSM, reliability, and
+status infrastructure. No deployment or pull request has been performed.
+
+## Planned Next Work
+
+- Review and apply a fresh Terraform plan, then open the prepared Phase 17 pull
+  request when deployment approval is given.
+- Use one target-aware content-sync command for individual items and
+  collections. Scenarios may be added atomically to a running host without
+  changing the current mission; mods may be downloaded to isolated staging but
+  become active only through a controlled restart or wake.
+- Reuse the session workflow lock and workflow record, the existing artifact
+  and reliability workers, the wake content stage, S3, DynamoDB, and SSM. Add
+  only a terminal SSM EventBridge callback and narrow permissions; do not add a
+  polling Step Function, worker, queue, table, bucket, GSI, or schedule.
+- Reject Workshop mutations while archived until an explicit archive-overlay
+  contract exists, because the current restore manifest comparison treats such
+  changes as drift.
+
+## Completed Phase 17.9 Development
+
+- **17.9.1:** Collections containing more than 50 direct children are rejected
+  before child metadata retrieval. The same ceiling is enforced by finalized
+  resolution and persisted mission/mod source validation while the generic
+  metadata adapter retains its independent batching capacity.
+- Workshop source changes now share one explicit lifecycle boundary: draft,
+  new, ready, running, idle, sleeping, warning, and recoverable failed sessions
+  are eligible only without an active workflow. Transitional, archived,
+  destructive, and deleted states fail closed.
+- Oversized collection errors tell the user to split the collection into at
+  most 50 direct items. Architecture and recovery documentation now reflects
+  the three-call maximum metadata path and the lifecycle matrix.
+- **17.9.2:** Bootstrap, wake/restore, and the reserved live command mode now
+  share one target-aware `sync_workshop_content` function. It accepts all,
+  mission, or mod targets, retains bounded item retries and the existing host
+  and Steam authorization locks, checks disk headroom, and writes one redacted
+  per-item result manifest to the existing session S3 prefix.
+- **17.9.3:** SteamCMD Workshop downloads use a workflow-scoped private Steam
+  library. Scenario identity, canonical filename, expected size, safe path,
+  payload shape, and checksum remain enforced before S3 snapshot and atomic
+  `mpmissions` placement. Mods are validated for item-ID path, symlinks, and
+  the 20-GiB item bound, then copied into client/server revision-owned trees.
+  Bootstrap/wake/restore may promote those trees; live command mode is
+  stage-only and cannot change active links, mod argument files, launch
+  arguments, mission selection, or services.
+- **17.9.4:** Stable running/idle resolutions can acquire a deterministic,
+  replay-safe `WorkshopContentSync` lease and dispatch one stage-only SSM
+  command. Its ID and deadline use the existing workflow record. One terminal
+  SSM EventBridge rule invokes the artifact worker, while the existing
+  reliability schedule observes missed terminal events. Callback identity is
+  restricted to the exact platform comment, workflow, command, and instance.
+- **17.9.5:** Wake's existing mod state is now `DispatchContent`, retaining its
+  state count and 30-second observation cadence. It synchronizes Workshop
+  missions without requiring a pending mod revision and promotes applying mods
+  before health verification. Bootstrap and restore retain the shared host
+  content-sync function.
+- **17.9.6:** Create/setup keeps Workshop resolution private and defers host
+  work to initial bootstrap. Stable running/idle edits dispatch live sync;
+  sleeping and pre-runtime sessions remain queued for their next lifecycle
+  content pass, while locked/transitional states reject safely. Detailed status
+  now distinguishes queued, downloading/validating, available, awaiting
+  restart, failed, and bounded excluded-child summaries without exposing titles.
+- **17.9.7:** Content workflows persist the exact target, resolution digest,
+  instance, command ID, and deadline. Replay identity binds the request and
+  digest; terminal callbacks recheck workflow, instance, and current snapshot.
+  Timed-out commands are cancelled before their lock is released, publisher
+  timestamp drift is rejected, stale staging older than one day is removed
+  through a constrained path, and all exit paths clean current staging and
+  ephemeral result files. Stable redacted failures now cover disk capacity,
+  visibility, removed items, publisher drift, Steam authorization, timeout,
+  and individual item failures with specific recovery actions.
+- Post-review recovery closes three interruption gaps before 17.9.8: queued
+  metadata resolution now has a durable target/request marker cleared on
+  success or terminal rejection; trusted callbacks and the scheduled scan can
+  recover an SSM command accepted before its command-ID write; and wake-time
+  mod promotion restarts and verifies Arma in the same host command before the
+  existing health gate. Mission-only synchronization remains restart-free.
+- **17.9.8:** The complete runtime and infrastructure diff was reviewed. One
+  EventBridge rule, target, and Lambda permission were added; the wake state
+  machine retains its state and polling count, and no worker, queue, table,
+  bucket, GSI, schedule, NAT path, or polling Step Function was added. Because
+  EventBridge cannot filter by SSM comment, terminal `AWS-RunShellScript`
+  events cause one bounded artifact-worker invocation and ownership lookup;
+  unrelated commands are rejected before session mutation. Scheduled recovery
+  now has explicit missed-event and missing-command-ID coverage.
+- Cost and performance remain bounded by the 50-child collection ceiling, one
+  SSM command per requested synchronization, existing 15-minute recovery scan,
+  six-hour command deadline, per-host file lock, disk headroom checks, and
+  revision-owned staging. Mod staging temporarily duplicates downloaded data;
+  mission copies and ordinary session management do not restart Arma.
 
 ## Completed Development
 
@@ -70,11 +156,13 @@ these repairs.
 
 ## Validation
 
-- Changed Go files pass `gofmt -l`; unrelated pre-existing formatting findings
-  were not rewritten.
-- `go test ./...`, `go vet ./...`, and `go build ./cmd/...` pass.
+- Changed Go files pass `gofmt`; unrelated files were not rewritten.
+- `go test ./...`, `go vet ./...`, and `go build ./cmd/...` pass with
+  repository-local Go caches.
 - All Lambda archives package successfully.
-- Bootstrap Bash syntax and focused SteamCMD/bootstrap tests pass.
+- Bootstrap Bash syntax through Git Bash and focused SteamCMD/bootstrap,
+  lifecycle, collection-boundary, staging, result-manifest, and failure-mapping
+  tests pass.
 - Discord command registration and interaction contract tests pass; command
   definitions did not change, so re-registration is unnecessary.
 - Terraform recursive format and development-environment validation pass.
@@ -86,11 +174,14 @@ these repairs.
 Title: `feat: add Steam Workshop content sources`
 
 Summary: add bounded item/collection resolution for Arma 3 scenarios and client
-mods, immutable provenance and generated artifacts, existing mission/mod
-lifecycle integration, per-item authenticated SteamCMD safeguards, actionable
-Discord recovery messages, metadata batching, persistence bounds, and the
-minimal artifact-worker timeout/queue visibility changes. No new persistent
-service or IAM grant is introduced.
+mods, immutable provenance and generated artifacts, live and lifecycle-aware
+SSM synchronization, existing mission/mod revision integration, per-item
+authenticated SteamCMD safeguards, actionable Discord recovery messages,
+metadata batching, persistence bounds, missed-event recovery, and a verified
+wake-time mod restart. Infrastructure adds one terminal SSM EventBridge rule
+and the SSM lookup/cancellation permissions required by the existing artifact
+and reliability workers; no persistent service or polling state machine is
+added.
 
 ## Commands to Apply Current Changes
 
@@ -102,13 +193,14 @@ $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 
 ./scripts/package-discord-lambda.ps1
-$PlanFile = "legacy-workshop-scenario-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
+$PlanFile = "workshop-content-sync-recovery-$((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss')).tfplan"
 terraform -chdir=infra/terraform/environments/dev plan -out $PlanFile
 terraform -chdir=infra/terraform/environments/dev show $PlanFile
-# Apply only after confirming the reviewed plan updates the affected Discord,
-# artifact-worker, and bootstrap-worker packages plus the bootstrap script, and
-# contains no unrelated infrastructure changes.
+# Apply only after confirming the reviewed plan updates the affected Lambda
+# packages, bootstrap script object, wake definition, SSM cancellation IAM, and the
+# single terminal SSM EventBridge rule, with no unrelated infrastructure.
 terraform -chdir=infra/terraform/environments/dev apply $PlanFile
 ```
 
-No Discord command registration is required.
+No Discord command registration is required because command definitions did
+not change.

@@ -369,6 +369,18 @@ func TestWorkflowCommandDeadlineRoundTripsBackwardCompatibly(t *testing.T) {
 	}
 }
 
+func TestWorkshopContentWorkflowAuthorityRoundTrips(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	workflow := domain.Workflow{ID: "wsync-1", SessionID: "session-1", Type: domain.WorkshopContentSyncWorkflowType, Status: domain.WorkflowRunning, RequestedBy: "owner-1", CorrelationID: "correlation-1", ExpectedVersion: 1, CurrentStage: "Downloading", CommandID: "command-1", CommandDeadlineAt: now.Add(6 * time.Hour), ContentTarget: string(domain.WorkshopTargetMods), ContentDigest: strings.Repeat("a", 64), InstanceID: "i-1", StartedAt: now, LeaseExpiresAt: now.Add(7 * time.Hour)}
+	stored, err := fromWorkflowItem(toWorkflowItem(workflow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.ContentTarget != workflow.ContentTarget || stored.ContentDigest != workflow.ContentDigest || stored.InstanceID != workflow.InstanceID {
+		t.Fatalf("stored workflow = %#v", stored)
+	}
+}
+
 func TestGetIdempotencyDecodesStoredRecord(t *testing.T) {
 	t.Parallel()
 

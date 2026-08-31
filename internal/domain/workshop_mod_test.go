@@ -53,6 +53,21 @@ func TestRecordWorkshopModSourceReplayAndReplacement(t *testing.T) {
 	}
 }
 
+func TestWorkshopModSourceRejectsOversizedCollectionSnapshot(t *testing.T) {
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	source := WorkshopModSource{
+		Source:     WorkshopReference{PublishedFileID: 10, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=10"},
+		SourceKind: WorkshopSourceCollection, ResolutionSHA256: strings.Repeat("a", 64), ResolvedAt: now,
+		AcceptedItems: []WorkshopModItem{{PublishedFileID: 1, Title: "Mod"}},
+	}
+	for id := uint64(2); id <= MaximumWorkshopCollectionChildren+1; id++ {
+		source.ExcludedItems = append(source.ExcludedItems, WorkshopResolutionItem{PublishedFileID: id, Class: WorkshopItemScenario})
+	}
+	if err := source.Validate(); err == nil || !strings.Contains(err.Error(), "50-item limit") {
+		t.Fatalf("Validate() error = %v; want collection limit", err)
+	}
+}
+
 func TestAttachWorkshopModSourceActivatesInitialDraftRevisionWithProvenance(t *testing.T) {
 	now := time.Now().UTC()
 	session, _ := NewSession(NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner", GuildID: "guild", ChannelID: "channel"}, now)

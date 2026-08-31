@@ -19,6 +19,8 @@ SERVER_CONFIG_SHA256="$(decode "$SERVER_CONFIG_SHA_B64")"
 SERVER_CONFIG_REVISION="$(decode "$SERVER_CONFIG_REV_B64")"
 PRESET_KEY="$(decode "$PRESET_KEY_B64")"
 PRESET_REVISION="$(decode "$PRESET_REVISION_B64")"
+WORKSHOP_MOD_RESOLUTION="$(decode "${WORKSHOP_MOD_RESOLUTION_B64:-}")"
+WORKSHOP_MOD_MANIFEST="$(decode "${WORKSHOP_MOD_MANIFEST_B64:-}")"
 PRESET_ROLLBACK="$(decode "$PRESET_ROLLBACK_B64")"
 SERVER_PRESET_KEY="$(decode "$SERVER_PRESET_KEY_B64")"
 SERVER_PRESET_REVISION="$(decode "$SERVER_PRESET_REVISION_B64")"
@@ -30,6 +32,9 @@ STEAM_AUTH_SECRET_ID="$(decode "$STEAM_AUTH_SECRET_B64")"
 AWS_REGION="$(decode "$AWS_REGION_B64")"
 TEAMSPEAK_VERSION="$(decode "$TEAMSPEAK_VERSION_B64")"
 : "${VANILLA_MODE:=false}"
+: "${GSP_OPERATION_MODE:=bootstrap}"
+: "${WORKSHOP_SYNC_TARGET:=all}"
+: "${WORKSHOP_PROMOTE_MODS:=true}"
 ROOT=/srv/game-server
 STATE_DIR="$ROOT/state"
 LOG_DIR="$ROOT/logs"
@@ -48,6 +53,8 @@ STEAM_AUTH_LOCK_LEASE_SECONDS=900
 STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=300
 PROGRESS_FILE=/run/gsp-bootstrap-progress
 PROGRESS_KEY="sessions/$SESSION_ID/runtime/bootstrap-progress-$WORKFLOW_ID.txt"
+WORKSHOP_STAGING_ROOT=""
+WORKSHOP_SYNC_RESULTS=""
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 publish_progress() { aws s3 cp "$PROGRESS_FILE" "s3://$ASSETS_BUCKET/$PROGRESS_KEY" --region "$AWS_REGION" --only-show-errors >/dev/null 2>&1 || true; }
@@ -299,6 +306,13 @@ cleanup_steam_auth() {
   STEAM_AUTH_INITIAL_SHA=""
 }
 
+cleanup_workshop_staging() {
+  [ -z "$WORKSHOP_STAGING_ROOT" ] || rm -rf -- "$WORKSHOP_STAGING_ROOT"
+  WORKSHOP_STAGING_ROOT=""
+  [ -z "$WORKSHOP_SYNC_RESULTS" ] || rm -f -- "$WORKSHOP_SYNC_RESULTS"
+  WORKSHOP_SYNC_RESULTS=""
+}
+
 steam_auth_exit() {
   local code=$?
   trap - EXIT INT TERM
@@ -306,6 +320,7 @@ steam_auth_exit() {
     if $STEAM_AUTH_VALID && ! $STEAM_AUTH_FINALIZED && ! $STEAM_AUTH_PERSIST_ATTEMPTED; then persist_steam_auth || code=1; fi
     cleanup_steam_auth
   fi
+  cleanup_workshop_staging
   exit "$code"
 }
 trap steam_auth_exit EXIT
@@ -342,8 +357,15 @@ run_steamcmd() {
 	if grep -Eqi 'timeout|timed out|connection|network|content server|rate limit|temporarily unavailable|service unavailable' "$output_file"; then
 	  rm -f -- "$output_file"; log "SteamCMD transient download failure"; return 75
 	fi
+	if grep -Eqi 'access denied|private|visibility|not permitted' "$output_file"; then
+	  rm -f -- "$output_file"; printf 'ERR_WORKSHOP_VISIBILITY: Workshop item is not publicly downloadable.\n' >&2; return 1
+	fi
+	if grep -Eqi 'not found|removed|deleted|no subscription|missing file' "$output_file"; then
+	  rm -f -- "$output_file"; printf 'ERR_WORKSHOP_ITEM_REMOVED: Workshop item is no longer available.\n' >&2; return 1
+	fi
     log "SteamCMD download failed without exposing its raw output"
 	rm -f -- "$output_file"
+	printf 'ERR_WORKSHOP_ITEM_DOWNLOAD: A Workshop item could not be downloaded.\n' >&2
 	return 1
   fi
 	rm -f -- "$output_file"
@@ -359,11 +381,56 @@ download_workshop_item() {
 		rm -f -- "$runfile"; [ "$code" -eq 0 ] && return 0; [ "$code" -eq 75 ] || return "$code"
 		log "Retrying transient Workshop mod download"
 	done
-	log "Workshop mod download retries exhausted"; return 1
+	printf 'ERR_WORKSHOP_DOWNLOAD_TIMEOUT: Workshop item download retries were exhausted.\n' >&2; return 1
+}
+
+prepare_workshop_staging() {
+  [[ "$WORKFLOW_ID" =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { log "Workshop workflow identity is invalid"; return 1; }
+  [[ "$WORKSHOP_SYNC_TARGET" =~ ^(all|missions|mods)$ ]] || { log "Workshop sync target is invalid"; return 1; }
+  [ -z "$WORKSHOP_MOD_RESOLUTION" ] || [[ "$WORKSHOP_MOD_RESOLUTION" =~ ^[0-9a-f]{64}$ ]] || { log "Workshop mod resolution is invalid"; return 1; }
+  WORKSHOP_STAGING_ROOT="$ROOT/workshop-staging/$WORKFLOW_ID"
+  [ ! -L "$ROOT/workshop-staging" ] || { log "Workshop staging root cannot be a symbolic link"; return 1; }
+  mkdir -p "$ROOT/workshop-staging"
+  find "$ROOT/workshop-staging" -regextype posix-extended -mindepth 1 -maxdepth 1 -type d -mtime +1 -regex '.*/[A-Za-z0-9_-]{1,80}' -exec rm -rf -- {} +
+  rm -rf -- "$WORKSHOP_STAGING_ROOT"
+  mkdir -p "$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410"
+  chown -R steam:steam "$ROOT/workshop-staging"
+  rm -f -- "$STEAM_AUTH_ROOT/home/Steam/steamapps" "$STEAM_AUTH_ROOT/home/.local/share/Steam/steamapps"
+  ln -s "$WORKSHOP_STAGING_ROOT/steamapps" "$STEAM_AUTH_ROOT/home/Steam/steamapps"
+  ln -s "$WORKSHOP_STAGING_ROOT/steamapps" "$STEAM_AUTH_ROOT/home/.local/share/Steam/steamapps"
+  WORKSHOP_SYNC_RESULTS="$(mktemp /run/gsp-workshop-sync-results.XXXXXX)"
+}
+
+require_workshop_space() {
+  local required_bytes="$1" available_bytes
+  [[ "$required_bytes" =~ ^[1-9][0-9]*$ ]] || return 1
+  available_bytes="$(df -PB1 "$ROOT" | awk 'NR==2 {print $4}')"
+  [[ "$available_bytes" =~ ^[0-9]+$ ]] && [ "$available_bytes" -ge "$required_bytes" ] || {
+    printf 'ERR_WORKSHOP_DISK_SPACE: Workshop staging requires additional free disk space.\n' >&2
+    return 1
+  }
+}
+
+record_workshop_sync_result() {
+  local target="$1" id="$2" revision="$3"
+  [[ "$target" =~ ^(mission|mod|server_mod)$ && "$id" =~ ^[1-9][0-9]{0,19}$ && "$revision" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || return 1
+  printf '%s\t%s\t%s\tsucceeded\n' "$target" "$id" "$revision" >> "$WORKSHOP_SYNC_RESULTS"
+}
+
+publish_workshop_sync_results() {
+  local result_json
+  result_json="$(mktemp /run/gsp-workshop-sync-manifest.XXXXXX)"
+  jq -Rn --arg session "$SESSION_ID" --arg workflow "$WORKFLOW_ID" --arg target "$WORKSHOP_SYNC_TARGET" --arg completed "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+    [inputs | split("\t") | {target:.[0],published_file_id:.[1],revision:.[2],status:.[3]}] |
+    {schema_version:1,session_id:$session,workflow_id:$workflow,target:$target,completed_at:$completed,items:.}
+  ' < "$WORKSHOP_SYNC_RESULTS" > "$result_json"
+  aws s3 cp "$result_json" "s3://$ASSETS_BUCKET/sessions/$SESSION_ID/workshop-sync/$WORKFLOW_ID.json" --region "$AWS_REGION" --only-show-errors --content-type application/json
+  rm -f -- "$result_json" "$WORKSHOP_SYNC_RESULTS"
+  WORKSHOP_SYNC_RESULTS=""
 }
 
 install_workshop_missions() (
-	local id revision expected_filename expected_size extra source pbo size parent pending='' final attempt code checksum runfile filename object_key manifest_file candidate_name
+	local id revision expected_filename expected_size extra source pbo size parent pending='' final attempt code checksum runfile filename object_key manifest_file candidate_name expected_total=0
   local -a ids=() pbos=()
   declare -A seen=()
 	declare -A filename_seen=()
@@ -374,10 +441,11 @@ install_workshop_missions() (
 	    [ -z "$id" ] && continue
 	    [[ "$id" =~ ^[1-9][0-9]{0,19}$ && "$revision" = "$WORKSHOP_MISSION_REVISION" && "$expected_filename" =~ ^[A-Za-z0-9._-]{1,251}\.[pP][bB][oO]$ && "$expected_size" =~ ^[1-9][0-9]*$ && "$expected_size" -ge 16 && "$expected_size" -le 104857600 && -z "$extra" ]] || { log "Workshop mission manifest is invalid or predates canonical filename support; resubmit the Workshop source"; return 1; }
     [ -z "${seen[$id]+x}" ] || { log "Workshop mission manifest contains duplicates"; return 1; }
-	    seen[$id]=1; ids+=("$id"); expected_filenames[$id]="$expected_filename"; expected_sizes[$id]="$expected_size"
+	    seen[$id]=1; ids+=("$id"); expected_filenames[$id]="$expected_filename"; expected_sizes[$id]="$expected_size"; expected_total=$((expected_total + expected_size))
   done <<< "$WORKSHOP_MISSION_MANIFEST"
   [ "${#ids[@]}" -le 20 ] || { log "Workshop mission item limit exceeded"; return 1; }
 	[ "${#ids[@]}" -gt 0 ] || return 0
+	require_workshop_space "$((expected_total * 2 + 268435456))"
 	manifest_file="$(mktemp /run/gsp-workshop-missions.XXXXXX)"
 	trap '[ -z "$pending" ] || rm -rf -- "$pending"; rm -f -- "$manifest_file"' EXIT
   for id in "${ids[@]}"; do
@@ -393,8 +461,8 @@ install_workshop_missions() (
 		rm -f -- "$runfile"; [ "$code" -eq 0 ] && break; [ "$code" -eq 75 ] || return "$code"
 		log "Retrying transient Workshop mission download"
 	  done
-	  [ "$code" -eq 0 ] || { log "Workshop mission download retries exhausted"; return 1; }
-	  source="$ROOT/home/Steam/steamapps/workshop/content/107410/$id"
+	  [ "$code" -eq 0 ] || { printf 'ERR_WORKSHOP_DOWNLOAD_TIMEOUT: Workshop scenario download retries were exhausted.\n' >&2; return 1; }
+	  source="$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/$id"
 	  [ -d "$source" ] || { printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario content was not downloaded.\n' >&2; return 1; }
 	  ! find "$source" -type l -print -quit | grep -q . || { printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario content contains a symbolic link.\n' >&2; return 1; }
 	  mapfile -d '' pbos < <(find "$source" -maxdepth 4 -type f \( -iname '*.pbo' -o -iname '*_legacy.bin' \) -print0)
@@ -419,6 +487,7 @@ install_workshop_missions() (
 	aws s3 cp "$final/mission.pbo" "s3://$ASSETS_BUCKET/$object_key" --region "$AWS_REGION" --only-show-errors --checksum-algorithm SHA256
 	mkdir -p "$ROOT/arma3/mpmissions"; cp -- "$final/mission.pbo" "$ROOT/arma3/mpmissions/.workshop-$id.pending"; chown steam:steam "$ROOT/arma3/mpmissions/.workshop-$id.pending"; chmod 0644 "$ROOT/arma3/mpmissions/.workshop-$id.pending"; mv -f -- "$ROOT/arma3/mpmissions/.workshop-$id.pending" "$ROOT/arma3/mpmissions/$filename"
 	printf '%s\t%s\t%s\t%s\n' "$checksum" "$filename" "$object_key" "$id" >> "$manifest_file"
+	record_workshop_sync_result mission "$id" "$WORKSHOP_MISSION_REVISION"
   done
 	aws s3 cp "$manifest_file" "s3://$ASSETS_BUCKET/sessions/$SESSION_ID/workshop-resolutions/$WORKSHOP_MISSION_REVISION.tsv" --region "$AWS_REGION" --only-show-errors --content-type text/tab-separated-values
 )
@@ -455,8 +524,15 @@ lowercase_tree() {
   done < <(find "$root" -depth -name '*[A-Z]*' -print0)
 }
 
+workshop_item_updated_at() {
+  local id="$1" acf="$WORKSHOP_STAGING_ROOT/steamapps/workshop/appworkshop_107410.acf"
+  [ -f "$acf" ] || return 1
+  awk -F'"' -v id="$id" '$2 == id {inside=1; next} inside && tolower($2) == "timeupdated" {print $4; exit} inside && $0 ~ /^[[:space:]]*}[[:space:]]*$/ {exit}' "$acf"
+}
+
 install_workshop() (
   if [ "$VANILLA_MODE" = true ]; then
+	[ "$WORKSHOP_PROMOTE_MODS" = true ] || return 0
     : > "$ROOT/config/mods.txt"
 	: > "$ROOT/config/server-mods.txt"
     rm -f "$ROOT/config/preset.html"
@@ -475,7 +551,8 @@ install_workshop() (
 		aws s3 cp "s3://$ASSETS_BUCKET/$PRESET_KEY" "$preset_file" --region "$AWS_REGION" --only-show-errors
 		mapfile -t ids < <(grep -Eio "id=[0-9]+|data-publishedfileid=[\"'][0-9]+" "$preset_file" | grep -Eo '[0-9]+' | awk '!seen[$0]++')
 	else
-		rm -f -- "$preset_file" "$ROOT/config/preset.html"
+		rm -f -- "$preset_file"
+		[ "$WORKSHOP_PROMOTE_MODS" = true ] && rm -f -- "$ROOT/config/preset.html"
 	fi
 	if [ -n "$SERVER_PRESET_KEY" ]; then
 		aws s3 cp "s3://$ASSETS_BUCKET/$SERVER_PRESET_KEY" "$server_preset_file" --region "$AWS_REGION" --only-show-errors
@@ -496,32 +573,67 @@ install_workshop() (
     [ -d "$ROOT/arma3/$dlc" ] || { log "Selected Creator DLC $dlc was not installed"; return 1; }
     mods="${mods:+$mods;}$dlc"
   done
-	local id source link source_size
+	local id source link source_size revision_root pending expected_update actual_update extra
+	declare -A expected_updates=()
+	while IFS=$'\t' read -r id expected_update extra; do
+		[ -z "$id" ] && continue
+		[[ "$id" =~ ^[1-9][0-9]{0,19}$ && "$expected_update" =~ ^-?[0-9]+$ && -z "$extra" ]] || { printf 'ERR_WORKSHOP_METADATA_DRIFT: Workshop mod snapshot metadata is invalid.\n' >&2; return 1; }
+		expected_updates[$id]="$expected_update"
+	done <<< "$WORKSHOP_MOD_MANIFEST"
   workshop_count=$((${#ids[@]} + ${#server_ids[@]}))
 	[ "$workshop_count" -le 250 ] || { log "Workshop mod count exceeds the supported limit"; return 1; }
   if [ "$workshop_count" -gt 0 ]; then
+  require_workshop_space 5368709120
   activity "WORKSHOP_ITEMS:$workshop_count"
 	for id in "${ids[@]}" "${server_ids[@]}"; do [ -z "$id" ] || download_workshop_item "$id"; done
   for id in "${ids[@]}"; do
-    source="$ROOT/home/Steam/steamapps/workshop/content/107410/$id"
+    source="$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/$id"
     [ -d "$source" ] || { log "Workshop item $id was not downloaded"; return 1; }
 	! find "$source" -type l -print -quit | grep -q . || { log "Workshop mod content contains a symbolic link"; return 1; }
+	expected_update="${expected_updates[$id]:-0}"
+	if [ "$expected_update" -gt 0 ]; then
+		actual_update="$(workshop_item_updated_at "$id" || true)"
+		[ "$actual_update" = "$expected_update" ] || { printf 'ERR_WORKSHOP_METADATA_DRIFT: Workshop mod changed after metadata resolution.\n' >&2; return 1; }
+	fi
 	source_size="$(du -sb "$source" | awk '{print $1}')"; [ "$source_size" -gt 0 ] && [ "$source_size" -le 21474836480 ] || { log "Workshop mod content size is outside the allowed range"; return 1; }
     lowercase_tree "$source"
-    link="$ROOT/arma3/@workshop_$id"
-    ln -sfn "$source" "$link"
-    mods="${mods:+$mods;}@workshop_$id"
+	revision_root="$ROOT/workshop/mod-revisions/client-$PRESET_REVISION"
+	mkdir -p "$revision_root"
+	[ ! -e "$revision_root/$id" ] || rm -rf -- "$revision_root/$id"
+	pending="$(mktemp -d "$revision_root/.pending-$id.XXXXXX")"
+	cp -a -- "$source/." "$pending/"
+	chown -R steam:steam "$pending"
+	mv -- "$pending" "$revision_root/$id"
+	source="$revision_root/$id"
+	if [ "$WORKSHOP_PROMOTE_MODS" = true ]; then
+      link="$ROOT/arma3/@workshop_$id"
+      ln -sfn "$source" "$link"
+      mods="${mods:+$mods;}@workshop_$id"
+	fi
+	record_workshop_sync_result mod "$id" "${WORKSHOP_MOD_RESOLUTION:-$PRESET_REVISION}"
   done
 	for id in "${server_ids[@]}"; do
-		source="$ROOT/home/Steam/steamapps/workshop/content/107410/$id"
+		source="$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/$id"
 		[ -d "$source" ] || { log "Server-only Workshop item $id was not downloaded"; return 1; }
 		! find "$source" -type l -print -quit | grep -q . || { log "Server-only Workshop content contains a symbolic link"; return 1; }
 		lowercase_tree "$source"
-		link="$ROOT/arma3/@workshop_$id"
-		ln -sfn "$source" "$link"
-		server_mods="${server_mods:+$server_mods;}@workshop_$id"
+		revision_root="$ROOT/workshop/mod-revisions/server-$SERVER_PRESET_REVISION"
+		mkdir -p "$revision_root"
+		[ ! -e "$revision_root/$id" ] || rm -rf -- "$revision_root/$id"
+		pending="$(mktemp -d "$revision_root/.pending-$id.XXXXXX")"
+		cp -a -- "$source/." "$pending/"
+		chown -R steam:steam "$pending"
+		mv -- "$pending" "$revision_root/$id"
+		source="$revision_root/$id"
+		if [ "$WORKSHOP_PROMOTE_MODS" = true ]; then
+			link="$ROOT/arma3/@workshop_$id"
+			ln -sfn "$source" "$link"
+			server_mods="${server_mods:+$server_mods;}@workshop_$id"
+		fi
+		record_workshop_sync_result server_mod "$id" "$SERVER_PRESET_REVISION"
 	done
 	fi
+	[ "$WORKSHOP_PROMOTE_MODS" = true ] || return 0
 	printf '%s' "$mods" > "$mods_file"
 	printf '%s' "$server_mods" > "$server_mods_file"
 	if [ -n "$PRESET_KEY" ]; then ln -sfn "presets/revision-$PRESET_REVISION.html" "$ROOT/config/preset.html"; fi
@@ -531,6 +643,17 @@ install_workshop() (
   mkdir -p "$ROOT/home/Steam/steamapps/workshop"
   chown -R steam:steam "$ROOT/config" "$ROOT/home/Steam/steamapps/workshop" "$ROOT/arma3"
 )
+
+sync_workshop_content() {
+  prepare_workshop_staging
+  case "$WORKSHOP_SYNC_TARGET" in
+    all) install_workshop_missions; install_workshop ;;
+    missions) install_workshop_missions ;;
+    mods) install_workshop ;;
+  esac
+  publish_workshop_sync_results
+  cleanup_workshop_staging
+}
 
 sqf_escape() { printf '%s' "$1" | sed 's/"/""/g'; }
 
@@ -699,25 +822,37 @@ launch_and_verify() {
 exec 8>/run/gsp-bootstrap-host.lock
 flock -w 30 8
 : > "$PROGRESS_FILE"
+if [ "$GSP_OPERATION_MODE" = workshop_sync ]; then
+  [ -d "$ROOT" ] && [ -x "$ROOT/steamcmd/steamcmd.sh" ] || { log "Workshop sync requires a prepared managed host"; exit 1; }
+  mkdir -p "$STATE_DIR" "$LOG_DIR" "$ROOT/workshop" "$ROOT/workshop-staging"
+  begin_steam_auth
+  sync_workshop_content
+  persist_steam_auth
+  cleanup_steam_auth
+  if [ "$WORKSHOP_PROMOTE_MODS" = true ]; then
+    checkpoint SERVICE_STARTED
+    launch_and_verify
+  fi
+  log "Workshop content sync complete"
+  exit 0
+fi
+[ "$GSP_OPERATION_MODE" = bootstrap ] || { log "unsupported host operation mode"; exit 1; }
 prepare_host
 checkpoint HOST_PREPARED
 mkdir -p "$STATE_DIR" "$LOG_DIR"
 exec 9>"$STATE_DIR/bootstrap.lock"
 flock -w 30 9
-for stage in install_steamcmd install_arma install_workshop_missions install_workshop deploy_content install_teamspeak; do
+for stage in install_steamcmd install_arma sync_workshop_content deploy_content install_teamspeak; do
 	if [ "$stage" = install_arma ] && ! $STEAM_AUTH_ACTIVE; then begin_steam_auth; fi
 	case "$stage" in
 		install_steamcmd) checkpoint GAME_SERVER_INSTALLED;;
-		install_workshop) checkpoint MODS_APPLIED;;
+		sync_workshop_content) checkpoint MODS_APPLIED;;
 		deploy_content) checkpoint CONFIGURATION_READY;;
 	esac
   marker="$STATE_DIR/$stage.complete"
-	if [ "$stage" = install_workshop ] && [ "$VANILLA_MODE" = false ]; then
-		marker="$STATE_DIR/$stage.revision-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete"
+	if [ "$stage" = sync_workshop_content ]; then
+		marker="$STATE_DIR/$stage.missions-$WORKSHOP_MISSION_REVISION.client-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete"
 		[ "$PRESET_ROLLBACK" = true ] && rm -f -- "$marker"
-	fi
-	if [ "$stage" = install_workshop_missions ]; then
-		marker="$STATE_DIR/$stage.revision-$WORKSHOP_MISSION_REVISION.complete"
 	fi
 	if [ "$stage" = deploy_content ]; then
 		[[ "$CONTENT_REVISION" =~ ^[0-9a-f]{64}$ ]] || { log "content deployment revision is invalid"; exit 1; }
@@ -725,7 +860,7 @@ for stage in install_steamcmd install_arma install_workshop_missions install_wor
 	fi
   if [ -f "$marker" ]; then
     log "stage $stage already complete"
-    if [ "$stage" = install_workshop ] && $STEAM_AUTH_ACTIVE; then persist_steam_auth; cleanup_steam_auth; fi
+    if [ "$stage" = sync_workshop_content ] && $STEAM_AUTH_ACTIVE; then persist_steam_auth; cleanup_steam_auth; fi
     continue
   fi
   log "starting stage $stage"
@@ -735,10 +870,10 @@ for stage in install_steamcmd install_arma install_workshop_missions install_wor
     # deployment but before the new marker, the next attempt safely replays.
     rm -f -- "$STATE_DIR/deploy_content.complete" "$STATE_DIR"/deploy_content.revision-*.complete
   fi
-	if [ "$stage" = install_workshop_missions ]; then rm -f -- "$STATE_DIR/install_workshop_missions.complete" "$STATE_DIR"/install_workshop_missions.revision-*.complete; fi
+	if [ "$stage" = sync_workshop_content ]; then rm -f -- "$STATE_DIR/sync_workshop_content.complete" "$STATE_DIR"/sync_workshop_content.*.complete; fi
   touch "$marker"
   log "completed stage $stage"
-	if [ "$stage" = install_workshop ] && $STEAM_AUTH_ACTIVE; then persist_steam_auth; cleanup_steam_auth; fi
+	if [ "$stage" = sync_workshop_content ] && $STEAM_AUTH_ACTIVE; then persist_steam_auth; cleanup_steam_auth; fi
 done
 checkpoint SERVICE_STARTED
 log "starting stage launch_and_verify"

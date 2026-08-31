@@ -50,8 +50,8 @@ func (client *Client) Item(ctx context.Context, publishedFileID uint64) (domain.
 // Items batches Steam's published-file endpoint to bound collection latency,
 // request count, and Lambda cost while preserving caller order exactly.
 func (client *Client) Items(ctx context.Context, publishedFileIDs []uint64) ([]domain.WorkshopItem, error) {
-	if len(publishedFileIDs) == 0 || len(publishedFileIDs) > domain.MaximumWorkshopChildren {
-		return nil, fmt.Errorf("published file batch must contain 1 to %d IDs", domain.MaximumWorkshopChildren)
+	if len(publishedFileIDs) == 0 || len(publishedFileIDs) > domain.MaximumWorkshopMetadataItems {
+		return nil, fmt.Errorf("published file batch must contain 1 to %d IDs", domain.MaximumWorkshopMetadataItems)
 	}
 	seen := make(map[uint64]struct{}, len(publishedFileIDs))
 	items := make([]domain.WorkshopItem, 0, len(publishedFileIDs))

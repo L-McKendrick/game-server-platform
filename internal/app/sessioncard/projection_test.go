@@ -139,8 +139,31 @@ func TestProjectShowsAcceptedWorkshopMissionSourceBeforeBootstrapDownload(t *tes
 	session := domain.Session{DisplayName: "Workshop", Slug: "workshop", GameType: "arma3", LifecycleState: domain.StateDraft, UpdatedAt: now,
 		WorkshopMissionSources: []domain.WorkshopMissionSource{{Source: domain.WorkshopReference{PublishedFileID: 42, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=42"}, SourceKind: domain.WorkshopSourceItem, ResolutionSHA256: strings.Repeat("a", 64), AcceptedItemIDs: []uint64{42}, ResolvedAt: now}}}
 	projection := Project(session, Options{Now: now})
-	if projection.Artifacts.Mission.Status != "Workshop source accepted; downloads on next start" || projection.Artifacts.Mission.Issue != "" {
+	if projection.Artifacts.Mission.Status != "Workshop scenarios queued for initial start" || projection.Artifacts.Mission.Issue != "" {
 		t.Fatalf("mission projection = %#v", projection.Artifacts.Mission)
+	}
+}
+
+func TestProjectShowsWorkshopMetadataResolutionBeforeSourceExists(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	session := domain.Session{DisplayName: "Test", Slug: "test", GameType: "arma3", LifecycleState: domain.StateRunning, UpdatedAt: now, WorkshopResolutionTarget: domain.WorkshopTargetMission, WorkshopResolutionRequestKey: "request-1", WorkshopResolutionRequestedAt: now}
+	projection := Project(session, Options{Now: now})
+	if projection.Artifacts.Mission.Status != "Resolving Workshop source metadata" {
+		t.Fatalf("mission status = %q", projection.Artifacts.Mission.Status)
+	}
+	session.WorkshopResolutionTarget = domain.WorkshopTargetMods
+	projection = Project(session, Options{Now: now})
+	if projection.Mods.Status != "Resolving Workshop source metadata" {
+		t.Fatalf("mod status = %q", projection.Mods.Status)
+	}
+}
+
+func TestProjectShowsLiveWorkshopSyncAndExcludedChildren(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	session := domain.Session{ID: "session-1", DisplayName: "Test", Slug: "test", GameType: "arma3", LifecycleState: domain.StateRunning, UpdatedAt: now, ActiveWorkflowID: "wsync-1", ActiveWorkflowType: domain.WorkshopContentSyncWorkflowType, Progress: domain.SessionProgress{WorkflowID: "wsync-1", WorkflowType: domain.WorkshopContentSyncWorkflowType, Milestone: domain.ProgressAccepted, State: domain.ProgressActive, StartedAt: now, LastProgressAt: now}, WorkshopMissionSources: []domain.WorkshopMissionSource{{ExcludedItems: []domain.WorkshopResolutionItem{{PublishedFileID: 42, Class: domain.WorkshopItemClientMod}}}}}
+	projection := Project(session, Options{Now: now})
+	if projection.CurrentOperation != "Synchronizing Workshop content" || projection.Stage != "Downloading and validating" || projection.Artifacts.Mission.Status != "Workshop scenarios downloading and validating" || !strings.Contains(projection.Artifacts.Mission.Issue, "42 (client_mod)") {
+		t.Fatalf("projection = %#v", projection)
 	}
 }
 

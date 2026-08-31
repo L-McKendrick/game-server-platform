@@ -2,6 +2,7 @@ package workshop
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,45 @@ func (clock testClock) Now() time.Time { return clock.now }
 type testCatalog struct {
 	items    map[uint64]domain.WorkshopItem
 	children map[uint64][]uint64
+}
+
+type oversizedCollectionCatalog struct{ childMetadataRequested bool }
+
+func (catalog *oversizedCollectionCatalog) Item(_ context.Context, id uint64) (domain.WorkshopItem, error) {
+	return domain.WorkshopItem{PublishedFileID: id, ConsumerAppID: domain.Arma3WorkshopAppID, Available: true, Collection: true}, nil
+}
+
+func (catalog *oversizedCollectionCatalog) Items(_ context.Context, _ []uint64) ([]domain.WorkshopItem, error) {
+	catalog.childMetadataRequested = true
+	return nil, nil
+}
+
+func (catalog *oversizedCollectionCatalog) CollectionChildren(_ context.Context, _ uint64) ([]uint64, error) {
+	children := make([]uint64, domain.MaximumWorkshopCollectionChildren+1)
+	for index := range children {
+		children[index] = uint64(index + 1)
+	}
+	return children, nil
+}
+
+func TestResolveRejectsOversizedCollectionBeforeChildMetadata(t *testing.T) {
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	catalog := &oversizedCollectionCatalog{}
+	service, err := New(catalog, testClock{now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Resolve(context.Background(), domain.WorkshopSourceRequest{
+		MessageType: "workshop_resolution", SchemaVersion: 1, SessionID: "session-1", Target: domain.WorkshopTargetMission,
+		SourceURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=10", ActorID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+		CorrelationID: "correlation-1", IdempotencyKey: "workshop-limit", RequestedAt: now,
+	})
+	if err == nil || !strings.Contains(err.Error(), "maximum is 50") {
+		t.Fatalf("Resolve() error = %v; want collection limit rejection", err)
+	}
+	if catalog.childMetadataRequested {
+		t.Fatal("oversized collection requested child metadata")
+	}
 }
 
 func (catalog testCatalog) Item(_ context.Context, id uint64) (domain.WorkshopItem, error) {

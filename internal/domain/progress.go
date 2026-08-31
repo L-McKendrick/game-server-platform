@@ -60,6 +60,7 @@ const (
 )
 
 const ProvisionWorkflowType = "ProvisionSession"
+const WorkshopContentSyncWorkflowType = "WorkshopContentSync"
 
 var workflowMilestoneSets = map[string][]ProgressMilestone{
 	ProvisionWorkflowType: {
@@ -91,6 +92,7 @@ var workflowMilestoneSets = map[string][]ProgressMilestone{
 	TerminationWorkflowType: {
 		ProgressAccepted, ProgressRuntimeRemoved, ProgressArtifactsRemoved, ProgressCompleted,
 	},
+	WorkshopContentSyncWorkflowType: {ProgressAccepted, ProgressModsApplied, ProgressCompleted},
 	"ReconcileSession": {
 		ProgressAccepted, ProgressResourcesInspected, ProgressMetadataReconciled, ProgressCompleted,
 	},

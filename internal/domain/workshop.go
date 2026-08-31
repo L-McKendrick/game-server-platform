@@ -12,14 +12,17 @@ import (
 )
 
 const (
-	Arma3WorkshopAppID                  uint32 = 107410
-	MaximumWorkshopChildren                    = 500
-	MaximumWorkshopMissionItems                = 20
-	MaximumWorkshopMissionSources              = 20
-	MaximumWorkshopMissionSnapshotItems        = 1000
-	MaximumWorkshopMissionBytes         int64  = 100 * 1024 * 1024
-	MaximumWorkshopModItems                    = 250
-	MaximumWorkshopModSnapshotItems            = 1000
+	Arma3WorkshopAppID uint32 = 107410
+	// MaximumWorkshopCollectionChildren bounds the complete direct membership
+	// snapshot before child metadata is fetched or any host work is requested.
+	MaximumWorkshopCollectionChildren         = 50
+	MaximumWorkshopMetadataItems              = 500
+	MaximumWorkshopMissionItems               = 20
+	MaximumWorkshopMissionSources             = 20
+	MaximumWorkshopMissionSnapshotItems       = 1000
+	MaximumWorkshopMissionBytes         int64 = 100 * 1024 * 1024
+	MaximumWorkshopModItems                   = 250
+	MaximumWorkshopModSnapshotItems           = 1000
 )
 
 type WorkshopTarget string
@@ -56,6 +59,7 @@ const (
 	WorkshopMetadataRateLimited     WorkshopMetadataErrorCode = "WORKSHOP_RATE_LIMITED"
 	WorkshopMetadataTransient       WorkshopMetadataErrorCode = "WORKSHOP_TRANSIENT"
 	WorkshopMetadataRejected        WorkshopMetadataErrorCode = "WORKSHOP_REJECTED"
+	WorkshopMetadataCollectionLimit WorkshopMetadataErrorCode = "WORKSHOP_COLLECTION_LIMIT"
 	WorkshopMetadataInvalidResponse WorkshopMetadataErrorCode = "WORKSHOP_INVALID_RESPONSE"
 )
 
@@ -85,6 +89,47 @@ type WorkshopSourceRequest struct {
 	IdempotencyKey               string         `json:"idempotency_key"`
 	RequestedAt                  time.Time      `json:"requested_at"`
 	ExpectedActivePresetRevision int64          `json:"expected_active_preset_revision,omitempty"`
+}
+
+func (session *Session) BeginWorkshopResolution(target WorkshopTarget, requestKey string, now time.Time) error {
+	requestKey = strings.TrimSpace(requestKey)
+	if (target != WorkshopTargetMission && target != WorkshopTargetMods) || requestKey == "" || now.IsZero() {
+		return fmt.Errorf("invalid Workshop resolution marker")
+	}
+	if session.WorkshopResolutionRequestKey != "" && (session.WorkshopResolutionTarget != target || session.WorkshopResolutionRequestKey != requestKey) {
+		return ErrConflict
+	}
+	session.WorkshopResolutionTarget = target
+	session.WorkshopResolutionRequestKey = requestKey
+	session.WorkshopResolutionRequestedAt = now.UTC()
+	session.Version++
+	session.UpdatedAt = now.UTC()
+	return session.Validate()
+}
+
+func (session *Session) FinishWorkshopResolution(target WorkshopTarget, requestKey string, now time.Time) error {
+	if session.WorkshopResolutionRequestKey == "" {
+		return nil
+	}
+	if session.WorkshopResolutionTarget != target || session.WorkshopResolutionRequestKey != strings.TrimSpace(requestKey) {
+		return ErrConflict
+	}
+	session.WorkshopResolutionTarget = ""
+	session.WorkshopResolutionRequestKey = ""
+	session.WorkshopResolutionRequestedAt = time.Time{}
+	session.Version++
+	session.UpdatedAt = now.UTC()
+	return session.Validate()
+}
+
+func (session *Session) clearWorkshopResolutionMarker(target WorkshopTarget) bool {
+	if session.WorkshopResolutionTarget == target {
+		session.WorkshopResolutionTarget = ""
+		session.WorkshopResolutionRequestKey = ""
+		session.WorkshopResolutionRequestedAt = time.Time{}
+		return true
+	}
+	return false
 }
 
 func (request WorkshopSourceRequest) Validate() error {
@@ -183,8 +228,10 @@ type WorkshopMissionItem struct {
 }
 
 type WorkshopModItem struct {
-	PublishedFileID uint64 `json:"published_file_id"`
-	Title           string `json:"title"`
+	PublishedFileID uint64    `json:"published_file_id"`
+	Title           string    `json:"title"`
+	UpdatedAt       time.Time `json:"updated_at,omitempty"`
+	FileSize        int64     `json:"file_size,omitempty"`
 }
 type WorkshopModSource struct {
 	Source            WorkshopReference        `json:"source"`
@@ -197,6 +244,21 @@ type WorkshopModSource struct {
 	ModlistObjectKey  string                   `json:"modlist_object_key"`
 	ManifestObjectKey string                   `json:"manifest_object_key"`
 	ArtifactSHA256    string                   `json:"artifact_sha256"`
+}
+
+// CanChangeWorkshopSources limits user-authored source snapshots to lifecycle
+// boundaries where they cannot alter an in-flight bootstrap/archive manifest.
+// Sleeping and warning sessions may safely retain content for their next wake.
+func (session Session) CanChangeWorkshopSources() bool {
+	if session.ActiveWorkflowID != "" {
+		return false
+	}
+	switch session.LifecycleState {
+	case StateDraft, StateNew, StateReady, StateRunning, StateIdle, StateSleeping, StateWarning1, StateWarning2, StateFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 // PersistenceProjection omits untrusted display titles from the hot session
@@ -218,7 +280,7 @@ func NewWorkshopModSource(resolution WorkshopResolution) (WorkshopModSource, err
 	source := WorkshopModSource{Source: resolution.Source, SourceKind: resolution.SourceKind, ResolutionSHA256: resolution.ResolutionSHA256, ResolvedAt: resolution.ResolvedAt.UTC()}
 	for _, item := range resolution.Items {
 		if item.MatchesTarget && item.Class == WorkshopItemClientMod {
-			source.AcceptedItems = append(source.AcceptedItems, WorkshopModItem{PublishedFileID: item.PublishedFileID, Title: boundedWorkshopTitle(item.Title)})
+			source.AcceptedItems = append(source.AcceptedItems, WorkshopModItem{PublishedFileID: item.PublishedFileID, Title: boundedWorkshopTitle(item.Title), UpdatedAt: item.UpdatedAt.UTC(), FileSize: item.FileSize})
 		} else {
 			source.ExcludedItems = append(source.ExcludedItems, WorkshopResolutionItem{PublishedFileID: item.PublishedFileID, Class: item.Class})
 		}
@@ -244,7 +306,7 @@ func (source WorkshopModSource) Validate() error {
 	}
 	seen := map[uint64]bool{}
 	for _, item := range source.AcceptedItems {
-		if item.PublishedFileID == 0 || seen[item.PublishedFileID] || item.Title != boundedWorkshopTitle(item.Title) {
+		if item.PublishedFileID == 0 || seen[item.PublishedFileID] || item.Title != boundedWorkshopTitle(item.Title) || item.FileSize < 0 {
 			return fmt.Errorf("Workshop mod item is invalid")
 		}
 		seen[item.PublishedFileID] = true
@@ -254,6 +316,9 @@ func (source WorkshopModSource) Validate() error {
 			return fmt.Errorf("Workshop mod exclusion is invalid")
 		}
 		seen[item.PublishedFileID] = true
+	}
+	if source.SourceKind == WorkshopSourceCollection && len(source.AcceptedItems)+len(source.ExcludedItems) > MaximumWorkshopCollectionChildren {
+		return fmt.Errorf("Workshop collection exceeds the %d-item limit", MaximumWorkshopCollectionChildren)
 	}
 	if source.SourceKind == WorkshopSourceItem && (len(source.AcceptedItems) != 1 || source.AcceptedItems[0].PublishedFileID != source.Source.PublishedFileID || len(source.ExcludedItems) != 0) {
 		return fmt.Errorf("Workshop mod item source must resolve only itself")
@@ -272,9 +337,10 @@ func (session *Session) RecordWorkshopModSource(source WorkshopModSource, now ti
 		return err
 	}
 	source = source.PersistenceProjection()
-	if session.LifecycleState == StateDeleting || session.LifecycleState == StateDeleted || session.LifecycleState == StateArchiving || session.LifecycleState == StateDestroying {
+	if !session.CanChangeWorkshopSources() {
 		return fmt.Errorf("%w: Workshop mods cannot change in the current lifecycle", ErrInvalidTransition)
 	}
+	session.clearWorkshopResolutionMarker(WorkshopTargetMods)
 	for _, existing := range session.WorkshopModSources {
 		if existing.Source == source.Source && existing.ResolutionSHA256 == source.ResolutionSHA256 && existing.ArtifactSHA256 == source.ArtifactSHA256 {
 			return nil
@@ -430,6 +496,9 @@ func (source WorkshopMissionSource) Validate() error {
 		}
 		seen[item.PublishedFileID] = struct{}{}
 	}
+	if source.SourceKind == WorkshopSourceCollection && len(source.AcceptedItemIDs)+len(source.ExcludedItems) > MaximumWorkshopCollectionChildren {
+		return fmt.Errorf("Workshop collection exceeds the %d-item limit", MaximumWorkshopCollectionChildren)
+	}
 	return nil
 }
 
@@ -437,12 +506,16 @@ func (session *Session) RecordWorkshopMissionSource(source WorkshopMissionSource
 	if err := source.Validate(); err != nil {
 		return err
 	}
-	if session.LifecycleState == StateDeleting || session.LifecycleState == StateDeleted || session.LifecycleState == StateArchiving || session.LifecycleState == StateDestroying {
+	if !session.CanChangeWorkshopSources() {
 		return fmt.Errorf("%w: Workshop missions cannot change in the current lifecycle", ErrInvalidTransition)
 	}
+	resolutionCleared := session.clearWorkshopResolutionMarker(WorkshopTargetMission)
 	for index, existing := range session.WorkshopMissionSources {
 		if existing.Source.PublishedFileID == source.Source.PublishedFileID && existing.SourceKind == source.SourceKind {
 			if existing.ResolutionSHA256 == source.ResolutionSHA256 {
+				if resolutionCleared {
+					return session.RecordMutation(now)
+				}
 				return nil
 			}
 			updated := append([]WorkshopMissionSource(nil), session.WorkshopMissionSources...)
@@ -553,7 +626,11 @@ func (resolution *WorkshopResolution) Finalize(now time.Time) error {
 	if resolution.SchemaVersion != 1 || (resolution.Target != WorkshopTargetMission && resolution.Target != WorkshopTargetMods) {
 		return fmt.Errorf("invalid Workshop resolution")
 	}
-	if resolution.Source.PublishedFileID == 0 || len(resolution.Items) == 0 || len(resolution.Items) > MaximumWorkshopChildren {
+	maximumItems := 1
+	if resolution.SourceKind == WorkshopSourceCollection {
+		maximumItems = MaximumWorkshopCollectionChildren
+	}
+	if resolution.Source.PublishedFileID == 0 || len(resolution.Items) == 0 || len(resolution.Items) > maximumItems {
 		return fmt.Errorf("Workshop resolution item count is invalid")
 	}
 	slices.SortFunc(resolution.Items, func(left, right WorkshopItem) int {

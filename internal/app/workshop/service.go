@@ -39,8 +39,11 @@ func (service *Service) Resolve(ctx context.Context, request domain.WorkshopSour
 		if childErr != nil {
 			return domain.WorkshopResolution{}, fmt.Errorf("resolve Workshop collection: %w", childErr)
 		}
-		if len(children) == 0 || len(children) > domain.MaximumWorkshopChildren {
-			return domain.WorkshopResolution{}, fmt.Errorf("Workshop collection must contain between 1 and %d children", domain.MaximumWorkshopChildren)
+		if len(children) == 0 || len(children) > domain.MaximumWorkshopCollectionChildren {
+			if len(children) > domain.MaximumWorkshopCollectionChildren {
+				return domain.WorkshopResolution{}, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataCollectionLimit, Detail: fmt.Sprintf("Workshop collection contains %d direct children; maximum is %d", len(children), domain.MaximumWorkshopCollectionChildren)}
+			}
+			return domain.WorkshopResolution{}, fmt.Errorf("Workshop collection must contain at least one child")
 		}
 		seen := make(map[uint64]struct{}, len(children))
 		uniqueChildren := make([]uint64, 0, len(children))

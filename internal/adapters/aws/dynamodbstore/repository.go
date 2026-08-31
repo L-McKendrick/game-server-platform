@@ -166,6 +166,9 @@ type sessionItem struct {
 	MissionArtifactIssue             string   `dynamodbav:"mission_artifact_issue,omitempty"`
 	PresetArtifactIssue              string   `dynamodbav:"preset_artifact_issue,omitempty"`
 	ServerPresetArtifactIssue        string   `dynamodbav:"server_preset_artifact_issue,omitempty"`
+	WorkshopResolutionTarget         string   `dynamodbav:"workshop_resolution_target,omitempty"`
+	WorkshopResolutionRequestKey     string   `dynamodbav:"workshop_resolution_request_key,omitempty"`
+	WorkshopResolutionRequestedAt    string   `dynamodbav:"workshop_resolution_requested_at,omitempty"`
 	CapacitySlotID                   string   `dynamodbav:"capacity_slot_id,omitempty"`
 	AvailabilityZone                 string   `dynamodbav:"availability_zone,omitempty"`
 	SubnetID                         string   `dynamodbav:"subnet_id,omitempty"`
@@ -1125,6 +1128,9 @@ func toSessionItem(session domain.Session) sessionItem {
 		MissionArtifactIssue:             session.MissionArtifactIssue,
 		PresetArtifactIssue:              session.PresetArtifactIssue,
 		ServerPresetArtifactIssue:        session.ServerPresetArtifactIssue,
+		WorkshopResolutionTarget:         string(session.WorkshopResolutionTarget),
+		WorkshopResolutionRequestKey:     session.WorkshopResolutionRequestKey,
+		WorkshopResolutionRequestedAt:    optionalTimestamp(session.WorkshopResolutionRequestedAt),
 		CapacitySlotID:                   session.Infrastructure.CapacitySlotID,
 		AvailabilityZone:                 session.Infrastructure.AvailabilityZone,
 		SubnetID:                         session.Infrastructure.SubnetID,
@@ -1295,6 +1301,10 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("parse pending preset rollback_at: %w", err)
 	}
+	workshopResolutionRequestedAt, err := parseOptionalTimestamp(item.WorkshopResolutionRequestedAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse Workshop resolution requested_at: %w", err)
+	}
 	missionStatus := domain.ArtifactStatus(item.MissionArtifactStatus)
 	if missionStatus == "" && strings.TrimSpace(item.MissionObjectKey) != "" {
 		missionStatus = domain.ArtifactAccepted
@@ -1364,33 +1374,36 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	}
 
 	session := domain.Session{
-		ID:                     item.SessionID,
-		Slug:                   item.Slug,
-		DisplayName:            item.DisplayName,
-		Description:            item.Description,
-		GameType:               item.GameType,
-		OwnerDiscordUserID:     item.OwnerDiscordUserID,
-		GuildID:                item.GuildID,
-		ChannelID:              item.ChannelID,
-		GameProfileID:          item.GameProfileID,
-		SleepAfterSeconds:      item.SleepAfterSeconds,
-		ArchiveAfterSeconds:    item.ArchiveAfterSeconds,
-		TeamSpeakEnabled:       item.TeamSpeakEnabled,
-		Vanilla:                item.Vanilla,
-		CreatorDLCs:            append([]string(nil), item.CreatorDLCs...),
-		StartWhenReady:         item.StartWhenReady,
-		ConfigurationRevision:  item.ConfigurationRevision,
-		ServerConfigRevision:   item.ServerConfigRevision,
-		ServerConfigObjectKey:  item.ServerConfigObjectKey,
-		ServerConfigSHA256:     item.ServerConfigSHA256,
-		MissionObjectKey:       item.MissionObjectKey,
-		MissionFiles:           missionFiles,
-		ConfiguredMission:      configuredMission,
-		CurrentMission:         currentMission,
-		WorkshopMissionSources: workshopMissionSources,
-		WorkshopModSources:     workshopModSources,
-		PresetObjectKey:        item.PresetObjectKey,
-		PresetRevisionSequence: item.PresetRevisionSequence,
+		ID:                            item.SessionID,
+		Slug:                          item.Slug,
+		DisplayName:                   item.DisplayName,
+		Description:                   item.Description,
+		GameType:                      item.GameType,
+		OwnerDiscordUserID:            item.OwnerDiscordUserID,
+		GuildID:                       item.GuildID,
+		ChannelID:                     item.ChannelID,
+		GameProfileID:                 item.GameProfileID,
+		SleepAfterSeconds:             item.SleepAfterSeconds,
+		ArchiveAfterSeconds:           item.ArchiveAfterSeconds,
+		TeamSpeakEnabled:              item.TeamSpeakEnabled,
+		Vanilla:                       item.Vanilla,
+		CreatorDLCs:                   append([]string(nil), item.CreatorDLCs...),
+		StartWhenReady:                item.StartWhenReady,
+		ConfigurationRevision:         item.ConfigurationRevision,
+		ServerConfigRevision:          item.ServerConfigRevision,
+		ServerConfigObjectKey:         item.ServerConfigObjectKey,
+		ServerConfigSHA256:            item.ServerConfigSHA256,
+		MissionObjectKey:              item.MissionObjectKey,
+		MissionFiles:                  missionFiles,
+		ConfiguredMission:             configuredMission,
+		CurrentMission:                currentMission,
+		WorkshopMissionSources:        workshopMissionSources,
+		WorkshopModSources:            workshopModSources,
+		WorkshopResolutionTarget:      domain.WorkshopTarget(item.WorkshopResolutionTarget),
+		WorkshopResolutionRequestKey:  item.WorkshopResolutionRequestKey,
+		WorkshopResolutionRequestedAt: workshopResolutionRequestedAt,
+		PresetObjectKey:               item.PresetObjectKey,
+		PresetRevisionSequence:        item.PresetRevisionSequence,
 		PendingPresetRevision: domain.PresetRevision{
 			Number: item.PendingPresetRevision, BaseRevision: item.PendingPresetBaseRevision, PresetObjectKey: item.PendingPresetObjectKey,
 			Modlist: domain.PresetModlistMetadata{ObjectKey: item.PendingPresetModlistKey, Filename: item.PendingPresetModlistName, SHA256: item.PendingPresetModlistSHA, SizeBytes: item.PendingPresetModlistSize, WorkshopCount: item.PendingPresetWorkshopCount},

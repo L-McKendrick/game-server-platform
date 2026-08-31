@@ -23,6 +23,15 @@ func TestWorkshopFinalAttemptAndActionableMetadataMessage(t *testing.T) {
 	}
 }
 
+func TestWorkshopCollectionLimitMessageExplainsRecovery(t *testing.T) {
+	notice := workshopResolutionUserMessage(domain.WorkshopMetadataError{Code: domain.WorkshopMetadataCollectionLimit}, false)
+	for _, want := range []string{"50", "Split", "submit"} {
+		if !strings.Contains(notice, want) {
+			t.Fatalf("notice %q omitted %q", notice, want)
+		}
+	}
+}
+
 func TestWorkshopRecordMessagesGiveUserCorrectRecovery(t *testing.T) {
 	tests := []struct {
 		err  error

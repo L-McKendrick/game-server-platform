@@ -35,6 +35,9 @@ type workflowItem struct {
 	ErrorMessage       string `dynamodbav:"error_message,omitempty"`
 	CommandID          string `dynamodbav:"command_id,omitempty"`
 	CommandDeadlineAt  string `dynamodbav:"command_deadline_at,omitempty"`
+	ContentTarget      string `dynamodbav:"content_target,omitempty"`
+	ContentDigest      string `dynamodbav:"content_digest,omitempty"`
+	InstanceID         string `dynamodbav:"instance_id,omitempty"`
 	StartedAt          string `dynamodbav:"started_at"`
 	CompletedAt        string `dynamodbav:"completed_at,omitempty"`
 	LeaseExpiresAt     string `dynamodbav:"lease_expires_at"`
@@ -227,6 +230,7 @@ func toWorkflowItem(workflow domain.Workflow) workflowItem {
 		ExecutionARN: workflow.ExecutionARN, CurrentStage: workflow.CurrentStage,
 		ErrorCode: workflow.ErrorCode, ErrorMessage: workflow.ErrorMessage,
 		CommandID: workflow.CommandID, CommandDeadlineAt: optionalTimestamp(workflow.CommandDeadlineAt),
+		ContentTarget: workflow.ContentTarget, ContentDigest: workflow.ContentDigest, InstanceID: workflow.InstanceID,
 		StartedAt: optionalTimestamp(workflow.StartedAt), CompletedAt: optionalTimestamp(workflow.CompletedAt),
 		LeaseExpiresAt:    optionalTimestamp(workflow.LeaseExpiresAt),
 		CancelRequestedAt: optionalTimestamp(workflow.CancelRequestedAt), CancelRequestedBy: workflow.CancelRequestedBy,
@@ -271,6 +275,7 @@ func fromWorkflowItem(item workflowItem) (domain.Workflow, error) {
 		ExecutionARN: item.ExecutionARN, CurrentStage: item.CurrentStage,
 		ErrorCode: item.ErrorCode, ErrorMessage: item.ErrorMessage,
 		CommandID: item.CommandID, CommandDeadlineAt: commandDeadlineAt,
+		ContentTarget: item.ContentTarget, ContentDigest: item.ContentDigest, InstanceID: item.InstanceID,
 		StartedAt: startedAt, CompletedAt: completedAt, LeaseExpiresAt: leaseExpiresAt,
 		CancelRequestedAt: cancelRequestedAt, CancelRequestedBy: item.CancelRequestedBy,
 		Retry: domain.WorkflowRetry{Attempt: item.RetryAttempt, MaxAttempts: item.RetryMaxAttempts, LastAttemptAt: retryLastAttemptAt, NextAttemptAt: retryNextAttemptAt},

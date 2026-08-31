@@ -202,7 +202,7 @@ func TestRequestWorkshopResolveAuthorizesAndQueuesOwnerRequest(t *testing.T) {
 	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
 	repository := memory.NewSessionRepository()
 	queue := memory.NewArtifactQueue()
-	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now}, time.Hour, WithWorkshopQueue(queue))
+	service, err := NewService(repository, &sequenceIDGenerator{ids: []string{"event-workshop-queued"}}, fixedClock{now}, time.Hour, WithWorkshopQueue(queue))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,9 +222,43 @@ func TestRequestWorkshopResolveAuthorizesAndQueuesOwnerRequest(t *testing.T) {
 	if got := queue.WorkshopRequests(); len(got) != 1 || got[0].SourceURL != request.SourceURL {
 		t.Fatalf("Workshop requests = %#v", got)
 	}
+	persisted, err := repository.Get(context.Background(), session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.WorkshopResolutionTarget != domain.WorkshopTargetMission || persisted.WorkshopResolutionRequestKey != request.IdempotencyKey || persisted.WorkshopResolutionRequestedAt.IsZero() {
+		t.Fatalf("Workshop resolving marker = %#v", persisted)
+	}
 	request.ActorID = "owner-2"
 	if err := service.RequestWorkshopResolve(context.Background(), testActor("owner-2"), request); !errors.Is(err, domain.ErrForbidden) {
 		t.Fatalf("non-owner error = %v", err)
+	}
+}
+
+func TestRequestWorkshopResolveRejectsArchivedSession(t *testing.T) {
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	queue := memory.NewArtifactQueue()
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now}, time.Hour, WithWorkshopQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-archived-workshop", Slug: "archived-workshop", DisplayName: "Archived", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.LifecycleState = domain.StateArchived
+	event := domain.NewSessionCreatedEvent("event-archived-workshop", "correlation-archived-workshop", testActor("owner-1"), session, now)
+	record, _ := domain.NewCompletedIdempotencyRecord("seed:archived-workshop", "hash", session.ID, now, time.Hour)
+	if err := repository.Create(context.Background(), session, event, record); err != nil {
+		t.Fatal(err)
+	}
+	request := domain.WorkshopSourceRequest{MessageType: "workshop_resolution", SchemaVersion: 1, SessionID: session.ID, Target: domain.WorkshopTargetMission, SourceURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=42", ActorID: "owner-1", GuildID: session.GuildID, ChannelID: session.ChannelID, CorrelationID: "correlation-workshop", IdempotencyKey: "discord:archived-workshop", RequestedAt: now}
+	if err := service.RequestWorkshopResolve(context.Background(), testActor("owner-1"), request); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("RequestWorkshopResolve() error = %v; want invalid transition", err)
+	}
+	if got := queue.WorkshopRequests(); len(got) != 0 {
+		t.Fatalf("queued requests = %#v; want none", got)
 	}
 }
 

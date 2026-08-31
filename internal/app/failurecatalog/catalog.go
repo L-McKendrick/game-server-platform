@@ -101,6 +101,48 @@ var entries = map[string]entry{
 		"The platform did not install the ambiguous or unsafe scenario and retained the server for recovery.",
 		"Confirm the item is a public multiplayer Arma 3 scenario. Resubmit its link, or upload a correctly named mission PBO instead.",
 	},
+	"ERR_WORKSHOP_DISK_SPACE": {
+		"The Workshop content could not be staged on the server.",
+		"The managed data volume does not have enough free space for the isolated download and validated copy.",
+		"The platform removed temporary staging and retained the active mission and mods.",
+		"Remove unused session content or ask an operator to expand the data volume, then submit the Workshop link again.",
+	},
+	"ERR_WORKSHOP_VISIBILITY": {
+		"A recorded Workshop item is not downloadable.",
+		"The item is private, friends-only, restricted, or otherwise inaccessible to the server's Steam account.",
+		"The platform stopped the exact snapshot and retained active content.",
+		"Make every required item Public, confirm its page opens while signed out, then submit the item or collection link again.",
+	},
+	"ERR_WORKSHOP_ITEM_REMOVED": {
+		"A recorded Workshop item is no longer available.",
+		"The publisher removed the item or Steam no longer returns its downloadable files.",
+		"The platform stopped without substituting different content and retained active content.",
+		"Remove or replace the unavailable child in the collection, then submit the source again.",
+	},
+	"ERR_WORKSHOP_DOWNLOAD_TIMEOUT": {
+		"A Workshop item did not download within the bounded retries.",
+		"Steam or the network remained unavailable long enough to exhaust the item-level retry budget.",
+		"The platform cleaned temporary staging and retained active content.",
+		"Wait a few minutes and submit the same link again. If it repeats for one item, verify that item's availability.",
+	},
+	"ERR_WORKSHOP_ITEM_DOWNLOAD": {
+		"An individual Workshop item could not be downloaded.",
+		"Steam rejected or could not complete one item in the recorded item or collection snapshot.",
+		"The platform stopped the snapshot, cleaned temporary staging, and retained active content.",
+		"Check that every collection child is public and available, then submit the source again. If it repeats, give the support reference to an operator.",
+	},
+	"ERR_WORKSHOP_SYNC_DISPATCH": {
+		"Workshop synchronization could not start on the managed server.",
+		"The recorded instance changed, was no longer managed, or Systems Manager could not accept the command.",
+		"The platform released the content lock and retained active content.",
+		"Check `/rb status`, wait for any lifecycle operation to finish, then submit the Workshop link again.",
+	},
+	"ERR_WORKSHOP_METADATA_DRIFT": {
+		"The downloaded Workshop item no longer matches the recorded snapshot.",
+		"The publisher updated the item after the platform resolved its metadata.",
+		"The platform rejected the changed files and retained active content.",
+		"Submit the Workshop item or collection link again to create a new immutable snapshot.",
+	},
 	"ERR_ARCHIVE_COMMAND": {
 		"The archive could not be created and verified.",
 		"The managed backup command stopped before a portable archive was verified.",

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -53,5 +54,33 @@ func TestRecordWorkshopMissionSourceIsReplaySafeAndDoesNotChangeCurrentMission(t
 	}
 	if len(session.WorkshopMissionSources) != 1 || session.CurrentMission.Template != "existing.VR" {
 		t.Fatalf("session = %#v", session)
+	}
+}
+
+func TestWorkshopMissionSourceRejectsOversizedCollectionSnapshot(t *testing.T) {
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	source := WorkshopMissionSource{
+		Source:     WorkshopReference{PublishedFileID: 10, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=10"},
+		SourceKind: WorkshopSourceCollection, ResolutionSHA256: strings.Repeat("a", 64), ResolvedAt: now,
+		AcceptedItemIDs: []uint64{1},
+	}
+	for id := uint64(2); id <= MaximumWorkshopCollectionChildren+1; id++ {
+		source.ExcludedItems = append(source.ExcludedItems, WorkshopResolutionItem{PublishedFileID: id, Class: WorkshopItemClientMod})
+	}
+	if err := source.Validate(); err == nil || !strings.Contains(err.Error(), "50-item limit") {
+		t.Fatalf("Validate() error = %v; want collection limit", err)
+	}
+}
+
+func TestRecordWorkshopMissionSourceRejectsArchivedSession(t *testing.T) {
+	now := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	session := Session{LifecycleState: StateArchived}
+	source := WorkshopMissionSource{
+		Source:     WorkshopReference{PublishedFileID: 10, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=10"},
+		SourceKind: WorkshopSourceItem, ResolutionSHA256: strings.Repeat("a", 64), ResolvedAt: now,
+		AcceptedItemIDs: []uint64{10},
+	}
+	if err := session.RecordWorkshopMissionSource(source, now); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("RecordWorkshopMissionSource() error = %v; want invalid transition", err)
 	}
 }

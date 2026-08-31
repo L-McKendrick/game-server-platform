@@ -41,6 +41,30 @@ func NewRecorder(repository ports.SessionRepository, objects ports.ObjectStore, 
 	return &Recorder{repository: repository, objects: objects, ids: ids, clock: clock, retention: retention}, nil
 }
 
+func (recorder *Recorder) ClearResolution(ctx context.Context, request domain.WorkshopSourceRequest, reason string) error {
+	session, err := recorder.repository.Get(ctx, request.SessionID)
+	if err != nil {
+		return err
+	}
+	expected, now := session.Version, recorder.clock.Now().UTC()
+	if err := session.FinishWorkshopResolution(request.Target, request.IdempotencyKey, now); err != nil {
+		return err
+	}
+	if session.Version == expected {
+		return nil
+	}
+	eventID, err := recorder.ids.New(now)
+	if err != nil {
+		return err
+	}
+	event := domain.SessionEvent{ID: eventID, SessionID: session.ID, Type: domain.EventWorkshopResolutionCleared, OccurredAt: now, ActorType: string(domain.ActorTypeSystem), ActorID: "artifact-worker", CorrelationID: request.CorrelationID, Data: map[string]string{"target": string(request.Target), "reason": strings.TrimSpace(reason)}}
+	record, err := domain.NewCompletedIdempotencyRecord("workshop-clear:"+request.IdempotencyKey, string(request.Target), session.ID, now, recorder.retention)
+	if err != nil {
+		return err
+	}
+	return recorder.repository.SaveWithEvent(ctx, session, expected, event, record)
+}
+
 func (recorder *Recorder) RecordModResolution(ctx context.Context, request domain.WorkshopSourceRequest, resolution domain.WorkshopResolution) (ModResolutionResult, error) {
 	if err := request.Validate(); err != nil || request.Target != domain.WorkshopTargetMods {
 		return ModResolutionResult{}, fmt.Errorf("%w: invalid mod request", domain.ErrPermanentWorkshopRejection)

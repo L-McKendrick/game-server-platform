@@ -118,6 +118,9 @@ func render(card Projection, detailed bool) string {
 			fmt.Fprintf(&builder, " — active %s", timestamp(card.Mods.ActiveSince))
 		}
 	}
+	if detailed && card.Mods.Issue != "" {
+		fmt.Fprintf(&builder, "\n**Workshop mod source:** %s", safe(card.Mods.Issue))
+	}
 	if len(card.Mods.CreatorDLCs) > 0 {
 		fmt.Fprintf(&builder, "\n**Creator DLC:** %s", safe(strings.Join(creatorDLCLabels(card.Mods.CreatorDLCs), ", ")))
 	}

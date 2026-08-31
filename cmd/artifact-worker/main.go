@@ -22,6 +22,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3objects"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqscommand"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmbootstrap"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmlivemission"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/httpartifact"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/steamworkshop"
@@ -30,6 +31,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	appworkshop "github.com/L-McKendrick/game-server-platform/internal/app/workshop"
+	"github.com/L-McKendrick/game-server-platform/internal/app/workshopcontent"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/identity"
@@ -42,6 +44,8 @@ type handler struct {
 	serverConfig     *serverconfig.Processor
 	workshop         *appworkshop.Service
 	workshopRecorder *appworkshop.Recorder
+	contentSync      *workshopcontent.Service
+	sessions         ports.SessionRepository
 	notifications    ports.NotificationQueue
 	logger           *slog.Logger
 }
@@ -52,7 +56,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "artifact worker startup error: %v\n", err)
 		os.Exit(1)
 	}
-	lambda.Start(handler.Handle)
+	lambda.Start(handler.HandleEvent)
 }
 
 func build(ctx context.Context) (*handler, error) {
@@ -73,7 +77,8 @@ func build(ctx context.Context) (*handler, error) {
 	objects := s3objects.New(s3.NewFromConfig(awsCfg), cfg.SessionAssetsBucket)
 	clock := appsession.SystemClock{}
 	queueClient := sqs.NewFromConfig(awsCfg)
-	liveMissionCopier, err := ssmlivemission.New(ssm.NewFromConfig(awsCfg), ssmlivemission.Config{Region: cfg.AWSRegion, AssetsBucket: cfg.SessionAssetsBucket})
+	ssmClient := ssm.NewFromConfig(awsCfg)
+	liveMissionCopier, err := ssmlivemission.New(ssmClient, ssmlivemission.Config{Region: cfg.AWSRegion, AssetsBucket: cfg.SessionAssetsBucket})
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +110,75 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &handler{service: service, serverConfig: serverConfig, workshop: workshopService, workshopRecorder: workshopRecorder, notifications: sqsnotification.New(queueClient, cfg.NotificationQueueURL), logger: logger}, nil
+	timeout, err := artifactPositiveInt32("BOOTSTRAP_COMMAND_TIMEOUT_SECONDS", 21600)
+	if err != nil {
+		return nil, err
+	}
+	contentRunner, err := ssmbootstrap.New(ssmClient, ssmbootstrap.Config{Region: cfg.AWSRegion, AssetsBucket: cfg.SessionAssetsBucket, BootstrapScriptKey: strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_KEY")), MetadataTableName: cfg.MetadataTable, SteamAuthSecretID: strings.TrimSpace(os.Getenv("STEAM_AUTH_SECRET_ID")), TeamSpeakVersion: artifactEnv("TEAMSPEAK_VERSION", "3.13.8"), TimeoutSeconds: timeout})
+	if err != nil {
+		return nil, err
+	}
+	contentSync, err := workshopcontent.New(repository, repository, contentRunner, identity.Generator{}, clock)
+	if err != nil {
+		return nil, err
+	}
+	return &handler{service: service, serverConfig: serverConfig, workshop: workshopService, workshopRecorder: workshopRecorder, contentSync: contentSync, sessions: repository, notifications: sqsnotification.New(queueClient, cfg.NotificationQueueURL), logger: logger}, nil
+}
+
+func artifactPositiveInt32(name string, fallback int32) (int32, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return int32(value), nil
+}
+func artifactEnv(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func workshopMissionRevision(ctx context.Context, sessionID string, sessions ports.SessionRepository) (string, error) {
+	if sessions == nil {
+		return "", fmt.Errorf("session repository is not configured")
+	}
+	session, err := sessions.Get(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	return session.WorkshopMissionRevision()
+}
+
+func (handler *handler) HandleEvent(ctx context.Context, raw json.RawMessage) (any, error) {
+	var event struct {
+		Source string `json:"source"`
+		Detail struct {
+			CommandID string `json:"command-id"`
+			Status    string `json:"status"`
+		} `json:"detail"`
+	}
+	if json.Unmarshal(raw, &event) == nil && event.Source == "aws.ssm" {
+		switch event.Detail.Status {
+		case "Success", "Failed", "TimedOut", "Cancelled":
+			done, err := handler.contentSync.HandleTerminal(ctx, event.Detail.CommandID)
+			if errors.Is(err, domain.ErrForbidden) || errors.Is(err, domain.ErrNotFound) {
+				return false, nil
+			}
+			return done, err
+		default:
+			return false, nil
+		}
+	}
+	var sqsEvent events.SQSEvent
+	if err := json.Unmarshal(raw, &sqsEvent); err != nil {
+		return nil, err
+	}
+	return handler.Handle(ctx, sqsEvent)
 }
 
 func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (events.SQSEventResponse, error) {
@@ -132,6 +205,10 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
 					continue
 				}
+				if err := handler.workshopRecorder.ClearResolution(ctx, request, code); err != nil {
+					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+					continue
+				}
 				if err := handler.notifyWorkshop(ctx, request, workshopResolutionUserMessage(resolveErr, workshopFinalAttempt(message))); err != nil {
 					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
 				}
@@ -141,6 +218,10 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 				source, recordErr := handler.workshopRecorder.RecordMissionResolution(ctx, request, resolution)
 				if recordErr != nil {
 					if permanentWorkshopRecordError(recordErr) || workshopFinalAttempt(message) {
+						if err := handler.workshopRecorder.ClearResolution(ctx, request, "record_failed"); err != nil {
+							response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+							continue
+						}
 						if err := handler.notifyWorkshop(ctx, request, workshopRecordUserMessage(recordErr, domain.WorkshopTargetMission, workshopFinalAttempt(message))); err != nil {
 							response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
 						}
@@ -151,12 +232,23 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 				}
 				content := fmt.Sprintf("Workshop mission source accepted: %d scenario(s), %d excluded. Download will be staged without changing the current mission.", len(source.AcceptedItemIDs), len(source.ExcludedItems))
 				handler.logger.Info("Workshop mission resolution recorded", slog.String("session_id", request.SessionID), slog.String("source_kind", string(source.SourceKind)), slog.Int("accepted_count", len(source.AcceptedItemIDs)), slog.Int("excluded_count", len(source.ExcludedItems)), slog.String("status_summary", content), slog.String("correlation_id", request.CorrelationID))
+				revision, revisionErr := workshopMissionRevision(ctx, request.SessionID, handler.sessions)
+				if revisionErr == nil {
+					_, revisionErr = handler.contentSync.Start(ctx, request.SessionID, request.Target, revision, request.ActorID, request.CorrelationID, request.IdempotencyKey)
+				}
+				if revisionErr != nil && !errors.Is(revisionErr, domain.ErrInvalidTransition) {
+					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+				}
 				continue
 			}
 			if request.Target == domain.WorkshopTargetMods {
 				result, recordErr := handler.workshopRecorder.RecordModResolution(ctx, request, resolution)
 				if recordErr != nil {
 					if permanentWorkshopRecordError(recordErr) || workshopFinalAttempt(message) {
+						if err := handler.workshopRecorder.ClearResolution(ctx, request, "record_failed"); err != nil {
+							response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+							continue
+						}
 						if err := handler.notifyWorkshop(ctx, request, workshopRecordUserMessage(recordErr, domain.WorkshopTargetMods, workshopFinalAttempt(message))); err != nil {
 							response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
 						}
@@ -181,6 +273,9 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 					}
 				}
 				handler.logger.Info("Workshop mod resolution recorded", slog.String("session_id", request.SessionID), slog.String("source_kind", string(source.SourceKind)), slog.Int("accepted_count", len(source.AcceptedItems)), slog.Int("excluded_count", len(source.ExcludedItems)), slog.Int64("preset_revision", result.Revision.Number), slog.String("revision_status", string(result.Revision.Status)), slog.String("correlation_id", request.CorrelationID))
+				if _, syncErr := handler.contentSync.Start(ctx, request.SessionID, request.Target, result.Revision.WorkshopResolutionSHA256, request.ActorID, request.CorrelationID, request.IdempotencyKey); syncErr != nil && !errors.Is(syncErr, domain.ErrInvalidTransition) {
+					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+				}
 				continue
 			}
 			matched := 0
@@ -247,6 +342,8 @@ func workshopResolutionUserMessage(err error, exhausted bool) string {
 			}
 		case domain.WorkshopMetadataRejected:
 			return "Steam rejected the Workshop metadata request. Confirm this is a canonical public Steam Community shared-file link for an Arma 3 item or collection, then submit it again."
+		case domain.WorkshopMetadataCollectionLimit:
+			return fmt.Sprintf("This Workshop collection contains more than %d direct items. Split it into smaller collections of at most %d items, then submit the applicable links separately.", domain.MaximumWorkshopCollectionChildren, domain.MaximumWorkshopCollectionChildren)
 		}
 	}
 	return "Workshop link could not be accepted. Use the canonical public Steam Community shared-file link and confirm the item or collection is for Arma 3."
@@ -266,7 +363,7 @@ func workshopRecordUserMessage(err error, target domain.WorkshopTarget, exhauste
 		return "This session has reached its bounded Workshop source-history limit. Its active content was left unchanged. Use an uploaded preset for the next revision or create a new session; contact an administrator if history must be retained differently."
 	}
 	if exhausted && !errors.Is(err, domain.ErrPermanentWorkshopRejection) && !errors.Is(err, domain.ErrIdempotencyConflict) {
-		return "The Workshop content was validated, but the platform could not safely save it after several attempts. Your active content was left unchanged. Submit the link again; if it repeats, contact an administrator."
+		return "The Workshop content was validated, but the platform could not safely save it after several attempts. Your active content was left unchanged. Submit the link again; if it repeats, contact an operator."
 	}
 	if target == domain.WorkshopTargetMods {
 		return "No usable mod preset could be created from this Workshop source. Confirm it contains public Arma 3 mods (not scenarios)."

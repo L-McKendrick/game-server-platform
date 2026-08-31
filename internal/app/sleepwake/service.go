@@ -14,12 +14,15 @@ import (
 )
 
 const (
-	ActionPrepare          = "prepare"
-	ActionDispatch         = "dispatch"
-	ActionObserve          = "observe"
-	ActionCheckManaged     = "check_managed"
-	ActionHealthDispatch   = "dispatch_health"
-	ActionHealthObserve    = "observe_health"
+	ActionPrepare         = "prepare"
+	ActionDispatch        = "dispatch"
+	ActionObserve         = "observe"
+	ActionCheckManaged    = "check_managed"
+	ActionHealthDispatch  = "dispatch_health"
+	ActionHealthObserve   = "observe_health"
+	ActionContentDispatch = "dispatch_content"
+	ActionContentObserve  = "observe_content"
+	// Legacy action names remain accepted while an older execution definition drains.
 	ActionModsDispatch     = "dispatch_mods"
 	ActionModsObserve      = "observe_mods"
 	ActionRollbackDispatch = "dispatch_rollback"
@@ -59,6 +62,7 @@ type Service struct {
 	compute       ports.ComputeProvisioner
 	monitor       ports.MonitoringRunner
 	presetRunner  ports.PresetRevisionRunner
+	contentRunner ports.WorkshopContentSyncRunner
 	notifications ports.NotificationQueue
 	ids           IDGenerator
 	clock         Clock
@@ -67,7 +71,12 @@ type Service struct {
 type Option func(*Service)
 
 func WithPresetRevisionRunner(runner ports.PresetRevisionRunner) Option {
-	return func(service *Service) { service.presetRunner = runner }
+	return func(service *Service) {
+		service.presetRunner = runner
+		if content, ok := runner.(ports.WorkshopContentSyncRunner); ok {
+			service.contentRunner = content
+		}
+	}
 }
 
 func NewService(s ports.SessionRepository, st ports.ProvisioningRepository, w ports.WorkflowRepository, c ports.ComputeProvisioner, m ports.MonitoringRunner, n ports.NotificationQueue, ids IDGenerator, clock Clock, options ...Option) (*Service, error) {
@@ -109,10 +118,10 @@ func (s *Service) Handle(ctx context.Context, r TaskRequest) (TaskResult, error)
 		return s.observe(ctx, session, wf)
 	case ActionCheckManaged:
 		return s.checkManaged(ctx, session, wf)
-	case ActionModsDispatch:
-		return s.dispatchMods(ctx, session, wf)
-	case ActionModsObserve:
-		return s.observeMods(ctx, session, wf, r.CommandID)
+	case ActionContentDispatch, ActionModsDispatch:
+		return s.dispatchContent(ctx, session, wf)
+	case ActionContentObserve, ActionModsObserve:
+		return s.observeContent(ctx, session, wf, r.CommandID)
 	case ActionRollbackDispatch:
 		return s.dispatchRollback(ctx, session, wf)
 	case ActionRollbackObserve:
@@ -159,9 +168,11 @@ func (s *Service) Handle(ctx context.Context, r TaskRequest) (TaskResult, error)
 	}
 }
 
-func (s *Service) dispatchMods(ctx context.Context, session domain.Session, wf domain.Workflow) (TaskResult, error) {
+func (s *Service) dispatchContent(ctx context.Context, session domain.Session, wf domain.Workflow) (TaskResult, error) {
 	out := result(session, wf)
-	if !session.HasApplyingPresetRevision(wf.ID) {
+	hasMissions := len(session.WorkshopMissionSources) > 0
+	hasMods := session.HasApplyingPresetRevision(wf.ID)
+	if !hasMissions && !hasMods {
 		if wf.Type == domain.WakeWorkflowType && session.Progress.Milestone == domain.ProgressModsApplied {
 			updated, err := s.skipProgress(ctx, session, wf, domain.ProgressModsApplied, domain.ProgressServiceStarted)
 			if err != nil {
@@ -176,10 +187,10 @@ func (s *Service) dispatchMods(ctx context.Context, session domain.Session, wf d
 	if wf.Type != domain.WakeWorkflowType {
 		return TaskResult{}, fmt.Errorf("%w: mod revision dispatch requires a wake workflow", domain.ErrInvalidTransition)
 	}
-	if s.presetRunner == nil {
+	if s.contentRunner == nil {
 		return TaskResult{}, fmt.Errorf("preset revision runner is not configured")
 	}
-	commandID, err := s.presetRunner.Start(ctx, session)
+	commandID, err := s.contentRunner.StartContent(ctx, session, domain.WorkshopTarget("all"), true)
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("start pending mod revision: %w", err)
 	}
@@ -187,16 +198,16 @@ func (s *Service) dispatchMods(ctx context.Context, session domain.Session, wf d
 	return out, nil
 }
 
-func (s *Service) observeMods(ctx context.Context, session domain.Session, wf domain.Workflow, commandID string) (TaskResult, error) {
+func (s *Service) observeContent(ctx context.Context, session domain.Session, wf domain.Workflow, commandID string) (TaskResult, error) {
 	out := result(session, wf)
-	if !session.HasApplyingPresetRevision(wf.ID) {
+	if len(session.WorkshopMissionSources) == 0 && !session.HasApplyingPresetRevision(wf.ID) {
 		out.Done, out.Succeeded = true, true
 		return out, nil
 	}
-	if s.presetRunner == nil {
+	if s.contentRunner == nil {
 		return TaskResult{}, fmt.Errorf("preset revision runner is not configured")
 	}
-	status, err := s.presetRunner.Observe(ctx, session.Infrastructure.InstanceID, strings.TrimSpace(commandID))
+	status, err := s.contentRunner.Observe(ctx, session.Infrastructure.InstanceID, strings.TrimSpace(commandID))
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("observe pending mod revision: %w", err)
 	}
@@ -217,6 +228,15 @@ func (s *Service) observeMods(ctx context.Context, session domain.Session, wf do
 		out.ErrorMessage = bounded(status.ErrorMessage, "pending mod revision failed")
 	}
 	return out, nil
+}
+
+// Legacy helpers keep package-local callers and draining tests compatible.
+func (s *Service) dispatchMods(ctx context.Context, session domain.Session, wf domain.Workflow) (TaskResult, error) {
+	return s.dispatchContent(ctx, session, wf)
+}
+
+func (s *Service) observeMods(ctx context.Context, session domain.Session, wf domain.Workflow, commandID string) (TaskResult, error) {
+	return s.observeContent(ctx, session, wf, commandID)
 }
 
 func (s *Service) dispatchRollback(ctx context.Context, session domain.Session, wf domain.Workflow) (TaskResult, error) {

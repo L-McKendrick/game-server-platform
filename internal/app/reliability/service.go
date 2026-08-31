@@ -21,13 +21,19 @@ type IDGenerator interface {
 }
 
 type Service struct {
-	sessions    ports.SessionRepository
-	workflows   ports.WorkflowRepository
-	reliability ports.ReliabilityRepository
-	ids         IDGenerator
-	clock       Clock
-	inspector   ports.WorkflowExecutionInspector
-	deadLetters ports.DeadLetterManager
+	sessions          ports.SessionRepository
+	workflows         ports.WorkflowRepository
+	reliability       ports.ReliabilityRepository
+	ids               IDGenerator
+	clock             Clock
+	inspector         ports.WorkflowExecutionInspector
+	deadLetters       ports.DeadLetterManager
+	commandReconciler ports.ActiveWorkflowReconciler
+}
+
+func (service *Service) WithActiveWorkflowReconciler(reconciler ports.ActiveWorkflowReconciler) *Service {
+	service.commandReconciler = reconciler
+	return service
 }
 
 func (service *Service) WithDeadLetterManager(manager ports.DeadLetterManager) *Service {
@@ -179,6 +185,15 @@ func (service *Service) inspectWorkflow(ctx context.Context, session domain.Sess
 		}
 		finding, createErr := service.newFinding(session, "TERMINAL_WORKFLOW_LOCKED", "A terminal workflow retained an expired session lock.", domain.ReconciliationReleaseLock, now)
 		return &finding, true, createErr
+	}
+	if workflow.Type == domain.WorkshopContentSyncWorkflowType && service.commandReconciler != nil {
+		done, reconcileErr := service.commandReconciler.ReconcileActive(ctx, session, workflow)
+		if reconcileErr != nil {
+			return nil, false, reconcileErr
+		}
+		if done || workflow.CommandDeadlineAt.After(now) {
+			return nil, false, nil
+		}
 	}
 	if strings.TrimSpace(workflow.ExecutionARN) == "" {
 		if session.ActiveWorkflowLeaseExpiresAt.After(now) {

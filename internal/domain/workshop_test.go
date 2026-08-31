@@ -52,3 +52,21 @@ func TestWorkshopResolutionFinalizeIsDeterministic(t *testing.T) {
 		t.Fatalf("finalized resolution = %#v", resolution)
 	}
 }
+
+func TestCanChangeWorkshopSourcesLifecycleMatrix(t *testing.T) {
+	allowed := []LifecycleState{StateDraft, StateNew, StateReady, StateRunning, StateIdle, StateSleeping, StateWarning1, StateWarning2, StateFailed}
+	blocked := []LifecycleState{StateValidating, StateProvisioning, StateBootstrapping, StateInstalling, StateStopping, StateWaking, StateArchiving, StateDestroying, StateArchived, StateRestoring, StateDeleting, StateDeleted}
+	for _, state := range allowed {
+		if !(Session{LifecycleState: state}).CanChangeWorkshopSources() {
+			t.Errorf("state %s was blocked", state)
+		}
+	}
+	for _, state := range blocked {
+		if (Session{LifecycleState: state}).CanChangeWorkshopSources() {
+			t.Errorf("state %s was allowed", state)
+		}
+	}
+	if (Session{LifecycleState: StateRunning, ActiveWorkflowID: "workflow-1"}).CanChangeWorkshopSources() {
+		t.Fatal("active workflow was allowed")
+	}
+}

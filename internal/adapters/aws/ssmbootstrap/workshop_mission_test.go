@@ -10,6 +10,16 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
 
+func readBootstrapArtifact(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join("..", "..", "..", "..", "deploy", "bootstrap", "arma3-bootstrap.sh")
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(contents)
+}
+
 func TestResolvedWorkshopMissionManifestIsDeterministicAndDeduplicated(t *testing.T) {
 	now := time.Now().UTC()
 	session := domain.Session{WorkshopMissionSources: []domain.WorkshopMissionSource{
@@ -44,9 +54,30 @@ func TestBootstrapScriptContainsIsolatedWorkshopMissionGuards(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := string(contents)
-	for _, required := range []string{"install_workshop_missions", "Workshop scenario must contain exactly one PBO or legacy payload", "_legacy\\.[bB][iI][nN]", "expected_filename", "expected_size", "Workshop scenario content contains a symbolic link", "ERR_WORKSHOP_SCENARIO_RESUBMIT", "ERR_WORKSHOP_SCENARIO_PAYLOAD", "return 75", "workshop-missions/$id", "104857600", "install_workshop_missions.revision-"} {
+	for _, required := range []string{"install_workshop_missions", "sync_workshop_content", "Workshop scenario must contain exactly one PBO or legacy payload", "_legacy\\.[bB][iI][nN]", "expected_filename", "expected_size", "Workshop scenario content contains a symbolic link", "ERR_WORKSHOP_SCENARIO_RESUBMIT", "ERR_WORKSHOP_SCENARIO_PAYLOAD", "return 75", "workshop-missions/$id", "104857600", "$stage.missions-$WORKSHOP_MISSION_REVISION"} {
 		if !strings.Contains(script, required) {
 			t.Errorf("bootstrap script missing %q", required)
+		}
+	}
+}
+
+func TestBootstrapScriptUsesWorkflowIsolatedWorkshopStaging(t *testing.T) {
+	script := readBootstrapArtifact(t)
+	for _, required := range []string{
+		`WORKSHOP_STAGING_ROOT="$ROOT/workshop-staging/$WORKFLOW_ID"`,
+		`ln -s "$WORKSHOP_STAGING_ROOT/steamapps"`,
+		`source="$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/$id"`,
+		`$ROOT/workshop/mod-revisions/client-$PRESET_REVISION`,
+		`$ROOT/workshop/mod-revisions/server-$SERVER_PRESET_REVISION`,
+		`WORKSHOP_PROMOTE_MODS:=true`,
+		`[ "$WORKSHOP_PROMOTE_MODS" = true ] || return 0`,
+		`if [ "$WORKSHOP_PROMOTE_MODS" = true ]; then`,
+		`launch_and_verify`,
+		`ERR_WORKSHOP_DISK_SPACE`,
+		`sessions/$SESSION_ID/workshop-sync/$WORKFLOW_ID.json`,
+	} {
+		if !strings.Contains(script, required) {
+			t.Errorf("bootstrap script missing isolated-sync guard %q", required)
 		}
 	}
 }
