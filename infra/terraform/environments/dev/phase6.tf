@@ -80,6 +80,12 @@ data "aws_iam_policy_document" "game_instance_bootstrap" {
   }
 
   statement {
+    sid       = "PublishWorkshopSyncResults"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.session_assets.arn}/sessions/*/workshop-sync/*.json"]
+  }
+
+  statement {
     sid       = "UseSteamAuthorizationCache"
     actions   = ["secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
     resources = [aws_secretsmanager_secret.steam_authorization_cache.arn]

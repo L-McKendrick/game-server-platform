@@ -158,6 +158,14 @@ callbacks must also match the active workflow, current instance, and current
 immutable snapshot. The host lock serializes commands on each managed host.
 Expired commands are cancelled before releasing their session lock. Scenario
 size and mod publisher timestamps reject content changed after resolution.
+
+After host validation and staging complete, the managed game instance writes a
+bounded workflow result JSON under
+`sessions/<session-id>/workshop-sync/<workflow-id>.json`. Its IAM permission is
+limited to `PutObject` on that JSON prefix. If publication fails, the command
+returns `ERR_WORKSHOP_RESULT_PUBLISH`; status directs the user to an operator
+because retrying before storage access is repaired cannot safely finalize the
+revision.
 Current staging and temporary manifests are removed on every exit, and
 constrained cleanup removes abandoned workflow staging older than one day.
 

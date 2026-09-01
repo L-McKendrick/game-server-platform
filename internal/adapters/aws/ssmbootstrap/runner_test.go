@@ -518,6 +518,7 @@ func TestObserveMapsWorkshopScenarioFailuresToActionableCodes(t *testing.T) {
 		{"package noise\nERR_WORKSHOP_SCENARIO_RESUBMIT: private detail", "ERR_WORKSHOP_SCENARIO_RESUBMIT", "The Workshop scenario changed after metadata resolution."},
 		{"package noise\nERR_WORKSHOP_SCENARIO_PAYLOAD: private detail", "ERR_WORKSHOP_SCENARIO_PAYLOAD", "The Workshop scenario download did not contain one safe deployable mission payload."},
 		{"package noise\nERR_WORKSHOP_DISK_SPACE: private detail", "ERR_WORKSHOP_DISK_SPACE", "The managed host does not have enough free disk space to stage the Workshop content."},
+		{"package noise\nERR_WORKSHOP_RESULT_PUBLISH: private detail", "ERR_WORKSHOP_RESULT_PUBLISH", "The platform could not publish the Workshop synchronization result."},
 	}
 	for _, test := range tests {
 		client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{Status: types.CommandInvocationStatusFailed, StandardErrorContent: aws.String(test.stderr)}}

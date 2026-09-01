@@ -424,7 +424,12 @@ publish_workshop_sync_results() {
     [inputs | split("\t") | {target:.[0],published_file_id:.[1],revision:.[2],status:.[3]}] |
     {schema_version:1,session_id:$session,workflow_id:$workflow,target:$target,completed_at:$completed,items:.}
   ' < "$WORKSHOP_SYNC_RESULTS" > "$result_json"
-  aws s3 cp "$result_json" "s3://$ASSETS_BUCKET/sessions/$SESSION_ID/workshop-sync/$WORKFLOW_ID.json" --region "$AWS_REGION" --only-show-errors --content-type application/json
+  if ! aws s3 cp "$result_json" "s3://$ASSETS_BUCKET/sessions/$SESSION_ID/workshop-sync/$WORKFLOW_ID.json" --region "$AWS_REGION" --only-show-errors --content-type application/json; then
+    rm -f -- "$result_json" "$WORKSHOP_SYNC_RESULTS"
+    WORKSHOP_SYNC_RESULTS=""
+    printf 'ERR_WORKSHOP_RESULT_PUBLISH: The Workshop synchronization result could not be published.\n' >&2
+    return 1
+  fi
   rm -f -- "$result_json" "$WORKSHOP_SYNC_RESULTS"
   WORKSHOP_SYNC_RESULTS=""
 }

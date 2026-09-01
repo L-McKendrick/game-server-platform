@@ -143,6 +143,12 @@ var entries = map[string]entry{
 		"The platform rejected the changed files and retained active content.",
 		"Submit the Workshop item or collection link again to create a new immutable snapshot.",
 	},
+	"ERR_WORKSHOP_RESULT_PUBLISH": {
+		"Workshop synchronization completed on the server but could not be finalized.",
+		"The managed host could not publish its bounded result manifest to platform storage.",
+		"The platform retained the server and did not infer a successful metadata revision without the required evidence.",
+		"Give the support reference to an operator. Retry only after the platform storage permission or availability issue is repaired.",
+	},
 	"ERR_ARCHIVE_COMMAND": {
 		"The archive could not be created and verified.",
 		"The managed backup command stopped before a portable archive was verified.",

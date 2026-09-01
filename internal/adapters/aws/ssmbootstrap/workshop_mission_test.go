@@ -74,10 +74,29 @@ func TestBootstrapScriptUsesWorkflowIsolatedWorkshopStaging(t *testing.T) {
 		`if [ "$WORKSHOP_PROMOTE_MODS" = true ]; then`,
 		`launch_and_verify`,
 		`ERR_WORKSHOP_DISK_SPACE`,
+		`ERR_WORKSHOP_RESULT_PUBLISH`,
 		`sessions/$SESSION_ID/workshop-sync/$WORKFLOW_ID.json`,
 	} {
 		if !strings.Contains(script, required) {
 			t.Errorf("bootstrap script missing isolated-sync guard %q", required)
+		}
+	}
+}
+
+func TestGameInstancePolicyAllowsOnlyWorkshopSyncResultJSON(t *testing.T) {
+	policyPath := filepath.Join("..", "..", "..", "..", "infra", "terraform", "environments", "dev", "phase6.tf")
+	contents, err := os.ReadFile(policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := string(contents)
+	for _, required := range []string{
+		`sid       = "PublishWorkshopSyncResults"`,
+		`actions   = ["s3:PutObject"]`,
+		`/sessions/*/workshop-sync/*.json`,
+	} {
+		if !strings.Contains(policy, required) {
+			t.Errorf("game-instance policy missing %q", required)
 		}
 	}
 }

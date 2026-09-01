@@ -334,6 +334,9 @@ func bootstrapFailure(stderr string) (string, string) {
 	if strings.Contains(stderr, "ERR_WORKSHOP_METADATA_DRIFT") {
 		return "ERR_WORKSHOP_METADATA_DRIFT", "Workshop publisher metadata changed after this snapshot was resolved."
 	}
+	if strings.Contains(stderr, "ERR_WORKSHOP_RESULT_PUBLISH") {
+		return "ERR_WORKSHOP_RESULT_PUBLISH", "The platform could not publish the Workshop synchronization result."
+	}
 	return "", domain.SanitizeDiagnostic(stderr)
 }
 
