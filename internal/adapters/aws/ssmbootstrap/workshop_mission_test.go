@@ -101,6 +101,22 @@ func TestGameInstancePolicyAllowsOnlyWorkshopSyncResultJSON(t *testing.T) {
 	}
 }
 
+func TestWorkshopMissionFinalizersCanReadOnlyResolutionManifests(t *testing.T) {
+	for _, filename := range []string{"phase4.tf", "phase8.tf", "phase10.tf"} {
+		policyPath := filepath.Join("..", "..", "..", "..", "infra", "terraform", "environments", "dev", filename)
+		contents, err := os.ReadFile(policyPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		policy := string(contents)
+		if !strings.Contains(policy, `sid       = "ReadWorkshopMissionManifests"`) ||
+			!strings.Contains(policy, `actions   = ["s3:GetObject"]`) ||
+			!strings.Contains(policy, `/sessions/*/workshop-resolutions/*.tsv`) {
+			t.Errorf("%s does not grant the bounded manifest read", filename)
+		}
+	}
+}
+
 func TestBootstrapScriptDownloadsPresetModsPerItemWithBoundedFailureHandling(t *testing.T) {
 	path := filepath.Join("..", "..", "..", "..", "deploy", "bootstrap", "arma3-bootstrap.sh")
 	contents, err := os.ReadFile(path)

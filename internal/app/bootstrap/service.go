@@ -331,11 +331,12 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 	}
 	expectedVersion := session.Version
 	now := service.clock.Now().UTC()
-	if err := service.importWorkshopMissions(ctx, &session, now); err != nil {
+	missions, err := service.workshopMissions(ctx, session)
+	if err != nil {
 		return TaskResult{}, err
 	}
 	session.ClearFailure()
-	if err := session.CompleteBootstrap(workflow.ID, now); err != nil {
+	if err := session.CompleteBootstrapWithWorkshopMissions(workflow.ID, missions, now); err != nil {
 		return TaskResult{}, err
 	}
 	workflow.Status = domain.WorkflowSucceeded

@@ -332,3 +332,8 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **17.10.1** [x] Grant the managed game instance least-privilege write access to workflow-scoped Workshop result JSON objects.
       - **17.10.2** [x] Emit and present a stable actionable failure when result publication fails instead of exposing raw AWS diagnostics.
       - **17.10.3** [x] Add focused policy, bootstrap, and failure-presentation regression coverage and refresh the deployment handoff.
+    - **17.11** [x] Repair bootstrap Workshop mission finalization and complete an end-to-end architecture hardening pass.
+      - **17.11.1** [x] Import a validated Workshop mission manifest as one atomic domain mutation so bootstrap completion retains the strict single-version transaction invariant.
+      - **17.11.2** [x] Add repository-realistic regression coverage for item and collection bootstrap completion, replay, malformed manifests, and unchanged mission selection.
+      - **17.11.3** [x] Review submission through lifecycle replay, live synchronization, result publication, promotion, failure recovery, status, IAM, and cleanup; fix only demonstrated correctness or duplication gaps.
+      - **17.11.4** [x] Run proportional Go, Bash, packaging, Terraform, command-contract, and diff validation; refresh the deployment and test-33 recovery handoff, then commit and push.

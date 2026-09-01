@@ -80,6 +80,22 @@ func (session *Session) CompleteBootstrap(workflowID string, now time.Time) erro
 	return session.Validate()
 }
 
+// CompleteBootstrapWithWorkshopMissions validates and attaches the exact host
+// result manifest in the same optimistic-concurrency mutation that marks the
+// server playable. A malformed collection cannot partially alter the session,
+// and any number of accepted scenarios still advances the version only once.
+func (session *Session) CompleteBootstrapWithWorkshopMissions(workflowID string, missions []MissionRecord, now time.Time) error {
+	candidate, err := session.withWorkshopMissions(missions, now)
+	if err != nil {
+		return err
+	}
+	if err = candidate.CompleteBootstrap(workflowID, now); err != nil {
+		return err
+	}
+	*session = candidate
+	return nil
+}
+
 // FailBootstrap preserves the compute plane and durable stage markers so the
 // same session can resume without reinstalling completed content.
 func (session *Session) FailBootstrap(workflowID string, now time.Time) error {

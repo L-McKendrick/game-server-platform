@@ -118,7 +118,7 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	contentSync, err := workshopcontent.New(repository, repository, contentRunner, identity.Generator{}, clock)
+	contentSync, err := workshopcontent.New(repository, repository, contentRunner, identity.Generator{}, clock, workshopcontent.WithWorkshopMissionManifest(objects))
 	if err != nil {
 		return nil, err
 	}

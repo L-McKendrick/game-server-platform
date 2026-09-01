@@ -84,6 +84,20 @@ func (session *Session) CompleteWake(workflowID string, publicIPv4 string, now t
 	return session.Validate()
 }
 
+// CompleteWakeWithWorkshopMissions attaches scenarios synchronized while the
+// host was sleeping and completes wake as one optimistic-concurrency mutation.
+func (session *Session) CompleteWakeWithWorkshopMissions(workflowID string, publicIPv4 string, missions []MissionRecord, now time.Time) error {
+	candidate, err := session.withWorkshopMissions(missions, now)
+	if err != nil {
+		return err
+	}
+	if err = candidate.CompleteWake(workflowID, publicIPv4, now); err != nil {
+		return err
+	}
+	*session = candidate
+	return nil
+}
+
 func (session *Session) FailSleepWake(workflowID string, now time.Time) error {
 	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) || (session.ActiveWorkflowType != SleepWorkflowType && session.ActiveWorkflowType != WakeWorkflowType) {
 		return ErrConflict

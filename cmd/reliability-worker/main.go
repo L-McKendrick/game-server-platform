@@ -12,6 +12,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ec2orphans"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/resourceinventory"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3objects"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sfnworkflow"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsdlq"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmbootstrap"
@@ -89,7 +90,7 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	contentSync, err := workshopcontent.New(repository, repository, contentRunner, ids, clock)
+	contentSync, err := workshopcontent.New(repository, repository, contentRunner, ids, clock, workshopcontent.WithWorkshopMissionManifest(s3objects.New(s3Client, bucket)))
 	if err != nil {
 		return nil, err
 	}

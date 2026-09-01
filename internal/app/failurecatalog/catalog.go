@@ -149,6 +149,12 @@ var entries = map[string]entry{
 		"The platform retained the server and did not infer a successful metadata revision without the required evidence.",
 		"Give the support reference to an operator. Retry only after the platform storage permission or availability issue is repaired.",
 	},
+	"ERR_WORKSHOP_RESULT_IMPORT": {
+		"Workshop mission synchronization completed on the server but could not be finalized.",
+		"The platform could not validate or record the immutable mission result manifest.",
+		"The platform retained the server and active mission selection without trusting incomplete result evidence.",
+		"Give the support reference to an operator. Resubmit the Workshop link after the manifest issue is repaired.",
+	},
 	"ERR_ARCHIVE_COMMAND": {
 		"The archive could not be created and verified.",
 		"The managed backup command stopped before a portable archive was verified.",

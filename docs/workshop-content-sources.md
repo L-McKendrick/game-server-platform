@@ -166,6 +166,22 @@ limited to `PutObject` on that JSON prefix. If publication fails, the command
 returns `ERR_WORKSHOP_RESULT_PUBLISH`; status directs the user to an operator
 because retrying before storage access is repaired cannot safely finalize the
 revision.
+
+The same strict manifest parser finalizes scenarios after initial bootstrap,
+live synchronization (including scheduled missed-event recovery), and wake.
+It checks the exact session prefix, content-addressed object key, normalized
+filename, item identity, complete accepted-item set, and recorded provenance.
+All scenario records are attached in the same optimistic-concurrency mutation
+that completes the owning workflow, so a collection cannot partially appear
+and the configured/current mission never changes. Bootstrap, live sync, and
+wake therefore retain the repository's single-version completion invariant.
+The three existing workers have read-only access to the bounded
+`workshop-resolutions/*.tsv` prefix; no new worker, queue, state machine, table,
+bucket, or polling path is required. Wake skips the S3 read when every item and
+its complete current provenance are already attached, so ordinary wakes do not
+gain a Workshop storage dependency or request. A live result that cannot be validated is
+released as `ERR_WORKSHOP_RESULT_IMPORT` with operator-directed status instead
+of leaving the session locked indefinitely.
 Current staging and temporary manifests are removed on every exit, and
 constrained cleanup removes abandoned workflow staging older than one day.
 

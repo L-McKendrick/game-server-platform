@@ -35,6 +35,10 @@ type recoveryIDs struct{}
 
 func (recoveryIDs) New(time.Time) (string, error) { return "event-recovered", nil }
 
+type recoveryManifest struct{ body []byte }
+
+func (reader recoveryManifest) Get(context.Context, string) ([]byte, error) { return reader.body, nil }
+
 func TestContentWorkflowIDBindsDigestAndRequest(t *testing.T) {
 	digestA, digestB := strings.Repeat("a", 64), strings.Repeat("b", 64)
 	first := contentWorkflowID("session-1", domain.WorkshopTargetMods, digestA, "request-1")
@@ -91,7 +95,9 @@ func TestReconcileActiveRecoversCommandWhenEventBridgeDeliveryWasLost(t *testing
 	if err := repository.AcquireWorkflow(context.Background(), session, expected, workflow, started); err != nil {
 		t.Fatal(err)
 	}
-	service, err := New(repository, repository, recoveryRunner{}, recoveryIDs{}, recoveryClock{now: now.Add(time.Minute)})
+	manifestDigest := strings.Repeat("b", 64)
+	manifest := []byte(manifestDigest + "\tRecovered.Altis.pbo\tsessions/session-1/input/missions/" + manifestDigest + "-Recovered.Altis.pbo\t42\n")
+	service, err := New(repository, repository, recoveryRunner{}, recoveryIDs{}, recoveryClock{now: now.Add(time.Minute)}, WithWorkshopMissionManifest(recoveryManifest{body: manifest}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +110,7 @@ func TestReconcileActiveRecoversCommandWhenEventBridgeDeliveryWasLost(t *testing
 		t.Fatalf("workflow = %#v, err = %v", completed, err)
 	}
 	persisted, err := repository.Get(context.Background(), session.ID)
-	if err != nil || persisted.ActiveWorkflowID != "" {
+	if err != nil || persisted.ActiveWorkflowID != "" || persisted.Version != session.Version+1 || len(persisted.MissionFiles) != 1 || persisted.MissionFiles[0].WorkshopItemID != 42 {
 		t.Fatalf("session lock = %q, err = %v", persisted.ActiveWorkflowID, err)
 	}
 }

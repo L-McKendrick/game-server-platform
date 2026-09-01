@@ -131,6 +131,12 @@ data "aws_iam_policy_document" "reliability_worker" {
   }
 
   statement {
+    sid       = "ReadWorkshopMissionManifests"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.session_assets.arn}/sessions/*/workshop-resolutions/*.tsv"]
+  }
+
+  statement {
     actions = [
       "sqs:DeleteMessage",
       "sqs:GetQueueAttributes",

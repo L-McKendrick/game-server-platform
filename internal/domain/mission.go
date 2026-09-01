@@ -25,15 +25,23 @@ type MissionRecord struct {
 }
 
 func (session *Session) AttachWorkshopMission(record MissionRecord, now time.Time) error {
+	changed, err := session.attachWorkshopMissionWithoutVersion(record, now)
+	if err != nil || !changed {
+		return err
+	}
+	return session.RecordMutation(now)
+}
+
+func (session *Session) attachWorkshopMissionWithoutVersion(record MissionRecord, now time.Time) (bool, error) {
 	if record.WorkshopItemID == 0 || len(record.WorkshopSources) == 0 || record.Status != ArtifactAccepted || strings.TrimSpace(record.ObjectKey) == "" {
-		return fmt.Errorf("Workshop mission record is invalid")
+		return false, fmt.Errorf("Workshop mission record is invalid")
 	}
 	filename, err := NormalizeMissionFilename(record.Filename)
 	if err != nil || filename != record.Filename || missionFilenameFromObjectKey(record.ObjectKey) != filename {
-		return fmt.Errorf("Workshop mission filename or object key is invalid")
+		return false, fmt.Errorf("Workshop mission filename or object key is invalid")
 	}
 	if session.LifecycleState == StateDeleting || session.LifecycleState == StateDeleted || session.LifecycleState == StateArchiving || session.LifecycleState == StateDestroying {
-		return fmt.Errorf("%w: Workshop missions cannot change in the current lifecycle", ErrInvalidTransition)
+		return false, fmt.Errorf("%w: Workshop missions cannot change in the current lifecycle", ErrInvalidTransition)
 	}
 	for _, source := range record.WorkshopSources {
 		matched := false
@@ -44,12 +52,12 @@ func (session *Session) AttachWorkshopMission(record MissionRecord, now time.Tim
 			}
 		}
 		if !matched {
-			return fmt.Errorf("Workshop mission provenance is not authorized")
+			return false, fmt.Errorf("Workshop mission provenance is not authorized")
 		}
 	}
 	for index := range session.MissionFiles {
 		if session.MissionFiles[index].ObjectKey == record.ObjectKey {
-			return nil
+			return false, nil
 		}
 		if session.MissionFiles[index].WorkshopItemID == record.WorkshopItemID && session.MissionFiles[index].Active() {
 			session.MissionFiles[index].RemovedAt = now.UTC()
@@ -57,7 +65,20 @@ func (session *Session) AttachWorkshopMission(record MissionRecord, now time.Tim
 	}
 	record.AddedAt = now.UTC()
 	session.MissionFiles = append(session.MissionFiles, record)
-	return session.RecordMutation(now)
+	return true, nil
+}
+
+func (session Session) withWorkshopMissions(records []MissionRecord, now time.Time) (Session, error) {
+	session.MissionFiles = append([]MissionRecord(nil), session.MissionFiles...)
+	for index := range session.MissionFiles {
+		session.MissionFiles[index].WorkshopSources = append([]WorkshopReference(nil), session.MissionFiles[index].WorkshopSources...)
+	}
+	for _, record := range records {
+		if _, err := session.attachWorkshopMissionWithoutVersion(record, now); err != nil {
+			return Session{}, err
+		}
+	}
+	return session, nil
 }
 
 func (record MissionRecord) Active() bool { return record.RemovedAt.IsZero() }

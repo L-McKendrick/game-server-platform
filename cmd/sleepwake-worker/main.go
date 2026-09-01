@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ec2compute"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3objects"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmbootstrap"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmmonitor"
@@ -17,6 +18,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"log/slog"
@@ -64,7 +66,7 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	service, err := sleepwake.NewService(repo, repo, repo, ec2compute.New(ec2.NewFromConfig(awsCfg), ssm.NewFromConfig(awsCfg)), monitor, sqsnotification.New(sqs.NewFromConfig(awsCfg), cfg.NotificationQueueURL), identity.Generator{}, appsession.SystemClock{}, sleepwake.WithPresetRevisionRunner(presetRunner))
+	service, err := sleepwake.NewService(repo, repo, repo, ec2compute.New(ec2.NewFromConfig(awsCfg), ssm.NewFromConfig(awsCfg)), monitor, sqsnotification.New(sqs.NewFromConfig(awsCfg), cfg.NotificationQueueURL), identity.Generator{}, appsession.SystemClock{}, sleepwake.WithPresetRevisionRunner(presetRunner), sleepwake.WithWorkshopMissionManifest(s3objects.New(s3.NewFromConfig(awsCfg), cfg.SessionAssetsBucket)))
 	if err != nil {
 		return nil, err
 	}

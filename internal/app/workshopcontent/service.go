@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
+	"github.com/L-McKendrick/game-server-platform/internal/app/workshopmanifest"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -27,13 +28,26 @@ type Service struct {
 	runner    ports.WorkshopContentRunner
 	ids       IDGenerator
 	clock     Clock
+	manifest  ports.ObjectReader
 }
 
-func New(s ports.SessionRepository, w ports.WorkflowRepository, r ports.WorkshopContentRunner, ids IDGenerator, clock Clock) (*Service, error) {
+type Option func(*Service)
+
+func WithWorkshopMissionManifest(reader ports.ObjectReader) Option {
+	return func(service *Service) { service.manifest = reader }
+}
+
+func New(s ports.SessionRepository, w ports.WorkflowRepository, r ports.WorkshopContentRunner, ids IDGenerator, clock Clock, options ...Option) (*Service, error) {
 	if s == nil || w == nil || r == nil || ids == nil || clock == nil {
 		return nil, fmt.Errorf("Workshop content dependencies are required")
 	}
-	return &Service{sessions: s, workflows: w, runner: r, ids: ids, clock: clock}, nil
+	service := &Service{sessions: s, workflows: w, runner: r, ids: ids, clock: clock}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service, nil
 }
 
 func (s *Service) Start(ctx context.Context, sessionID string, target domain.WorkshopTarget, digest, requestedBy, correlationID, idempotencyKey string) (domain.Workflow, error) {
@@ -188,11 +202,27 @@ func (s *Service) finish(ctx context.Context, session domain.Session, workflow d
 	}
 	expected, now := session.Version, s.clock.Now().UTC()
 	var releaseErr error
+	var missions []domain.MissionRecord
+	if success {
+		if workflow.ContentTarget == string(domain.WorkshopTargetMission) {
+			var err error
+			missions, err = workshopmanifest.Load(ctx, s.manifest, session)
+			if err != nil {
+				success = false
+				code = "ERR_WORKSHOP_RESULT_IMPORT"
+				message = "The platform could not validate and record the completed Workshop mission result."
+			}
+		}
+	}
 	if success {
 		if session.Failure.Stage == "Workshop content sync" {
 			session.ClearFailure()
 		}
-		releaseErr = session.CompleteWorkflowLock(workflow.ID, now)
+		if workflow.ContentTarget == string(domain.WorkshopTargetMission) {
+			releaseErr = session.CompleteWorkshopContentSync(workflow.ID, missions, now)
+		} else {
+			releaseErr = session.CompleteWorkflowLock(workflow.ID, now)
+		}
 	} else {
 		if strings.TrimSpace(code) == "" {
 			code = "ERR_WORKSHOP_ITEM_DOWNLOAD"

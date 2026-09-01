@@ -300,6 +300,23 @@ func (session *Session) CompleteWorkflowLock(workflowID string, now time.Time) e
 	return session.Validate()
 }
 
+// CompleteWorkshopContentSync attaches every validated scenario result and
+// releases the live synchronization lease as one versioned mutation.
+func (session *Session) CompleteWorkshopContentSync(workflowID string, missions []MissionRecord, now time.Time) error {
+	if session.ActiveWorkflowType != WorkshopContentSyncWorkflowType {
+		return fmt.Errorf("%w: workflow does not hold the Workshop content lease", ErrConflict)
+	}
+	candidate, err := session.withWorkshopMissions(missions, now)
+	if err != nil {
+		return err
+	}
+	if err = candidate.CompleteWorkflowLock(workflowID, now); err != nil {
+		return err
+	}
+	*session = candidate
+	return nil
+}
+
 // RecordMutation advances optimistic-concurrency metadata for an event that
 // does not otherwise change the user-visible session fields.
 func (session *Session) RecordMutation(now time.Time) error {

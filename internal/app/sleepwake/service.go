@@ -9,6 +9,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/app/failurestate"
 	appreliability "github.com/L-McKendrick/game-server-platform/internal/app/reliability"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
+	"github.com/L-McKendrick/game-server-platform/internal/app/workshopmanifest"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -63,6 +64,7 @@ type Service struct {
 	monitor       ports.MonitoringRunner
 	presetRunner  ports.PresetRevisionRunner
 	contentRunner ports.WorkshopContentSyncRunner
+	manifest      ports.ObjectReader
 	notifications ports.NotificationQueue
 	ids           IDGenerator
 	clock         Clock
@@ -77,6 +79,10 @@ func WithPresetRevisionRunner(runner ports.PresetRevisionRunner) Option {
 			service.contentRunner = content
 		}
 	}
+}
+
+func WithWorkshopMissionManifest(reader ports.ObjectReader) Option {
+	return func(service *Service) { service.manifest = reader }
 }
 
 func NewService(s ports.SessionRepository, st ports.ProvisioningRepository, w ports.WorkflowRepository, c ports.ComputeProvisioner, m ports.MonitoringRunner, n ports.NotificationQueue, ids IDGenerator, clock Clock, options ...Option) (*Service, error) {
@@ -347,6 +353,10 @@ func (s *Service) complete(ctx context.Context, session domain.Session, wf domai
 	if wf.Type == domain.SleepWorkflowType {
 		err = session.CompleteSleep(wf.ID, now)
 	} else {
+		missions, manifestErr := workshopmanifest.Load(ctx, s.manifest, session)
+		if manifestErr != nil {
+			return TaskResult{}, manifestErr
+		}
 		observation, observeErr := s.compute.ObserveInstance(ctx, session.Infrastructure.InstanceID)
 		if observeErr != nil {
 			return TaskResult{}, observeErr
@@ -354,7 +364,7 @@ func (s *Service) complete(ctx context.Context, session domain.Session, wf domai
 		if observation.State != "running" {
 			return TaskResult{}, fmt.Errorf("instance is not running")
 		}
-		err = session.CompleteWake(wf.ID, observation.PublicIPv4, now)
+		err = session.CompleteWakeWithWorkshopMissions(wf.ID, observation.PublicIPv4, missions, now)
 	}
 	if err != nil {
 		return TaskResult{}, err
