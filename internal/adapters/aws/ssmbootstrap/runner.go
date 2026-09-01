@@ -25,6 +25,7 @@ import (
 const (
 	documentName                = "AWS-RunShellScript"
 	RuntimeConfigurationVersion = "steam-auth-cache-v1"
+	bashShebang                 = "#!/usr/bin/env bash\n"
 )
 
 type API interface {
@@ -132,7 +133,11 @@ func (runner *Runner) StartContent(ctx context.Context, session domain.Session, 
 	} else {
 		prefix += "export WORKSHOP_PROMOTE_MODS=false\n"
 	}
-	return runner.send(ctx, session, prefix+script, "gsp:workshop-sync:"+session.ID+":"+session.ActiveWorkflowID, "workshop-sync")
+	if !strings.HasPrefix(script, bashShebang) {
+		return "", fmt.Errorf("generated Workshop sync command is missing its Bash interpreter boundary")
+	}
+	script = bashShebang + prefix + strings.TrimPrefix(script, bashShebang)
+	return runner.send(ctx, session, script, "gsp:workshop-sync:"+session.ID+":"+session.ActiveWorkflowID, "workshop-sync")
 }
 
 func (runner *Runner) ResolveContentCommand(ctx context.Context, commandID string) (string, string, string, error) {
@@ -447,7 +452,7 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 		"TEAMSPEAK_VERSION_B64":         runner.config.TeamSpeakVersion,
 	}
 	var command strings.Builder
-	command.WriteString("#!/usr/bin/env bash\nset -Eeuo pipefail\numask 077\n")
+	command.WriteString(bashShebang + "set -Eeuo pipefail\numask 077\n")
 	for _, key := range []string{"SESSION_ID_B64", "WORKFLOW_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "MISSION_MANIFEST_B64", "CONTENT_REVISION_B64", "WORKSHOP_MISSION_MANIFEST_B64", "WORKSHOP_MISSION_REVISION_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "WORKSHOP_MOD_RESOLUTION_B64", "WORKSHOP_MOD_MANIFEST_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
 		command.WriteString("export " + key + "='" + base64.StdEncoding.EncodeToString([]byte(values[key])) + "'\n")
 	}

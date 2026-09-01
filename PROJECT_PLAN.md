@@ -337,3 +337,6 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **17.11.2** [x] Add repository-realistic regression coverage for item and collection bootstrap completion, replay, malformed manifests, and unchanged mission selection.
       - **17.11.3** [x] Review submission through lifecycle replay, live synchronization, result publication, promotion, failure recovery, status, IAM, and cleanup; fix only demonstrated correctness or duplication gaps.
       - **17.11.4** [x] Run proportional Go, Bash, packaging, Terraform, command-contract, and diff validation; refresh the deployment and test-33 recovery handoff, then commit and push.
+    - **17.12** [x] Repair the Workshop content-sync shell boundary found during `test-33` wake verification.
+      - **17.12.1** [x] Preserve the generated Bash shebang as the first command line when adding Workshop operation variables, so AWS Run Command cannot fall back to POSIX `sh` before content synchronization begins.
+      - **17.12.2** [x] Preserve actionable Workshop failure codes, add focused command-generation and wake-observation coverage, run proportional validation, and refresh the deployment and safe `test-33` recovery handoff.

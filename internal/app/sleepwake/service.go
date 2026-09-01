@@ -230,8 +230,11 @@ func (s *Service) observeContent(ctx context.Context, session domain.Session, wf
 		out.CommandID, out.Done, out.Succeeded = strings.TrimSpace(commandID), true, true
 	}
 	if out.Done && !out.Succeeded {
-		out.ErrorCode = "ERR_MOD_REVISION_" + strings.ToUpper(status.Status)
-		out.ErrorMessage = bounded(status.ErrorMessage, "pending mod revision failed")
+		out.ErrorCode = strings.TrimSpace(status.ErrorCode)
+		if out.ErrorCode == "" {
+			out.ErrorCode = "ERR_WORKSHOP_CONTENT_" + strings.ToUpper(status.Status)
+		}
+		out.ErrorMessage = bounded(status.ErrorMessage, "Workshop content synchronization failed")
 	}
 	return out, nil
 }

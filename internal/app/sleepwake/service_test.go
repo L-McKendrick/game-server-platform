@@ -125,3 +125,22 @@ func TestWakeDispatchesWorkshopMissionsWithoutPendingMods(t *testing.T) {
 		t.Fatalf("dispatch = %#v starts=%d err=%v", result, runner.starts, err)
 	}
 }
+
+func TestWakeContentFailurePreservesActionableWorkshopCode(t *testing.T) {
+	runner := &presetRunner{status: ports.BootstrapCommandStatus{
+		Status:       "Failed",
+		ErrorCode:    "ERR_WORKSHOP_DISK_SPACE",
+		ErrorMessage: "The managed host does not have enough free disk space to stage the Workshop content.",
+	}}
+	service := &Service{presetRunner: runner, contentRunner: runner}
+	session := domain.Session{ID: "session-1", ActiveWorkflowID: "wake-1", LifecycleState: domain.StateWaking, Infrastructure: domain.Infrastructure{InstanceID: "i-1"}, WorkshopMissionSources: []domain.WorkshopMissionSource{{}}}
+	workflow := domain.Workflow{ID: "wake-1", Type: domain.WakeWorkflowType}
+
+	result, err := service.observeContent(context.Background(), session, workflow, "command-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Done || result.Succeeded || result.ErrorCode != "ERR_WORKSHOP_DISK_SPACE" {
+		t.Fatalf("result = %#v", result)
+	}
+}

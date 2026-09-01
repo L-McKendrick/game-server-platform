@@ -138,6 +138,9 @@ func TestStartContentRestartsOnlyWhenPromotingMods(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := client.sent.Parameters["commands"][0]
+	if !strings.HasPrefix(script, bashShebang+"export GSP_OPERATION_MODE=workshop_sync\n") {
+		t.Fatal("content command placed operation variables before its Bash shebang")
+	}
 	if !strings.Contains(script, "export WORKSHOP_PROMOTE_MODS=true") {
 		t.Fatal("promoting content command did not request mod promotion")
 	}
@@ -146,6 +149,9 @@ func TestStartContentRestartsOnlyWhenPromotingMods(t *testing.T) {
 	}
 	if !strings.Contains(client.sent.Parameters["commands"][0], "export WORKSHOP_PROMOTE_MODS=false") {
 		t.Fatal("mission-only content command did not disable mod promotion")
+	}
+	if strings.Index(client.sent.Parameters["commands"][0], bashShebang) != 0 {
+		t.Fatal("mission-only content command did not retain Bash as its interpreter")
 	}
 }
 

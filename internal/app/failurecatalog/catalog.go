@@ -137,6 +137,12 @@ var entries = map[string]entry{
 		"The platform released the content lock and retained active content.",
 		"Check `/rb status`, wait for any lifecycle operation to finish, then submit the Workshop link again.",
 	},
+	"ERR_WORKSHOP_CONTENT_FAILED": {
+		"Workshop content synchronization stopped on the managed server.",
+		"The host command ended before its recorded Workshop snapshot was validated and applied.",
+		"The platform retained the managed server and did not infer successful content changes.",
+		"Give the support reference to an operator. Retry the lifecycle operation after the host-command issue is repaired.",
+	},
 	"ERR_WORKSHOP_METADATA_DRIFT": {
 		"The downloaded Workshop item no longer matches the recorded snapshot.",
 		"The publisher updated the item after the platform resolved its metadata.",
