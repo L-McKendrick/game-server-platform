@@ -83,6 +83,49 @@ func TestMissionButtonLabelKeepsStatusWithinDiscordLimit(t *testing.T) {
 	}
 }
 
+func TestWriteMissionManagerShowsPendingWorkshopMissionsWithoutDuplicateControls(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 2, 8, 0, 0, 0, time.UTC)
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Workshop missions", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.WorkshopMissionSources = []domain.WorkshopMissionSource{
+		{AcceptedItemIDs: []uint64{100, 200}, AcceptedItems: []domain.WorkshopMissionItem{{PublishedFileID: 100, Filename: "Ready.Altis.pbo"}, {PublishedFileID: 200, Filename: "Pending.Enoch.pbo"}}},
+		{AcceptedItemIDs: []uint64{200, 300, 400}},
+	}
+	session.MissionFiles = []domain.MissionRecord{{ObjectKey: "sessions/session-1/input/missions/hash-Ready.Altis.pbo", Filename: "Ready.Altis.pbo", Status: domain.ArtifactAccepted, AddedAt: now, WorkshopItemID: 100}}
+	session.MissionFiles = append(session.MissionFiles, domain.MissionRecord{ObjectKey: "sessions/session-1/input/missions/hash-Removed.Altis.pbo", Filename: "Removed.Altis.pbo", Status: domain.ArtifactAccepted, AddedAt: now, RemovedAt: now.Add(time.Minute), WorkshopItemID: 300})
+
+	recorder := httptest.NewRecorder()
+	writeMissionManager(recorder, session, 0)
+	var response interactionResponse
+	decodeResponse(t, recorder, &response)
+	components := (*response.Data.Components)[0].Components
+	labels := make([]string, 0)
+	for _, row := range components {
+		if len(row.Components) == 0 || !strings.Contains(row.Components[0].Label, "Workshop") {
+			continue
+		}
+		labels = append(labels, row.Components[0].Label)
+		if strings.Contains(row.Components[0].Label, "awaiting download") && len(row.Components) != 1 {
+			t.Fatalf("pending Workshop row has mutation controls: %#v", row.Components)
+		}
+	}
+	joined := strings.Join(labels, "\n")
+	for _, want := range []string{"Ready.Altis.pbo — ACCEPTED, Workshop #100", "Pending.Enoch.pbo — awaiting download, Workshop #200", "Workshop item #400 — awaiting download, Workshop #400"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("Workshop mission labels = %q; missing %q", joined, want)
+		}
+	}
+	if strings.Count(joined, "Workshop #200") != 1 {
+		t.Fatalf("pending collection item was duplicated: %q", joined)
+	}
+	if strings.Contains(joined, "Workshop #300") {
+		t.Fatalf("removed Workshop mission reappeared as pending: %q", joined)
+	}
+}
+
 func TestMissionControlIdentifierRejectsMalformedState(t *testing.T) {
 	t.Parallel()
 	if _, _, _, _, _, err := parseMissionCustomID("rb:missions:v1:remove:session:bad:0:1"); err == nil {

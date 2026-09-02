@@ -2,61 +2,53 @@
 
 ## State and Objective
 
-Phase 17.12 is complete and deployed from `codex/workshop-content-sources`.
-Live investigation
-of `test-33` support reference `ref_4ce8ff3ad476` found that wake started the
-retained EC2 instance successfully, then its Workshop content command failed
-before doing any work because operation exports were prepended ahead of the
-generated Bash shebang. AWS Run Command therefore interpreted `set -o pipefail`
-with Ubuntu `dash` and rejected it.
+Phase 17.13 is complete on `codex/workshop-content-sources`. Accepted Workshop
+scenarios now appear in `/rb edit` -> `Mission files` before their host download
+and immutable mission-record import finishes.
 
 ## Completed Development
 
-- Workshop content commands now retain `#!/usr/bin/env bash` as their first
-  line and inject wake/live operation variables immediately after it.
-- Wake content observation preserves a stable actionable Workshop error code
-  reported by the host. Unknown terminal host failures use
-  `ERR_WORKSHOP_CONTENT_<STATUS>` instead of misleadingly reporting every
-  mission or mixed-content failure as a mod-revision failure.
-- The failure catalog includes safe guidance for the generic
-  `ERR_WORKSHOP_CONTENT_FAILED` case.
-- Focused tests cover Bash interpreter placement for promoted-mod and
-  mission-only content commands and actionable wake failure propagation.
+- The mission editor combines active `MissionFiles` with unresolved accepted
+  Workshop scenario items in stable source order.
+- Pending Workshop items are deduplicated across collections and finalized
+  records, labeled `awaiting download`, and exposed without Default or Remove
+  controls until a validated object key exists.
+- Backward-compatible Workshop snapshots that predate canonical filenames are
+  shown by Workshop item ID instead of being hidden.
+- Empty pending object keys cannot be mistaken for the built-in configured or
+  currently loaded mission.
 
-## Live Session Finding
+## Live Finding
 
-`test-33` is recoverable. Its instance `i-0a474c54ba6b9ec6b` is running, both
-EC2 status checks are OK, SSM is online, and the failed wake workflow released
-its lock. The session is truthfully `FAILED` because wake crossed the compute
-start boundary but did not synchronize content or restart and health-check
-Arma. Do not mutate DynamoDB or mark that wake successful manually.
-
-Use `/rb start` for `test-33`. Failed sessions with retained
-managed infrastructure enter the resumable bootstrap path, which will reuse
-the host, synchronize the immutable Workshop mission, start Arma, verify
-health, and return the session to running state. The running instance and
-100-GiB gp3 volume may incur cost until recovery, sleep, archive, or termination.
+The deployed `test-34` record demonstrated the gap: its Workshop scenario
+metadata was accepted while the session was `WAKING`, but `mission_files_json`
+was intentionally absent until host synchronization completed. `test-33`
+already contained the finalized accepted Workshop mission record before it was
+terminated. No persistence or download mutation is required for this repair.
 
 ## Validation
 
-- `go test ./...`, `go vet ./...`, and `go build ./cmd/...` pass with
-  repository-local caches.
-- Focused SSM bootstrap, sleep/wake, and failure-catalog tests pass.
-- Lambda packaging completes successfully. A concurrent local packaging rerun
-  briefly collided over its generated helper; the clean serial rerun passed.
-- Recursive Terraform formatting, development Terraform validation, and
+- Focused Discord interaction tests pass, including finalized, pending,
+  collection-deduplication, and legacy-snapshot presentation.
+- `go test ./...`, `go vet ./...`, `go build ./cmd/...`, Lambda packaging, and
   `git diff --check` pass. Windows reports only expected LF/CRLF warnings.
-- Discord command definitions did not change; registration is unnecessary.
-- Terraform applied the reviewed saved plan successfully: 0 resources added,
-  13 Lambda functions updated in place, and 0 resources destroyed. The
-  sleep/wake and bootstrap workers are active with the planned code hashes.
-- Post-deployment metadata verification confirms `test-33` remains `FAILED`
-  with no active workflow-lock attribute. Operator recovery is not blocked.
+- Infrastructure and Discord command definitions did not change. Only the
+  Discord interactions Lambda requires deployment; command registration is
+  unnecessary.
 
 ## Commands to Apply Current Changes
 
-No packaging, Terraform deployment, or Discord command registration remains.
-The reviewed deployment is already applied. Run `/rb status` for `test-33`,
-then `/rb start` once. Confirm
-the resumable bootstrap completes, the Workshop scenario remains available,
-and health returns to healthy.
+```powershell
+$env:AWS_PROFILE = "game-server-dev"
+$env:AWS_REGION = "us-west-2"
+$env:AWS_EC2_METADATA_DISABLED = "true"
+./scripts/package-discord-lambda.ps1
+terraform -chdir=infra/terraform/environments/dev plan -out=workshop-mission-editor-20260901.tfplan
+terraform -chdir=infra/terraform/environments/dev show workshop-mission-editor-20260901.tfplan
+terraform -chdir=infra/terraform/environments/dev apply workshop-mission-editor-20260901.tfplan
+aws lambda get-function-configuration --function-name game-server-platform-dev-discord-interactions --query '{State:State,LastModified:LastModified,CodeSha256:CodeSha256}' --output table
+```
+
+The reviewed plan should update only the packaged Lambda functions whose ZIP
+hashes changed; it must add and destroy no infrastructure. Discord command
+registration is not required.

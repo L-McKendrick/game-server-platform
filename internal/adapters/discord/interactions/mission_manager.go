@@ -18,6 +18,12 @@ const missionUploadField = "mission:file"
 const missionWorkshopField = "mission:workshop"
 const maximumMissionButtonLabelRunes = 80
 
+type missionManagerEntry struct {
+	record  domain.MissionRecord
+	index   int
+	pending bool
+}
+
 func (payload interactionPayload) isRBEditCommand() bool {
 	if payload.Type != interactionTypeApplicationCommand {
 		return false
@@ -66,16 +72,33 @@ func missionCustomID(sessionID, action string, index, page int, version int64) s
 }
 
 func writeMissionManager(writer http.ResponseWriter, session domain.Session, page int) {
-	active := make([]struct {
-		record domain.MissionRecord
-		index  int
-	}, 0)
+	active := make([]missionManagerEntry, 0, len(session.MissionFiles))
+	finalizedWorkshopItems := make(map[uint64]bool)
 	for index, record := range session.MissionFiles {
+		if record.WorkshopItemID != 0 {
+			finalizedWorkshopItems[record.WorkshopItemID] = true
+		}
 		if record.Active() {
-			active = append(active, struct {
-				record domain.MissionRecord
-				index  int
-			}{record, index})
+			active = append(active, missionManagerEntry{record: record, index: index})
+		}
+	}
+	pendingWorkshopItems := make(map[uint64]bool)
+	for _, source := range session.WorkshopMissionSources {
+		for _, item := range source.AcceptedItems {
+			if item.PublishedFileID == 0 || finalizedWorkshopItems[item.PublishedFileID] || pendingWorkshopItems[item.PublishedFileID] {
+				continue
+			}
+			pendingWorkshopItems[item.PublishedFileID] = true
+			active = append(active, missionManagerEntry{record: domain.MissionRecord{Filename: item.Filename, WorkshopItemID: item.PublishedFileID}, index: -1, pending: true})
+		}
+		// Older source snapshots do not retain canonical filenames. Keep them
+		// visible by Workshop identity until the host publishes the final name.
+		for _, itemID := range source.AcceptedItemIDs {
+			if itemID == 0 || finalizedWorkshopItems[itemID] || pendingWorkshopItems[itemID] {
+				continue
+			}
+			pendingWorkshopItems[itemID] = true
+			active = append(active, missionManagerEntry{record: domain.MissionRecord{Filename: fmt.Sprintf("Workshop item #%d", itemID), WorkshopItemID: itemID}, index: -1, pending: true})
 		}
 	}
 	pages := (len(active) + 4) / 5
@@ -113,25 +136,28 @@ func writeMissionManager(writer http.ResponseWriter, session domain.Session, pag
 	}
 	for _, entry := range active[start:end] {
 		status := string(entry.record.Status)
+		if entry.pending {
+			status = "awaiting download"
+		}
 		if entry.record.WorkshopItemID != 0 {
 			status += fmt.Sprintf(", Workshop #%d", entry.record.WorkshopItemID)
 		}
-		if session.CurrentMission.ObjectKey == entry.record.ObjectKey {
+		if entry.record.ObjectKey != "" && session.CurrentMission.ObjectKey == entry.record.ObjectKey {
 			status += ", currently loaded"
 		}
-		if configured.ObjectKey == entry.record.ObjectKey {
+		if entry.record.ObjectKey != "" && configured.ObjectKey == entry.record.ObjectKey {
 			status += ", configured"
 		}
 		row := interactionComponent{Type: componentTypeActionRow, Components: []interactionComponent{{
 			Type: componentTypeButton, Style: buttonStyleSecondary, Label: missionButtonLabel(entry.record.Filename, status),
 			CustomID: missionCustomID(session.ID, "label", entry.index, page, session.Version), Disabled: true,
 		}}}
-		if entry.record.Status == domain.ArtifactAccepted && configured.ObjectKey != entry.record.ObjectKey {
+		if !entry.pending && entry.record.Status == domain.ArtifactAccepted && configured.ObjectKey != entry.record.ObjectKey {
 			row.Components = append(row.Components, interactionComponent{
 				Type: componentTypeButton, Style: buttonStyleSecondary, Label: "Default", CustomID: missionCustomID(session.ID, "default", entry.index, page, session.Version),
 			})
 		}
-		if session.CurrentMission.ObjectKey != entry.record.ObjectKey {
+		if !entry.pending && session.CurrentMission.ObjectKey != entry.record.ObjectKey {
 			row.Components = append(row.Components, interactionComponent{
 				Type: componentTypeButton, Style: buttonStyleDanger, Label: "Remove", CustomID: missionCustomID(session.ID, "remove", entry.index, page, session.Version),
 			})

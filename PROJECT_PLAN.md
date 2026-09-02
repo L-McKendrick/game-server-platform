@@ -340,3 +340,6 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **17.12** [x] Repair the Workshop content-sync shell boundary found during `test-33` wake verification.
       - **17.12.1** [x] Preserve the generated Bash shebang as the first command line when adding Workshop operation variables, so AWS Run Command cannot fall back to POSIX `sh` before content synchronization begins.
       - **17.12.2** [x] Preserve actionable Workshop failure codes, add focused command-generation and wake-observation coverage, run proportional validation, and refresh the deployment and safe `test-33` recovery handoff.
+    - **17.13** [x] Show accepted Workshop scenarios in the mission editor before host synchronization finishes.
+      - **17.13.1** [x] Project deduplicated unresolved Workshop scenario items alongside finalized mission records as non-actionable awaiting-download entries.
+      - **17.13.2** [x] Add focused pagination, promotion, collection, and backward-compatibility coverage; validate and refresh the deployment handoff.
