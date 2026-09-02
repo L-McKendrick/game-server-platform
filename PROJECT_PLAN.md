@@ -343,3 +343,6 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **17.13** [x] Show accepted Workshop scenarios in the mission editor before host synchronization finishes.
       - **17.13.1** [x] Project deduplicated unresolved Workshop scenario items alongside finalized mission records as non-actionable awaiting-download entries.
       - **17.13.2** [x] Add focused pagination, promotion, collection, and backward-compatibility coverage; validate and refresh the deployment handoff.
+    - **17.14** [x] Normalize Steam Workshop links copied with trailing query parameters.
+      - **17.14.1** [x] Retain one valid Workshop `id`, discard all other query parameters, and persist the existing canonical URL while preserving host, path, scheme, fragment, and duplicate-ID safeguards.
+      - **17.14.2** [x] Validate mod Workshop links before mutating session options, return an actionable private error for malformed links, and add focused regression coverage.

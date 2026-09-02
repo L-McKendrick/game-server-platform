@@ -296,6 +296,50 @@ func TestHandlerOpensAndSubmitsPrivateModsModalForRunningSession(t *testing.T) {
 	}
 }
 
+func TestHandlerNormalizesWorkshopModQueryParametersBeforeMutation(t *testing.T) {
+	t.Parallel()
+	handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(t, []string{"correlation-mods-open", "correlation-mods-invalid"}, nil)
+	seedHandlerPresetRevisionSession(t, repository)
+	openBody := marshalPayload(map[string]any{
+		"id": "mods-open", "application_id": "app-1", "type": interactionTypeApplicationCommand, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data":   map[string]any{"name": "rb", "options": []any{map[string]any{"type": applicationCommandOptionSubcommand, "name": "edit", "options": []any{map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "session-mods"}, map[string]any{"type": applicationCommandOptionString, "name": "section", "value": "mods"}}}}},
+	})
+	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
+	var modal interactionResponse
+	decodeResponse(t, opened, &modal)
+	before, err := repository.Get(context.Background(), "session-mods")
+	if err != nil {
+		t.Fatal(err)
+	}
+	submit := func(interactionID, rawURL string) interactionResponse {
+		t.Helper()
+		body := marshalPayload(map[string]any{
+			"id": interactionID, "application_id": "app-1", "type": interactionTypeModalSubmit, "guild_id": "guild-1", "channel_id": "channel-1",
+			"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+			"data": map[string]any{"custom_id": modal.Data.CustomID, "components": []any{
+				map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsPresetCustomID, "values": []string{}}},
+				map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeTextInput, "custom_id": modsWorkshopCustomID, "value": rawURL}},
+				map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsServerPresetCustomID, "values": []string{}}},
+				map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeCheckboxGroup, "custom_id": modsCreatorDLCsCustomID, "values": []string{}}},
+			}},
+		})
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		return decoded
+	}
+	invalid := submit("mods-invalid", "https://example.com/sharedfiles/filedetails/?id=12345&l=english")
+	afterInvalid, err := repository.Get(context.Background(), "session-mods")
+	if err != nil || invalid.Data == nil || !strings.Contains(invalid.Data.Content, "valid `id`") || afterInvalid.Version != before.Version || len(queue.WorkshopRequests()) != 0 {
+		t.Fatalf("invalid response=%#v before=%d after=%#v requests=%#v err=%v", invalid.Data, before.Version, afterInvalid, queue.WorkshopRequests(), err)
+	}
+	request := createWorkshopRequest(interactionPayload{GuildID: "guild-1", ChannelID: "channel-1"}, domain.Actor{ID: "owner-1"}, "correlation-1", "session-1", domain.WorkshopTargetMods, "https://steamcommunity.com/sharedfiles/filedetails/?id=12345&l=english&utm_source=copy", "key-1", testNow)
+	if request.SourceURL != "https://steamcommunity.com/sharedfiles/filedetails/?id=12345" {
+		t.Fatalf("canonical Workshop request URL = %q", request.SourceURL)
+	}
+}
+
 func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testing.T) {
 	t.Parallel()
 

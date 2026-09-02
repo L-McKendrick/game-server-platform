@@ -273,6 +273,9 @@ func requestWorkshopResolve(ctx context.Context, service SessionService, actor d
 }
 
 func createWorkshopRequest(payload interactionPayload, actor domain.Actor, correlationID, sessionID string, target domain.WorkshopTarget, sourceURL, idempotencyKey string, requestedAt time.Time) domain.WorkshopSourceRequest {
+	if reference, err := domain.ParseWorkshopURL(sourceURL); err == nil {
+		sourceURL = reference.CanonicalURL
+	}
 	return domain.WorkshopSourceRequest{MessageType: "workshop_resolution", SchemaVersion: 1, SessionID: sessionID, Target: target, SourceURL: sourceURL, ActorID: actor.ID, GuildID: strings.TrimSpace(payload.GuildID), ChannelID: strings.TrimSpace(payload.ChannelID), CorrelationID: correlationID, IdempotencyKey: idempotencyKey, RequestedAt: requestedAt.UTC()}
 }
 

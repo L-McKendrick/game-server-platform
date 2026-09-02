@@ -169,8 +169,8 @@ func ParseWorkshopURL(raw string) (WorkshopReference, error) {
 		return WorkshopReference{}, fmt.Errorf("Workshop URL contains unsupported components")
 	}
 	values := parsed.Query()
-	if len(values) != 1 || len(values["id"]) != 1 {
-		return WorkshopReference{}, fmt.Errorf("Workshop URL must contain only one item ID")
+	if len(values["id"]) != 1 {
+		return WorkshopReference{}, fmt.Errorf("Workshop URL must contain one item ID")
 	}
 	id, err := strconv.ParseUint(values.Get("id"), 10, 64)
 	if err != nil || id == 0 {

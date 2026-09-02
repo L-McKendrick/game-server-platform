@@ -6,14 +6,21 @@ import (
 )
 
 func TestParseWorkshopURLCanonicalizesItem(t *testing.T) {
-	reference, err := ParseWorkshopURL("https://steamcommunity.com/sharedfiles/filedetails/?id=12345")
-	if err != nil || reference.PublishedFileID != 12345 || reference.CanonicalURL != "https://steamcommunity.com/sharedfiles/filedetails/?id=12345" {
-		t.Fatalf("ParseWorkshopURL() = %#v, %v", reference, err)
+	for _, raw := range []string{
+		"https://steamcommunity.com/sharedfiles/filedetails/?id=12345",
+		"https://steamcommunity.com/sharedfiles/filedetails/?id=12345&searchtext=x",
+		"https://steamcommunity.com/sharedfiles/filedetails/?id=12345&l=english&utm_source=copy",
+	} {
+		reference, err := ParseWorkshopURL(raw)
+		if err != nil || reference.PublishedFileID != 12345 || reference.CanonicalURL != "https://steamcommunity.com/sharedfiles/filedetails/?id=12345" {
+			t.Fatalf("ParseWorkshopURL(%q) = %#v, %v", raw, reference, err)
+		}
 	}
 	for _, invalid := range []string{
 		"http://steamcommunity.com/sharedfiles/filedetails/?id=12345",
 		"https://example.com/sharedfiles/filedetails/?id=12345",
-		"https://steamcommunity.com/sharedfiles/filedetails/?id=12345&searchtext=x",
+		"https://steamcommunity.com/sharedfiles/filedetails/?id=12345&id=67890",
+		"https://steamcommunity.com/sharedfiles/filedetails/?searchtext=x",
 	} {
 		if _, err := ParseWorkshopURL(invalid); err == nil {
 			t.Fatalf("ParseWorkshopURL(%q) unexpectedly succeeded", invalid)

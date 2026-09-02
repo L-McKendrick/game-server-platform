@@ -2,39 +2,43 @@
 
 ## State and Objective
 
-Phase 17.13 is complete on `codex/workshop-content-sources`. Accepted Workshop
-scenarios now appear in `/rb edit` -> `Mission files` before their host download
-and immutable mission-record import finishes.
+Phase 17.14 is complete on `codex/workshop-content-sources`. Steam Workshop
+item and collection links copied with extra query parameters are normalized to
+the existing canonical shared-file URL instead of being rejected.
 
 ## Completed Development
 
-- The mission editor combines active `MissionFiles` with unresolved accepted
-  Workshop scenario items in stable source order.
-- Pending Workshop items are deduplicated across collections and finalized
-  records, labeled `awaiting download`, and exposed without Default or Remove
-  controls until a validated object key exists.
-- Backward-compatible Workshop snapshots that predate canonical filenames are
-  shown by Workshop item ID instead of being hidden.
-- Empty pending object keys cannot be mistaken for the built-in configured or
-  currently loaded mission.
+- Workshop URL parsing now requires exactly one valid numeric `id` but ignores
+  and strips all other query parameters such as `l`, `searchtext`, and tracking
+  values.
+- HTTPS, exact Steam Community host, exact shared-file path, no credentials or
+  port, no fragment, and no duplicate `id` remain mandatory.
+- The shared Discord Workshop request builder queues only
+  `https://steamcommunity.com/sharedfiles/filedetails/?id=<id>`, covering create,
+  mission, mod-item, and mod-collection entry points.
+- `/rb edit` mod links are validated before mod options mutate. Invalid links
+  now return a direct private correction instead of a generic reference error
+  after a partial configuration change.
 
 ## Live Finding
 
-The deployed `test-34` record demonstrated the gap: its Workshop scenario
-metadata was accepted while the session was `WAKING`, but `mission_files_json`
-was intentionally absent until host synchronization completed. `test-33`
-already contained the finalized accepted Workshop mission record before it was
-terminated. No persistence or download mutation is required for this repair.
+`test-35` (`01M1GN9VX56E304VWKMHG8YQ4A`) remains a recoverable `DRAFT` with no
+active workflow or Workshop-resolution marker. Correlation reference
+`01M1GNE74T71240CS0RVZB753V` failed synchronously because its mod collection
+URL did not match the previous query-strict canonical form. The mission source
+was accepted independently; no host download or SteamCMD operation began for
+the rejected mod link.
 
 ## Validation
 
-- Focused Discord interaction tests pass, including finalized, pending,
-  collection-deduplication, and legacy-snapshot presentation.
+- Focused domain and Discord tests pass for query stripping, canonical queued
+  requests, duplicate-ID rejection, invalid-link private feedback, and
+  pre-mutation behavior.
 - `go test ./...`, `go vet ./...`, `go build ./cmd/...`, Lambda packaging, and
   `git diff --check` pass. Windows reports only expected LF/CRLF warnings.
-- Infrastructure and Discord command definitions did not change. Only the
-  Discord interactions Lambda requires deployment; command registration is
-  unnecessary.
+- Terraform and Discord command definitions did not change. The Discord
+  interactions and artifact-worker Lambdas consume the changed shared domain
+  code and require deployment; command registration is unnecessary.
 
 ## Commands to Apply Current Changes
 
@@ -43,12 +47,13 @@ $env:AWS_PROFILE = "game-server-dev"
 $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=workshop-mission-editor-20260901.tfplan
-terraform -chdir=infra/terraform/environments/dev show workshop-mission-editor-20260901.tfplan
-terraform -chdir=infra/terraform/environments/dev apply workshop-mission-editor-20260901.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out=workshop-url-normalization-20260902.tfplan
+terraform -chdir=infra/terraform/environments/dev show workshop-url-normalization-20260902.tfplan
+terraform -chdir=infra/terraform/environments/dev apply workshop-url-normalization-20260902.tfplan
 aws lambda get-function-configuration --function-name game-server-platform-dev-discord-interactions --query '{State:State,LastModified:LastModified,CodeSha256:CodeSha256}' --output table
+aws lambda get-function-configuration --function-name game-server-platform-dev-artifact-worker --query '{State:State,LastModified:LastModified,CodeSha256:CodeSha256}' --output table
 ```
 
-The reviewed plan should update only the packaged Lambda functions whose ZIP
-hashes changed; it must add and destroy no infrastructure. Discord command
-registration is not required.
+The reviewed plan must add and destroy no infrastructure. Discord command
+registration is not required. After deployment, reopen `/rb edit` -> `Mods`
+for `test-35` and submit the collection link again; the draft is not stuck.

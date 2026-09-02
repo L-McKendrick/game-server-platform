@@ -208,6 +208,11 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 	if attachment != nil && workshopURL != "" {
 		return "", newUserError("Provide either a client preset upload or Workshop mod link, not both.")
 	}
+	if workshopURL != "" {
+		if _, parseErr := domain.ParseWorkshopURL(workshopURL); parseErr != nil {
+			return "", newUserError("Provide a public Steam Workshop item or collection link containing a valid `id`.")
+		}
+	}
 	keyPrefix := "discord:" + strings.TrimSpace(payload.ID) + ":mod-options"
 	current, err := handler.service.Get(ctx, appsession.GetQuery{Actor: actor, SessionID: state.sessionID, GuildID: payload.GuildID})
 	if err != nil {
