@@ -2,43 +2,40 @@
 
 ## State and Objective
 
-Phase 17.14 is complete on `codex/workshop-content-sources`. Steam Workshop
-item and collection links copied with extra query parameters are normalized to
-the existing canonical shared-file URL instead of being rejected.
+Phase 17.15 is complete on `codex/workshop-content-sources`. Steam's public
+collection URL form is accepted by the shared Workshop source path.
 
 ## Completed Development
 
-- Workshop URL parsing now requires exactly one valid numeric `id` but ignores
-  and strips all other query parameters such as `l`, `searchtext`, and tracking
-  values.
-- HTTPS, exact Steam Community host, exact shared-file path, no credentials or
-  port, no fragment, and no duplicate `id` remain mandatory.
-- The shared Discord Workshop request builder queues only
-  `https://steamcommunity.com/sharedfiles/filedetails/?id=<id>`, covering create,
-  mission, mod-item, and mod-collection entry points.
-- `/rb edit` mod links are validated before mod options mutate. Invalid links
-  now return a direct private correction instead of a generic reference error
-  after a partial configuration change.
+- Workshop URL parsing accepts both exact Steam paths:
+  `/sharedfiles/filedetails/` for shared items and `/workshop/filedetails/` for
+  public collections.
+- Both forms still require HTTPS, the exact Steam Community host, exactly one
+  numeric nonzero `id`, no credentials, port, or fragment, and discard all
+  unrelated query parameters.
+- Accepted links normalize to
+  `https://steamcommunity.com/sharedfiles/filedetails/?id=<id>`, leaving the
+  resolver, item-versus-collection detection, and downstream download path
+  unchanged.
+- Focused Discord coverage verifies `/rb edit` -> `Mods` accepts collection
+  `3041715613`, persists the mod options, and queues the canonical source URL.
 
 ## Live Finding
 
-`test-35` (`01M1GN9VX56E304VWKMHG8YQ4A`) remains a recoverable `DRAFT` with no
-active workflow or Workshop-resolution marker. Correlation reference
-`01M1GNE74T71240CS0RVZB753V` failed synchronously because its mod collection
-URL did not match the previous query-strict canonical form. The mission source
-was accepted independently; no host download or SteamCMD operation began for
-the rejected mod link.
+`test-37` rejected the supplied public collection before any AWS or Steam work
+because the URL was `https://steamcommunity.com/workshop/filedetails/?id=3041715613`
+and the parser admitted only the equivalent shared-file path. The session is
+not stuck by this validation failure and can be retried after deployment.
 
 ## Validation
 
-- Focused domain and Discord tests pass for query stripping, canonical queued
-  requests, duplicate-ID rejection, invalid-link private feedback, and
-  pre-mutation behavior.
+- Focused domain and Discord interaction tests pass, including the exact public
+  collection URL reported for `test-37`.
 - `go test ./...`, `go vet ./...`, `go build ./cmd/...`, Lambda packaging, and
   `git diff --check` pass. Windows reports only expected LF/CRLF warnings.
 - Terraform and Discord command definitions did not change. The Discord
-  interactions and artifact-worker Lambdas consume the changed shared domain
-  code and require deployment; command registration is unnecessary.
+  interactions and artifact-worker Lambdas consume the shared domain parser
+  and require deployment; command registration is unnecessary.
 
 ## Commands to Apply Current Changes
 
@@ -47,13 +44,13 @@ $env:AWS_PROFILE = "game-server-dev"
 $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=workshop-url-normalization-20260902.tfplan
-terraform -chdir=infra/terraform/environments/dev show workshop-url-normalization-20260902.tfplan
-terraform -chdir=infra/terraform/environments/dev apply workshop-url-normalization-20260902.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out=workshop-collection-url-20260902.tfplan
+terraform -chdir=infra/terraform/environments/dev show workshop-collection-url-20260902.tfplan
+terraform -chdir=infra/terraform/environments/dev apply workshop-collection-url-20260902.tfplan
 aws lambda get-function-configuration --function-name game-server-platform-dev-discord-interactions --query '{State:State,LastModified:LastModified,CodeSha256:CodeSha256}' --output table
 aws lambda get-function-configuration --function-name game-server-platform-dev-artifact-worker --query '{State:State,LastModified:LastModified,CodeSha256:CodeSha256}' --output table
 ```
 
 The reviewed plan must add and destroy no infrastructure. Discord command
 registration is not required. After deployment, reopen `/rb edit` -> `Mods`
-for `test-35` and submit the collection link again; the draft is not stuck.
+for `test-37` and submit the collection link again.

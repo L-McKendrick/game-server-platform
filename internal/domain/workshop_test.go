@@ -10,6 +10,8 @@ func TestParseWorkshopURLCanonicalizesItem(t *testing.T) {
 		"https://steamcommunity.com/sharedfiles/filedetails/?id=12345",
 		"https://steamcommunity.com/sharedfiles/filedetails/?id=12345&searchtext=x",
 		"https://steamcommunity.com/sharedfiles/filedetails/?id=12345&l=english&utm_source=copy",
+		"https://steamcommunity.com/workshop/filedetails/?id=12345",
+		"https://steamcommunity.com/workshop/filedetails/?id=12345&searchtext=x&l=english",
 	} {
 		reference, err := ParseWorkshopURL(raw)
 		if err != nil || reference.PublishedFileID != 12345 || reference.CanonicalURL != "https://steamcommunity.com/sharedfiles/filedetails/?id=12345" {
@@ -19,7 +21,9 @@ func TestParseWorkshopURLCanonicalizesItem(t *testing.T) {
 	for _, invalid := range []string{
 		"http://steamcommunity.com/sharedfiles/filedetails/?id=12345",
 		"https://example.com/sharedfiles/filedetails/?id=12345",
+		"https://steamcommunity.com/workshop/?id=12345",
 		"https://steamcommunity.com/sharedfiles/filedetails/?id=12345&id=67890",
+		"https://steamcommunity.com/workshop/filedetails/?id=12345&id=67890",
 		"https://steamcommunity.com/sharedfiles/filedetails/?searchtext=x",
 	} {
 		if _, err := ParseWorkshopURL(invalid); err == nil {

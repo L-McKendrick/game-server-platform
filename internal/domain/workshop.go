@@ -162,8 +162,8 @@ type WorkshopReference struct {
 
 func ParseWorkshopURL(raw string) (WorkshopReference, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), "steamcommunity.com") || parsed.Path != "/sharedfiles/filedetails/" {
-		return WorkshopReference{}, fmt.Errorf("Workshop URL must be a canonical Steam Community shared-file link")
+	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), "steamcommunity.com") || !validWorkshopFileDetailsPath(parsed.Path) {
+		return WorkshopReference{}, fmt.Errorf("Workshop URL must be a Steam Community item or collection link")
 	}
 	if parsed.User != nil || parsed.Port() != "" || parsed.Fragment != "" {
 		return WorkshopReference{}, fmt.Errorf("Workshop URL contains unsupported components")
@@ -177,6 +177,10 @@ func ParseWorkshopURL(raw string) (WorkshopReference, error) {
 		return WorkshopReference{}, fmt.Errorf("Workshop item ID is invalid")
 	}
 	return WorkshopReference{PublishedFileID: id, CanonicalURL: fmt.Sprintf("https://steamcommunity.com/sharedfiles/filedetails/?id=%d", id)}, nil
+}
+
+func validWorkshopFileDetailsPath(path string) bool {
+	return path == "/sharedfiles/filedetails/" || path == "/workshop/filedetails/"
 }
 
 type WorkshopItem struct {

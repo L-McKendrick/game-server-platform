@@ -346,3 +346,6 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **17.14** [x] Normalize Steam Workshop links copied with trailing query parameters.
       - **17.14.1** [x] Retain one valid Workshop `id`, discard all other query parameters, and persist the existing canonical URL while preserving host, path, scheme, fragment, and duplicate-ID safeguards.
       - **17.14.2** [x] Validate mod Workshop links before mutating session options, return an actionable private error for malformed links, and add focused regression coverage.
+    - **17.15** [x] Accept Steam's public collection URL form.
+      - **17.15.1** [x] Accept `/workshop/filedetails/` collection links at every shared Workshop entry point and normalize them to the existing canonical shared-file URL.
+      - **17.15.2** [x] Add focused parser and `/rb edit` mod submission coverage, validate the affected components, and refresh the deployment handoff.

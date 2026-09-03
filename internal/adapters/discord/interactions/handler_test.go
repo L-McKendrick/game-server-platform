@@ -340,6 +340,37 @@ func TestHandlerNormalizesWorkshopModQueryParametersBeforeMutation(t *testing.T)
 	}
 }
 
+func TestHandlerAcceptsWorkshopCollectionURLForMods(t *testing.T) {
+	t.Parallel()
+	handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(t, []string{"correlation-collection-open", "correlation-collection-submit"}, []string{"event-mod-options", "event-workshop-queued"})
+	seedHandlerPresetRevisionSession(t, repository)
+	openBody := marshalPayload(map[string]any{
+		"id": "collection-open", "application_id": "app-1", "type": interactionTypeApplicationCommand, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data":   map[string]any{"name": "rb", "options": []any{map[string]any{"type": applicationCommandOptionSubcommand, "name": "edit", "options": []any{map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "session-mods"}, map[string]any{"type": applicationCommandOptionString, "name": "section", "value": "mods"}}}}},
+	})
+	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
+	var modal interactionResponse
+	decodeResponse(t, opened, &modal)
+	submitBody := marshalPayload(map[string]any{
+		"id": "collection-submit", "application_id": "app-1", "type": interactionTypeModalSubmit, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{"custom_id": modal.Data.CustomID, "components": []any{
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsPresetCustomID, "values": []string{}}},
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeTextInput, "custom_id": modsWorkshopCustomID, "value": "https://steamcommunity.com/workshop/filedetails/?id=3041715613&searchtext=mods"}},
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsServerPresetCustomID, "values": []string{}}},
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeCheckboxGroup, "custom_id": modsCreatorDLCsCustomID, "values": []string{domain.CreatorDLCReactionForces}}},
+		}},
+	})
+	submitted := executeSignedRequest(t, handler, privateKey, submitBody, testNow)
+	var response interactionResponse
+	decodeResponse(t, submitted, &response)
+	requests := queue.WorkshopRequests()
+	if response.Data == nil || !strings.Contains(response.Data.Content, "queued for metadata validation") || len(requests) != 1 || requests[0].SourceURL != "https://steamcommunity.com/sharedfiles/filedetails/?id=3041715613" {
+		t.Fatalf("collection response=%#v requests=%#v", response.Data, requests)
+	}
+}
+
 func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testing.T) {
 	t.Parallel()
 
@@ -1663,6 +1694,7 @@ func newTestHandlerWithQueues(
 		fixedClock{now: testNow},
 		7*24*time.Hour,
 		appsession.WithArtifactQueue(artifactQueue),
+		appsession.WithWorkshopQueue(artifactQueue),
 		appsession.WithNotificationQueue(notificationQueue),
 		appsession.WithCommandQueue(discardCommandQueue{}),
 		appsession.WithConfirmationRepository(repository),
