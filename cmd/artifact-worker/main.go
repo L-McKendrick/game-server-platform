@@ -210,16 +210,13 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 					code, retryable = string(metadataErr.Code), metadataErr.Retryable
 				}
 				handler.logger.Warn("Workshop resolution failed", slog.String("session_id", request.SessionID), slog.String("target", string(request.Target)), slog.String("error_code", code), slog.Bool("retryable", retryable), slog.String("correlation_id", request.CorrelationID))
-				if errors.As(resolveErr, &metadataErr) && metadataErr.Retryable && !workshopFinalAttempt(message) {
+				detail := workshopResolutionUserMessage(resolveErr, true)
+				if err := handler.workshopRecorder.ClearResolution(ctx, request, detail); err != nil {
 					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
 					continue
 				}
-				if err := handler.workshopRecorder.ClearResolution(ctx, request, code); err != nil {
-					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
-					continue
-				}
-				if err := handler.notifyWorkshop(ctx, request, workshopResolutionUserMessage(resolveErr, workshopFinalAttempt(message))); err != nil {
-					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+				if err := handler.enqueueWorkshopStatusCard(ctx, request); err != nil {
+					handler.logger.Warn("Workshop failure card refresh deferred", slog.String("session_id", request.SessionID), slog.String("correlation_id", request.CorrelationID), slog.Any("error", err))
 				}
 				continue
 			}
@@ -227,12 +224,13 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 				source, recordErr := handler.workshopRecorder.RecordMissionResolution(ctx, request, resolution)
 				if recordErr != nil {
 					if permanentWorkshopRecordError(recordErr) || workshopFinalAttempt(message) {
-						if err := handler.workshopRecorder.ClearResolution(ctx, request, "record_failed"); err != nil {
+						detail := workshopRecordUserMessage(recordErr, domain.WorkshopTargetMission, workshopFinalAttempt(message))
+						if err := handler.workshopRecorder.ClearResolution(ctx, request, detail); err != nil {
 							response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
 							continue
 						}
-						if err := handler.notifyWorkshop(ctx, request, workshopRecordUserMessage(recordErr, domain.WorkshopTargetMission, workshopFinalAttempt(message))); err != nil {
-							response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+						if err := handler.enqueueWorkshopStatusCard(ctx, request); err != nil {
+							handler.logger.Warn("Workshop failure card refresh deferred", slog.String("session_id", request.SessionID), slog.Any("error", err))
 						}
 					} else {
 						response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
@@ -246,7 +244,7 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 					_, revisionErr = handler.contentSync.Start(ctx, request.SessionID, request.Target, revision, request.ActorID, request.CorrelationID, request.IdempotencyKey)
 				}
 				if revisionErr != nil && !errors.Is(revisionErr, domain.ErrInvalidTransition) {
-					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+					handler.logger.Warn("Workshop mission content sync dispatch deferred", slog.String("session_id", request.SessionID), slog.Any("error", revisionErr))
 				}
 				continue
 			}
@@ -254,12 +252,13 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 				result, recordErr := handler.workshopRecorder.RecordModResolution(ctx, request, resolution)
 				if recordErr != nil {
 					if permanentWorkshopRecordError(recordErr) || workshopFinalAttempt(message) {
-						if err := handler.workshopRecorder.ClearResolution(ctx, request, "record_failed"); err != nil {
+						detail := workshopRecordUserMessage(recordErr, domain.WorkshopTargetMods, workshopFinalAttempt(message))
+						if err := handler.workshopRecorder.ClearResolution(ctx, request, detail); err != nil {
 							response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
 							continue
 						}
-						if err := handler.notifyWorkshop(ctx, request, workshopRecordUserMessage(recordErr, domain.WorkshopTargetMods, workshopFinalAttempt(message))); err != nil {
-							response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+						if err := handler.enqueueWorkshopStatusCard(ctx, request); err != nil {
+							handler.logger.Warn("Workshop failure card refresh deferred", slog.String("session_id", request.SessionID), slog.Any("error", err))
 						}
 					} else {
 						response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
@@ -272,18 +271,16 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 					content += " Excluded: " + summary + "."
 				}
 				if err := handler.enqueueWorkshopCard(ctx, request, result); err != nil {
-					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
-					continue
+					handler.logger.Warn("Workshop success card refresh deferred", slog.String("session_id", request.SessionID), slog.Any("error", err))
 				}
 				if result.Revision.Status == domain.PresetRevisionActive {
 					if err := handler.enqueueWorkshopModlist(ctx, request, result); err != nil {
-						response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
-						continue
+						handler.logger.Warn("Workshop modlist refresh deferred", slog.String("session_id", request.SessionID), slog.Any("error", err))
 					}
 				}
 				handler.logger.Info("Workshop mod resolution recorded", slog.String("session_id", request.SessionID), slog.String("source_kind", string(source.SourceKind)), slog.Int("accepted_count", len(source.AcceptedItems)), slog.Int("excluded_count", len(source.ExcludedItems)), slog.Int64("preset_revision", result.Revision.Number), slog.String("revision_status", string(result.Revision.Status)), slog.String("correlation_id", request.CorrelationID))
 				if _, syncErr := handler.contentSync.Start(ctx, request.SessionID, request.Target, result.Revision.WorkshopResolutionSHA256, request.ActorID, request.CorrelationID, request.IdempotencyKey); syncErr != nil && !errors.Is(syncErr, domain.ErrInvalidTransition) {
-					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+					handler.logger.Warn("Workshop content sync dispatch deferred", slog.String("session_id", request.SessionID), slog.Any("error", syncErr))
 				}
 				continue
 			}
@@ -393,7 +390,7 @@ func workshopResolutionUserMessage(err error, exhausted bool) string {
 			return "Workshop link could not be used because the item or collection is unavailable or private. Make it Public in Steam Workshop, confirm the link opens while signed out, then submit it again."
 		case domain.WorkshopMetadataRateLimited, domain.WorkshopMetadataTransient, domain.WorkshopMetadataInvalidResponse:
 			if exhausted {
-				return "Steam Workshop metadata could not be read after several automatic attempts. Your session was left unchanged. Wait a few minutes, confirm the Workshop page is public, then submit the link again."
+				return "Steam Workshop metadata could not be read within the bounded request. Your session was left unchanged. Wait a few minutes, confirm the Workshop page is public, then submit the link again."
 			}
 		case domain.WorkshopMetadataRejected:
 			return "Steam rejected the Workshop metadata request. Confirm this is a canonical public Steam Community shared-file link for an Arma 3 item or collection, then submit it again."
@@ -441,10 +438,17 @@ func (handler *handler) enqueueWorkshopCard(ctx context.Context, request domain.
 	return handler.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: fmt.Sprintf("card-workshop-%s-r%d", result.Session.ID, result.Revision.Number), SessionID: result.Session.ID, GuildID: result.Session.GuildID, ChannelID: result.Session.ChannelID, Content: sessioncard.RenderPublic(projection), Embed: sessioncard.RenderPublicEmbed(projection), Kind: domain.NotificationSessionCard, CardRevision: result.Session.Version, CorrelationID: request.CorrelationID, RequestedAt: now})
 }
 
-func (handler *handler) notifyWorkshop(ctx context.Context, request domain.WorkshopSourceRequest, content string) error {
+func (handler *handler) enqueueWorkshopStatusCard(ctx context.Context, request domain.WorkshopSourceRequest) error {
+	session, err := handler.sessions.Get(ctx, request.SessionID)
+	if err != nil {
+		return err
+	}
+	now := appsession.SystemClock{}.Now()
+	projection := sessioncard.Project(session, sessioncard.Options{Now: now})
 	return handler.notifications.Enqueue(ctx, domain.NotificationRequest{
-		SchemaVersion: 1, NotificationID: "workshop-resolution-" + request.IdempotencyKey,
-		SessionID: request.SessionID, GuildID: request.GuildID, ChannelID: request.ChannelID,
-		Content: domain.SanitizeDiagnostic(content), CorrelationID: request.CorrelationID, RequestedAt: appsession.SystemClock{}.Now(),
+		SchemaVersion: 1, NotificationID: "card-workshop-outcome-" + request.IdempotencyKey,
+		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
+		Content: sessioncard.RenderPublic(projection), Embed: sessioncard.RenderPublicEmbed(projection), Kind: domain.NotificationSessionCard, CardRevision: session.Version,
+		CorrelationID: request.CorrelationID, RequestedAt: now,
 	})
 }

@@ -109,6 +109,9 @@ func render(card Projection, detailed bool) string {
 		"\n\n**Mission:** %s\n**Preset:** %s\n**Mods:** %s",
 		artifactLine(card.Artifacts.Mission), artifactLine(card.Artifacts.Preset), safe(card.Mods.Status),
 	)
+	if detailed && card.Artifacts.Mission.Status == "Workshop source needs attention" && card.Artifacts.Mission.Issue != "" {
+		fmt.Fprintf(&builder, "\n**Workshop mission source:** %s", safe(card.Artifacts.Mission.Issue))
+	}
 	if card.Mods.ActiveRevision > 0 {
 		fmt.Fprintf(&builder, "\n**Active mod revision:** `%d`", card.Mods.ActiveRevision)
 		if card.Mods.ActiveWorkshopSourceID > 0 {

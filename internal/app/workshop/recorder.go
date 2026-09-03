@@ -47,7 +47,7 @@ func (recorder *Recorder) ClearResolution(ctx context.Context, request domain.Wo
 		return err
 	}
 	expected, now := session.Version, recorder.clock.Now().UTC()
-	if err := session.FinishWorkshopResolution(request.Target, request.IdempotencyKey, now); err != nil {
+	if err := session.RecordWorkshopResolutionFailure(request.Target, request.IdempotencyKey, reason, now); err != nil {
 		return err
 	}
 	if session.Version == expected {

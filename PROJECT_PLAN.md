@@ -354,3 +354,8 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **17.16.2** [x] Harden Workshop SQS decoding diagnostics and terminal cleanup so malformed or rejected requests cannot leave a session indefinitely resolving.
       - **17.16.3** [x] Return actionable private `/rb start` feedback while Workshop metadata resolution is pending or the draft lacks an accepted mod revision.
       - **17.16.4** [x] Add focused Steam adapter, resolver, worker, session, and Discord regression coverage; validate, refresh the deployment handoff, commit, and push.
+    - **17.17** [x] Make Workshop metadata resolution fast, status-driven, and free of standalone public error messages.
+      - **17.17.1** [x] Decouple completed metadata persistence from best-effort card/modlist notification delivery so notification failures cannot trigger nine-minute SQS visibility retries or repeat Steam calls.
+      - **17.17.2** [x] Remove standalone Workshop result/error notifications; persist a bounded last-resolution outcome and project its summary on the public card with actionable detail in ephemeral `/rb status`.
+      - **17.17.3** [x] Add an offline end-to-end item/collection simulation using the observed public metadata shape for `3368879130`, covering seven direct mods, generated artifacts, lifecycle gating, and host-sync dispatch boundaries without AWS mutation or SteamCMD download.
+      - **17.17.4** [x] Review all Workshop terminal paths for idempotency and latency, run proportional validation, refresh the deployment handoff, commit, and push.

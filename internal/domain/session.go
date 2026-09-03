@@ -47,6 +47,9 @@ type Session struct {
 	WorkshopResolutionTarget      WorkshopTarget
 	WorkshopResolutionRequestKey  string
 	WorkshopResolutionRequestedAt time.Time
+	WorkshopResolutionLastTarget  WorkshopTarget
+	WorkshopResolutionIssue       string
+	WorkshopResolutionFailedAt    time.Time
 	// PresetObjectKey remains a write-through compatibility projection of the
 	// active preset revision for older workers and persisted rows.
 	PresetObjectKey              string
@@ -488,6 +491,11 @@ func (session Session) Validate() error {
 	if session.WorkshopResolutionTarget != "" || session.WorkshopResolutionRequestKey != "" || !session.WorkshopResolutionRequestedAt.IsZero() {
 		if (session.WorkshopResolutionTarget != WorkshopTargetMission && session.WorkshopResolutionTarget != WorkshopTargetMods) || strings.TrimSpace(session.WorkshopResolutionRequestKey) == "" || session.WorkshopResolutionRequestedAt.IsZero() {
 			return fmt.Errorf("Workshop resolution pending state is invalid")
+		}
+	}
+	if session.WorkshopResolutionIssue != "" || session.WorkshopResolutionLastTarget != "" || !session.WorkshopResolutionFailedAt.IsZero() {
+		if (session.WorkshopResolutionLastTarget != WorkshopTargetMission && session.WorkshopResolutionLastTarget != WorkshopTargetMods) || strings.TrimSpace(session.WorkshopResolutionIssue) == "" || session.WorkshopResolutionFailedAt.IsZero() || session.WorkshopResolutionIssue != SanitizeDiagnostic(session.WorkshopResolutionIssue) {
+			return fmt.Errorf("Workshop resolution failure state is invalid")
 		}
 	}
 	switch {

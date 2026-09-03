@@ -121,3 +121,23 @@ func TestResolveExcludesNestedCollectionsWithoutExpandingThem(t *testing.T) {
 		t.Fatalf("resolution = %#v", resolution)
 	}
 }
+
+func TestResolveObservedReArmaCollectionFixture(t *testing.T) {
+	now := time.Date(2026, 9, 3, 7, 0, 0, 0, time.UTC)
+	ids := []uint64{3791892274, 3770609240, 3742163031, 450814997, 2623341670, 3407948300, 3525204764}
+	catalog := testCatalog{items: map[uint64]domain.WorkshopItem{3368879130: {PublishedFileID: 3368879130, ConsumerAppID: domain.Arma3WorkshopAppID, Available: true, Tags: []string{"Mod"}}}, children: map[uint64][]domain.WorkshopCollectionChild{3368879130: {}}}
+	for _, id := range ids {
+		catalog.children[3368879130] = append(catalog.children[3368879130], domain.WorkshopCollectionChild{PublishedFileID: id})
+		catalog.items[id] = domain.WorkshopItem{PublishedFileID: id, ConsumerAppID: domain.Arma3WorkshopAppID, Available: true, Title: "Observed direct mod", Tags: []string{"Mod"}}
+	}
+	service, _ := New(catalog, testClock{now: now})
+	resolution, err := service.Resolve(context.Background(), domain.WorkshopSourceRequest{MessageType: "workshop_resolution", SchemaVersion: 1, SessionID: "session-1", Target: domain.WorkshopTargetMods, SourceURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=3368879130", ActorID: "owner", GuildID: "guild", ChannelID: "channel", CorrelationID: "correlation", IdempotencyKey: "rearma", RequestedAt: now})
+	if err != nil || resolution.SourceKind != domain.WorkshopSourceCollection || len(resolution.Items) != 7 {
+		t.Fatalf("resolution = %#v, %v", resolution, err)
+	}
+	for _, item := range resolution.Items {
+		if item.Class != domain.WorkshopItemClientMod || !item.MatchesTarget {
+			t.Fatalf("item = %#v", item)
+		}
+	}
+}

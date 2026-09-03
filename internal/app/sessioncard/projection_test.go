@@ -110,6 +110,30 @@ func TestProjectMapsEveryAuthoritativeCardSectionWithoutInternalIDs(t *testing.T
 	}
 }
 
+func TestProjectShowsWorkshopFailureSummaryAndPrivateDetail(t *testing.T) {
+	now := time.Date(2026, 9, 3, 7, 0, 0, 0, time.UTC)
+	session := domain.Session{DisplayName: "Test", Slug: "test", GameType: "arma3", LifecycleState: domain.StateDraft, UpdatedAt: now, WorkshopResolutionLastTarget: domain.WorkshopTargetMods, WorkshopResolutionIssue: "The session changed state; submit the link again.", WorkshopResolutionFailedAt: now}
+	projection := Project(session, Options{Now: now})
+	if projection.Mods.Status != "Workshop source needs attention" || projection.Mods.Issue == "" {
+		t.Fatalf("mods = %#v", projection.Mods)
+	}
+	if strings.Contains(RenderPublic(projection), projection.Mods.Issue) || !strings.Contains(RenderDetailed(projection), projection.Mods.Issue) {
+		t.Fatalf("public=%q detailed=%q", RenderPublic(projection), RenderDetailed(projection))
+	}
+}
+
+func TestProjectShowsMissionWorkshopFailureSummaryAndPrivateDetail(t *testing.T) {
+	now := time.Date(2026, 9, 3, 7, 0, 0, 0, time.UTC)
+	session := domain.Session{DisplayName: "Test", Slug: "test", GameType: "arma3", LifecycleState: domain.StateDraft, UpdatedAt: now, WorkshopResolutionLastTarget: domain.WorkshopTargetMission, WorkshopResolutionIssue: "The Workshop scenario is private; make it Public and submit it again.", WorkshopResolutionFailedAt: now}
+	projection := Project(session, Options{Now: now})
+	if projection.Artifacts.Mission.Status != "Workshop source needs attention" || projection.Artifacts.Mission.Issue == "" {
+		t.Fatalf("mission = %#v", projection.Artifacts.Mission)
+	}
+	if strings.Contains(RenderPublic(projection), projection.Artifacts.Mission.Issue) || !strings.Contains(RenderDetailed(projection), projection.Artifacts.Mission.Issue) {
+		t.Fatalf("public=%q detailed=%q", RenderPublic(projection), RenderDetailed(projection))
+	}
+}
+
 func TestProgressBarFillsCompletedCheckpointsOnly(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 18, 5, 0, 0, 0, time.UTC)

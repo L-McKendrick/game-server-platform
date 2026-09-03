@@ -2,43 +2,48 @@
 
 ## State and Objective
 
-Phase 17.16 is complete on `codex/workshop-content-sources`. Live Workshop
-collection resolution now identifies root collections reliably, rejects nested
-collections without recursion, and gives actionable start feedback.
+Phase 17.17 is complete on `codex/workshop-content-sources`. Workshop metadata
+resolution now terminates within its bounded Steam request, never emits a
+standalone public result/error message, and stores user-actionable outcomes for
+the authoritative card and ephemeral `/rb status` response.
 
 ## Completed Development
 
-- The resolver probes Steam collection metadata instead of relying on the
-  `file_type` field omitted by Steam's published-file response for observed
-  public collections.
-- Direct child `filetype` is retained. Nested collection children are excluded
-  as `nested_collection`; they are never expanded, fetched as mods, or sent to
-  SteamCMD.
-- Collections containing only nested collections receive a private actionable
-  rejection directing the user to submit direct downloadable Arma 3 mods.
-- Workshop queue decoding accepts strict current RFC3339 timestamps plus
-  bounded legacy Unix seconds/milliseconds, logs sanitized decode failures, and
-  clears an exact marker-bound malformed request on its final retry.
-- `/rb start` now privately explains when Workshop metadata is still resolving
-  or when a draft remains incomplete instead of returning an opaque reference.
+- Removed notification, modlist, and content-sync dispatch from the artifact
+  queue retry boundary after metadata has been safely persisted. Best-effort
+  delivery failures are logged for repair rather than repeating Steam calls
+  after the queue's nine-minute visibility timeout.
+- Transient or invalid Steam metadata responses now clear the exact pending
+  marker immediately and retain a sanitized, bounded last-resolution outcome.
+- The public session card shows only `Workshop source needs attention`; detailed
+  mission or mod remedies appear only in ephemeral `/rb status`.
+- Removed standalone Workshop success and failure notifications. Successful
+  resolution still refreshes the session card and active modlist when possible.
+- Corrected `/rb start` pending-resolution guidance so it no longer implies the
+  session will start automatically after resolution.
 
-## Live Findings
+## Pseudo Run: Workshop 3368879130
 
-- `test-38` (`01M1JXJPZYGE2AYHR01R3N22H4`) was started 13 seconds after its
-  Workshop request and remained `DRAFT` with the resolution marker pending.
-- `test-37` and `test-38` queue messages were retrying without diagnostic logs;
-  neither session provisioned infrastructure or incurred game-host cost.
-- Collection `3041715613` contains three direct nested collections. It remains
-  intentionally unsupported and will now be rejected clearly after deployment.
+- The supplied public URL resolves as one Arma 3 collection with seven direct
+  mod children, no nested collections, and approximately 5.43 GB total content.
+- All seven children classify as client mods and remain within the 50-child
+  collection safeguard. The fixture exercises deterministic collection
+  expansion and mod resolution; existing focused tests cover generated preset/
+  modlist artifacts, lifecycle gates, recorder replay, and sync dispatch.
+- Observed Steam metadata calls complete on the seconds scale. The later
+  SteamCMD transfer of approximately 5.43 GB is intentionally asynchronous and
+  may take substantially longer; it is not metadata-resolution latency.
+- No AWS resource, live session, or SteamCMD mutation was used for this run.
 
 ## Validation
 
-- Focused Steam adapter, resolver, domain, artifact-worker, session, and Discord
-  interaction tests pass.
-- `go test ./...`, `go vet ./...`, `go build ./cmd/...`, Lambda packaging, and
-  `git diff --check` pass. Windows reports only expected LF/CRLF warnings.
+- Focused worker, domain, Workshop, session-card, DynamoDB, and Discord tests pass.
+- `go test ./...`, `go vet ./...`, `go build ./cmd/...`, Lambda packaging,
+  recursive Terraform formatting, and `git diff --check` pass. Windows reports
+  only expected LF/CRLF warnings.
 - Terraform and Discord command definitions did not change. Discord interactions
-  and artifact-worker Lambda code require deployment; registration is unnecessary.
+  and artifact-worker Lambda code require deployment; command registration is
+  unnecessary.
 
 ## Commands to Apply Current Changes
 
@@ -47,13 +52,13 @@ $env:AWS_PROFILE = "game-server-dev"
 $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=workshop-collection-resolution-20260903.tfplan
-terraform -chdir=infra/terraform/environments/dev show workshop-collection-resolution-20260903.tfplan
-terraform -chdir=infra/terraform/environments/dev apply workshop-collection-resolution-20260903.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out=workshop-metadata-status-20260903.tfplan
+terraform -chdir=infra/terraform/environments/dev show workshop-metadata-status-20260903.tfplan
+terraform -chdir=infra/terraform/environments/dev apply workshop-metadata-status-20260903.tfplan
 aws lambda get-function-configuration --function-name game-server-platform-dev-discord-interactions --query '{State:State,LastModified:LastModified,CodeSha256:CodeSha256}' --output table
 aws lambda get-function-configuration --function-name game-server-platform-dev-artifact-worker --query '{State:State,LastModified:LastModified,CodeSha256:CodeSha256}' --output table
 ```
 
 The reviewed plan must add and destroy no infrastructure. After deployment,
-allow the existing test-37/test-38 messages to reach their bounded retry or
-resubmit a direct-item collection; verify `/rb status` clears resolving state.
+submit the collection to a disposable draft and confirm metadata leaves the
+resolving state promptly; use `/rb status` to verify detailed private remedies.

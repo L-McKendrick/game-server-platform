@@ -102,9 +102,26 @@ func (session *Session) BeginWorkshopResolution(target WorkshopTarget, requestKe
 	session.WorkshopResolutionTarget = target
 	session.WorkshopResolutionRequestKey = requestKey
 	session.WorkshopResolutionRequestedAt = now.UTC()
+	session.WorkshopResolutionLastTarget = ""
+	session.WorkshopResolutionIssue = ""
+	session.WorkshopResolutionFailedAt = time.Time{}
 	session.Version++
 	session.UpdatedAt = now.UTC()
 	return session.Validate()
+}
+
+func (session *Session) RecordWorkshopResolutionFailure(target WorkshopTarget, requestKey, issue string, now time.Time) error {
+	if session.WorkshopResolutionTarget != target || session.WorkshopResolutionRequestKey != strings.TrimSpace(requestKey) {
+		return ErrConflict
+	}
+	issue = SanitizeDiagnostic(issue)
+	if issue == "" || now.IsZero() {
+		return fmt.Errorf("Workshop resolution failure detail is required")
+	}
+	session.WorkshopResolutionLastTarget = target
+	session.WorkshopResolutionIssue = issue
+	session.WorkshopResolutionFailedAt = now.UTC()
+	return session.FinishWorkshopResolution(target, requestKey, now)
 }
 
 func (session *Session) FinishWorkshopResolution(target WorkshopTarget, requestKey string, now time.Time) error {

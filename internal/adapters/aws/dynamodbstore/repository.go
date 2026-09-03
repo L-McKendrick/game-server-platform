@@ -169,6 +169,9 @@ type sessionItem struct {
 	WorkshopResolutionTarget         string   `dynamodbav:"workshop_resolution_target,omitempty"`
 	WorkshopResolutionRequestKey     string   `dynamodbav:"workshop_resolution_request_key,omitempty"`
 	WorkshopResolutionRequestedAt    string   `dynamodbav:"workshop_resolution_requested_at,omitempty"`
+	WorkshopResolutionLastTarget     string   `dynamodbav:"workshop_resolution_last_target,omitempty"`
+	WorkshopResolutionIssue          string   `dynamodbav:"workshop_resolution_issue,omitempty"`
+	WorkshopResolutionFailedAt       string   `dynamodbav:"workshop_resolution_failed_at,omitempty"`
 	CapacitySlotID                   string   `dynamodbav:"capacity_slot_id,omitempty"`
 	AvailabilityZone                 string   `dynamodbav:"availability_zone,omitempty"`
 	SubnetID                         string   `dynamodbav:"subnet_id,omitempty"`
@@ -1131,6 +1134,9 @@ func toSessionItem(session domain.Session) sessionItem {
 		WorkshopResolutionTarget:         string(session.WorkshopResolutionTarget),
 		WorkshopResolutionRequestKey:     session.WorkshopResolutionRequestKey,
 		WorkshopResolutionRequestedAt:    optionalTimestamp(session.WorkshopResolutionRequestedAt),
+		WorkshopResolutionLastTarget:     string(session.WorkshopResolutionLastTarget),
+		WorkshopResolutionIssue:          session.WorkshopResolutionIssue,
+		WorkshopResolutionFailedAt:       optionalTimestamp(session.WorkshopResolutionFailedAt),
 		CapacitySlotID:                   session.Infrastructure.CapacitySlotID,
 		AvailabilityZone:                 session.Infrastructure.AvailabilityZone,
 		SubnetID:                         session.Infrastructure.SubnetID,
@@ -1305,6 +1311,10 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("parse Workshop resolution requested_at: %w", err)
 	}
+	workshopResolutionFailedAt, err := parseOptionalTimestamp(item.WorkshopResolutionFailedAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse Workshop resolution failed_at: %w", err)
+	}
 	missionStatus := domain.ArtifactStatus(item.MissionArtifactStatus)
 	if missionStatus == "" && strings.TrimSpace(item.MissionObjectKey) != "" {
 		missionStatus = domain.ArtifactAccepted
@@ -1402,6 +1412,9 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		WorkshopResolutionTarget:      domain.WorkshopTarget(item.WorkshopResolutionTarget),
 		WorkshopResolutionRequestKey:  item.WorkshopResolutionRequestKey,
 		WorkshopResolutionRequestedAt: workshopResolutionRequestedAt,
+		WorkshopResolutionLastTarget:  domain.WorkshopTarget(item.WorkshopResolutionLastTarget),
+		WorkshopResolutionIssue:       item.WorkshopResolutionIssue,
+		WorkshopResolutionFailedAt:    workshopResolutionFailedAt,
 		PresetObjectKey:               item.PresetObjectKey,
 		PresetRevisionSequence:        item.PresetRevisionSequence,
 		PendingPresetRevision: domain.PresetRevision{

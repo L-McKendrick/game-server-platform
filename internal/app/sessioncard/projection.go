@@ -711,6 +711,11 @@ func missionArtifactView(session domain.Session) ArtifactView {
 		view.Status = "Resolving Workshop source metadata"
 		return view
 	}
+	if session.WorkshopResolutionLastTarget == domain.WorkshopTargetMission && session.WorkshopResolutionIssue != "" {
+		view.Status = "Workshop source needs attention"
+		view.Issue = session.WorkshopResolutionIssue
+		return view
+	}
 	if len(session.WorkshopMissionSources) > 0 {
 		switch {
 		case session.Progress.WorkflowType == domain.WorkshopContentSyncWorkflowType && session.Progress.State == domain.ProgressActive:
@@ -765,6 +770,10 @@ func modProjection(session domain.Session, modlistURL string) ModsProjection {
 		if summary := domain.WorkshopExclusionSummary(latest.ExcludedItems, 8); summary != "" {
 			projection.Issue = "Excluded: " + summary
 		}
+	}
+	if session.WorkshopResolutionLastTarget == domain.WorkshopTargetMods && session.WorkshopResolutionIssue != "" {
+		projection.Status = "Workshop source needs attention"
+		projection.Issue = session.WorkshopResolutionIssue
 	}
 	active := session.EffectiveActivePresetRevision()
 	if !active.Empty() {

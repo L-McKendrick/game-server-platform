@@ -81,3 +81,20 @@ func TestCanChangeWorkshopSourcesLifecycleMatrix(t *testing.T) {
 		t.Fatal("active workflow was allowed")
 	}
 }
+
+func TestRecordWorkshopResolutionFailureClearsPendingAndPersistsSanitizedDetail(t *testing.T) {
+	now := time.Date(2026, 9, 3, 7, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner", GuildID: "guild", ChannelID: "channel"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.BeginWorkshopResolution(WorkshopTargetMods, "request-1", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.RecordWorkshopResolutionFailure(WorkshopTargetMods, "request-1", "Nested collections\nare not supported", now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if session.WorkshopResolutionRequestKey != "" || session.WorkshopResolutionLastTarget != WorkshopTargetMods || session.WorkshopResolutionIssue != "Nested collections are not supported" || session.WorkshopResolutionFailedAt.IsZero() {
+		t.Fatalf("session = %#v", session)
+	}
+}
