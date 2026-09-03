@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -9,6 +11,14 @@ import (
 
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
+
+func TestDecodeWorkshopRequestAcceptsLegacyUnixTime(t *testing.T) {
+	body, _ := json.Marshal(map[string]any{"message_type": "workshop_resolution", "schema_version": 1, "session_id": "session-1", "target": "mods", "source_url": "https://steamcommunity.com/sharedfiles/filedetails/?id=42", "actor_id": "owner", "guild_id": "guild", "channel_id": "channel", "correlation_id": "correlation", "idempotency_key": "key", "requested_at": int64(1788415147)})
+	request, err := decodeWorkshopRequest(string(body))
+	if err != nil || request.RequestedAt.Unix() != 1788415147 {
+		t.Fatalf("request = %#v, %v", request, err)
+	}
+}
 
 func TestWorkshopFinalAttemptAndActionableMetadataMessage(t *testing.T) {
 	message := events.SQSMessage{Attributes: map[string]string{"ApproximateReceiveCount": "5"}}
@@ -29,6 +39,13 @@ func TestWorkshopCollectionLimitMessageExplainsRecovery(t *testing.T) {
 		if !strings.Contains(notice, want) {
 			t.Fatalf("notice %q omitted %q", notice, want)
 		}
+	}
+}
+
+func TestWorkshopNestedCollectionMessageExplainsDirectChildren(t *testing.T) {
+	notice := workshopRecordUserMessage(fmt.Errorf("%w: %w", domain.ErrPermanentWorkshopRejection, domain.ErrWorkshopNestedOnly), domain.WorkshopTargetMods, false)
+	if !strings.Contains(notice, "Nested collections are not supported") || !strings.Contains(notice, "direct children") {
+		t.Fatalf("notice = %q", notice)
 	}
 }
 

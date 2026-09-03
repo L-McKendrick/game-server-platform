@@ -349,3 +349,8 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **17.15** [x] Accept Steam's public collection URL form.
       - **17.15.1** [x] Accept `/workshop/filedetails/` collection links at every shared Workshop entry point and normalize them to the existing canonical shared-file URL.
       - **17.15.2** [x] Add focused parser and `/rb edit` mod submission coverage, validate the affected components, and refresh the deployment handoff.
+    - **17.16** [x] Repair live Workshop collection resolution and start feedback without supporting nested collections.
+      - **17.16.1** [x] Detect root collections through Steam collection metadata, retain direct-child type data, and exclude nested collection children without recursively expanding them.
+      - **17.16.2** [x] Harden Workshop SQS decoding diagnostics and terminal cleanup so malformed or rejected requests cannot leave a session indefinitely resolving.
+      - **17.16.3** [x] Return actionable private `/rb start` feedback while Workshop metadata resolution is pending or the draft lacks an accepted mod revision.
+      - **17.16.4** [x] Add focused Steam adapter, resolver, worker, session, and Discord regression coverage; validate, refresh the deployment handoff, commit, and push.

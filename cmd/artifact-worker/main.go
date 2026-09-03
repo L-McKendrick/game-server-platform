@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
@@ -188,9 +189,17 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 			MessageType string `json:"message_type"`
 		}
 		if err := json.Unmarshal([]byte(message.Body), &envelope); err == nil && envelope.MessageType == "workshop_resolution" {
-			var request domain.WorkshopSourceRequest
-			if err := json.Unmarshal([]byte(message.Body), &request); err != nil {
-				response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+			request, err := decodeWorkshopRequest(message.Body)
+			if err != nil {
+				handler.logger.Error("invalid Workshop queue message", slog.String("message_id", message.MessageId), slog.Any("error", err))
+				if workshopFinalAttempt(message) && request.SessionID != "" && request.Target != "" && request.IdempotencyKey != "" {
+					if clearErr := handler.workshopRecorder.ClearResolution(ctx, request, "invalid_queue_message"); clearErr != nil {
+						handler.logger.Error("clear invalid Workshop request marker", slog.String("message_id", message.MessageId), slog.String("session_id", request.SessionID), slog.Any("error", clearErr))
+						response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+					}
+				} else {
+					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+				}
 				continue
 			}
 			resolution, resolveErr := handler.workshop.Resolve(ctx, request)
@@ -319,6 +328,52 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 	return response, nil
 }
 
+// decodeWorkshopRequest retains the strict domain validation boundary while
+// accepting legacy Unix timestamps emitted by earlier queue producers.
+func decodeWorkshopRequest(body string) (domain.WorkshopSourceRequest, error) {
+	var request domain.WorkshopSourceRequest
+	if err := json.Unmarshal([]byte(body), &request); err == nil {
+		return request, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &fields); err != nil {
+		return request, err
+	}
+	rawTime, ok := fields["requested_at"]
+	if !ok {
+		return request, fmt.Errorf("Workshop request time is missing")
+	}
+	delete(fields, "requested_at")
+	remainder, err := json.Marshal(fields)
+	if err != nil {
+		return request, err
+	}
+	if err := json.Unmarshal(remainder, &request); err != nil {
+		return request, err
+	}
+	var unixSeconds int64
+	if err := json.Unmarshal(rawTime, &unixSeconds); err != nil {
+		var encoded string
+		if stringErr := json.Unmarshal(rawTime, &encoded); stringErr != nil {
+			return request, fmt.Errorf("Workshop request time is invalid")
+		}
+		parsed, parseErr := strconv.ParseInt(encoded, 10, 64)
+		if parseErr != nil {
+			return request, fmt.Errorf("Workshop request time is invalid")
+		}
+		unixSeconds = parsed
+	}
+	if unixSeconds <= 0 {
+		return request, fmt.Errorf("Workshop request time is invalid")
+	}
+	if unixSeconds > 10_000_000_000 {
+		request.RequestedAt = time.UnixMilli(unixSeconds).UTC()
+	} else {
+		request.RequestedAt = time.Unix(unixSeconds, 0).UTC()
+	}
+	return request, nil
+}
+
 const maximumWorkshopReceiveCount = 5
 
 func permanentWorkshopRecordError(err error) bool {
@@ -350,6 +405,9 @@ func workshopResolutionUserMessage(err error, exhausted bool) string {
 }
 
 func workshopRecordUserMessage(err error, target domain.WorkshopTarget, exhausted bool) string {
+	if errors.Is(err, domain.ErrWorkshopNestedOnly) {
+		return "This Workshop collection contains only other collections. Nested collections are not supported; submit a collection whose direct children are downloadable Arma 3 mods."
+	}
 	if errors.Is(err, domain.ErrForbidden) {
 		return "This Workshop request no longer matches the session owner or channel. Open the session in its configured server and channel, then submit the link again."
 	}

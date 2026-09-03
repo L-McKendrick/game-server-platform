@@ -198,6 +198,13 @@ type WorkshopItem struct {
 	Issue           string            `json:"issue,omitempty"`
 }
 
+// WorkshopCollectionChild preserves the direct membership type returned by
+// Steam. Collection children are intentionally not expanded recursively.
+type WorkshopCollectionChild struct {
+	PublishedFileID uint64
+	Collection      bool
+}
+
 type WorkshopResolution struct {
 	SchemaVersion    int                `json:"schema_version"`
 	Target           WorkshopTarget     `json:"target"`
@@ -290,6 +297,15 @@ func NewWorkshopModSource(resolution WorkshopResolution) (WorkshopModSource, err
 		}
 	}
 	if len(source.AcceptedItems) == 0 || len(source.AcceptedItems) > MaximumWorkshopModItems {
+		if len(source.AcceptedItems) == 0 && len(source.ExcludedItems) > 0 {
+			nestedOnly := true
+			for _, item := range source.ExcludedItems {
+				nestedOnly = nestedOnly && item.Class == WorkshopItemNestedCollection
+			}
+			if nestedOnly {
+				return WorkshopModSource{}, ErrWorkshopNestedOnly
+			}
+		}
 		return WorkshopModSource{}, fmt.Errorf("Workshop mod source must contain 1 to %d client mods", MaximumWorkshopModItems)
 	}
 	return source, nil

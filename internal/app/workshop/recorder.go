@@ -71,7 +71,7 @@ func (recorder *Recorder) RecordModResolution(ctx context.Context, request domai
 	}
 	source, err := domain.NewWorkshopModSource(resolution)
 	if err != nil {
-		return ModResolutionResult{}, fmt.Errorf("%w: %v", domain.ErrPermanentWorkshopRejection, err)
+		return ModResolutionResult{}, fmt.Errorf("%w: %w", domain.ErrPermanentWorkshopRejection, err)
 	}
 	key, hash := "workshop-mods:"+strings.TrimSpace(request.IdempotencyKey), source.ResolutionSHA256
 	if record, getErr := recorder.repository.GetIdempotency(ctx, key); getErr == nil {

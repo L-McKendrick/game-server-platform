@@ -11,7 +11,7 @@ import (
 type WorkshopCatalog interface {
 	Item(ctx context.Context, publishedFileID uint64) (domain.WorkshopItem, error)
 	Items(ctx context.Context, publishedFileIDs []uint64) ([]domain.WorkshopItem, error)
-	CollectionChildren(ctx context.Context, publishedFileID uint64) ([]uint64, error)
+	CollectionChildren(ctx context.Context, publishedFileID uint64) ([]domain.WorkshopCollectionChild, error)
 }
 
 type WorkshopQueue interface {

@@ -1,10 +1,18 @@
 package domain
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestNewWorkshopModSourceRejectsNestedOnlyCollection(t *testing.T) {
+	resolution := WorkshopResolution{SchemaVersion: 1, Target: WorkshopTargetMods, SourceKind: WorkshopSourceCollection, Source: WorkshopReference{PublishedFileID: 10, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=10"}, ResolutionSHA256: strings.Repeat("a", 64), ResolvedAt: time.Now().UTC(), Items: []WorkshopItem{{PublishedFileID: 20, Class: WorkshopItemNestedCollection}}}
+	if _, err := NewWorkshopModSource(resolution); !errors.Is(err, ErrWorkshopNestedOnly) {
+		t.Fatalf("NewWorkshopModSource() error = %v", err)
+	}
+}
 
 func TestNewWorkshopModSourceAcceptsClientModsAndExcludesServerAndScenarioItems(t *testing.T) {
 	now := time.Now().UTC()

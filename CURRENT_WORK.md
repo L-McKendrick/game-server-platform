@@ -2,40 +2,43 @@
 
 ## State and Objective
 
-Phase 17.15 is complete on `codex/workshop-content-sources`. Steam's public
-collection URL form is accepted by the shared Workshop source path.
+Phase 17.16 is complete on `codex/workshop-content-sources`. Live Workshop
+collection resolution now identifies root collections reliably, rejects nested
+collections without recursion, and gives actionable start feedback.
 
 ## Completed Development
 
-- Workshop URL parsing accepts both exact Steam paths:
-  `/sharedfiles/filedetails/` for shared items and `/workshop/filedetails/` for
+- The resolver probes Steam collection metadata instead of relying on the
+  `file_type` field omitted by Steam's published-file response for observed
   public collections.
-- Both forms still require HTTPS, the exact Steam Community host, exactly one
-  numeric nonzero `id`, no credentials, port, or fragment, and discard all
-  unrelated query parameters.
-- Accepted links normalize to
-  `https://steamcommunity.com/sharedfiles/filedetails/?id=<id>`, leaving the
-  resolver, item-versus-collection detection, and downstream download path
-  unchanged.
-- Focused Discord coverage verifies `/rb edit` -> `Mods` accepts collection
-  `3041715613`, persists the mod options, and queues the canonical source URL.
+- Direct child `filetype` is retained. Nested collection children are excluded
+  as `nested_collection`; they are never expanded, fetched as mods, or sent to
+  SteamCMD.
+- Collections containing only nested collections receive a private actionable
+  rejection directing the user to submit direct downloadable Arma 3 mods.
+- Workshop queue decoding accepts strict current RFC3339 timestamps plus
+  bounded legacy Unix seconds/milliseconds, logs sanitized decode failures, and
+  clears an exact marker-bound malformed request on its final retry.
+- `/rb start` now privately explains when Workshop metadata is still resolving
+  or when a draft remains incomplete instead of returning an opaque reference.
 
-## Live Finding
+## Live Findings
 
-`test-37` rejected the supplied public collection before any AWS or Steam work
-because the URL was `https://steamcommunity.com/workshop/filedetails/?id=3041715613`
-and the parser admitted only the equivalent shared-file path. The session is
-not stuck by this validation failure and can be retried after deployment.
+- `test-38` (`01M1JXJPZYGE2AYHR01R3N22H4`) was started 13 seconds after its
+  Workshop request and remained `DRAFT` with the resolution marker pending.
+- `test-37` and `test-38` queue messages were retrying without diagnostic logs;
+  neither session provisioned infrastructure or incurred game-host cost.
+- Collection `3041715613` contains three direct nested collections. It remains
+  intentionally unsupported and will now be rejected clearly after deployment.
 
 ## Validation
 
-- Focused domain and Discord interaction tests pass, including the exact public
-  collection URL reported for `test-37`.
+- Focused Steam adapter, resolver, domain, artifact-worker, session, and Discord
+  interaction tests pass.
 - `go test ./...`, `go vet ./...`, `go build ./cmd/...`, Lambda packaging, and
   `git diff --check` pass. Windows reports only expected LF/CRLF warnings.
-- Terraform and Discord command definitions did not change. The Discord
-  interactions and artifact-worker Lambdas consume the shared domain parser
-  and require deployment; command registration is unnecessary.
+- Terraform and Discord command definitions did not change. Discord interactions
+  and artifact-worker Lambda code require deployment; registration is unnecessary.
 
 ## Commands to Apply Current Changes
 
@@ -44,13 +47,13 @@ $env:AWS_PROFILE = "game-server-dev"
 $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=workshop-collection-url-20260902.tfplan
-terraform -chdir=infra/terraform/environments/dev show workshop-collection-url-20260902.tfplan
-terraform -chdir=infra/terraform/environments/dev apply workshop-collection-url-20260902.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out=workshop-collection-resolution-20260903.tfplan
+terraform -chdir=infra/terraform/environments/dev show workshop-collection-resolution-20260903.tfplan
+terraform -chdir=infra/terraform/environments/dev apply workshop-collection-resolution-20260903.tfplan
 aws lambda get-function-configuration --function-name game-server-platform-dev-discord-interactions --query '{State:State,LastModified:LastModified,CodeSha256:CodeSha256}' --output table
 aws lambda get-function-configuration --function-name game-server-platform-dev-artifact-worker --query '{State:State,LastModified:LastModified,CodeSha256:CodeSha256}' --output table
 ```
 
-The reviewed plan must add and destroy no infrastructure. Discord command
-registration is not required. After deployment, reopen `/rb edit` -> `Mods`
-for `test-37` and submit the collection link again.
+The reviewed plan must add and destroy no infrastructure. After deployment,
+allow the existing test-37/test-38 messages to reach their bounded retry or
+resubmit a direct-item collection; verify `/rb status` clears resolving state.

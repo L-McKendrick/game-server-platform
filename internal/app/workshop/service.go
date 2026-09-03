@@ -2,6 +2,7 @@ package workshop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -33,12 +34,9 @@ func (service *Service) Resolve(ctx context.Context, request domain.WorkshopSour
 		return domain.WorkshopResolution{}, fmt.Errorf("resolve Workshop item metadata: %w", err)
 	}
 	resolution := domain.WorkshopResolution{SchemaVersion: 1, Target: request.Target, Source: reference}
-	if root.Collection {
+	children, collectionErr := service.catalog.CollectionChildren(ctx, reference.PublishedFileID)
+	if collectionErr == nil {
 		resolution.SourceKind = domain.WorkshopSourceCollection
-		children, childErr := service.catalog.CollectionChildren(ctx, reference.PublishedFileID)
-		if childErr != nil {
-			return domain.WorkshopResolution{}, fmt.Errorf("resolve Workshop collection: %w", childErr)
-		}
 		if len(children) == 0 || len(children) > domain.MaximumWorkshopCollectionChildren {
 			if len(children) > domain.MaximumWorkshopCollectionChildren {
 				return domain.WorkshopResolution{}, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataCollectionLimit, Detail: fmt.Sprintf("Workshop collection contains %d direct children; maximum is %d", len(children), domain.MaximumWorkshopCollectionChildren)}
@@ -47,7 +45,8 @@ func (service *Service) Resolve(ctx context.Context, request domain.WorkshopSour
 		}
 		seen := make(map[uint64]struct{}, len(children))
 		uniqueChildren := make([]uint64, 0, len(children))
-		for _, childID := range children {
+		for _, child := range children {
+			childID := child.PublishedFileID
 			if childID == 0 {
 				return domain.WorkshopResolution{}, fmt.Errorf("Workshop collection contains an invalid child ID")
 			}
@@ -55,21 +54,29 @@ func (service *Service) Resolve(ctx context.Context, request domain.WorkshopSour
 				continue
 			}
 			seen[childID] = struct{}{}
+			if child.Collection {
+				resolution.Items = append(resolution.Items, domain.WorkshopItem{PublishedFileID: childID, Available: true, Collection: true, Class: domain.WorkshopItemNestedCollection, Issue: "nested collections are not supported"})
+				continue
+			}
 			uniqueChildren = append(uniqueChildren, childID)
 		}
-		items, itemErr := service.catalog.Items(ctx, uniqueChildren)
-		if itemErr != nil {
-			return domain.WorkshopResolution{}, fmt.Errorf("resolve Workshop collection children: %w", itemErr)
+		if len(uniqueChildren) > 0 {
+			items, itemErr := service.catalog.Items(ctx, uniqueChildren)
+			if itemErr != nil {
+				return domain.WorkshopResolution{}, fmt.Errorf("resolve Workshop collection children: %w", itemErr)
+			}
+			if len(items) != len(uniqueChildren) {
+				return domain.WorkshopResolution{}, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataInvalidResponse, Retryable: true, Detail: "Steam returned incomplete collection metadata"}
+			}
+			for _, item := range items {
+				resolution.Items = append(resolution.Items, domain.ClassifyWorkshopItem(item, request.Target))
+			}
 		}
-		if len(items) != len(uniqueChildren) {
-			return domain.WorkshopResolution{}, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataInvalidResponse, Retryable: true, Detail: "Steam returned incomplete collection metadata"}
-		}
-		for _, item := range items {
-			resolution.Items = append(resolution.Items, domain.ClassifyWorkshopItem(item, request.Target))
-		}
-	} else {
+	} else if errors.Is(collectionErr, domain.ErrWorkshopNotCollection) {
 		resolution.SourceKind = domain.WorkshopSourceItem
 		resolution.Items = []domain.WorkshopItem{domain.ClassifyWorkshopItem(root, request.Target)}
+	} else {
+		return domain.WorkshopResolution{}, fmt.Errorf("resolve Workshop collection metadata: %w", collectionErr)
 	}
 	if err := resolution.Finalize(service.clock.Now()); err != nil {
 		return domain.WorkshopResolution{}, err

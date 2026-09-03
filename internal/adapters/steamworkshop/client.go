@@ -124,7 +124,7 @@ func (client *Client) publishedFiles(ctx context.Context, values url.Values, exp
 	return items, nil
 }
 
-func (client *Client) CollectionChildren(ctx context.Context, publishedFileID uint64) ([]uint64, error) {
+func (client *Client) CollectionChildren(ctx context.Context, publishedFileID uint64) ([]domain.WorkshopCollectionChild, error) {
 	if publishedFileID == 0 {
 		return nil, fmt.Errorf("collection ID is required")
 	}
@@ -133,16 +133,19 @@ func (client *Client) CollectionChildren(ctx context.Context, publishedFileID ui
 	if err := client.post(ctx, "/GetCollectionDetails/v1/", values, &response); err != nil {
 		return nil, err
 	}
+	if len(response.Response.Details) == 1 && response.Response.Details[0].Result == 9 {
+		return nil, domain.ErrWorkshopNotCollection
+	}
 	if len(response.Response.Details) != 1 || response.Response.Details[0].Result != 1 {
 		return nil, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataUnavailable, Detail: "Steam collection is unavailable or private"}
 	}
-	children := make([]uint64, 0, len(response.Response.Details[0].Children))
+	children := make([]domain.WorkshopCollectionChild, 0, len(response.Response.Details[0].Children))
 	for _, child := range response.Response.Details[0].Children {
 		id, err := strconv.ParseUint(child.PublishedFileID, 10, 64)
 		if err != nil || id == 0 {
 			return nil, domain.WorkshopMetadataError{Code: domain.WorkshopMetadataInvalidResponse, Retryable: true, Detail: "Steam returned an invalid collection child"}
 		}
-		children = append(children, id)
+		children = append(children, domain.WorkshopCollectionChild{PublishedFileID: id, Collection: child.FileType == 2})
 	}
 	return children, nil
 }
@@ -224,6 +227,7 @@ type collectionResponse struct {
 			Result   int `json:"result"`
 			Children []struct {
 				PublishedFileID string `json:"publishedfileid"`
+				FileType        int    `json:"filetype"`
 			} `json:"children"`
 		} `json:"collectiondetails"`
 	} `json:"response"`

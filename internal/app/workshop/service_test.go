@@ -15,7 +15,7 @@ func (clock testClock) Now() time.Time { return clock.now }
 
 type testCatalog struct {
 	items    map[uint64]domain.WorkshopItem
-	children map[uint64][]uint64
+	children map[uint64][]domain.WorkshopCollectionChild
 }
 
 type oversizedCollectionCatalog struct{ childMetadataRequested bool }
@@ -29,10 +29,10 @@ func (catalog *oversizedCollectionCatalog) Items(_ context.Context, _ []uint64) 
 	return nil, nil
 }
 
-func (catalog *oversizedCollectionCatalog) CollectionChildren(_ context.Context, _ uint64) ([]uint64, error) {
-	children := make([]uint64, domain.MaximumWorkshopCollectionChildren+1)
+func (catalog *oversizedCollectionCatalog) CollectionChildren(_ context.Context, _ uint64) ([]domain.WorkshopCollectionChild, error) {
+	children := make([]domain.WorkshopCollectionChild, domain.MaximumWorkshopCollectionChildren+1)
 	for index := range children {
-		children[index] = uint64(index + 1)
+		children[index].PublishedFileID = uint64(index + 1)
 	}
 	return children, nil
 }
@@ -67,8 +67,12 @@ func (catalog testCatalog) Items(_ context.Context, ids []uint64) ([]domain.Work
 	}
 	return items, nil
 }
-func (catalog testCatalog) CollectionChildren(_ context.Context, id uint64) ([]uint64, error) {
-	return catalog.children[id], nil
+func (catalog testCatalog) CollectionChildren(_ context.Context, id uint64) ([]domain.WorkshopCollectionChild, error) {
+	children, ok := catalog.children[id]
+	if !ok {
+		return nil, domain.ErrWorkshopNotCollection
+	}
+	return children, nil
 }
 
 func TestResolveMixedCollectionClassifiesForRequestedTarget(t *testing.T) {
@@ -79,7 +83,7 @@ func TestResolveMixedCollectionClassifiesForRequestedTarget(t *testing.T) {
 			20: {PublishedFileID: 20, ConsumerAppID: domain.Arma3WorkshopAppID, Available: true, Tags: []string{"Mod"}},
 			30: {PublishedFileID: 30, ConsumerAppID: domain.Arma3WorkshopAppID, Available: true, Tags: []string{"Scenario", "Multiplayer"}},
 		},
-		children: map[uint64][]uint64{10: {30, 20}},
+		children: map[uint64][]domain.WorkshopCollectionChild{10: {{PublishedFileID: 30}, {PublishedFileID: 20}}},
 	}
 	service, err := New(catalog, testClock{now: now})
 	if err != nil {
@@ -95,6 +99,25 @@ func TestResolveMixedCollectionClassifiesForRequestedTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resolution.SourceKind != domain.WorkshopSourceCollection || len(resolution.Items) != 2 || resolution.Items[0].MatchesTarget || !resolution.Items[1].MatchesTarget {
+		t.Fatalf("resolution = %#v", resolution)
+	}
+}
+
+func TestResolveExcludesNestedCollectionsWithoutExpandingThem(t *testing.T) {
+	now := time.Date(2026, 9, 3, 6, 0, 0, 0, time.UTC)
+	catalog := testCatalog{
+		items: map[uint64]domain.WorkshopItem{
+			10: {PublishedFileID: 10, ConsumerAppID: domain.Arma3WorkshopAppID, Available: true},
+			20: {PublishedFileID: 20, ConsumerAppID: domain.Arma3WorkshopAppID, Available: true, Tags: []string{"Mod"}},
+		},
+		children: map[uint64][]domain.WorkshopCollectionChild{10: {{PublishedFileID: 30, Collection: true}, {PublishedFileID: 20}}},
+	}
+	service, _ := New(catalog, testClock{now: now})
+	resolution, err := service.Resolve(context.Background(), domain.WorkshopSourceRequest{MessageType: "workshop_resolution", SchemaVersion: 1, SessionID: "session-1", Target: domain.WorkshopTargetMods, SourceURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=10", ActorID: "owner", GuildID: "guild", ChannelID: "channel", CorrelationID: "correlation", IdempotencyKey: "key", RequestedAt: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolution.SourceKind != domain.WorkshopSourceCollection || len(resolution.Items) != 2 || resolution.Items[0].PublishedFileID != 20 || !resolution.Items[0].MatchesTarget || resolution.Items[1].Class != domain.WorkshopItemNestedCollection || resolution.Items[1].MatchesTarget {
 		t.Fatalf("resolution = %#v", resolution)
 	}
 }

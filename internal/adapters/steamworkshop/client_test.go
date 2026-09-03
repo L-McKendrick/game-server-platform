@@ -23,7 +23,7 @@ func TestClientReadsPublishedFileAndCollectionMetadata(t *testing.T) {
 		case "/GetPublishedFileDetails/v1/":
 			fmt.Fprint(writer, `{"response":{"publishedfiledetails":[{"publishedfileid":"42","result":1,"file_type":0,"consumer_app_id":107410,"title":"Coop Night","filename":"Coop%20Night.Altis.pbo","file_size":"123","time_updated":1700000000,"tags":[{"tag":"Scenario"},{"tag":"Coop"}]}]}}`)
 		case "/GetCollectionDetails/v1/":
-			fmt.Fprint(writer, `{"response":{"collectiondetails":[{"result":1,"children":[{"publishedfileid":"42"}]}]}}`)
+			fmt.Fprint(writer, `{"response":{"collectiondetails":[{"result":1,"children":[{"publishedfileid":"42","filetype":2}]}]}}`)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -41,7 +41,7 @@ func TestClientReadsPublishedFileAndCollectionMetadata(t *testing.T) {
 		t.Fatalf("item = %#v", item)
 	}
 	children, err := client.CollectionChildren(context.Background(), 9)
-	if err != nil || len(children) != 1 || children[0] != 42 {
+	if err != nil || len(children) != 1 || children[0].PublishedFileID != 42 || !children[0].Collection {
 		t.Fatalf("children = %v, %v", children, err)
 	}
 }
@@ -99,5 +99,27 @@ func TestClientClassifiesRateLimitAsRetryable(t *testing.T) {
 	var metadataErr domain.WorkshopMetadataError
 	if !errors.As(err, &metadataErr) || metadataErr.Code != domain.WorkshopMetadataRateLimited || !metadataErr.Retryable {
 		t.Fatalf("Item() error = %#v", err)
+	}
+}
+
+func TestClientReportsNonCollectionAndPreservesNestedType(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := request.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if request.FormValue("publishedfileids[0]") == "1" {
+			fmt.Fprint(writer, `{"response":{"collectiondetails":[{"result":9}]}}`)
+			return
+		}
+		fmt.Fprint(writer, `{"response":{"collectiondetails":[{"result":1,"children":[{"publishedfileid":"3","filetype":2},{"publishedfileid":"4","filetype":0}]}]}}`)
+	}))
+	defer server.Close()
+	client, _ := NewWithClient(server.Client(), server.URL)
+	if _, err := client.CollectionChildren(context.Background(), 1); !errors.Is(err, domain.ErrWorkshopNotCollection) {
+		t.Fatalf("non-collection error = %v", err)
+	}
+	children, err := client.CollectionChildren(context.Background(), 2)
+	if err != nil || len(children) != 2 || !children[0].Collection || children[1].Collection {
+		t.Fatalf("children = %#v, %v", children, err)
 	}
 }
