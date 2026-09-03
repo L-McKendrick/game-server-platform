@@ -30,6 +30,7 @@ var (
 	ErrPermanentArtifactRejection    = errors.New("artifact permanently rejected")
 	ErrPermanentWorkshopRejection    = errors.New("Workshop source permanently rejected")
 	ErrWorkshopSnapshotLimit         = errors.New("Workshop source history limit reached")
+	ErrPersistenceInvariant          = errors.New("persistence invariant violated")
 )
 
 // OperationInProgressError returns safe progress for a repeated lifecycle

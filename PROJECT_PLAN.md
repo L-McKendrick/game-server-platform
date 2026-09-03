@@ -359,3 +359,8 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **17.17.2** [x] Remove standalone Workshop result/error notifications; persist a bounded last-resolution outcome and project its summary on the public card with actionable detail in ephemeral `/rb status`.
       - **17.17.3** [x] Add an offline end-to-end item/collection simulation using the observed public metadata shape for `3368879130`, covering seven direct mods, generated artifacts, lifecycle gating, and host-sync dispatch boundaries without AWS mutation or SteamCMD download.
       - **17.17.4** [x] Review all Workshop terminal paths for idempotency and latency, run proportional validation, refresh the deployment handoff, commit, and push.
+    - **17.18** [x] Restore the single-version persistence invariant for Workshop mod resolution and eliminate hidden deterministic queue retries.
+      - **17.18.1** [x] Make initial and replacement Workshop mod attachment one atomic domain mutation that advances the session exactly once while retaining existing revision, marker, provenance, and lifecycle rules.
+      - **17.18.2** [x] Classify and log recorder failures at the worker boundary, immediately persist actionable status for deterministic failures, and reserve SQS retries for bounded external persistence failures.
+      - **17.18.3** [x] Add domain, recorder, repository-realistic, and worker regression coverage for draft and established revisions, replay, stale state, and exact-marker cleanup.
+      - **17.18.4** [x] Review the affected Workshop path against the branch architecture, run proportional validation, refresh the deployment/recovery handoff, commit, and push without adding infrastructure.

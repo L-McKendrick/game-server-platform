@@ -31,6 +31,19 @@ type fakeAPI struct {
 	putItemInput       *dynamodb.PutItemInput
 }
 
+func TestSaveWithEventClassifiesInvalidVersionDeltaAsPersistenceInvariant(t *testing.T) {
+	now := time.Date(2026, 9, 3, 10, 26, 17, 0, time.UTC)
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner", GuildID: "guild", ChannelID: "channel"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeAPI{}
+	err = New(client, "metadata-table").SaveWithEvent(context.Background(), session, session.Version, domain.SessionEvent{}, domain.IdempotencyRecord{})
+	if !errors.Is(err, domain.ErrPersistenceInvariant) || client.transactWriteInput != nil {
+		t.Fatalf("SaveWithEvent() error = %v, transaction = %#v", err, client.transactWriteInput)
+	}
+}
+
 func TestSaveCardReferenceUsesIndependentChannelBoundItem(t *testing.T) {
 	t.Parallel()
 	client := &fakeAPI{}

@@ -58,6 +58,7 @@ func TestWorkshopRecordMessagesGiveUserCorrectRecovery(t *testing.T) {
 		{domain.ErrWorkflowLocked, "Wait for the current"},
 		{domain.ErrForbidden, "configured server and channel"},
 		{domain.ErrWorkshopSnapshotLimit, "uploaded preset"},
+		{domain.ErrPersistenceInvariant, "submitting the link repeatedly will not help"},
 		{errors.New("s3 unavailable"), "contact an operator"},
 	}
 	for _, test := range tests {
@@ -65,5 +66,11 @@ func TestWorkshopRecordMessagesGiveUserCorrectRecovery(t *testing.T) {
 		if !strings.Contains(notice, test.want) {
 			t.Errorf("notice %q omitted %q", notice, test.want)
 		}
+	}
+}
+
+func TestPersistenceInvariantIsTerminalWorkshopRecordError(t *testing.T) {
+	if !permanentWorkshopRecordError(fmt.Errorf("save: %w", domain.ErrPersistenceInvariant)) {
+		t.Fatal("persistence invariant would be retried through the nine-minute visibility timeout")
 	}
 }

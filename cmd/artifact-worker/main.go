@@ -223,6 +223,7 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 			if request.Target == domain.WorkshopTargetMission {
 				source, recordErr := handler.workshopRecorder.RecordMissionResolution(ctx, request, resolution)
 				if recordErr != nil {
+					handler.logWorkshopRecordFailure(request, recordErr)
 					if permanentWorkshopRecordError(recordErr) || workshopFinalAttempt(message) {
 						detail := workshopRecordUserMessage(recordErr, domain.WorkshopTargetMission, workshopFinalAttempt(message))
 						if err := handler.workshopRecorder.ClearResolution(ctx, request, detail); err != nil {
@@ -251,6 +252,7 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 			if request.Target == domain.WorkshopTargetMods {
 				result, recordErr := handler.workshopRecorder.RecordModResolution(ctx, request, resolution)
 				if recordErr != nil {
+					handler.logWorkshopRecordFailure(request, recordErr)
 					if permanentWorkshopRecordError(recordErr) || workshopFinalAttempt(message) {
 						detail := workshopRecordUserMessage(recordErr, domain.WorkshopTargetMods, workshopFinalAttempt(message))
 						if err := handler.workshopRecorder.ClearResolution(ctx, request, detail); err != nil {
@@ -374,7 +376,15 @@ func decodeWorkshopRequest(body string) (domain.WorkshopSourceRequest, error) {
 const maximumWorkshopReceiveCount = 5
 
 func permanentWorkshopRecordError(err error) bool {
-	return errors.Is(err, domain.ErrPermanentWorkshopRejection) || errors.Is(err, domain.ErrForbidden) || errors.Is(err, domain.ErrIdempotencyConflict) || errors.Is(err, domain.ErrConflict) || errors.Is(err, domain.ErrWorkflowLocked) || errors.Is(err, domain.ErrInvalidTransition) || errors.Is(err, domain.ErrWorkshopSnapshotLimit)
+	return errors.Is(err, domain.ErrPermanentWorkshopRejection) || errors.Is(err, domain.ErrForbidden) || errors.Is(err, domain.ErrIdempotencyConflict) || errors.Is(err, domain.ErrConflict) || errors.Is(err, domain.ErrWorkflowLocked) || errors.Is(err, domain.ErrInvalidTransition) || errors.Is(err, domain.ErrWorkshopSnapshotLimit) || errors.Is(err, domain.ErrPersistenceInvariant)
+}
+
+func (handler *handler) logWorkshopRecordFailure(request domain.WorkshopSourceRequest, err error) {
+	disposition := "retryable_persistence"
+	if permanentWorkshopRecordError(err) {
+		disposition = "terminal"
+	}
+	handler.logger.Warn("Workshop resolution persistence failed", slog.String("session_id", request.SessionID), slog.String("target", string(request.Target)), slog.String("disposition", disposition), slog.String("error", domain.SanitizeDiagnostic(err.Error())), slog.String("correlation_id", request.CorrelationID))
 }
 
 func workshopFinalAttempt(message events.SQSMessage) bool {
@@ -416,6 +426,9 @@ func workshopRecordUserMessage(err error, target domain.WorkshopTarget, exhauste
 	}
 	if errors.Is(err, domain.ErrWorkshopSnapshotLimit) {
 		return "This session has reached its bounded Workshop source-history limit. Its active content was left unchanged. Use an uploaded preset for the next revision or create a new session; contact an administrator if history must be retained differently."
+	}
+	if errors.Is(err, domain.ErrPersistenceInvariant) {
+		return "The Workshop content was validated, but the platform could not safely save it. Your active content was left unchanged. Contact an operator and provide the session name; submitting the link repeatedly will not help."
 	}
 	if exhausted && !errors.Is(err, domain.ErrPermanentWorkshopRejection) && !errors.Is(err, domain.ErrIdempotencyConflict) {
 		return "The Workshop content was validated, but the platform could not safely save it after several attempts. Your active content was left unchanged. Submit the link again; if it repeats, contact an operator."

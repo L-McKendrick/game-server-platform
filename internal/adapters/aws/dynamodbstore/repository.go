@@ -696,16 +696,17 @@ func (repository *Repository) SaveWithEvent(
 	}
 
 	if err := session.Validate(); err != nil {
-		return fmt.Errorf("validate session: %w", err)
+		return fmt.Errorf("%w: validate session: %v", domain.ErrPersistenceInvariant, err)
 	}
 
 	if expectedVersion < 1 {
-		return fmt.Errorf("expected version must be at least 1")
+		return fmt.Errorf("%w: expected version must be at least 1", domain.ErrPersistenceInvariant)
 	}
 
 	if session.Version != expectedVersion+1 {
 		return fmt.Errorf(
-			"session version %d must equal expected version %d plus one",
+			"%w: session version %d must equal expected version %d plus one",
+			domain.ErrPersistenceInvariant,
 			session.Version,
 			expectedVersion,
 		)

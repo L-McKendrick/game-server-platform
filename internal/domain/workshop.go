@@ -405,6 +405,22 @@ func workshopModSnapshotItemCount(sources []WorkshopModSource) int {
 // generated artifacts through the same active/pending revision authority used
 // by uploaded presets. Resolving metadata alone never refreshes this state.
 func (session *Session) AttachWorkshopModSource(source WorkshopModSource, expectedActiveRevision int64, modlist PresetModlistMetadata, now time.Time) (PresetRevision, error) {
+	working := *session
+	working.WorkshopModSources = slices.Clone(session.WorkshopModSources)
+	revision, err := working.attachWorkshopModSource(source, expectedActiveRevision, modlist, now)
+	if err != nil {
+		return PresetRevision{}, err
+	}
+	working.Version = session.Version + 1
+	working.UpdatedAt = now.UTC()
+	if err := working.Validate(); err != nil {
+		return PresetRevision{}, err
+	}
+	*session = working
+	return revision, nil
+}
+
+func (session *Session) attachWorkshopModSource(source WorkshopModSource, expectedActiveRevision int64, modlist PresetModlistMetadata, now time.Time) (PresetRevision, error) {
 	if err := source.Validate(); err != nil {
 		return PresetRevision{}, err
 	}

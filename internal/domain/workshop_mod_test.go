@@ -80,12 +80,20 @@ func TestAttachWorkshopModSourceActivatesInitialDraftRevisionWithProvenance(t *t
 	now := time.Now().UTC()
 	session, _ := NewSession(NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner", GuildID: "guild", ChannelID: "channel"}, now)
 	source, metadata := workshopModArtifacts(now, "a", "b")
+	expectedVersion := session.Version
+	if err := session.BeginWorkshopResolution(WorkshopTargetMods, "request-1", now.Add(30*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	expectedVersion = session.Version
 	revision, err := session.AttachWorkshopModSource(source, 0, metadata, now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if revision.Status != PresetRevisionActive || session.PresetObjectKey != source.PresetObjectKey || revision.WorkshopSourceID != source.Source.PublishedFileID || revision.WorkshopResolutionSHA256 != source.ResolutionSHA256 {
 		t.Fatalf("revision = %#v, session = %#v", revision, session)
+	}
+	if session.Version != expectedVersion+1 || session.WorkshopResolutionRequestKey != "" {
+		t.Fatalf("version = %d, marker = %q; want one mutation and cleared marker", session.Version, session.WorkshopResolutionRequestKey)
 	}
 }
 
@@ -100,12 +108,19 @@ func TestAttachWorkshopModSourceStagesEstablishedRevisionAndRejectsStaleOrImplic
 	nextSource, nextMetadata := workshopModArtifacts(now.Add(2*time.Minute), "c", "d")
 	nextSource.Source = WorkshopReference{PublishedFileID: 30, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=30"}
 	nextSource.AcceptedItems[0].PublishedFileID = 30
+	if err := session.BeginWorkshopResolution(WorkshopTargetMods, "request-2", now.Add(90*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	expectedVersion := session.Version
 	revision, err := session.AttachWorkshopModSource(nextSource, 1, nextMetadata, now.Add(2*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if revision.Status != PresetRevisionPending || revision.BaseRevision != 1 || session.PresetObjectKey != activeSource.PresetObjectKey {
 		t.Fatalf("revision = %#v, active key = %q", revision, session.PresetObjectKey)
+	}
+	if session.Version != expectedVersion+1 || session.WorkshopResolutionRequestKey != "" {
+		t.Fatalf("version = %d, marker = %q; want one mutation and cleared marker", session.Version, session.WorkshopResolutionRequestKey)
 	}
 	thirdSource, thirdMetadata := workshopModArtifacts(now.Add(3*time.Minute), "e", "f")
 	thirdSource.Source = nextSource.Source
