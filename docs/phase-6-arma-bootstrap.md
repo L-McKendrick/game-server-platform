@@ -32,10 +32,13 @@ Command dispatch is intentionally single-attempt because Systems Manager Run Com
 - Vanilla sessions use the same cached Steam authorization as modded sessions for the Arma 3 dedicated-server app, do not select the Creator DLC beta branch, and skip preset and Workshop processing entirely.
 - Steam Guard challenges fail closed with `ERR_STEAM_REAUTH_REQUIRED` and
   require the local MFA-gated operator enrollment procedure before retry.
-- Workshop content is read from the authenticated Steam user's persistent
-  library under `/srv/game-server/home/Steam/steamapps/workshop`. Client mods
-  are passed with `-mod=`; separately revisioned server-only mods use
-  `-serverMod=` and do not enter the downloadable client preset.
+- Workshop downloads use workflow-isolated Steam libraries under
+  `/srv/game-server/workshop-staging`, then validated content is copied into
+  revision-owned persistent directories. A live staged revision is reused on
+  wake when its bounded item markers and trees remain valid. Client mods are
+  passed with `-mod=`; separately revisioned server-only mods use `-serverMod=`
+  and do not enter the downloadable client preset. See
+  `docs/workshop-content-sources.md` for source, collection, and recovery rules.
 
 For a vanilla session, choose Vanilla in `/rb create` or `/rb setup`, upload
 only the mission, and then use `/rb start`. The vanilla selection is immutable

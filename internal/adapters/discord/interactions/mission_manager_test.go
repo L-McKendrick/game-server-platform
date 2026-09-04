@@ -91,8 +91,8 @@ func TestWriteMissionManagerShowsPendingWorkshopMissionsWithoutDuplicateControls
 		t.Fatal(err)
 	}
 	session.WorkshopMissionSources = []domain.WorkshopMissionSource{
-		{AcceptedItemIDs: []uint64{100, 200}, AcceptedItems: []domain.WorkshopMissionItem{{PublishedFileID: 100, Filename: "Ready.Altis.pbo"}, {PublishedFileID: 200, Filename: "Pending.Enoch.pbo"}}},
-		{AcceptedItemIDs: []uint64{200, 300, 400}},
+		{AcceptedItemIDs: []uint64{100, 200}, AcceptedItems: []domain.WorkshopMissionItem{{PublishedFileID: 100, Filename: "Ready.Altis.pbo"}, {PublishedFileID: 200, Filename: "Pending.Enoch.pbo"}}, ResolvedAt: now.Add(-time.Minute)},
+		{AcceptedItemIDs: []uint64{200, 300, 400}, ResolvedAt: now.Add(-time.Minute)},
 	}
 	session.MissionFiles = []domain.MissionRecord{{ObjectKey: "sessions/session-1/input/missions/hash-Ready.Altis.pbo", Filename: "Ready.Altis.pbo", Status: domain.ArtifactAccepted, AddedAt: now, WorkshopItemID: 100}}
 	session.MissionFiles = append(session.MissionFiles, domain.MissionRecord{ObjectKey: "sessions/session-1/input/missions/hash-Removed.Altis.pbo", Filename: "Removed.Altis.pbo", Status: domain.ArtifactAccepted, AddedAt: now, RemovedAt: now.Add(time.Minute), WorkshopItemID: 300})

@@ -18,9 +18,13 @@ type testCatalog struct {
 	children map[uint64][]domain.WorkshopCollectionChild
 }
 
-type oversizedCollectionCatalog struct{ childMetadataRequested bool }
+type oversizedCollectionCatalog struct {
+	childMetadataRequested bool
+	rootMetadataRequested  bool
+}
 
 func (catalog *oversizedCollectionCatalog) Item(_ context.Context, id uint64) (domain.WorkshopItem, error) {
+	catalog.rootMetadataRequested = true
 	return domain.WorkshopItem{PublishedFileID: id, ConsumerAppID: domain.Arma3WorkshopAppID, Available: true, Collection: true}, nil
 }
 
@@ -54,6 +58,9 @@ func TestResolveRejectsOversizedCollectionBeforeChildMetadata(t *testing.T) {
 	}
 	if catalog.childMetadataRequested {
 		t.Fatal("oversized collection requested child metadata")
+	}
+	if catalog.rootMetadataRequested {
+		t.Fatal("collection requested unused root-item metadata")
 	}
 }
 

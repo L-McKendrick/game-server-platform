@@ -73,19 +73,19 @@ func missionCustomID(sessionID, action string, index, page int, version int64) s
 
 func writeMissionManager(writer http.ResponseWriter, session domain.Session, page int) {
 	active := make([]missionManagerEntry, 0, len(session.MissionFiles))
-	finalizedWorkshopItems := make(map[uint64]bool)
 	for index, record := range session.MissionFiles {
-		if record.WorkshopItemID != 0 {
-			finalizedWorkshopItems[record.WorkshopItemID] = true
-		}
 		if record.Active() {
 			active = append(active, missionManagerEntry{record: record, index: index})
 		}
 	}
+	pendingIDs := make(map[uint64]bool)
+	for _, itemID := range session.PendingWorkshopMissionItemIDs() {
+		pendingIDs[itemID] = true
+	}
 	pendingWorkshopItems := make(map[uint64]bool)
 	for _, source := range session.WorkshopMissionSources {
 		for _, item := range source.AcceptedItems {
-			if item.PublishedFileID == 0 || finalizedWorkshopItems[item.PublishedFileID] || pendingWorkshopItems[item.PublishedFileID] {
+			if !pendingIDs[item.PublishedFileID] || pendingWorkshopItems[item.PublishedFileID] {
 				continue
 			}
 			pendingWorkshopItems[item.PublishedFileID] = true
@@ -94,7 +94,7 @@ func writeMissionManager(writer http.ResponseWriter, session domain.Session, pag
 		// Older source snapshots do not retain canonical filenames. Keep them
 		// visible by Workshop identity until the host publishes the final name.
 		for _, itemID := range source.AcceptedItemIDs {
-			if itemID == 0 || finalizedWorkshopItems[itemID] || pendingWorkshopItems[itemID] {
+			if !pendingIDs[itemID] || pendingWorkshopItems[itemID] {
 				continue
 			}
 			pendingWorkshopItems[itemID] = true

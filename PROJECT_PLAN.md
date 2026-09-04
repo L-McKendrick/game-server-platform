@@ -366,3 +366,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **17.18.4** [x] Review the affected Workshop path against the branch architecture, run proportional validation, refresh the deployment/recovery handoff, commit, and push without adding infrastructure.
     - **17.19** [x] Skip already-materialized Workshop content during ordinary wake operations.
       - **17.19.1** [x] Derive pending Workshop scenarios from immutable source and accepted-mission evidence, dispatch only unresolved or refreshed scenario items alongside genuinely applying mod revisions, and add focused wake/manifest regression coverage plus deployment handoff validation.
+    - **17.20** [x] Complete the Workshop content-source branch release-readiness review and pull-request handoff.
+      - **17.20.1** [x] Review the complete branch diff for security, lifecycle correctness, bounded cost/performance, failure recovery, backward compatibility, duplication, and repository architecture; correct concrete gaps with focused coverage.
+      - **17.20.2** [x] Reconcile user, operator, architecture, security, deployment, and roadmap documentation with the final implemented behavior and known operational constraints.
+      - **17.20.3** [x] Run full proportional validation, refresh the exact deployment handoff, commit and push the wrap-up, and prepare the Phase 17 pull-request title and description without deploying or merging.

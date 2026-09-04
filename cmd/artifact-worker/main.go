@@ -167,7 +167,7 @@ func (handler *handler) HandleEvent(ctx context.Context, raw json.RawMessage) (a
 		switch event.Detail.Status {
 		case "Success", "Failed", "TimedOut", "Cancelled":
 			done, err := handler.contentSync.HandleTerminal(ctx, event.Detail.CommandID)
-			if errors.Is(err, domain.ErrForbidden) || errors.Is(err, domain.ErrNotFound) {
+			if ignorableWorkshopCallbackError(err) {
 				return false, nil
 			}
 			return done, err
@@ -180,6 +180,10 @@ func (handler *handler) HandleEvent(ctx context.Context, raw json.RawMessage) (a
 		return nil, err
 	}
 	return handler.Handle(ctx, sqsEvent)
+}
+
+func ignorableWorkshopCallbackError(err error) bool {
+	return errors.Is(err, domain.ErrForbidden) || errors.Is(err, domain.ErrNotFound) || errors.Is(err, domain.ErrConflict)
 }
 
 func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (events.SQSEventResponse, error) {

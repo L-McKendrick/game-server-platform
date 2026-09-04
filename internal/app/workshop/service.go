@@ -29,10 +29,6 @@ func (service *Service) Resolve(ctx context.Context, request domain.WorkshopSour
 		return domain.WorkshopResolution{}, fmt.Errorf("validate Workshop request: %w", err)
 	}
 	reference, _ := domain.ParseWorkshopURL(request.SourceURL)
-	root, err := service.catalog.Item(ctx, reference.PublishedFileID)
-	if err != nil {
-		return domain.WorkshopResolution{}, fmt.Errorf("resolve Workshop item metadata: %w", err)
-	}
 	resolution := domain.WorkshopResolution{SchemaVersion: 1, Target: request.Target, Source: reference}
 	children, collectionErr := service.catalog.CollectionChildren(ctx, reference.PublishedFileID)
 	if collectionErr == nil {
@@ -73,6 +69,10 @@ func (service *Service) Resolve(ctx context.Context, request domain.WorkshopSour
 			}
 		}
 	} else if errors.Is(collectionErr, domain.ErrWorkshopNotCollection) {
+		root, err := service.catalog.Item(ctx, reference.PublishedFileID)
+		if err != nil {
+			return domain.WorkshopResolution{}, fmt.Errorf("resolve Workshop item metadata: %w", err)
+		}
 		resolution.SourceKind = domain.WorkshopSourceItem
 		resolution.Items = []domain.WorkshopItem{domain.ClassifyWorkshopItem(root, request.Target)}
 	} else {

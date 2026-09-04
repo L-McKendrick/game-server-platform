@@ -214,6 +214,11 @@ Run these checks in Discord:
 4. Enter `/rb create` as an allowed member. Confirm its public card appears in
    the selected channel, then stop after creating the session.
    Creation does not allocate a game server while provisioning is disabled.
+5. If Workshop sources are enabled in the selected release, verify a public
+   Arma 3 scenario item and a direct-child mod collection through `/rb create`
+   or `/rb edit`. Confirm the command response and `/rb status` are ephemeral,
+   the public card receives only its bounded status projection, and no direct
+   message or standalone public result is sent.
 
 Check the deployed bootstrap worker before enabling game servers:
 
@@ -246,3 +251,6 @@ again whenever `deploy/discord/rb-command.json` changes.
 
 For release acceptance and failure handling, use the
 [operator deployment runbook](runbooks/deploy-discord-interactions.md).
+Workshop-specific limits, host behavior, failure remedies, and least-privilege
+boundaries are documented in
+[Steam Workshop content sources](workshop-content-sources.md).

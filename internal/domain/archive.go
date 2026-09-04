@@ -410,6 +410,17 @@ func (manifest ArchiveManifest) Validate() error {
 	if err := manifest.validateServerPresetRevisionIntent(); err != nil {
 		return err
 	}
+	if len(manifest.WorkshopMissionSources) > MaximumWorkshopMissionSources || workshopMissionSnapshotItemCount(manifest.WorkshopMissionSources) > MaximumWorkshopMissionSnapshotItems || workshopMissionItemCount(manifest.WorkshopMissionSources) > MaximumWorkshopMissionItems {
+		return fmt.Errorf("manifest Workshop mission history exceeds platform limits")
+	}
+	for _, source := range manifest.WorkshopMissionSources {
+		if err := source.Validate(); err != nil {
+			return fmt.Errorf("manifest Workshop mission source is invalid: %w", err)
+		}
+	}
+	if len(manifest.WorkshopModSources) > MaximumWorkshopMissionSources || workshopModSnapshotItemCount(manifest.WorkshopModSources) > MaximumWorkshopModSnapshotItems {
+		return fmt.Errorf("manifest Workshop mod history exceeds platform limits")
+	}
 	for _, source := range manifest.WorkshopModSources {
 		if err := source.Validate(); err != nil {
 			return fmt.Errorf("manifest Workshop mod source is invalid: %w", err)

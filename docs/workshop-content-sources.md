@@ -21,9 +21,11 @@ the Workshop link to be resubmitted; records accepted before canonical
 filename support must also be resubmitted rather than guessed or re-resolved.
 
 A mixed collection does not fail merely because some children are ineligible.
-The completion message reports accepted and excluded counts and a bounded list
-of excluded item IDs and classifications. A collection with no eligible items
-is rejected with instructions describing the required type and tags.
+The public session card shows a bounded outcome summary; ephemeral `/rb status`
+provides accepted/excluded detail and item classifications. Workshop processing
+never emits a standalone public message or direct message. A collection with no
+eligible items is rejected with instructions describing the required type and
+tags.
 
 A collection may contain at most 50 direct children. The platform rejects a
 larger collection before requesting child metadata or starting SteamCMD and
@@ -41,7 +43,7 @@ Workshop source edits are accepted in `DRAFT`, `NEW`, `READY`, `RUNNING`,
 `IDLE`, `SLEEPING`, warning, and recoverable `FAILED` states when no workflow
 holds the session lock. `DRAFT` and `NEW` content is consumed by initial
 bootstrap; sleeping or warning-state content is retained for the next wake;
-stable running/idle host synchronization is introduced by Phase 17.9. Edits
+stable running/idle sessions start stage-only host synchronization. Edits
 are rejected during validating, provisioning, bootstrap/install, stop, wake,
 archive, restore, deletion, or any active workflow. Archived edits are also
 rejected because changing session metadata after archive creation would make
@@ -60,8 +62,10 @@ Common recovery actions:
   mission link, then retry the failed operation;
 - session changed or busy: wait for the active lifecycle operation to finish,
   review `/rb status`, and resubmit;
-- temporary Steam failure: allow the bounded automatic retries to finish, then
-  resubmit after a few minutes if the final notice says they were exhausted;
+- temporary Steam metadata failure: wait a few minutes and resubmit; metadata
+  requests fail quickly and do not occupy the FIFO queue for delayed retries;
+- temporary SteamCMD download failure: allow the three item-scoped attempts to
+  finish, then use the `/rb status` remedy if the operation stops;
 - Steam authorization required during host download: ask an operator to follow
   `docs/steam-auth-cache.md`; never send a password or Guard code in Discord.
 
@@ -75,8 +79,9 @@ revalidated before any artifact write, preventing a slow response from
 overwriting a newer preset.
 
 Collection metadata uses bounded batches of at most 100 published-file IDs.
-The maximum 50-child collection therefore uses three Steam requests: one root
-lookup, one collection expansion, and one child batch. This avoids
+The maximum 50-child collection therefore uses two Steam requests: one
+collection expansion and one child batch; the unused root item lookup is
+skipped. A single item uses one collection-type check and one item lookup. This avoids
 the latency, rate-limit exposure, and Lambda cost of one request per child.
 The worker has a 90-second timeout and its FIFO queue has a six-times timeout
 visibility window. Lambda billing remains based on actual execution duration;
@@ -89,7 +94,7 @@ NAT Gateway, new worker, or scheduled service is introduced. Existing S3
 lifecycle and session-prefix termination cleanup cover the new objects.
 
 Actual cost impact is expected to be small: short artifact-worker execution,
-at most three public metadata calls, three S3 writes, and one transactional
+at most two public metadata calls, three S3 writes, and one transactional
 metadata write per successful resolution. The material cost remains game-host
 runtime and Workshop download storage/transfer during bootstrap. Per-item
 download size is capped at 20 GiB and each collection at 50 direct children;
@@ -114,9 +119,11 @@ wake, and restore may promote those exact directories through the established
 revision apply path. Live `workshop_sync` mode sets stage-only behavior, so it
 does not change `@workshop_*` links, active preset compatibility links, mod
 argument files, launch arguments, or the running service. Wake-time promotion
-is different: after it switches the revision-owned links, the same bounded host
-command restarts and verifies Arma before the workflow performs its external
-health check and promotes the metadata revision.
+validates an item/revision marker, rejects links or oversized trees, and reuses
+the staged revision without another SteamCMD download. If staging is missing or
+invalid, the normal bounded download path repairs it. After switching the
+revision-owned links, the same bounded host command restarts and verifies Arma
+before the workflow performs its external health check and promotes metadata.
 
 Live synchronization is represented by a durable `WorkshopContentSync`
 workflow and the existing exclusive session lease. The artifact worker sends
@@ -175,7 +182,10 @@ revision.
 The same strict manifest parser finalizes scenarios after initial bootstrap,
 live synchronization (including scheduled missed-event recovery), and wake.
 It checks the exact session prefix, content-addressed object key, normalized
-filename, item identity, complete accepted-item set, and recorded provenance.
+filename, item identity, complete pending-item set, and recorded provenance.
+Partial collection refreshes therefore attach only newly resolved items, while
+removed scenarios remain removed unless the user explicitly resolves a newer
+snapshot.
 All scenario records are attached in the same optimistic-concurrency mutation
 that completes the owning workflow, so a collection cannot partially appear
 and the configured/current mission never changes. Bootstrap, live sync, and
@@ -198,11 +208,13 @@ workflow and Discord failure projections.
 
 ## Failure and operational behavior
 
-Metadata rate limits, transient Steam responses, malformed responses, S3
-failures, and DynamoDB failures are retryable. Policy, ownership, lifecycle,
-stale-revision, and idempotency conflicts fail permanently. On the final
-bounded retry, the worker sends a sanitized actionable notice instead of
-silently allowing the message to disappear into the dead-letter queue.
+Metadata rate limits, transient Steam responses, and malformed metadata fail
+fast with sanitized `/rb status` guidance so they cannot hold a session's FIFO
+group for the queue visibility interval. Transient persistence failures retain
+bounded queue retries; deterministic policy, ownership, lifecycle,
+stale-revision, invariant, and idempotency conflicts fail permanently. Every
+terminal path clears the exact pending marker or leaves an operator-visible
+failure instead of silently disappearing into the dead-letter queue.
 
 Generated S3 keys are content addressed. A failure between object writes and
 the atomic metadata transaction can leave an unreferenced object under the
@@ -215,3 +227,21 @@ CloudWatch logs contain stable error codes, target, source kind, counts,
 revision number/status, session ID, and correlation ID. They do not contain raw
 Steam responses, Workshop titles, credentials, Guard state, or downloaded
 paths. Existing queue alarms and DLQ inspection procedures remain applicable.
+
+## Security review boundary
+
+Workshop URLs accept only HTTPS Steam Community item/collection paths with one
+numeric ID; all other query parameters are discarded before queueing. Steam
+metadata is bounded, normalized, classified as data, and never interpolated as
+shell syntax. Host commands accept only numeric item IDs, fixed target values,
+normalized filenames, bounded sizes, and digest/revision identifiers. Downloads
+run as `steam`, reject symbolic links, stage outside active paths, and promote
+through atomic copies or revision-owned links. SSM callbacks must match the
+platform comment, active workflow, instance, target, and immutable digest;
+stale callbacks are ignored without retries or state mutation.
+
+The game-instance IAM role is shared by the current single-account platform,
+so its S3 permissions are prefix/type scoped but not dynamically restricted to
+one session ID. Control-plane manifest validation prevents a host from making a
+cross-session write authoritative, but per-session instance credentials remain
+a Phase 16 least-privilege hardening item.

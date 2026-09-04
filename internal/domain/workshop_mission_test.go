@@ -17,6 +17,10 @@ func TestPendingWorkshopMissionItemIDsTracksMaterializationAndRefresh(t *testing
 	if got := session.PendingWorkshopMissionItemIDs(); !slices.Equal(got, []uint64{30}) {
 		t.Fatalf("pending items = %v, want [30]", got)
 	}
+	session.MissionFiles[0].RemovedAt = now.Add(90 * time.Second)
+	if got := session.PendingWorkshopMissionItemIDs(); !slices.Equal(got, []uint64{30}) {
+		t.Fatalf("removed materialized item was requeued: %v", got)
+	}
 
 	session.WorkshopMissionSources[0].ResolvedAt = now.Add(2 * time.Minute)
 	if got := session.PendingWorkshopMissionItemIDs(); !slices.Equal(got, []uint64{20, 30}) {

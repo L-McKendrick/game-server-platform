@@ -64,3 +64,22 @@ func TestWorkshopMissionsRejectsIncompleteOrUnauthorizedManifest(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkshopMissionsAcceptsOnlyPendingItemsFromPartialRefreshManifest(t *testing.T) {
+	now := time.Date(2026, 9, 4, 6, 0, 0, 0, time.UTC)
+	session, _ := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner", GuildID: "guild", ChannelID: "channel"}, now)
+	session.WorkshopMissionSources = []domain.WorkshopMissionSource{
+		{Source: domain.WorkshopReference{PublishedFileID: 100, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=100"}, SourceKind: domain.WorkshopSourceItem, ResolutionSHA256: strings.Repeat("a", 64), AcceptedItemIDs: []uint64{100}, AcceptedItems: []domain.WorkshopMissionItem{{PublishedFileID: 100, Filename: "Current.Altis.pbo", FileSize: 100}}, ResolvedAt: now},
+		{Source: domain.WorkshopReference{PublishedFileID: 200, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=200"}, SourceKind: domain.WorkshopSourceItem, ResolutionSHA256: strings.Repeat("b", 64), AcceptedItemIDs: []uint64{200}, AcceptedItems: []domain.WorkshopMissionItem{{PublishedFileID: 200, Filename: "Pending.Stratis.pbo", FileSize: 200}}, ResolvedAt: now.Add(2 * time.Minute)},
+	}
+	session.MissionFiles = []domain.MissionRecord{{ObjectKey: "sessions/session-1/input/missions/" + strings.Repeat("c", 64) + "-Current.Altis.pbo", Filename: "Current.Altis.pbo", Status: domain.ArtifactAccepted, WorkshopItemID: 100, AddedAt: now.Add(time.Minute)}}
+	digest := strings.Repeat("d", 64)
+	key := "sessions/session-1/input/missions/" + digest + "-Pending.Stratis.pbo"
+	reader := &workshopManifestReader{body: []byte(digest + "\tPending.Stratis.pbo\t" + key + "\t200\n")}
+	service := &Service{workshopMissionManifest: reader}
+
+	missions, err := service.workshopMissions(context.Background(), session)
+	if err != nil || len(missions) != 1 || missions[0].WorkshopItemID != 200 {
+		t.Fatalf("partial refresh missions = %#v, err = %v", missions, err)
+	}
+}

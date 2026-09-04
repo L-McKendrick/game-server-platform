@@ -662,7 +662,13 @@ Canonical state machines:
 - `RestoreSession`
 - `DestroySession`
 - `ReconcileSession`
-- `RotateOrUpdateWorkshopContent`, future
+
+Workshop metadata uses the existing artifact FIFO worker. Live content staging
+uses a durable `WorkshopContentSync` record, one bounded Systems Manager
+command, terminal EventBridge delivery, and the existing reconciliation scan;
+it intentionally does not add a polling Step Functions state machine. Start,
+wake, and restore consume the same host content-sync implementation inside
+their existing lifecycle workflows.
 
 Each workflow receives:
 

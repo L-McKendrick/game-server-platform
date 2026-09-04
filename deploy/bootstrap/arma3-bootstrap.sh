@@ -411,6 +411,47 @@ require_workshop_space() {
   }
 }
 
+STAGED_WORKSHOP_MOD_PATH=""
+ensure_staged_workshop_mod() {
+  local id="$1" expected_update="$2" revision_root="$3" download_count="$4" source source_size pending marker marker_pending actual_update
+  [[ "$id" =~ ^[1-9][0-9]{0,19}$ && "$expected_update" =~ ^-?[0-9]+$ && "$download_count" =~ ^[1-9][0-9]{0,3}$ ]] || return 1
+  [ ! -L "$revision_root" ] || { log "Workshop revision root cannot be a symbolic link"; return 1; }
+  mkdir -p "$revision_root"
+  source="$revision_root/$id"
+  marker="$revision_root/.snapshot-$id"
+  if [ -d "$source" ] && [ ! -L "$source" ] && [ -f "$marker" ] && [ ! -L "$marker" ] && [ "$(cat -- "$marker")" = "$id:$expected_update" ] && ! find "$source" -type l -print -quit | grep -q .; then
+    source_size="$(du -sb "$source" | awk '{print $1}')"
+    if [[ "$source_size" =~ ^[1-9][0-9]*$ ]] && [ "$source_size" -le 21474836480 ]; then
+      STAGED_WORKSHOP_MOD_PATH="$source"
+      return 0
+    fi
+  fi
+  require_workshop_space 5368709120
+  activity "WORKSHOP_ITEMS:$download_count"
+  download_workshop_item "$id"
+  source="$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/$id"
+  [ -d "$source" ] && [ ! -L "$source" ] || { log "Workshop item $id was not downloaded safely"; return 1; }
+  ! find "$source" -type l -print -quit | grep -q . || { log "Workshop mod content contains a symbolic link"; return 1; }
+  if [ "$expected_update" -gt 0 ]; then
+    actual_update="$(workshop_item_updated_at "$id" || true)"
+    [ "$actual_update" = "$expected_update" ] || { printf 'ERR_WORKSHOP_METADATA_DRIFT: Workshop mod changed after metadata resolution.\n' >&2; return 1; }
+  fi
+  source_size="$(du -sb "$source" | awk '{print $1}')"
+  [ "$source_size" -gt 0 ] && [ "$source_size" -le 21474836480 ] || { log "Workshop mod content size is outside the allowed range"; return 1; }
+  lowercase_tree "$source"
+  [ ! -e "$revision_root/$id" ] || rm -rf -- "$revision_root/$id"
+  pending="$(mktemp -d "$revision_root/.pending-$id.XXXXXX")"
+  cp -a -- "$source/." "$pending/"
+  chown -R steam:steam "$pending"
+  mv -- "$pending" "$revision_root/$id"
+  marker_pending="$(mktemp "$revision_root/.snapshot-$id.XXXXXX")"
+  printf '%s:%s\n' "$id" "$expected_update" > "$marker_pending"
+  chmod 0640 "$marker_pending"
+  chown steam:steam "$marker_pending"
+  mv -f -- "$marker_pending" "$marker"
+  STAGED_WORKSHOP_MOD_PATH="$revision_root/$id"
+}
+
 record_workshop_sync_result() {
   local target="$1" id="$2" revision="$3"
   [[ "$target" =~ ^(mission|mod|server_mod)$ && "$id" =~ ^[1-9][0-9]{0,19}$ && "$revision" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || return 1
@@ -578,7 +619,7 @@ install_workshop() (
     [ -d "$ROOT/arma3/$dlc" ] || { log "Selected Creator DLC $dlc was not installed"; return 1; }
     mods="${mods:+$mods;}$dlc"
   done
-	local id source link source_size revision_root pending expected_update actual_update extra
+	local id source link revision_root expected_update extra
 	declare -A expected_updates=()
 	while IFS=$'\t' read -r id expected_update extra; do
 		[ -z "$id" ] && continue
@@ -588,59 +629,33 @@ install_workshop() (
   workshop_count=$((${#ids[@]} + ${#server_ids[@]}))
 	[ "$workshop_count" -le 250 ] || { log "Workshop mod count exceeds the supported limit"; return 1; }
   if [ "$workshop_count" -gt 0 ]; then
-  require_workshop_space 5368709120
-  activity "WORKSHOP_ITEMS:$workshop_count"
-	for id in "${ids[@]}" "${server_ids[@]}"; do [ -z "$id" ] || download_workshop_item "$id"; done
   for id in "${ids[@]}"; do
-    source="$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/$id"
-    [ -d "$source" ] || { log "Workshop item $id was not downloaded"; return 1; }
-	! find "$source" -type l -print -quit | grep -q . || { log "Workshop mod content contains a symbolic link"; return 1; }
 	expected_update="${expected_updates[$id]:-0}"
-	if [ "$expected_update" -gt 0 ]; then
-		actual_update="$(workshop_item_updated_at "$id" || true)"
-		[ "$actual_update" = "$expected_update" ] || { printf 'ERR_WORKSHOP_METADATA_DRIFT: Workshop mod changed after metadata resolution.\n' >&2; return 1; }
-	fi
-	source_size="$(du -sb "$source" | awk '{print $1}')"; [ "$source_size" -gt 0 ] && [ "$source_size" -le 21474836480 ] || { log "Workshop mod content size is outside the allowed range"; return 1; }
-    lowercase_tree "$source"
 	revision_root="$ROOT/workshop/mod-revisions/client-$PRESET_REVISION"
-	mkdir -p "$revision_root"
-	[ ! -e "$revision_root/$id" ] || rm -rf -- "$revision_root/$id"
-	pending="$(mktemp -d "$revision_root/.pending-$id.XXXXXX")"
-	cp -a -- "$source/." "$pending/"
-	chown -R steam:steam "$pending"
-	mv -- "$pending" "$revision_root/$id"
-	source="$revision_root/$id"
+	ensure_staged_workshop_mod "$id" "$expected_update" "$revision_root" "$workshop_count"
+	source="$STAGED_WORKSHOP_MOD_PATH"
+	mods="${mods:+$mods;}@workshop_$id"
 	if [ "$WORKSHOP_PROMOTE_MODS" = true ]; then
       link="$ROOT/arma3/@workshop_$id"
       ln -sfn "$source" "$link"
-      mods="${mods:+$mods;}@workshop_$id"
 	fi
 	record_workshop_sync_result mod "$id" "${WORKSHOP_MOD_RESOLUTION:-$PRESET_REVISION}"
   done
 	for id in "${server_ids[@]}"; do
-		source="$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/$id"
-		[ -d "$source" ] || { log "Server-only Workshop item $id was not downloaded"; return 1; }
-		! find "$source" -type l -print -quit | grep -q . || { log "Server-only Workshop content contains a symbolic link"; return 1; }
-		lowercase_tree "$source"
 		revision_root="$ROOT/workshop/mod-revisions/server-$SERVER_PRESET_REVISION"
-		mkdir -p "$revision_root"
-		[ ! -e "$revision_root/$id" ] || rm -rf -- "$revision_root/$id"
-		pending="$(mktemp -d "$revision_root/.pending-$id.XXXXXX")"
-		cp -a -- "$source/." "$pending/"
-		chown -R steam:steam "$pending"
-		mv -- "$pending" "$revision_root/$id"
-		source="$revision_root/$id"
+		ensure_staged_workshop_mod "$id" 0 "$revision_root" "$workshop_count"
+		source="$STAGED_WORKSHOP_MOD_PATH"
+		server_mods="${server_mods:+$server_mods;}@workshop_$id"
 		if [ "$WORKSHOP_PROMOTE_MODS" = true ]; then
 			link="$ROOT/arma3/@workshop_$id"
 			ln -sfn "$source" "$link"
-			server_mods="${server_mods:+$server_mods;}@workshop_$id"
 		fi
 		record_workshop_sync_result server_mod "$id" "$SERVER_PRESET_REVISION"
 	done
 	fi
-	[ "$WORKSHOP_PROMOTE_MODS" = true ] || return 0
 	printf '%s' "$mods" > "$mods_file"
 	printf '%s' "$server_mods" > "$server_mods_file"
+	[ "$WORKSHOP_PROMOTE_MODS" = true ] || return 0
 	if [ -n "$PRESET_KEY" ]; then ln -sfn "presets/revision-$PRESET_REVISION.html" "$ROOT/config/preset.html"; fi
 	ln -sfn "mod-revisions/revision-$PRESET_REVISION.txt" "$ROOT/config/mods.txt"
 	ln -sfn "server-mod-revisions/revision-$SERVER_PRESET_REVISION.txt" "$ROOT/config/server-mods.txt"

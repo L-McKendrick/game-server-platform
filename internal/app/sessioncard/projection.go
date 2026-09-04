@@ -375,7 +375,7 @@ func progressLabel(milestone domain.ProgressMilestone) string {
 	case domain.ProgressGameServerInstalled:
 		return "Downloading and installing game files"
 	case domain.ProgressModsApplied:
-		return "Downloading and installing Workshop content"
+		return "Synchronizing Workshop content"
 	case domain.ProgressConfigurationReady:
 		return "Deploying configuration"
 	case domain.ProgressServiceStarted:
@@ -717,6 +717,7 @@ func missionArtifactView(session domain.Session) ArtifactView {
 		return view
 	}
 	if len(session.WorkshopMissionSources) > 0 {
+		pendingMissions := len(session.PendingWorkshopMissionItemIDs()) > 0
 		switch {
 		case session.Progress.WorkflowType == domain.WorkshopContentSyncWorkflowType && session.Progress.State == domain.ProgressActive:
 			view.Status = "Workshop scenarios downloading and validating"
@@ -724,10 +725,12 @@ func missionArtifactView(session domain.Session) ArtifactView {
 			view.Status = "Workshop scenarios available"
 		case session.Progress.WorkflowType == domain.WorkshopContentSyncWorkflowType && session.Progress.State == domain.ProgressActionRequired:
 			view.Status = "Workshop scenario sync failed"
-		case session.LifecycleState == domain.StateDraft || session.LifecycleState == domain.StateNew:
+		case pendingMissions && (session.LifecycleState == domain.StateDraft || session.LifecycleState == domain.StateNew):
 			view.Status = "Workshop scenarios queued for initial start"
-		case session.LifecycleState == domain.StateSleeping || session.LifecycleState == domain.StateWarning1 || session.LifecycleState == domain.StateWarning2 || session.LifecycleState == domain.StateFailed:
+		case pendingMissions && (session.LifecycleState == domain.StateSleeping || session.LifecycleState == domain.StateWarning1 || session.LifecycleState == domain.StateWarning2 || session.LifecycleState == domain.StateFailed):
 			view.Status = "Workshop scenarios queued for next wake or start"
+		case !pendingMissions:
+			view.Status = "Workshop scenarios available"
 		default:
 			view.Status = "Workshop source accepted"
 		}

@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"path"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -17,26 +16,8 @@ import (
 )
 
 func Load(ctx context.Context, reader ports.ObjectReader, session domain.Session) ([]domain.MissionRecord, error) {
-	ids := session.WorkshopMissionItemIDs()
+	ids := session.PendingWorkshopMissionItemIDs()
 	if len(ids) == 0 {
-		return nil, nil
-	}
-	allCurrent := true
-	for _, id := range ids {
-		expectedSources := session.WorkshopSourcesForItem(id)
-		matched := false
-		for _, mission := range session.MissionFiles {
-			if mission.Accepted() && mission.WorkshopItemID == id && slices.Equal(mission.WorkshopSources, expectedSources) {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			allCurrent = false
-			break
-		}
-	}
-	if allCurrent {
 		return nil, nil
 	}
 	if reader == nil {
@@ -51,6 +32,10 @@ func Load(ctx context.Context, reader ports.ObjectReader, session domain.Session
 	if err != nil {
 		return nil, fmt.Errorf("read Workshop mission manifest: %w", err)
 	}
+	pending := make(map[uint64]bool, len(ids))
+	for _, id := range ids {
+		pending[id] = true
+	}
 	seen := map[uint64]bool{}
 	missions := make([]domain.MissionRecord, 0, len(ids))
 	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
@@ -60,7 +45,7 @@ func Load(ctx context.Context, reader ports.ObjectReader, session domain.Session
 		}
 		digest, filename, objectKey := fields[0], fields[1], fields[2]
 		itemID, parseErr := strconv.ParseUint(fields[3], 10, 64)
-		if parseErr != nil || itemID == 0 || seen[itemID] || len(digest) != 64 {
+		if parseErr != nil || itemID == 0 || !pending[itemID] || seen[itemID] || len(digest) != 64 {
 			return nil, fmt.Errorf("Workshop mission manifest identity is invalid")
 		}
 		if _, decodeErr := hex.DecodeString(digest); decodeErr != nil {

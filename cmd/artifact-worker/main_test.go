@@ -74,3 +74,14 @@ func TestPersistenceInvariantIsTerminalWorkshopRecordError(t *testing.T) {
 		t.Fatal("persistence invariant would be retried through the nine-minute visibility timeout")
 	}
 }
+
+func TestStaleWorkshopCallbackErrorsAreIgnored(t *testing.T) {
+	for _, err := range []error{domain.ErrForbidden, domain.ErrNotFound, domain.ErrConflict} {
+		if !ignorableWorkshopCallbackError(fmt.Errorf("callback: %w", err)) {
+			t.Fatalf("callback error %v would trigger EventBridge retries", err)
+		}
+	}
+	if ignorableWorkshopCallbackError(errors.New("SSM unavailable")) {
+		t.Fatal("transient callback failure was incorrectly ignored")
+	}
+}

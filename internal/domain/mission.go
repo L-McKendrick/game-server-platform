@@ -122,7 +122,9 @@ func (session Session) PendingWorkshopMissionItemIDs() []uint64 {
 	}
 	for _, record := range session.MissionFiles {
 		resolvedAt, tracked := latestResolution[record.WorkshopItemID]
-		if tracked && record.Accepted() && !record.AddedAt.Before(resolvedAt) {
+		// A removed record still proves this source snapshot was materialized.
+		// Removal is user intent; only a later explicit resolution is pending.
+		if tracked && record.Status == ArtifactAccepted && strings.TrimSpace(record.ObjectKey) != "" && !record.AddedAt.Before(resolvedAt) {
 			delete(latestResolution, record.WorkshopItemID)
 		}
 	}
