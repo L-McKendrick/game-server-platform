@@ -135,7 +135,12 @@ This adds one EventBridge rule plus low-volume Lambda and SSM lookup calls. It
 does not add a Step Functions execution, polling transitions, Lambda function,
 queue, table, bucket, GSI, or schedule. Wake renames its existing mod stage to
 `DispatchContent` and retains the same state count and 30-second polling
-cadence, while also synchronizing missions when no mod revision is pending.
+cadence, while also synchronizing pending missions when no mod revision is pending.
+An ordinary wake does not redispatch already materialized Workshop scenarios:
+the session derives pending item IDs from the immutable resolution time and the
+accepted mission record's attachment time. A later explicit resolution of the
+same scenario is newer than the prior mission record and is therefore synced,
+while unchanged active mod revisions remain excluded from wake downloads.
 EventBridge cannot filter these notifications by the platform-owned comment,
 so each terminal `AWS-RunShellScript` command causes one artifact-worker
 invocation and bounded `ListCommands` lookup. Commands without the exact

@@ -364,3 +364,5 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **17.18.2** [x] Classify and log recorder failures at the worker boundary, immediately persist actionable status for deterministic failures, and reserve SQS retries for bounded external persistence failures.
       - **17.18.3** [x] Add domain, recorder, repository-realistic, and worker regression coverage for draft and established revisions, replay, stale state, and exact-marker cleanup.
       - **17.18.4** [x] Review the affected Workshop path against the branch architecture, run proportional validation, refresh the deployment/recovery handoff, commit, and push without adding infrastructure.
+    - **17.19** [x] Skip already-materialized Workshop content during ordinary wake operations.
+      - **17.19.1** [x] Derive pending Workshop scenarios from immutable source and accepted-mission evidence, dispatch only unresolved or refreshed scenario items alongside genuinely applying mod revisions, and add focused wake/manifest regression coverage plus deployment handoff validation.

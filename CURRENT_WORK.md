@@ -2,60 +2,55 @@
 
 ## State and Objective
 
-Phase 17.18 is complete on `codex/workshop-content-sources`. Workshop mod
-resolution now preserves the repository's single-version transaction invariant,
-and deterministic persistence failures cannot silently cycle through the
-nine-minute artifact-queue visibility timeout.
+Phase 17.19 is complete on `codex/workshop-content-sources`. Ordinary wakes now
+skip Workshop scenarios already represented by accepted immutable mission
+records and skip unchanged active mod revisions.
+
+## Live Finding
+
+- `test-40` (`01M1MENEJCVQFZANVY3Z4BVSMG`) had one accepted Workshop mission
+  and active Workshop preset revision 1 before wake.
+- Wake still dispatched SSM command `1542eac4-df7f-40bc-9702-3c260af5092f`
+  with the platform Workshop-sync comment. The previous predicate treated
+  permanent Workshop source provenance as pending content on every wake.
+- The redundant command was left unchanged and completed successfully. A final
+  read-only check found `test-40` running and healthy with no active workflow.
 
 ## Completed Development
 
-- `AttachWorkshopModSource` now applies the existing preset revision and
-  immutable Workshop provenance operations to a copy of the session, validates
-  their combined result, and publishes exactly one aggregate version change.
-- Failed compound mutations leave the original in-memory session unchanged.
-- Draft/new sessions still activate their first generated preset; established
-  sessions still stage a pending revision. Existing lifecycle, active-revision,
-  marker, collection, provenance, and refresh safeguards are unchanged.
-- DynamoDB `SaveWithEvent` classifies invalid aggregate/version inputs as a
-  persistence invariant without attempting a transaction.
-- Artifact-worker logs every sanitized Workshop recorder failure with a terminal
-  or retryable-persistence disposition. Internal invariant failures clear the
-  exact pending marker immediately and direct the user to an operator through
-  private status; transient external storage failures retain bounded retries.
+- Added a domain query that returns only Workshop scenario items without an
+  accepted mission record produced at or after their latest immutable source
+  resolution.
+- Wake dispatch and observation now use that pending set together with the
+  existing applying-preset predicate. No content command is sent when both are
+  empty.
+- Live/wake Workshop manifests contain only pending scenario items. Bootstrap
+  and restore command generation retain the complete immutable manifest, while
+  accepted mission objects continue through the existing S3 deployment path.
+- Re-resolving an existing scenario remains functional: a newer source
+  resolution is pending until its replacement mission snapshot is attached.
+- Materialized legacy scenario sources do not block an unrelated pending mod
+  revision merely because they predate canonical filename metadata.
 
-## Live Finding and Recovery
+## Architecture and Impact
 
-- `test-39` metadata resolution completed in 315-627 ms. Its generated preset,
-  modlist, and immutable source manifest exist under deterministic S3 keys.
-- The old worker attempted to persist session version 9 from expected version 7;
-  `SaveWithEvent` correctly required version 8. The message then followed the
-  540-second SQS visibility retry cadence while the session retained its marker.
-- Deploy this change before resubmitting the same collection. The existing
-  test-39 delivery may clear itself on its fifth receive; after deployment,
-  resubmitting the link safely reuses the deterministic objects and records one
-  active draft revision. Check `/rb status` before resubmitting.
-
-## Architecture Review
-
-- No Lambda, queue, state machine, table, index, bucket, schedule, IAM permission,
-  or polling transition was added.
-- The fix stays within the domain aggregate and existing recorder/repository
-  boundaries. Steam metadata, collection expansion, generated artifacts,
-  content-sync dispatch, cards, and ephemeral status retain their original
-  contracts.
-- Deterministic S3 object keys keep retries idempotent and bounded; the change
-  adds no per-session storage multiplication or standard-flow performance cost.
+- No schema migration or new persisted marker is required; the decision uses
+  existing source `resolved_at` and mission `added_at` evidence.
+- No Lambda, state machine, transition, queue, EventBridge rule, table, bucket,
+  schedule, IAM permission, or polling behavior was added.
+- Unchanged wakes avoid SteamCMD, SSM command runtime, network transfer, disk
+  staging, and unnecessary wake delay. Pending edits and explicit refreshes
+  retain the existing bounded synchronization and error paths.
 
 ## Validation
 
-- Added draft and established-revision single-version tests, marker cleanup,
-  recorder persistence/replay coverage, repository invariant classification,
-  and worker terminal-disposition/user-guidance coverage.
+- Added focused domain, wake dispatch, refresh, partial-collection manifest,
+  and legacy-record regressions.
 - `go test ./...`, `go vet ./...`, `go build ./cmd/...`, Lambda packaging,
   recursive Terraform formatting, and `git diff --check` pass. Windows reports
   only expected LF/CRLF warnings.
-- Artifact-worker behavior requires deployment. Terraform and Discord command
-  definitions did not change; command registration is unnecessary.
+- Runtime behavior requires Lambda deployment. Terraform resources and Discord
+  command definitions did not change; command registration is unnecessary.
 
 ## Commands to Apply Current Changes
 
@@ -64,13 +59,14 @@ $env:AWS_PROFILE = "game-server-dev"
 $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan -out=workshop-mod-atomic-persistence-20260903.tfplan
-terraform -chdir=infra/terraform/environments/dev show workshop-mod-atomic-persistence-20260903.tfplan
-terraform -chdir=infra/terraform/environments/dev apply workshop-mod-atomic-persistence-20260903.tfplan
-aws lambda get-function-configuration --function-name game-server-platform-dev-artifact-worker --query '{State:State,LastModified:LastModified,CodeSha256:CodeSha256}' --output table
+terraform -chdir=infra/terraform/environments/dev plan -out=workshop-wake-pending-content-20260903.tfplan
+terraform -chdir=infra/terraform/environments/dev show workshop-wake-pending-content-20260903.tfplan
+terraform -chdir=infra/terraform/environments/dev apply workshop-wake-pending-content-20260903.tfplan
+aws lambda get-function-configuration --function-name game-server-platform-dev-sleepwake-worker --query '{State:State,LastModified:LastModified,CodeSha256:CodeSha256}' --output table
 ```
 
-The reviewed plan must add and destroy no infrastructure; Lambda package updates
-caused by shared Go dependencies are expected. After deployment, inspect `/rb status` for test-39;
-if it is no longer resolving, submit the collection once and verify resolution
-completes promptly with active mod revision 1.
+The reviewed plan must add and destroy no infrastructure. Lambda package
+updates caused by shared Go dependencies are expected. After deployment, let
+`test-40` finish its current wake, sleep it again, then wake it without edits;
+the wake should proceed from managed-node readiness to service start without a
+`gsp:workshop-sync` SSM command.

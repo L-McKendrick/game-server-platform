@@ -2,10 +2,27 @@ package domain
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestPendingWorkshopMissionItemIDsTracksMaterializationAndRefresh(t *testing.T) {
+	now := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
+	session := Session{
+		WorkshopMissionSources: []WorkshopMissionSource{{AcceptedItemIDs: []uint64{30, 20}, ResolvedAt: now}},
+		MissionFiles:           []MissionRecord{{WorkshopItemID: 20, ObjectKey: "mission-object", Filename: "Twenty.Stratis.pbo", Status: ArtifactAccepted, AddedAt: now.Add(time.Minute)}},
+	}
+	if got := session.PendingWorkshopMissionItemIDs(); !slices.Equal(got, []uint64{30}) {
+		t.Fatalf("pending items = %v, want [30]", got)
+	}
+
+	session.WorkshopMissionSources[0].ResolvedAt = now.Add(2 * time.Minute)
+	if got := session.PendingWorkshopMissionItemIDs(); !slices.Equal(got, []uint64{20, 30}) {
+		t.Fatalf("pending items after refresh = %v, want [20 30]", got)
+	}
+}
 
 func TestNewWorkshopMissionSourceFiltersMixedCollection(t *testing.T) {
 	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)

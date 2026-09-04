@@ -107,6 +107,33 @@ func (session Session) AcceptedMissionFiles() []MissionRecord {
 	return missions
 }
 
+// PendingWorkshopMissionItemIDs returns scenario snapshots that have not yet
+// been materialized into an accepted immutable mission record. A later source
+// resolution for the same item is pending until a record produced after that
+// resolution is attached.
+func (session Session) PendingWorkshopMissionItemIDs() []uint64 {
+	latestResolution := make(map[uint64]time.Time)
+	for _, source := range session.WorkshopMissionSources {
+		for _, itemID := range source.AcceptedItemIDs {
+			if source.ResolvedAt.After(latestResolution[itemID]) {
+				latestResolution[itemID] = source.ResolvedAt
+			}
+		}
+	}
+	for _, record := range session.MissionFiles {
+		resolvedAt, tracked := latestResolution[record.WorkshopItemID]
+		if tracked && record.Accepted() && !record.AddedAt.Before(resolvedAt) {
+			delete(latestResolution, record.WorkshopItemID)
+		}
+	}
+	ids := make([]uint64, 0, len(latestResolution))
+	for itemID := range latestResolution {
+		ids = append(ids, itemID)
+	}
+	slices.Sort(ids)
+	return ids
+}
+
 func (session Session) LiveMissionCopyTarget(objectKey string) (MissionRecord, bool) {
 	if (session.LifecycleState != StateRunning && session.LifecycleState != StateIdle) || session.ActiveWorkflowID != "" || strings.TrimSpace(session.Infrastructure.InstanceID) == "" {
 		return MissionRecord{}, false

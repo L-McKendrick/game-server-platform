@@ -26,7 +26,7 @@ func TestResolvedWorkshopMissionManifestIsDeterministicAndDeduplicated(t *testin
 		{Source: domain.WorkshopReference{PublishedFileID: 2, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=2"}, SourceKind: domain.WorkshopSourceCollection, ResolutionSHA256: strings.Repeat("b", 64), AcceptedItemIDs: []uint64{30, 20}, AcceptedItems: []domain.WorkshopMissionItem{{PublishedFileID: 30, Filename: "Thirty.Altis.pbo", FileSize: 300}, {PublishedFileID: 20, Filename: "Twenty.Stratis.pbo", FileSize: 200}}, ResolvedAt: now},
 		{Source: domain.WorkshopReference{PublishedFileID: 1, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=1"}, SourceKind: domain.WorkshopSourceCollection, ResolutionSHA256: strings.Repeat("a", 64), AcceptedItemIDs: []uint64{20}, AcceptedItems: []domain.WorkshopMissionItem{{PublishedFileID: 20, Filename: "Twenty.Stratis.pbo", FileSize: 200}}, ResolvedAt: now},
 	}}
-	manifest, revision, err := resolvedWorkshopMissionManifest(session)
+	manifest, revision, err := resolvedWorkshopMissionManifest(session, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,9 +41,45 @@ func TestResolvedWorkshopMissionManifestRequiresCanonicalMetadataForLegacyRecord
 		Source:     domain.WorkshopReference{PublishedFileID: 10, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=10"},
 		SourceKind: domain.WorkshopSourceItem, ResolutionSHA256: strings.Repeat("a", 64), AcceptedItemIDs: []uint64{10}, ResolvedAt: now,
 	}}}
-	_, _, err := resolvedWorkshopMissionManifest(session)
+	_, _, err := resolvedWorkshopMissionManifest(session, false)
 	if err == nil || !strings.Contains(err.Error(), "resubmitted") {
 		t.Fatalf("legacy manifest error = %v", err)
+	}
+}
+
+func TestResolvedWorkshopMissionManifestSkipsMaterializedLegacySourceForLiveSync(t *testing.T) {
+	now := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
+	session := domain.Session{
+		WorkshopMissionSources: []domain.WorkshopMissionSource{{
+			Source: domain.WorkshopReference{PublishedFileID: 10, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=10"}, SourceKind: domain.WorkshopSourceItem,
+			ResolutionSHA256: strings.Repeat("a", 64), AcceptedItemIDs: []uint64{10}, ResolvedAt: now,
+		}},
+		MissionFiles: []domain.MissionRecord{{WorkshopItemID: 10, ObjectKey: "mission-object", Filename: "Legacy.Altis.pbo", Status: domain.ArtifactAccepted, AddedAt: now.Add(time.Minute)}},
+	}
+
+	manifest, _, err := resolvedWorkshopMissionManifest(session, true)
+	if err != nil || manifest != "" {
+		t.Fatalf("materialized legacy manifest = %q, err = %v", manifest, err)
+	}
+}
+
+func TestResolvedWorkshopMissionManifestLimitsLiveSyncToPendingItems(t *testing.T) {
+	now := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
+	session := domain.Session{
+		ID: "session-1",
+		WorkshopMissionSources: []domain.WorkshopMissionSource{{
+			Source: domain.WorkshopReference{PublishedFileID: 1, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=1"}, SourceKind: domain.WorkshopSourceCollection,
+			ResolutionSHA256: strings.Repeat("a", 64), AcceptedItemIDs: []uint64{20, 30}, AcceptedItems: []domain.WorkshopMissionItem{{PublishedFileID: 20, Filename: "Twenty.Stratis.pbo", FileSize: 200}, {PublishedFileID: 30, Filename: "Thirty.Altis.pbo", FileSize: 300}}, ResolvedAt: now,
+		}},
+		MissionFiles: []domain.MissionRecord{{WorkshopItemID: 20, ObjectKey: "sessions/session-1/input/missions/" + strings.Repeat("b", 64) + "-Twenty.Stratis.pbo", Filename: "Twenty.Stratis.pbo", Status: domain.ArtifactAccepted, AddedAt: now.Add(time.Minute)}},
+	}
+
+	manifest, revision, err := resolvedWorkshopMissionManifest(session, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(manifest, "20\t") || manifest != "30\t"+revision+"\tThirty.Altis.pbo\t300\n" {
+		t.Fatalf("pending manifest = %q", manifest)
 	}
 }
 

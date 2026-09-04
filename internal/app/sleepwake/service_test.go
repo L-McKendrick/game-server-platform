@@ -3,6 +3,7 @@ package sleepwake
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,9 +117,10 @@ func TestWakeDispatchesApplyingPresetBeforeHealth(t *testing.T) {
 }
 
 func TestWakeDispatchesWorkshopMissionsWithoutPendingMods(t *testing.T) {
+	now := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
 	runner := &presetRunner{status: ports.BootstrapCommandStatus{Status: "Success"}}
 	service := &Service{presetRunner: runner, contentRunner: runner}
-	session := domain.Session{ID: "session-1", ActiveWorkflowID: "wake-1", LifecycleState: domain.StateWaking, Infrastructure: domain.Infrastructure{InstanceID: "i-1"}, WorkshopMissionSources: []domain.WorkshopMissionSource{{}}}
+	session := domain.Session{ID: "session-1", ActiveWorkflowID: "wake-1", LifecycleState: domain.StateWaking, Infrastructure: domain.Infrastructure{InstanceID: "i-1"}, WorkshopMissionSources: []domain.WorkshopMissionSource{{AcceptedItemIDs: []uint64{42}, ResolvedAt: now}}}
 	workflow := domain.Workflow{ID: "wake-1", Type: domain.WakeWorkflowType}
 	result, err := service.dispatchContent(context.Background(), session, workflow)
 	if err != nil || result.CommandID != "mods-command-1" || runner.starts != 1 {
@@ -126,14 +128,33 @@ func TestWakeDispatchesWorkshopMissionsWithoutPendingMods(t *testing.T) {
 	}
 }
 
+func TestWakeSkipsAlreadyMaterializedWorkshopMissions(t *testing.T) {
+	now := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
+	runner := &presetRunner{}
+	service := &Service{presetRunner: runner, contentRunner: runner}
+	session := domain.Session{
+		ID: "session-1", ActiveWorkflowID: "wake-1", LifecycleState: domain.StateWaking,
+		Infrastructure:         domain.Infrastructure{InstanceID: "i-1"},
+		WorkshopMissionSources: []domain.WorkshopMissionSource{{AcceptedItemIDs: []uint64{42}, ResolvedAt: now}},
+		MissionFiles:           []domain.MissionRecord{{WorkshopItemID: 42, ObjectKey: "sessions/session-1/input/missions/" + strings.Repeat("a", 64) + "-Scenario.Altis.pbo", Filename: "Scenario.Altis.pbo", Status: domain.ArtifactAccepted, AddedAt: now.Add(time.Minute)}},
+	}
+	workflow := domain.Workflow{ID: "wake-1", Type: domain.WakeWorkflowType}
+
+	result, err := service.dispatchContent(context.Background(), session, workflow)
+	if err != nil || !result.Done || !result.Succeeded || runner.starts != 0 {
+		t.Fatalf("dispatch = %#v starts=%d err=%v", result, runner.starts, err)
+	}
+}
+
 func TestWakeContentFailurePreservesActionableWorkshopCode(t *testing.T) {
+	now := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
 	runner := &presetRunner{status: ports.BootstrapCommandStatus{
 		Status:       "Failed",
 		ErrorCode:    "ERR_WORKSHOP_DISK_SPACE",
 		ErrorMessage: "The managed host does not have enough free disk space to stage the Workshop content.",
 	}}
 	service := &Service{presetRunner: runner, contentRunner: runner}
-	session := domain.Session{ID: "session-1", ActiveWorkflowID: "wake-1", LifecycleState: domain.StateWaking, Infrastructure: domain.Infrastructure{InstanceID: "i-1"}, WorkshopMissionSources: []domain.WorkshopMissionSource{{}}}
+	session := domain.Session{ID: "session-1", ActiveWorkflowID: "wake-1", LifecycleState: domain.StateWaking, Infrastructure: domain.Infrastructure{InstanceID: "i-1"}, WorkshopMissionSources: []domain.WorkshopMissionSource{{AcceptedItemIDs: []uint64{42}, ResolvedAt: now}}}
 	workflow := domain.Workflow{ID: "wake-1", Type: domain.WakeWorkflowType}
 
 	result, err := service.observeContent(context.Background(), session, workflow, "command-1")

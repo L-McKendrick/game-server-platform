@@ -176,7 +176,7 @@ func (s *Service) Handle(ctx context.Context, r TaskRequest) (TaskResult, error)
 
 func (s *Service) dispatchContent(ctx context.Context, session domain.Session, wf domain.Workflow) (TaskResult, error) {
 	out := result(session, wf)
-	hasMissions := len(session.WorkshopMissionSources) > 0
+	hasMissions := len(session.PendingWorkshopMissionItemIDs()) > 0
 	hasMods := session.HasApplyingPresetRevision(wf.ID)
 	if !hasMissions && !hasMods {
 		if wf.Type == domain.WakeWorkflowType && session.Progress.Milestone == domain.ProgressModsApplied {
@@ -206,7 +206,7 @@ func (s *Service) dispatchContent(ctx context.Context, session domain.Session, w
 
 func (s *Service) observeContent(ctx context.Context, session domain.Session, wf domain.Workflow, commandID string) (TaskResult, error) {
 	out := result(session, wf)
-	if len(session.WorkshopMissionSources) == 0 && !session.HasApplyingPresetRevision(wf.ID) {
+	if len(session.PendingWorkshopMissionItemIDs()) == 0 && !session.HasApplyingPresetRevision(wf.ID) {
 		out.Done, out.Succeeded = true, true
 		return out, nil
 	}

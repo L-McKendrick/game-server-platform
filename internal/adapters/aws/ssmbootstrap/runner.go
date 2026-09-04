@@ -123,7 +123,7 @@ func (runner *Runner) StartContent(ctx context.Context, session domain.Session, 
 	if target != domain.WorkshopTargetMission && target != domain.WorkshopTargetMods && target != domain.WorkshopTarget("all") {
 		return "", fmt.Errorf("unsupported Workshop sync target %q", target)
 	}
-	script, err := runner.commandMode(session, false)
+	script, err := runner.commandMode(session, false, true)
 	if err != nil {
 		return "", err
 	}
@@ -203,7 +203,7 @@ func (runner *Runner) CancelContentCommand(ctx context.Context, commandID, insta
 }
 
 func (runner *Runner) start(ctx context.Context, session domain.Session, rollback bool) (string, error) {
-	script, err := runner.commandMode(session, rollback)
+	script, err := runner.commandMode(session, rollback, false)
 	if err != nil {
 		return "", err
 	}
@@ -374,10 +374,10 @@ func parseCheckpoints(output string) []domain.ProgressMilestone {
 }
 
 func (runner *Runner) command(session domain.Session) (string, error) {
-	return runner.commandMode(session, false)
+	return runner.commandMode(session, false, false)
 }
 
-func (runner *Runner) commandMode(session domain.Session, rollback bool) (string, error) {
+func (runner *Runner) commandMode(session domain.Session, rollback, pendingWorkshopMissionsOnly bool) (string, error) {
 	creatorDLCFolders, err := domain.CreatorDLCModFolders(session.CreatorDLCs)
 	if err != nil {
 		return "", fmt.Errorf("creator DLC selection: %w", err)
@@ -391,7 +391,7 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	if err != nil {
 		return "", err
 	}
-	workshopMissionManifest, workshopMissionRevision, err := resolvedWorkshopMissionManifest(session)
+	workshopMissionManifest, workshopMissionRevision, err := resolvedWorkshopMissionManifest(session, pendingWorkshopMissionsOnly)
 	if err != nil {
 		return "", err
 	}
@@ -528,7 +528,7 @@ func acceptedMissionManifest(session domain.Session) (string, error) {
 	return manifest.String(), nil
 }
 
-func resolvedWorkshopMissionManifest(session domain.Session) (string, string, error) {
+func resolvedWorkshopMissionManifest(session domain.Session, pendingOnly bool) (string, string, error) {
 	type snapshot struct {
 		id       uint64
 		digest   string
@@ -536,14 +536,35 @@ func resolvedWorkshopMissionManifest(session domain.Session) (string, string, er
 		fileSize int64
 	}
 	snapshots := make([]snapshot, 0, len(session.WorkshopMissionSources))
+	pending := map[uint64]bool{}
+	if pendingOnly {
+		for _, itemID := range session.PendingWorkshopMissionItemIDs() {
+			pending[itemID] = true
+		}
+	}
 	for _, source := range session.WorkshopMissionSources {
 		if err := source.Validate(); err != nil {
 			return "", "", fmt.Errorf("Workshop mission source: %w", err)
+		}
+		if pendingOnly {
+			sourcePending := false
+			for _, itemID := range source.AcceptedItemIDs {
+				if pending[itemID] {
+					sourcePending = true
+					break
+				}
+			}
+			if !sourcePending {
+				continue
+			}
 		}
 		if len(source.AcceptedItems) == 0 {
 			return "", "", fmt.Errorf("Workshop mission source must be resubmitted to capture its canonical filename")
 		}
 		for _, item := range source.AcceptedItems {
+			if pendingOnly && !pending[item.PublishedFileID] {
+				continue
+			}
 			snapshots = append(snapshots, snapshot{id: item.PublishedFileID, digest: source.ResolutionSHA256, filename: item.Filename, fileSize: item.FileSize})
 		}
 	}
