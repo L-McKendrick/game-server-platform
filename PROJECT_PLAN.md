@@ -370,3 +370,5 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **17.20.1** [x] Review the complete branch diff for security, lifecycle correctness, bounded cost/performance, failure recovery, backward compatibility, duplication, and repository architecture; correct concrete gaps with focused coverage.
       - **17.20.2** [x] Reconcile user, operator, architecture, security, deployment, and roadmap documentation with the final implemented behavior and known operational constraints.
       - **17.20.3** [x] Run full proportional validation, refresh the exact deployment handoff, commit and push the wrap-up, and prepare the Phase 17 pull-request title and description without deploying or merging.
+    - **17.21** [x] Repair Workshop mod visibility on the managed host after live verification.
+      - **17.21.1** [x] Give the unprivileged Arma service read/traverse access to root-owned Workshop revision parents without granting write access, cover the permission contract, validate and document the correction, then commit and push it.

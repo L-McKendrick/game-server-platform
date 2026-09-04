@@ -412,11 +412,26 @@ require_workshop_space() {
 }
 
 STAGED_WORKSHOP_MOD_PATH=""
+ensure_workshop_revision_root() {
+  local revision_root="$1" revisions_root="$ROOT/workshop/mod-revisions"
+  [ ! -L "$ROOT/workshop" ] || { log "Workshop content root cannot be a symbolic link"; return 1; }
+  mkdir -p "$ROOT/workshop"
+  chown root:steam "$ROOT/workshop"
+  chmod 0750 "$ROOT/workshop"
+  [ ! -L "$revisions_root" ] || { log "Workshop revisions root cannot be a symbolic link"; return 1; }
+  mkdir -p "$revisions_root"
+  chown root:steam "$revisions_root"
+  chmod 0750 "$revisions_root"
+  [ ! -L "$revision_root" ] || { log "Workshop revision root cannot be a symbolic link"; return 1; }
+  mkdir -p "$revision_root"
+  chown root:steam "$revision_root"
+  chmod 0750 "$revision_root"
+}
+
 ensure_staged_workshop_mod() {
   local id="$1" expected_update="$2" revision_root="$3" download_count="$4" source source_size pending marker marker_pending actual_update
   [[ "$id" =~ ^[1-9][0-9]{0,19}$ && "$expected_update" =~ ^-?[0-9]+$ && "$download_count" =~ ^[1-9][0-9]{0,3}$ ]] || return 1
-  [ ! -L "$revision_root" ] || { log "Workshop revision root cannot be a symbolic link"; return 1; }
-  mkdir -p "$revision_root"
+  ensure_workshop_revision_root "$revision_root"
   source="$revision_root/$id"
   marker="$revision_root/.snapshot-$id"
   if [ -d "$source" ] && [ ! -L "$source" ] && [ -f "$marker" ] && [ ! -L "$marker" ] && [ "$(cat -- "$marker")" = "$id:$expected_update" ] && ! find "$source" -type l -print -quit | grep -q .; then

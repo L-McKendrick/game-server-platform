@@ -236,7 +236,10 @@ metadata is bounded, normalized, classified as data, and never interpolated as
 shell syntax. Host commands accept only numeric item IDs, fixed target values,
 normalized filenames, bounded sizes, and digest/revision identifiers. Downloads
 run as `steam`, reject symbolic links, stage outside active paths, and promote
-through atomic copies or revision-owned links. SSM callbacks must match the
+through atomic copies or revision-owned links. Persistent revision parents are
+root-owned with group-only read/traverse access for the unprivileged `steam`
+service, allowing Arma to follow active links without granting it revision
+write access. SSM callbacks must match the
 platform comment, active workflow, instance, target, and immutable digest;
 stale callbacks are ignored without retries or state mutation.
 
