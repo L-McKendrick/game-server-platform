@@ -10,7 +10,7 @@ Deployment status: complete. The development guild completed an end-to-end provi
 2. The command worker revalidates access and state, conditionally acquires the session workflow lease, and starts `ProvisionSession`.
 3. The provisioning workflow reserves a DynamoDB capacity slot before launching compute.
 4. The provisioning worker discovers an existing tagged instance or launches exactly one using an EC2 client token.
-5. The workflow polls bounded EC2 and Systems Manager readiness checks.
+5. The workflow polls EC2 and Systems Manager readiness every 15 seconds, allowing 40 unsuccessful observations per stage. Each loop uses Wait, observer Task, and Choice states. The observer returns counters carried in execution input, so Lambda retries replay the same counter and add no per-poll database writes. Readiness wins on the final allowed observation; timeout codes and cleanup remain unchanged.
 6. Resource identifiers are written conditionally to the authoritative session record.
 7. Success records `BOOTSTRAPPING`, completes the workflow, releases the lease, and queues a Discord notification.
 8. Failure records `FAILED`, preserves discovered identifiers, and releases unused capacity when no instance exists.

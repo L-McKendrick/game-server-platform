@@ -289,8 +289,11 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **16.2** [ ] Add OIDC deployment, staging, dashboards, alert validation, and tested production and disaster-recovery runbooks.
     - **16.3** [ ] Verify costs, quotas, failure recovery, backup restoration, and operational readiness against explicit release gates.
     - **16.4** [ ] Benchmark bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements, then optimize only demonstrated bottlenecks within cost and reliability guardrails.
-    - **16.5** [ ] Reduce measured AWS orchestration overhead without weakening bounded lifecycle behavior, progress visibility, or recovery safeguards.
-      - **16.5.1** [x] Reduce bootstrap Step Functions polling transitions by enforcing the persisted command deadline in the existing observer and removing counter-only workflow states, while preserving 30-second progress, terminal SSM results, rollback, replay, and backward compatibility.
+    - **16.5** [x] Reduce AWS orchestration overhead without weakening bounded lifecycle behavior, progress visibility, or recovery safeguards.
+      - **16.5.1** [x] Enforce the persisted bootstrap command deadline in the existing observer and remove counter-only workflow states while preserving terminal SSM results, rollback, replay, and backward compatibility.
+      - **16.5.2** [x] Publish bounded Workshop item ID/position snapshots and explicit shell stages; use 120-second Arma/Workshop installation polling with 30-second fallback and deadline capping; validate download/cache/retry behavior.
+      - **16.5.3** [x] Move provisioning poll counters into existing observers while preserving 15-second cadence and 40-observation limits. Retain persisted Refresh behavior because live overlays would require separate persistence and ordering integration.
+      - **16.5.4** [x] Validate the combined authorized changes, document deployment and progress semantics, and prepare the scoped commit and branch push without deploying.
 
 17. **Potential Enhancements — Pending**
     - **17.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.

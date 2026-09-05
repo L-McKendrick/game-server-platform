@@ -308,14 +308,14 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
           }
         }
         ResultSelector = { "result.$" = "$.Payload" }
-        ResultPath     = "$.command"
+        ResultPath     = "$.observation"
         Catch          = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }]
         Next           = "WaitForCommand"
       }
       WaitForCommand = {
-        Type    = "Wait"
-        Seconds = 30
-        Next    = "ObserveCommand"
+        Type        = "Wait"
+        SecondsPath = "$.observation.result.next_poll_seconds"
+        Next        = "ObserveCommand"
       }
       ObserveCommand = {
         Type     = "Task"
@@ -327,7 +327,7 @@ resource "aws_sfn_state_machine" "bootstrap_game_server" {
             "session_id.$"     = "$.session_id"
             "workflow_id.$"    = "$.workflow_id"
             "correlation_id.$" = "$.correlation_id"
-            "command_id.$"     = "$.command.result.command_id"
+            "command_id.$"     = "$.observation.result.command_id"
           }
         }
         ResultSelector = { "result.$" = "$.Payload" }

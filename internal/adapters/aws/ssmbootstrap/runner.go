@@ -271,13 +271,25 @@ func (runner *Runner) ObserveProgress(ctx context.Context, instanceID, commandID
 		return status, nil
 	}
 	defer output.Body.Close()
-	body, readErr := io.ReadAll(io.LimitReader(output.Body, 16*1024))
-	if readErr != nil {
+	body, readErr := io.ReadAll(io.LimitReader(output.Body, 16*1024+1))
+	if readErr != nil || len(body) > 16*1024 {
 		return status, nil
 	}
+	status.InstallationActive = installationActive(string(body))
 	status.Activity = parseActivity(string(body))
 	status.Checkpoints = parseCheckpoints(string(body))
 	return status, nil
+}
+
+// Unknown or absent stage markers retain the short polling interval for old hosts.
+func installationActive(output string) bool {
+	active := false
+	for _, line := range strings.Split(output, "\n") {
+		if strings.HasPrefix(line, "GSP_STAGE:") {
+			active = line == "GSP_STAGE:install_arma" || line == "GSP_STAGE:sync_workshop_content"
+		}
+	}
+	return active
 }
 
 func parseActivity(output string) string {
@@ -294,6 +306,18 @@ func parseActivity(output string) string {
 		}
 		value := strings.TrimSpace(strings.TrimPrefix(line, prefix))
 		switch {
+		case value == "":
+			activity = ""
+		case strings.HasPrefix(value, "WORKSHOP_ITEM:"):
+			parts := strings.Split(strings.TrimPrefix(value, "WORKSHOP_ITEM:"), ":")
+			if len(parts) == 3 {
+				id, idErr := strconv.ParseUint(parts[0], 10, 64)
+				index, indexErr := strconv.Atoi(parts[1])
+				total, totalErr := strconv.Atoi(parts[2])
+				if idErr == nil && id > 0 && strconv.FormatUint(id, 10) == parts[0] && indexErr == nil && totalErr == nil && index >= 1 && index <= total && total <= 250 && strconv.Itoa(index) == parts[1] && strconv.Itoa(total) == parts[2] {
+					activity = fmt.Sprintf("Workshop item %s (%d/%d)", parts[0], index, total)
+				}
+			}
 		case value == "ARMA_SERVER":
 			activity = "Arma 3 server files"
 		case strings.HasPrefix(value, "WORKSHOP_ITEMS:"):

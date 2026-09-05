@@ -9,10 +9,33 @@ Phase 6 turns a managed `BOOTSTRAPPING` instance into a playable Arma 3 server. 
 3. The command downloads the content-addressed host script from the private assets bucket, prepares and mounts the persistent data volume, then serializes work with a host lock.
 4. Durable markers skip completed SteamCMD, the Arma `creatordlc` server branch, Workshop, content, and optional TeamSpeak stages on retry.
 5. The final service and UDP health gate always reruns; it is never satisfied by an old marker.
-6. Step Functions polls Systems Manager without holding a Lambda invocation open.
+6. Step Functions polls Systems Manager without holding a Lambda invocation open: 120 seconds during explicitly observed Arma and Workshop installation, 30 seconds during other stages and rollback.
 7. Success records `RUNNING`/`HEALTHY` and notifies Discord. Failure records `FAILED`, retains infrastructure and markers, and remains retryable.
 
 Command dispatch is intentionally single-attempt because Systems Manager Run Command has no caller idempotency token. A transient dispatch failure fails closed and is retried by running `/session start` again; it cannot create two concurrent installers.
+
+## Installation progress and polling
+
+The managed command publishes a bounded workflow-scoped S3 snapshot with an
+explicit shell stage and the latest download activity. Missing, oversized, or
+legacy snapshots without an explicit stage retain the 30-second poll interval.
+The next wait is capped by the existing persisted command deadline. Terminal
+SSM results still take precedence over deadline expiry.
+
+The card shows one line, for example `Current download: Workshop item 450814997 (3/7)`. The position counts items in the current batch:
+Workshop missions have their own batch; client and server-only mods share one
+ordered batch. Cached items keep their position but emit no download activity;
+retries retain the same position. Activity clears when SteamCMD returns
+successfully, before payload validation, and when the shell stage changes.
+No titles, byte percentages, per-item history, or new event infrastructure are
+required. Snapshots may skip fast intermediate items between observations.
+
+The existing Refresh button queues persisted progress; it does not fetch the
+host snapshot. Progress can therefore be roughly two minutes old during
+installation. The host proceeds immediately between stages, but recognizing a
+new stage, completion, or failure can take up to the current two-minute wait
+plus observation overhead. Wake, restore, and standalone synchronization retain
+their existing orchestration cadence.
 
 ## Credential and content handling
 

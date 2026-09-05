@@ -44,16 +44,17 @@ type TaskRequest struct {
 }
 
 type TaskResult struct {
-	SessionID    string `json:"session_id"`
-	WorkflowID   string `json:"workflow_id"`
-	CommandID    string `json:"command_id,omitempty"`
-	State        string `json:"state,omitempty"`
-	Status       string `json:"status,omitempty"`
-	Done         bool   `json:"done"`
-	Succeeded    bool   `json:"succeeded"`
-	ErrorCode    string `json:"error_code,omitempty"`
-	ErrorMessage string `json:"error_message,omitempty"`
-	Warning      string `json:"warning,omitempty"`
+	NextPollSeconds int    `json:"next_poll_seconds"`
+	SessionID       string `json:"session_id"`
+	WorkflowID      string `json:"workflow_id"`
+	CommandID       string `json:"command_id,omitempty"`
+	State           string `json:"state,omitempty"`
+	Status          string `json:"status,omitempty"`
+	Done            bool   `json:"done"`
+	Succeeded       bool   `json:"succeeded"`
+	ErrorCode       string `json:"error_code,omitempty"`
+	ErrorMessage    string `json:"error_message,omitempty"`
+	Warning         string `json:"warning,omitempty"`
 }
 
 type Service struct {
@@ -259,6 +260,13 @@ func (service *Service) observe(ctx context.Context, request TaskRequest) (TaskR
 	result := taskResult(session, workflow)
 	result.CommandID = commandID
 	result.Status = status.Status
+	if status.InstallationActive {
+		result.NextPollSeconds = 120
+	}
+	// Never schedule a wait beyond the persisted command deadline.
+	if remaining := workflow.CommandDeadlineAt.Sub(service.clock.Now()); !workflow.CommandDeadlineAt.IsZero() && remaining > 0 && remaining < time.Duration(result.NextPollSeconds)*time.Second {
+		result.NextPollSeconds = max(1, int(remaining/time.Second))
+	}
 	checkpoints := status.Checkpoints
 	if status.Status == "Success" {
 		ordered, _ := domain.MilestonesForWorkflow(domain.BootstrapWorkflowType)
@@ -453,7 +461,7 @@ func (service *Service) loadRecords(ctx context.Context, request TaskRequest) (d
 }
 
 func taskResult(session domain.Session, workflow domain.Workflow) TaskResult {
-	return TaskResult{SessionID: session.ID, WorkflowID: workflow.ID, State: string(session.LifecycleState)}
+	return TaskResult{NextPollSeconds: 30, SessionID: session.ID, WorkflowID: workflow.ID, State: string(session.LifecycleState)}
 }
 
 func bounded(value string, maximum int, fallback string) string {

@@ -208,6 +208,14 @@ func TestBootstrapActivityAndInactivityDeadlinesRenderFromAuthoritativeState(t *
 		t.Fatalf("installing projection = %#v embed = %#v", card, RenderPublicEmbed(card))
 	}
 
+	installing.Progress.Milestone = domain.ProgressModsApplied
+	installing.Progress.Activity = "Workshop item 450814997 (3/7)"
+	workshopCard := Project(installing, Options{Now: now})
+	line := `**Current download:** Workshop item 450814997 \(3/7\)`
+	if !strings.Contains(RenderPublicEmbed(workshopCard).Fields[1].Value, line) || !strings.Contains(RenderPublic(workshopCard), line) {
+		t.Fatalf("Workshop download must render as one ID/position line: %#v", workshopCard)
+	}
+
 	idle := domain.Session{
 		DisplayName: "Idle", Slug: "idle", GameType: "arma3", LifecycleState: domain.StateRunning, UpdatedAt: now,
 		PlayerCountKnown: true, PlayerCount: 0, IdleSince: now.Add(-10 * time.Minute),
