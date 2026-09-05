@@ -2,32 +2,37 @@
 
 ## State and Objective
 
-Phase 17.22 is complete on `codex/workshop-content-sources`. Live diagnosis of
-`test-43` found and corrected the target-contract mismatch that prevented a
-running session from synchronizing an accepted Workshop mission.
+Phase 17.23 is complete on `codex/workshop-content-sources`. Live verification
+of `test-43` found and corrected the fixed five-minute completion tail on
+authenticated Steam operations.
 
 ## Live Finding and Correction
 
-- Workshop item `3641132830` resolved successfully as an Arma 3 multiplayer
-  scenario and was stored as an accepted mission source.
-- Workflow `wsync-d8a52ec7a750aba5451c66c1` dispatched the canonical domain
-  target `mission`, but the host script accepted only the unintended plural
-  spelling `missions`. It failed before SteamCMD ran and was consequently
-  presented as the generic `ERR_WORKSHOP_ITEM_DOWNLOAD` failure.
-- The bootstrap contract now accepts and routes `mission`, matching the domain,
-  workflow record, SSM dispatcher, and result-manifest target end to end.
-- Wake/bootstrap target `all` and mod target `mods` are unchanged.
-- The Tanoa source remains accepted but unresolved on `test-43`; after this
-  bootstrap object is deployed, resubmitting the same link will create a new
-  live synchronization attempt without changing the current mission.
+- Test-43 downloaded, validated, and promoted Workshop item `705986840`, but
+  its SSM command remained in progress for `5m 2.215s` while the authorization
+  heartbeat shell waited for its `sleep 300` child to finish.
+- Bash deferred the heartbeat shell's termination trap while that foreground
+  child was running. Cleanup therefore retained the workflow and shared Steam
+  authorization lease until the whole interval elapsed.
+- Heartbeat waits now use a tracked child. The worker's signal handler stops
+  and reaps that child, including the five-second renewal-retry wait, before
+  exiting. Repeated starts reuse the live worker, stale job identifiers are
+  reaped without signaling a reused process ID, and repeated stops remain harmless.
+- The existing owner-conditioned DynamoDB lease release, two-attempt renewal,
+  parent termination on renewal loss, credential scrubbing, and 300/900-second
+  heartbeat-to-lease ratio are unchanged.
+- This removes the artificial completion tail for live mission and mod sync as
+  well as authenticated bootstrap, wake, and restore paths without adding AWS
+  resources or more frequent DynamoDB writes.
 
 ## Validation
 
-- Focused `ssmbootstrap` dispatch and bootstrap-artifact contract tests pass.
-- The `workshopcontent` package tests pass.
+- The behavioral heartbeat regression passed 20 consecutive runs, covering
+  idempotent reuse of an existing worker, normal-wait interruption, retry-wait
+  interruption, and repeated cleanup within a three-second bound.
+- The complete `ssmbootstrap` package tests pass.
 - `git diff --check` passes.
-- Bash is unavailable on this Windows host, so CI remains the native `bash -n`
-  parser gate.
+- The bootstrap artifact passes native Git Bash syntax validation on this host.
 
 ## Deployment Attention
 
@@ -42,8 +47,8 @@ running session from synchronizing an accepted Workshop mission.
 $env:AWS_PROFILE = "game-server-dev"
 $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
-terraform -chdir=infra/terraform/environments/dev plan -out=workshop-mission-target-20260905.tfplan
-terraform -chdir=infra/terraform/environments/dev show workshop-mission-target-20260905.tfplan
-terraform -chdir=infra/terraform/environments/dev apply workshop-mission-target-20260905.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out workshop-heartbeat-stop-20260905.tfplan
+terraform -chdir=infra/terraform/environments/dev show workshop-heartbeat-stop-20260905.tfplan
+terraform -chdir=infra/terraform/environments/dev apply workshop-heartbeat-stop-20260905.tfplan
 ./scripts/verify-bootstrap-worker-deployment.ps1
 ```

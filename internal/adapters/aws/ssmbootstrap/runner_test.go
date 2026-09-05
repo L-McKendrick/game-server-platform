@@ -473,6 +473,67 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 	assertBashSyntax(t, script)
 }
 
+func TestSteamAuthHeartbeatStopsPromptlyAcrossWaitStates(t *testing.T) {
+	path := filepath.Clean(filepath.Join("..", "..", "..", "..", "deploy", "bootstrap", "arma3-bootstrap.sh"))
+	script, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extract := func(startMarker, endMarker string) string {
+		t.Helper()
+		start := strings.Index(string(script), startMarker)
+		if start < 0 {
+			t.Fatalf("bootstrap script missing %q", startMarker)
+		}
+		endOffset := strings.Index(string(script)[start:], endMarker)
+		if endOffset < 0 {
+			t.Fatalf("bootstrap script missing %q after %q", endMarker, startMarker)
+		}
+		return string(script)[start : start+endOffset+2]
+	}
+	stopFunction := extract("stop_steam_auth_lock_heartbeat() {", "\n}\n\nrelease_steam_auth_lock()")
+	startFunction := extract("start_steam_auth_lock_heartbeat() {", "\n}\n\nacquire_steam_auth_lock()")
+	harness := `#!/usr/bin/env bash
+set -euo pipefail
+STEAM_AUTH_LOCK_HEARTBEAT_PID=""
+STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=30
+REFRESH_FAIL=false
+refresh_steam_auth_lock() { ! "$REFRESH_FAIL"; }
+log() { :; }
+` + stopFunction + "\n" + startFunction + `
+start_steam_auth_lock_heartbeat
+first_pid="$STEAM_AUTH_LOCK_HEARTBEAT_PID"
+start_steam_auth_lock_heartbeat
+[ "$STEAM_AUTH_LOCK_HEARTBEAT_PID" = "$first_pid" ]
+kill -0 "$first_pid"
+stop_steam_auth_lock_heartbeat
+stop_steam_auth_lock_heartbeat
+REFRESH_FAIL=true
+STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=0.05
+start_steam_auth_lock_heartbeat
+sleep 0.2
+stop_steam_auth_lock_heartbeat
+printf 'stopped\n'
+`
+	bash, err := bashExecutable()
+	if err != nil {
+		t.Skip("bash is unavailable")
+	}
+	harnessPath := filepath.Join(t.TempDir(), "heartbeat-test.sh")
+	if err := os.WriteFile(harnessPath, []byte(harness), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, bash, filepath.ToSlash(harnessPath)).CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("heartbeat cleanup exceeded 3 seconds: %v\n%s", ctx.Err(), output)
+	}
+	if err != nil || string(output) != "stopped\n" {
+		t.Fatalf("heartbeat cleanup: %v\n%s", err, output)
+	}
+}
+
 func TestBootstrapArtifactCreatesWorkshopDirectoryForCreatorDLCOnlySessions(t *testing.T) {
 	path := filepath.Clean(filepath.Join("..", "..", "..", "..", "deploy", "bootstrap", "arma3-bootstrap.sh"))
 	script, err := os.ReadFile(path)
@@ -542,14 +603,7 @@ func TestObserveMapsWorkshopScenarioFailuresToActionableCodes(t *testing.T) {
 
 func assertBashSyntax(t *testing.T, script []byte) {
 	t.Helper()
-	bash, err := exec.LookPath("bash")
-	if err != nil && runtime.GOOS == "windows" {
-		candidate := `C:\Program Files\Git\bin\bash.exe`
-		if _, statErr := os.Stat(candidate); statErr == nil {
-			bash = candidate
-			err = nil
-		}
-	}
+	bash, err := bashExecutable()
 	if err != nil {
 		t.Skip("bash is unavailable")
 	}
@@ -560,6 +614,16 @@ func assertBashSyntax(t *testing.T, script []byte) {
 	if output, err := exec.Command(bash, "-n", filepath.ToSlash(path)).CombinedOutput(); err != nil {
 		t.Fatalf("bash -n: %v\n%s", err, output)
 	}
+}
+
+func bashExecutable() (string, error) {
+	if runtime.GOOS == "windows" {
+		candidate := `C:\Program Files\Git\bin\bash.exe`
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			return candidate, nil
+		}
+	}
+	return exec.LookPath("bash")
 }
 
 func TestObserveReturnsBoundedError(t *testing.T) {

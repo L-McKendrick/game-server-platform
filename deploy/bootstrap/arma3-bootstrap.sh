@@ -112,9 +112,16 @@ scrub_persistent_steam_auth() {
 steam_auth_key() { printf '{"pk":{"S":"STEAM_AUTH#CACHE"},"sk":{"S":"STATE"}}'; }
 
 stop_steam_auth_lock_heartbeat() {
+  local heartbeat_pid job_pid
   [ -n "$STEAM_AUTH_LOCK_HEARTBEAT_PID" ] || return 0
-  kill "$STEAM_AUTH_LOCK_HEARTBEAT_PID" >/dev/null 2>&1 || true
-  wait "$STEAM_AUTH_LOCK_HEARTBEAT_PID" 2>/dev/null || true
+  heartbeat_pid="$STEAM_AUTH_LOCK_HEARTBEAT_PID"
+  for job_pid in $(jobs -pr); do
+    if [ "$job_pid" = "$heartbeat_pid" ]; then
+      kill "$heartbeat_pid" >/dev/null 2>&1 || true
+      break
+    fi
+  done
+  wait "$heartbeat_pid" 2>/dev/null || true
   STEAM_AUTH_LOCK_HEARTBEAT_PID=""
 }
 
@@ -153,12 +160,36 @@ refresh_steam_auth_lock() {
 }
 
 start_steam_auth_lock_heartbeat() {
-  local bootstrap_pid="$$"
+  local bootstrap_pid="$$" job_pid
+  if [ -n "$STEAM_AUTH_LOCK_HEARTBEAT_PID" ]; then
+    for job_pid in $(jobs -pr); do
+      [ "$job_pid" = "$STEAM_AUTH_LOCK_HEARTBEAT_PID" ] && return 0
+    done
+    wait "$STEAM_AUTH_LOCK_HEARTBEAT_PID" 2>/dev/null || true
+    STEAM_AUTH_LOCK_HEARTBEAT_PID=""
+  fi
   (
-    trap 'exit 0' INT TERM
-    while sleep "$STEAM_AUTH_LOCK_HEARTBEAT_SECONDS"; do
+    local heartbeat_sleep_pid=""
+    stop_heartbeat_worker() {
+      local child_pid
+      trap - INT TERM
+      for child_pid in ${heartbeat_sleep_pid:-} $(jobs -pr); do
+        [[ "$child_pid" =~ ^[1-9][0-9]*$ ]] || continue
+        kill "$child_pid" >/dev/null 2>&1 || true
+      done
+      [ -z "$heartbeat_sleep_pid" ] || wait "$heartbeat_sleep_pid" 2>/dev/null || true
+      exit 0
+    }
+    wait_for_heartbeat_interval() {
+      sleep "$1" &
+      heartbeat_sleep_pid="$!"
+      wait "$heartbeat_sleep_pid"
+      heartbeat_sleep_pid=""
+    }
+    trap stop_heartbeat_worker INT TERM
+    while wait_for_heartbeat_interval "$STEAM_AUTH_LOCK_HEARTBEAT_SECONDS"; do
       if ! refresh_steam_auth_lock; then
-        sleep 5
+        wait_for_heartbeat_interval 5 || exit 0
         if ! refresh_steam_auth_lock; then
           log "Steam authorization lease renewal failed; stopping bootstrap"
           kill -TERM "$bootstrap_pid" >/dev/null 2>&1 || true
