@@ -103,7 +103,7 @@ time, EBS use, Steam transfer time, and start/wake duration.
 
 Host downloads use one target-aware `sync_workshop_content` implementation for
 initial bootstrap, wake/restore application, and the live-sync command mode.
-The mode accepts `all`, `missions`, or `mods`, retains item-scoped transient
+The mode accepts `all`, `mission`, or `mods`, retains item-scoped transient
 retries, serializes through the host and Steam authorization locks, checks free
 space before downloading, and writes a bounded workflow result manifest under
 the existing session S3 prefix. The manifest contains only session/workflow
@@ -199,6 +199,12 @@ released as `ERR_WORKSHOP_RESULT_IMPORT` with operator-directed status instead
 of leaving the session locked indefinitely.
 Current staging and temporary manifests are removed on every exit, and
 constrained cleanup removes abandoned workflow staging older than one day.
+
+The shared Steam authorization lease is renewed every five minutes while a
+download is active. Its heartbeat uses an interruptible tracked wait, so normal
+completion stops and reaps the worker immediately rather than adding up to five
+minutes of idle command and workflow time. Lease release remains conditioned on
+the exact owner, and loss of renewal ownership still stops the host operation.
 
 Safe failure codes provide distinct remedies for collection size, disk space,
 private/restricted items, removed children, metadata drift, Steam
