@@ -8,12 +8,14 @@ ready; a vanilla default-mission session is ready immediately.
 
 Use `/rb edit session:<slug> section:mission-files` to open the private mission
 manager. It shows five records per page with their validation state. **Default**
-chooses the built-in mission or an accepted upload for the next start, wake, or
-restore. **Remove** logically removes an upload while preserving its audit
-record; it is unavailable for the mission currently loaded by the server.
-**Add mission** opens a bounded `.pbo` upload modal. The `mods` section retains
-the existing Launcher preset and Creator DLC workflow formerly exposed as
-`/rb mods`.
+chooses the built-in mission or an accepted uploaded/Workshop scenario for the
+next start, wake, or restore. **Remove** logically removes a mission while
+preserving its audit record; it is unavailable for the mission currently loaded
+by the server.
+**Add mission** accepts either a bounded `.pbo` upload or a public Arma 3
+Workshop item/collection link through mutually exclusive inputs. The `mods`
+section accepts an uploaded Launcher preset or a Workshop item/collection and
+retains the Creator DLC workflow formerly exposed as `/rb mods`.
 
 The configured selection is editable desired state. The current selection is
 snapshotted when start, wake, or restore begins, so edits never hot-swap a
@@ -22,14 +24,14 @@ different revisions with the same original filename to coexist. Legacy rows
 with only `mission_object_key` are expanded on read and retain the compatibility
 field on write.
 
-Newly accepted uploads are copied to `arma3/mpmissions` on a stable running
-managed host. The artifact worker revalidates the exact accepted object,
-lifecycle, workflow lock, and instance before issuing one bounded SSM copy.
-The command downloads to a temporary file, verifies the content-addressed
-SHA-256, sets `steam:steam` ownership, and atomically renames the file without
-restarting Arma or changing the current mission. Sleeping, archived, changing,
-or instance-less sessions skip the live command and receive every active
-accepted mission through normal bootstrap.
+Newly accepted uploads and Workshop scenarios are copied to `arma3/mpmissions`
+on a stable running managed host without restarting Arma or changing the current
+mission. Uploaded files use the bounded S3 copy path with checksum and ownership
+validation. Workshop scenarios use workflow-isolated SteamCMD staging, validate
+the immutable item metadata and payload, publish a bounded result manifest, and
+then attach the content-addressed mission record. Sleeping, changing, or
+instance-less sessions defer accepted content to normal start/wake bootstrap;
+archived sessions reject edits to preserve restore-manifest consistency.
 
 Bootstrap receives the selected template plus a checksum-bound manifest of all
 active accepted uploads. It synchronizes that complete set during start, wake,

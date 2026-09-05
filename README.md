@@ -24,6 +24,11 @@ The platform keeps persistent session records and portable archives while game
 servers remain disposable. Provisioning limits and AWS Budget alerts constrain
 cost. Confirmation checks protect destructive actions.
 
+Arma missions and client mods may come from validated uploads or public Steam
+Workshop items and direct-child collections. Eligible Workshop scenarios added
+to a stable running server become mission choices without changing the current
+mission; Workshop mod revisions remain pending until a controlled restart.
+
 ## Deploy to your Discord server
 
 Follow [Deploy the bot to a Discord server](docs/deployment.md) for the full
@@ -111,6 +116,7 @@ Never place the bot token in a `.tfvars` file, command definition, log, or Terra
 
 - Deployment: a persistent game-server configuration and lifecycle record
 - Server: a temporary compute instance
-- Missions: optional, immutable Arma `.pbo` uploads managed through
-  `/rb edit`; sessions use `MP_ZGM_m12.Stratis` by default
+- Missions: optional, immutable Arma `.pbo` uploads or validated Workshop
+  scenarios managed through `/rb edit`; sessions use `MP_ZGM_m12.Stratis` by
+  default
 - Deployment archive: a long-term backup of a deployment

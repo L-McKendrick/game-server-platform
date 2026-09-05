@@ -376,3 +376,5 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **17.22.1** [x] Align the bootstrap mission target with the domain's canonical singular value, add focused live-dispatch coverage, validate the affected path, refresh the deployment handoff, then commit and push the correction.
     - **17.23** [x] Remove the fixed heartbeat-tail latency from authenticated Steam operations.
       - **17.23.1** [x] Make the Steam authorization lease heartbeat promptly and safely interruptible across its normal and retry waits, preserve owner-checked release and parent-failure behavior, add focused regression coverage, validate the affected bootstrap path, and refresh the deployment handoff.
+    - **17.24** [x] Reconcile Workshop documentation after the merged live verification fixes.
+      - **17.24.1** [x] Correct stale host-target and deployment wording, document prompt authorization-heartbeat shutdown, and align the README and mission-management guide with Workshop-backed scenarios.

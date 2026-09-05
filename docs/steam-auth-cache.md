@@ -103,6 +103,13 @@ authentication material. Frozen AMIs or EBS snapshots may contain
 SteamCMD/game data only after that scrub; never bake a signed-in cache into a
 snapshot or session data volume.
 
+The renewal worker uses an interruptible tracked wait. Normal completion and
+error cleanup stop and reap it promptly, including during the short renewal
+retry delay, so the five-minute renewal cadence does not become completion
+latency or unnecessarily retain the shared lease. Cleanup signals only the
+shell's registered heartbeat job and DynamoDB releases only the matching lease
+owner.
+
 Vanilla and modded sessions use the same cached authorization and serialized
 lease for the Arma server package. Vanilla sessions still skip preset and
 Workshop processing.
