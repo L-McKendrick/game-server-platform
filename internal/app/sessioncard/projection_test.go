@@ -110,6 +110,30 @@ func TestProjectMapsEveryAuthoritativeCardSectionWithoutInternalIDs(t *testing.T
 	}
 }
 
+func TestProjectShowsWorkshopFailureSummaryAndPrivateDetail(t *testing.T) {
+	now := time.Date(2026, 9, 3, 7, 0, 0, 0, time.UTC)
+	session := domain.Session{DisplayName: "Test", Slug: "test", GameType: "arma3", LifecycleState: domain.StateDraft, UpdatedAt: now, WorkshopResolutionLastTarget: domain.WorkshopTargetMods, WorkshopResolutionIssue: "The session changed state; submit the link again.", WorkshopResolutionFailedAt: now}
+	projection := Project(session, Options{Now: now})
+	if projection.Mods.Status != "Workshop source needs attention" || projection.Mods.Issue == "" {
+		t.Fatalf("mods = %#v", projection.Mods)
+	}
+	if strings.Contains(RenderPublic(projection), projection.Mods.Issue) || !strings.Contains(RenderDetailed(projection), projection.Mods.Issue) {
+		t.Fatalf("public=%q detailed=%q", RenderPublic(projection), RenderDetailed(projection))
+	}
+}
+
+func TestProjectShowsMissionWorkshopFailureSummaryAndPrivateDetail(t *testing.T) {
+	now := time.Date(2026, 9, 3, 7, 0, 0, 0, time.UTC)
+	session := domain.Session{DisplayName: "Test", Slug: "test", GameType: "arma3", LifecycleState: domain.StateDraft, UpdatedAt: now, WorkshopResolutionLastTarget: domain.WorkshopTargetMission, WorkshopResolutionIssue: "The Workshop scenario is private; make it Public and submit it again.", WorkshopResolutionFailedAt: now}
+	projection := Project(session, Options{Now: now})
+	if projection.Artifacts.Mission.Status != "Workshop source needs attention" || projection.Artifacts.Mission.Issue == "" {
+		t.Fatalf("mission = %#v", projection.Artifacts.Mission)
+	}
+	if strings.Contains(RenderPublic(projection), projection.Artifacts.Mission.Issue) || !strings.Contains(RenderDetailed(projection), projection.Artifacts.Mission.Issue) {
+		t.Fatalf("public=%q detailed=%q", RenderPublic(projection), RenderDetailed(projection))
+	}
+}
+
 func TestProgressBarFillsCompletedCheckpointsOnly(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 18, 5, 0, 0, 0, time.UTC)
@@ -131,6 +155,39 @@ func TestProgressBarFillsCompletedCheckpointsOnly(t *testing.T) {
 	content := RenderDetailed(projection)
 	if !strings.Contains(content, "Step 4/6") || !strings.Contains(content, "**Elapsed:** 0s") || strings.Contains(content, "Milestone") {
 		t.Fatalf("progress content = %q", content)
+	}
+}
+
+func TestProjectShowsAcceptedWorkshopMissionSourceBeforeBootstrapDownload(t *testing.T) {
+	now := time.Date(2026, 8, 27, 4, 0, 0, 0, time.UTC)
+	session := domain.Session{DisplayName: "Workshop", Slug: "workshop", GameType: "arma3", LifecycleState: domain.StateDraft, UpdatedAt: now,
+		WorkshopMissionSources: []domain.WorkshopMissionSource{{Source: domain.WorkshopReference{PublishedFileID: 42, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=42"}, SourceKind: domain.WorkshopSourceItem, ResolutionSHA256: strings.Repeat("a", 64), AcceptedItemIDs: []uint64{42}, ResolvedAt: now}}}
+	projection := Project(session, Options{Now: now})
+	if projection.Artifacts.Mission.Status != "Workshop scenarios queued for initial start" || projection.Artifacts.Mission.Issue != "" {
+		t.Fatalf("mission projection = %#v", projection.Artifacts.Mission)
+	}
+}
+
+func TestProjectShowsWorkshopMetadataResolutionBeforeSourceExists(t *testing.T) {
+	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
+	session := domain.Session{DisplayName: "Test", Slug: "test", GameType: "arma3", LifecycleState: domain.StateRunning, UpdatedAt: now, WorkshopResolutionTarget: domain.WorkshopTargetMission, WorkshopResolutionRequestKey: "request-1", WorkshopResolutionRequestedAt: now}
+	projection := Project(session, Options{Now: now})
+	if projection.Artifacts.Mission.Status != "Resolving Workshop source metadata" {
+		t.Fatalf("mission status = %q", projection.Artifacts.Mission.Status)
+	}
+	session.WorkshopResolutionTarget = domain.WorkshopTargetMods
+	projection = Project(session, Options{Now: now})
+	if projection.Mods.Status != "Resolving Workshop source metadata" {
+		t.Fatalf("mod status = %q", projection.Mods.Status)
+	}
+}
+
+func TestProjectShowsLiveWorkshopSyncAndExcludedChildren(t *testing.T) {
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	session := domain.Session{ID: "session-1", DisplayName: "Test", Slug: "test", GameType: "arma3", LifecycleState: domain.StateRunning, UpdatedAt: now, ActiveWorkflowID: "wsync-1", ActiveWorkflowType: domain.WorkshopContentSyncWorkflowType, Progress: domain.SessionProgress{WorkflowID: "wsync-1", WorkflowType: domain.WorkshopContentSyncWorkflowType, Milestone: domain.ProgressAccepted, State: domain.ProgressActive, StartedAt: now, LastProgressAt: now}, WorkshopMissionSources: []domain.WorkshopMissionSource{{ExcludedItems: []domain.WorkshopResolutionItem{{PublishedFileID: 42, Class: domain.WorkshopItemClientMod}}}}}
+	projection := Project(session, Options{Now: now})
+	if projection.CurrentOperation != "Synchronizing Workshop content" || projection.Stage != "Downloading and validating" || projection.Artifacts.Mission.Status != "Workshop scenarios downloading and validating" || !strings.Contains(projection.Artifacts.Mission.Issue, "42 (client_mod)") {
+		t.Fatalf("projection = %#v", projection)
 	}
 }
 
@@ -355,6 +412,26 @@ func TestUnknownPersistedFailureRendersSafeFallbackWithBillingAndReference(t *te
 		if strings.Contains(content, forbidden) {
 			t.Fatalf("content exposed %q: %q", forbidden, content)
 		}
+	}
+}
+
+func TestLegacyWorkshopMissionBootstrapFailureRequestsResubmission(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 28, 1, 0, 0, 0, time.UTC)
+	failure, err := domain.NewFailureRecord(domain.FailureRecordInput{
+		Code: "ERR_BOOTSTRAP_COMMAND_FAILED", Stage: "Started", RetryDisposition: domain.RetryNotScheduled,
+		ResourceImpact: domain.ResourceCostRetained, Detail: "setup stopped", FailedAt: now, SupportReference: "ref_legacy123",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := domain.Session{LifecycleState: domain.StateFailed, Failure: failure, WorkshopMissionSources: []domain.WorkshopMissionSource{{
+		Source:     domain.WorkshopReference{PublishedFileID: 10, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=10"},
+		SourceKind: domain.WorkshopSourceItem, ResolutionSHA256: strings.Repeat("a", 64), AcceptedItemIDs: []uint64{10}, ResolvedAt: now,
+	}}}
+	projection := failureProjection(session, nil)
+	if !strings.Contains(projection.UserAction, "Resubmit the Workshop mission link") || projection.SupportReference != "ref_legacy123" || !strings.Contains(projection.BillingImpact, "incur cost") {
+		t.Fatalf("failure projection = %#v", projection)
 	}
 }
 

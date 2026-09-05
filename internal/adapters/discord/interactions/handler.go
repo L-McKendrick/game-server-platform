@@ -733,6 +733,16 @@ func (handler *Handler) startSession(
 	if err != nil {
 		return "", err
 	}
+	session, err := handler.service.Get(ctx, appsession.GetQuery{Actor: actor, SessionID: sessionID, GuildID: payload.GuildID})
+	if err != nil {
+		return "", err
+	}
+	if session.WorkshopResolutionRequestKey != "" {
+		return "", newUserError("Steam Workshop metadata is still being checked. Wait for `/rb status` to show the source as accepted or rejected, then run `/rb start` when the session is ready.")
+	}
+	if session.LifecycleState == domain.StateDraft {
+		return "", newUserError("This session is still a draft and is not ready to start. Review `/rb status` and provide any missing or rejected mission and mod configuration through `/rb edit`.")
+	}
 	roles := []string{}
 	if payload.Member != nil {
 		roles = append(roles, payload.Member.Roles...)

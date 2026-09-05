@@ -13,6 +13,8 @@ var (
 	ErrConflict                      = errors.New("version conflict")
 	ErrForbidden                     = errors.New("forbidden")
 	ErrInvalidTransition             = errors.New("invalid lifecycle transition")
+	ErrWorkshopNotCollection         = errors.New("Workshop item is not a collection")
+	ErrWorkshopNestedOnly            = errors.New("Workshop collection contains only nested collections")
 	ErrIdempotencyConflict           = errors.New("idempotency key reused with a different request")
 	ErrCommandInProgress             = errors.New("command is already in progress")
 	ErrWorkflowLocked                = errors.New("session workflow lock is held")
@@ -26,6 +28,9 @@ var (
 	ErrConfirmationRequired          = errors.New("durable confirmation is required")
 	ErrConfirmationDispatchUncertain = errors.New("confirmed action queue delivery is uncertain")
 	ErrPermanentArtifactRejection    = errors.New("artifact permanently rejected")
+	ErrPermanentWorkshopRejection    = errors.New("Workshop source permanently rejected")
+	ErrWorkshopSnapshotLimit         = errors.New("Workshop source history limit reached")
+	ErrPersistenceInvariant          = errors.New("persistence invariant violated")
 )
 
 // OperationInProgressError returns safe progress for a repeated lifecycle

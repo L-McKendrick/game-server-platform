@@ -179,6 +179,10 @@ type WorkflowExecutionInspector interface {
 	Describe(ctx context.Context, executionARN string) (domain.WorkflowExecutionStatus, bool, error)
 }
 
+type ActiveWorkflowReconciler interface {
+	ReconcileActive(ctx context.Context, session domain.Session, workflow domain.Workflow) (bool, error)
+}
+
 type DeadLetterManager interface {
 	Inspect(ctx context.Context, queue domain.DeadLetterQueue) (domain.DeadLetterInspection, string, error)
 	StartRedrive(ctx context.Context, queue domain.DeadLetterQueue, maxMessagesPerSecond int32) (sourceARN string, destinationARN string, error error)
@@ -249,6 +253,18 @@ type BootstrapRunner interface {
 type PresetRevisionRunner interface {
 	BootstrapRunner
 	StartRollback(ctx context.Context, session domain.Session) (string, error)
+}
+
+type WorkshopContentSyncRunner interface {
+	StartContent(ctx context.Context, session domain.Session, target domain.WorkshopTarget, promoteMods bool) (string, error)
+	Observe(ctx context.Context, instanceID string, commandID string) (BootstrapCommandStatus, error)
+}
+
+type WorkshopContentRunner interface {
+	WorkshopContentSyncRunner
+	FindContentCommand(ctx context.Context, sessionID, workflowID, instanceID string) (string, error)
+	ResolveContentCommand(ctx context.Context, commandID string) (sessionID string, workflowID string, instanceID string, error error)
+	CancelContentCommand(ctx context.Context, commandID string, instanceID string) error
 }
 
 type RestoreRunner interface {

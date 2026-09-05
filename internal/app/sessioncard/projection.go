@@ -92,15 +92,18 @@ type EndpointProjection struct {
 }
 
 type ModsProjection struct {
-	Required        bool
-	Status          string
-	ActiveRevision  int64
-	ActiveSince     time.Time
-	PendingRevision int64
-	PendingStatus   string
-	PendingSince    time.Time
-	DownloadURL     string
-	CreatorDLCs     []string
+	Required                bool
+	Status                  string
+	ActiveRevision          int64
+	ActiveSince             time.Time
+	PendingRevision         int64
+	PendingStatus           string
+	PendingSince            time.Time
+	DownloadURL             string
+	CreatorDLCs             []string
+	ActiveWorkshopSourceID  uint64
+	PendingWorkshopSourceID uint64
+	Issue                   string
 }
 
 type ServerModsProjection struct {
@@ -170,7 +173,7 @@ func Project(session domain.Session, options Options) Projection {
 		Mods:       modProjection(session, options.ModlistURL),
 		ServerMods: serverModProjection(session),
 		Artifacts: ArtifactProjection{
-			Mission: artifactView(session.MissionArtifactStatus, session.MissionObjectKey, session.MissionArtifactIssue, false),
+			Mission: missionArtifactView(session),
 			Preset:  presetArtifactView(session),
 		},
 		Freshness: FreshnessProjection{
@@ -180,6 +183,16 @@ func Project(session domain.Session, options Options) Projection {
 	}
 	if label := progressLabel(session.Progress.Milestone); label != "" {
 		projection.Stage = label
+	}
+	if session.Progress.WorkflowType == domain.WorkshopContentSyncWorkflowType {
+		switch session.Progress.State {
+		case domain.ProgressActive, domain.ProgressWaiting, domain.ProgressRetrying:
+			projection.Stage = "Downloading and validating"
+		case domain.ProgressCompletedState:
+			projection.Stage = "Available"
+		case domain.ProgressActionRequired:
+			projection.Stage = "Action required"
+		}
 	}
 	projection.Progress = progressProjection(session, options.Workflow, now)
 	projection.LifecycleTiming = lifecycleTimingProjection(session, now)
@@ -362,7 +375,7 @@ func progressLabel(milestone domain.ProgressMilestone) string {
 	case domain.ProgressGameServerInstalled:
 		return "Downloading and installing game files"
 	case domain.ProgressModsApplied:
-		return "Downloading and installing Workshop content"
+		return "Synchronizing Workshop content"
 	case domain.ProgressConfigurationReady:
 		return "Deploying configuration"
 	case domain.ProgressServiceStarted:
@@ -611,6 +624,8 @@ func operationLabel(value string) string {
 		return "Restoring server"
 	case domain.TerminationWorkflowType:
 		return "Terminating server"
+	case domain.WorkshopContentSyncWorkflowType:
+		return "Synchronizing Workshop content"
 	default:
 		return ""
 	}
@@ -626,6 +641,16 @@ func failureProjection(session domain.Session, workflow *domain.Workflow) Failur
 	}
 	if !session.Failure.Empty() {
 		presentation := failurecatalog.Lookup(session.Failure)
+		if hasLegacyWorkshopMissionSource(session) && strings.HasPrefix(session.Failure.Code, "ERR_BOOTSTRAP") {
+			return FailureProjection{
+				Present: true, Summary: "A Workshop scenario source must be submitted again before setup can continue.",
+				Reason:           "The source was accepted before canonical Steam scenario filenames were recorded.",
+				PlatformAction:   "The platform stopped without guessing a mission filename or changing the current mission.",
+				UserAction:       "Resubmit the Workshop mission link, then retry the failed operation.",
+				RetryDisposition: presentation.RetryDisposition, BillingImpact: presentation.BillingImpact,
+				SupportReference: presentation.SupportReference, OccurredAt: session.Failure.FailedAt,
+			}
+		}
 		return FailureProjection{
 			Present: true, Summary: presentation.WhatHappened, Reason: presentation.LikelyReason,
 			PlatformAction: presentation.PlatformAction, UserAction: presentation.UserAction,
@@ -643,6 +668,15 @@ func failureProjection(session domain.Session, workflow *domain.Workflow) Failur
 		}
 	}
 	return FailureProjection{}
+}
+
+func hasLegacyWorkshopMissionSource(session domain.Session) bool {
+	for _, source := range session.WorkshopMissionSources {
+		if len(source.AcceptedItemIDs) > 0 && len(source.AcceptedItems) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func legacyBillingImpact(session domain.Session) string {
@@ -671,6 +705,43 @@ func artifactView(status domain.ArtifactStatus, objectKey, issue string, notRequ
 	return ArtifactView{Status: label, Issue: strings.TrimSpace(issue)}
 }
 
+func missionArtifactView(session domain.Session) ArtifactView {
+	view := artifactView(session.MissionArtifactStatus, session.MissionObjectKey, session.MissionArtifactIssue, false)
+	if session.WorkshopResolutionTarget == domain.WorkshopTargetMission {
+		view.Status = "Resolving Workshop source metadata"
+		return view
+	}
+	if session.WorkshopResolutionLastTarget == domain.WorkshopTargetMission && session.WorkshopResolutionIssue != "" {
+		view.Status = "Workshop source needs attention"
+		view.Issue = session.WorkshopResolutionIssue
+		return view
+	}
+	if len(session.WorkshopMissionSources) > 0 {
+		pendingMissions := len(session.PendingWorkshopMissionItemIDs()) > 0
+		switch {
+		case session.Progress.WorkflowType == domain.WorkshopContentSyncWorkflowType && session.Progress.State == domain.ProgressActive:
+			view.Status = "Workshop scenarios downloading and validating"
+		case session.Progress.WorkflowType == domain.WorkshopContentSyncWorkflowType && session.Progress.State == domain.ProgressCompletedState:
+			view.Status = "Workshop scenarios available"
+		case session.Progress.WorkflowType == domain.WorkshopContentSyncWorkflowType && session.Progress.State == domain.ProgressActionRequired:
+			view.Status = "Workshop scenario sync failed"
+		case pendingMissions && (session.LifecycleState == domain.StateDraft || session.LifecycleState == domain.StateNew):
+			view.Status = "Workshop scenarios queued for initial start"
+		case pendingMissions && (session.LifecycleState == domain.StateSleeping || session.LifecycleState == domain.StateWarning1 || session.LifecycleState == domain.StateWarning2 || session.LifecycleState == domain.StateFailed):
+			view.Status = "Workshop scenarios queued for next wake or start"
+		case !pendingMissions:
+			view.Status = "Workshop scenarios available"
+		default:
+			view.Status = "Workshop source accepted"
+		}
+		latest := session.WorkshopMissionSources[len(session.WorkshopMissionSources)-1]
+		if summary := domain.WorkshopExclusionSummary(latest.ExcludedItems, 8); summary != "" {
+			view.Issue = "Excluded: " + summary
+		}
+	}
+	return view
+}
+
 func modStatus(session domain.Session) string {
 	if session.Vanilla {
 		return "Not required for vanilla"
@@ -693,20 +764,41 @@ func modProjection(session domain.Session, modlistURL string) ModsProjection {
 	if session.Vanilla {
 		return projection
 	}
+	if session.WorkshopResolutionTarget == domain.WorkshopTargetMods {
+		projection.Status = "Resolving Workshop source metadata"
+		return projection
+	}
+	if len(session.WorkshopModSources) > 0 {
+		latest := session.WorkshopModSources[len(session.WorkshopModSources)-1]
+		if summary := domain.WorkshopExclusionSummary(latest.ExcludedItems, 8); summary != "" {
+			projection.Issue = "Excluded: " + summary
+		}
+	}
+	if session.WorkshopResolutionLastTarget == domain.WorkshopTargetMods && session.WorkshopResolutionIssue != "" {
+		projection.Status = "Workshop source needs attention"
+		projection.Issue = session.WorkshopResolutionIssue
+	}
 	active := session.EffectiveActivePresetRevision()
 	if !active.Empty() {
 		projection.ActiveRevision = active.Number
 		projection.ActiveSince = active.ActivatedAt.UTC()
+		projection.ActiveWorkshopSourceID = active.WorkshopSourceID
 	}
 	pending := session.PendingPresetRevision
 	if pending.Empty() {
 		return projection
 	}
 	projection.PendingRevision = pending.Number
+	projection.PendingWorkshopSourceID = pending.WorkshopSourceID
 	switch pending.Status {
 	case domain.PresetRevisionPending:
-		projection.Status = "Revision staged for next start"
-		projection.PendingStatus = "Staged"
+		if session.Progress.WorkflowType == domain.WorkshopContentSyncWorkflowType && session.Progress.State == domain.ProgressActive {
+			projection.Status, projection.PendingStatus = "Downloading and validating pending revision", "Downloading"
+		} else if session.Progress.WorkflowType == domain.WorkshopContentSyncWorkflowType && session.Progress.State == domain.ProgressCompletedState {
+			projection.Status, projection.PendingStatus = "Revision downloaded; awaiting restart", "Awaiting restart"
+		} else {
+			projection.Status, projection.PendingStatus = "Revision queued for next start", "Queued"
+		}
 		projection.PendingSince = pending.StagedAt.UTC()
 	case domain.PresetRevisionApplying:
 		projection.Status = "Applying pending revision"

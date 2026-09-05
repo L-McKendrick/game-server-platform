@@ -15,7 +15,14 @@ import (
 const missionManagerPrefix = "rb:missions:v1:"
 const missionUploadPrefix = "rb:mission-upload:v1:"
 const missionUploadField = "mission:file"
+const missionWorkshopField = "mission:workshop"
 const maximumMissionButtonLabelRunes = 80
+
+type missionManagerEntry struct {
+	record  domain.MissionRecord
+	index   int
+	pending bool
+}
 
 func (payload interactionPayload) isRBEditCommand() bool {
 	if payload.Type != interactionTypeApplicationCommand {
@@ -65,16 +72,33 @@ func missionCustomID(sessionID, action string, index, page int, version int64) s
 }
 
 func writeMissionManager(writer http.ResponseWriter, session domain.Session, page int) {
-	active := make([]struct {
-		record domain.MissionRecord
-		index  int
-	}, 0)
+	active := make([]missionManagerEntry, 0, len(session.MissionFiles))
 	for index, record := range session.MissionFiles {
 		if record.Active() {
-			active = append(active, struct {
-				record domain.MissionRecord
-				index  int
-			}{record, index})
+			active = append(active, missionManagerEntry{record: record, index: index})
+		}
+	}
+	pendingIDs := make(map[uint64]bool)
+	for _, itemID := range session.PendingWorkshopMissionItemIDs() {
+		pendingIDs[itemID] = true
+	}
+	pendingWorkshopItems := make(map[uint64]bool)
+	for _, source := range session.WorkshopMissionSources {
+		for _, item := range source.AcceptedItems {
+			if !pendingIDs[item.PublishedFileID] || pendingWorkshopItems[item.PublishedFileID] {
+				continue
+			}
+			pendingWorkshopItems[item.PublishedFileID] = true
+			active = append(active, missionManagerEntry{record: domain.MissionRecord{Filename: item.Filename, WorkshopItemID: item.PublishedFileID}, index: -1, pending: true})
+		}
+		// Older source snapshots do not retain canonical filenames. Keep them
+		// visible by Workshop identity until the host publishes the final name.
+		for _, itemID := range source.AcceptedItemIDs {
+			if !pendingIDs[itemID] || pendingWorkshopItems[itemID] {
+				continue
+			}
+			pendingWorkshopItems[itemID] = true
+			active = append(active, missionManagerEntry{record: domain.MissionRecord{Filename: fmt.Sprintf("Workshop item #%d", itemID), WorkshopItemID: itemID}, index: -1, pending: true})
 		}
 	}
 	pages := (len(active) + 4) / 5
@@ -112,22 +136,28 @@ func writeMissionManager(writer http.ResponseWriter, session domain.Session, pag
 	}
 	for _, entry := range active[start:end] {
 		status := string(entry.record.Status)
-		if session.CurrentMission.ObjectKey == entry.record.ObjectKey {
+		if entry.pending {
+			status = "awaiting download"
+		}
+		if entry.record.WorkshopItemID != 0 {
+			status += fmt.Sprintf(", Workshop #%d", entry.record.WorkshopItemID)
+		}
+		if entry.record.ObjectKey != "" && session.CurrentMission.ObjectKey == entry.record.ObjectKey {
 			status += ", currently loaded"
 		}
-		if configured.ObjectKey == entry.record.ObjectKey {
+		if entry.record.ObjectKey != "" && configured.ObjectKey == entry.record.ObjectKey {
 			status += ", configured"
 		}
 		row := interactionComponent{Type: componentTypeActionRow, Components: []interactionComponent{{
 			Type: componentTypeButton, Style: buttonStyleSecondary, Label: missionButtonLabel(entry.record.Filename, status),
 			CustomID: missionCustomID(session.ID, "label", entry.index, page, session.Version), Disabled: true,
 		}}}
-		if entry.record.Status == domain.ArtifactAccepted && configured.ObjectKey != entry.record.ObjectKey {
+		if !entry.pending && entry.record.Status == domain.ArtifactAccepted && configured.ObjectKey != entry.record.ObjectKey {
 			row.Components = append(row.Components, interactionComponent{
 				Type: componentTypeButton, Style: buttonStyleSecondary, Label: "Default", CustomID: missionCustomID(session.ID, "default", entry.index, page, session.Version),
 			})
 		}
-		if session.CurrentMission.ObjectKey != entry.record.ObjectKey {
+		if !entry.pending && session.CurrentMission.ObjectKey != entry.record.ObjectKey {
 			row.Components = append(row.Components, interactionComponent{
 				Type: componentTypeButton, Style: buttonStyleDanger, Label: "Remove", CustomID: missionCustomID(session.ID, "remove", entry.index, page, session.Version),
 			})
@@ -241,9 +271,12 @@ func (handler *Handler) handleMissionManagerComponent(ctx context.Context, write
 }
 
 func writeMissionUploadModal(writer http.ResponseWriter, sessionID string, version int64) error {
-	required := true
-	one := 1
-	components := []interactionComponent{{Type: componentTypeLabel, Label: "Mission file", Description: "Upload one Arma 3 .pbo file (maximum 100 MiB).", Component: &interactionComponent{Type: componentTypeFileUpload, CustomID: missionUploadField, Required: &required, MinValues: &one, MaxValues: &one}}}
+	optional := false
+	zero, one, maximumURL := 0, 1, 200
+	components := []interactionComponent{
+		{Type: componentTypeLabel, Label: "Mission file", Description: "Optional .pbo upload; do not also provide a Workshop link.", Component: &interactionComponent{Type: componentTypeFileUpload, CustomID: missionUploadField, Required: &optional, MinValues: &zero, MaxValues: &one}},
+		{Type: componentTypeLabel, Label: "Steam Workshop link", Description: "Optional public Arma 3 scenario item or collection.", Component: &interactionComponent{Type: componentTypeTextInput, CustomID: missionWorkshopField, Style: textInputStyleShort, Placeholder: "https://steamcommunity.com/sharedfiles/filedetails/?id=...", MaxLength: &maximumURL, Required: &optional}},
+	}
 	writeJSON(writer, http.StatusOK, interactionResponse{Type: interactionResponseModal, Data: &interactionResponseData{CustomID: fmt.Sprintf("%s%s:%d", missionUploadPrefix, sessionID, version), Title: "Add mission file", Components: &components}})
 	return nil
 }
@@ -268,12 +301,24 @@ func (handler *Handler) submitMissionUpload(ctx context.Context, payload interac
 	if session.Version != version || session.ActiveWorkflowID != "" {
 		return "", domain.ErrConflict
 	}
-	if len(payload.Data.Components) != 1 || payload.Data.Components[0].Component == nil {
-		return "", newUserError("Upload one .pbo file.")
+	if len(payload.Data.Components) != 2 || payload.Data.Components[0].Component == nil || payload.Data.Components[1].Component == nil {
+		return "", newUserError("Provide one .pbo file or Workshop link.")
 	}
-	attachment, err := resolveModalAttachment(payload.Data, payload.Data.Components[0].Component, true)
+	attachment, err := resolveModalAttachment(payload.Data, payload.Data.Components[0].Component, false)
 	if err != nil {
-		return "", newUserError("Upload one .pbo file.")
+		return "", newUserError("Provide one .pbo file or Workshop link.")
+	}
+	workshopURL := strings.TrimSpace(payload.Data.Components[1].Component.Value)
+	if (attachment == nil) == (workshopURL == "") {
+		return "", newUserError("Provide either one .pbo file or one Workshop link, not both.")
+	}
+	if workshopURL != "" {
+		request := createWorkshopRequest(payload, actor, correlationID, sessionID, domain.WorkshopTargetMission, workshopURL, "discord:"+payload.ID+":mission-workshop", handler.clock.Now().UTC())
+		request.ChannelID = session.ChannelID
+		if err := requestWorkshopResolve(ctx, handler.service, actor, request); err != nil {
+			return "", err
+		}
+		return "Workshop scenario link queued for metadata validation. Accepted scenarios will be added as mission choices in the download phase.", nil
 	}
 	request := createArtifactRequest(payload, actor, correlationID, sessionID, domain.ArtifactMission, *attachment, "discord:"+payload.ID+":mission-upload", handler.clock.Now().UTC())
 	request.ChannelID = session.ChannelID

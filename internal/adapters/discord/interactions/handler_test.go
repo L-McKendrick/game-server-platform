@@ -265,7 +265,7 @@ func TestHandlerOpensAndSubmitsPrivateModsModalForRunningSession(t *testing.T) {
 	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
 	var modal interactionResponse
 	decodeResponse(t, opened, &modal)
-	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, modsModalCustomIDPrefix+modsModeRevision+":session-mods:1:0:") || modal.Data.Components == nil || len(*modal.Data.Components) != 3 {
+	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, modsModalCustomIDPrefix+modsModeRevision+":session-mods:1:0:") || modal.Data.Components == nil || len(*modal.Data.Components) != 4 {
 		t.Fatalf("mods modal response = %#v body=%s", modal, opened.Body.String())
 	}
 	submitBody := marshalPayload(map[string]any{
@@ -293,6 +293,81 @@ func TestHandlerOpensAndSubmitsPrivateModsModalForRunningSession(t *testing.T) {
 	requests := queue.Requests()
 	if len(requests) != 2 || requests[0].Purpose != domain.ArtifactPurposePresetRevision || requests[0].ExpectedActivePresetRevision != 1 || requests[0].SessionID != "session-mods" || requests[1].Kind != domain.ArtifactServerPreset || requests[1].Purpose != domain.ArtifactPurposeServerPresetRevision || requests[1].ExpectedActiveServerPresetRevision != 0 {
 		t.Fatalf("mods queue requests = %#v", requests)
+	}
+}
+
+func TestHandlerNormalizesWorkshopModQueryParametersBeforeMutation(t *testing.T) {
+	t.Parallel()
+	handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(t, []string{"correlation-mods-open", "correlation-mods-invalid"}, nil)
+	seedHandlerPresetRevisionSession(t, repository)
+	openBody := marshalPayload(map[string]any{
+		"id": "mods-open", "application_id": "app-1", "type": interactionTypeApplicationCommand, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data":   map[string]any{"name": "rb", "options": []any{map[string]any{"type": applicationCommandOptionSubcommand, "name": "edit", "options": []any{map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "session-mods"}, map[string]any{"type": applicationCommandOptionString, "name": "section", "value": "mods"}}}}},
+	})
+	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
+	var modal interactionResponse
+	decodeResponse(t, opened, &modal)
+	before, err := repository.Get(context.Background(), "session-mods")
+	if err != nil {
+		t.Fatal(err)
+	}
+	submit := func(interactionID, rawURL string) interactionResponse {
+		t.Helper()
+		body := marshalPayload(map[string]any{
+			"id": interactionID, "application_id": "app-1", "type": interactionTypeModalSubmit, "guild_id": "guild-1", "channel_id": "channel-1",
+			"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+			"data": map[string]any{"custom_id": modal.Data.CustomID, "components": []any{
+				map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsPresetCustomID, "values": []string{}}},
+				map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeTextInput, "custom_id": modsWorkshopCustomID, "value": rawURL}},
+				map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsServerPresetCustomID, "values": []string{}}},
+				map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeCheckboxGroup, "custom_id": modsCreatorDLCsCustomID, "values": []string{}}},
+			}},
+		})
+		response := executeSignedRequest(t, handler, privateKey, body, testNow)
+		var decoded interactionResponse
+		decodeResponse(t, response, &decoded)
+		return decoded
+	}
+	invalid := submit("mods-invalid", "https://example.com/sharedfiles/filedetails/?id=12345&l=english")
+	afterInvalid, err := repository.Get(context.Background(), "session-mods")
+	if err != nil || invalid.Data == nil || !strings.Contains(invalid.Data.Content, "valid `id`") || afterInvalid.Version != before.Version || len(queue.WorkshopRequests()) != 0 {
+		t.Fatalf("invalid response=%#v before=%d after=%#v requests=%#v err=%v", invalid.Data, before.Version, afterInvalid, queue.WorkshopRequests(), err)
+	}
+	request := createWorkshopRequest(interactionPayload{GuildID: "guild-1", ChannelID: "channel-1"}, domain.Actor{ID: "owner-1"}, "correlation-1", "session-1", domain.WorkshopTargetMods, "https://steamcommunity.com/sharedfiles/filedetails/?id=12345&l=english&utm_source=copy", "key-1", testNow)
+	if request.SourceURL != "https://steamcommunity.com/sharedfiles/filedetails/?id=12345" {
+		t.Fatalf("canonical Workshop request URL = %q", request.SourceURL)
+	}
+}
+
+func TestHandlerAcceptsWorkshopCollectionURLForMods(t *testing.T) {
+	t.Parallel()
+	handler, repository, queue, privateKey := newTestHandlerWithArtifactQueue(t, []string{"correlation-collection-open", "correlation-collection-submit"}, []string{"event-mod-options", "event-workshop-queued"})
+	seedHandlerPresetRevisionSession(t, repository)
+	openBody := marshalPayload(map[string]any{
+		"id": "collection-open", "application_id": "app-1", "type": interactionTypeApplicationCommand, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data":   map[string]any{"name": "rb", "options": []any{map[string]any{"type": applicationCommandOptionSubcommand, "name": "edit", "options": []any{map[string]any{"type": applicationCommandOptionString, "name": "session", "value": "session-mods"}, map[string]any{"type": applicationCommandOptionString, "name": "section", "value": "mods"}}}}},
+	})
+	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
+	var modal interactionResponse
+	decodeResponse(t, opened, &modal)
+	submitBody := marshalPayload(map[string]any{
+		"id": "collection-submit", "application_id": "app-1", "type": interactionTypeModalSubmit, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{"custom_id": modal.Data.CustomID, "components": []any{
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsPresetCustomID, "values": []string{}}},
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeTextInput, "custom_id": modsWorkshopCustomID, "value": "https://steamcommunity.com/workshop/filedetails/?id=3041715613&searchtext=mods"}},
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeFileUpload, "custom_id": modsServerPresetCustomID, "values": []string{}}},
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeCheckboxGroup, "custom_id": modsCreatorDLCsCustomID, "values": []string{domain.CreatorDLCReactionForces}}},
+		}},
+	})
+	submitted := executeSignedRequest(t, handler, privateKey, submitBody, testNow)
+	var response interactionResponse
+	decodeResponse(t, submitted, &response)
+	requests := queue.WorkshopRequests()
+	if response.Data == nil || !strings.Contains(response.Data.Content, "queued for metadata validation") || len(requests) != 1 || requests[0].SourceURL != "https://steamcommunity.com/sharedfiles/filedetails/?id=3041715613" {
+		t.Fatalf("collection response=%#v requests=%#v", response.Data, requests)
 	}
 }
 
@@ -469,7 +544,7 @@ func TestHandlerKeepsModdedCreationWithoutPresetRecoverable(t *testing.T) {
 	opened := executeSignedRequest(t, handler, privateKey, openBody, testNow)
 	var modal interactionResponse
 	decodeResponse(t, opened, &modal)
-	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, modsModalCustomIDPrefix+modsModeCreate) || modal.Data.Components == nil || len(*modal.Data.Components) != 3 {
+	if modal.Type != interactionResponseModal || modal.Data == nil || !strings.HasPrefix(modal.Data.CustomID, modsModalCustomIDPrefix+modsModeCreate) || modal.Data.Components == nil || len(*modal.Data.Components) != 4 {
 		t.Fatalf("creation mod options modal = %#v", modal)
 	}
 	submitBody := marshalPayload(map[string]any{
@@ -830,11 +905,11 @@ func TestHandlerOpensCreateModalWithoutPersistingSession(t *testing.T) {
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
 	if decoded.Type != interactionResponseModal || decoded.Data == nil || decoded.Data.CustomID != createModalCustomID ||
-		decoded.Data.Title != "Create Arma 3 session" || decoded.Data.Components == nil || len(*decoded.Data.Components) != 4 {
+		decoded.Data.Title != "Create Arma 3 session" || decoded.Data.Components == nil || len(*decoded.Data.Components) != 5 {
 		t.Fatalf("create modal response = %#v", decoded)
 	}
 	components := *decoded.Data.Components
-	wantTypes := []int{componentTypeTextInput, componentTypeTextInput, componentTypeCheckboxGroup, componentTypeFileUpload}
+	wantTypes := []int{componentTypeTextInput, componentTypeTextInput, componentTypeCheckboxGroup, componentTypeFileUpload, componentTypeTextInput}
 	for index, component := range components {
 		if component.Type != componentTypeLabel || component.Component == nil || component.Component.Type != wantTypes[index] {
 			t.Fatalf("modal component %d = %#v; want label wrapping type %d", index, component, wantTypes[index])
@@ -1619,6 +1694,7 @@ func newTestHandlerWithQueues(
 		fixedClock{now: testNow},
 		7*24*time.Hour,
 		appsession.WithArtifactQueue(artifactQueue),
+		appsession.WithWorkshopQueue(artifactQueue),
 		appsession.WithNotificationQueue(notificationQueue),
 		appsession.WithCommandQueue(discardCommandQueue{}),
 		appsession.WithConfirmationRepository(repository),

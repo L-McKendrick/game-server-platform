@@ -108,6 +108,19 @@ func TestArchiveManifestPreservesPendingFirstServerPresetAcrossRestore(t *testin
 	}
 }
 
+func TestArchiveManifestRejectsInvalidOrOversizedWorkshopHistory(t *testing.T) {
+	now := time.Date(2026, 9, 4, 6, 0, 0, 0, time.UTC)
+	manifest := ArchiveManifest{SchemaVersion: 1, ArchiveID: "archive-1", SessionID: "session-1", CreatedAt: now.Format(time.RFC3339Nano), Format: "tar+gzip", ObjectKey: "sessions/session-1/archives/archive-1/session.tar.gz", SHA256: base64.StdEncoding.EncodeToString(make([]byte, 32)), SizeBytes: 42, ContentRoots: []string{"/srv/game-server/config"}, GameProfileID: "arma3-default", SourceInstanceID: "i-1", SourceDataVolumeID: "vol-1"}
+	manifest.WorkshopMissionSources = []WorkshopMissionSource{{Source: WorkshopReference{PublishedFileID: 42, CanonicalURL: "https://example.invalid/?id=42"}, SourceKind: WorkshopSourceItem, ResolutionSHA256: strings.Repeat("a", 64), AcceptedItemIDs: []uint64{42}, ResolvedAt: now}}
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "Workshop mission source") {
+		t.Fatalf("invalid Workshop source error = %v", err)
+	}
+	manifest.WorkshopMissionSources = make([]WorkshopMissionSource, MaximumWorkshopMissionSources+1)
+	if err := manifest.Validate(); err == nil || !strings.Contains(err.Error(), "exceeds platform limits") {
+		t.Fatalf("oversized Workshop history error = %v", err)
+	}
+}
+
 func TestArchiveEventCapturesRevisionIntentWithoutFailureText(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 18, 2, 0, 0, 0, time.UTC)

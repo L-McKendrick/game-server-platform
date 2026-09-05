@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -13,12 +14,71 @@ const DefaultArma3MissionTemplate = "MP_ZGM_m12.Stratis"
 var missionHashPrefix = regexp.MustCompile(`^[0-9a-fA-F]{64}-`)
 
 type MissionRecord struct {
-	ObjectKey string         `json:"object_key"`
-	Filename  string         `json:"filename"`
-	Status    ArtifactStatus `json:"status"`
-	Issue     string         `json:"issue,omitempty"`
-	AddedAt   time.Time      `json:"added_at"`
-	RemovedAt time.Time      `json:"removed_at,omitempty"`
+	ObjectKey       string              `json:"object_key"`
+	Filename        string              `json:"filename"`
+	Status          ArtifactStatus      `json:"status"`
+	Issue           string              `json:"issue,omitempty"`
+	AddedAt         time.Time           `json:"added_at"`
+	RemovedAt       time.Time           `json:"removed_at,omitempty"`
+	WorkshopItemID  uint64              `json:"workshop_item_id,omitempty"`
+	WorkshopSources []WorkshopReference `json:"workshop_sources,omitempty"`
+}
+
+func (session *Session) AttachWorkshopMission(record MissionRecord, now time.Time) error {
+	changed, err := session.attachWorkshopMissionWithoutVersion(record, now)
+	if err != nil || !changed {
+		return err
+	}
+	return session.RecordMutation(now)
+}
+
+func (session *Session) attachWorkshopMissionWithoutVersion(record MissionRecord, now time.Time) (bool, error) {
+	if record.WorkshopItemID == 0 || len(record.WorkshopSources) == 0 || record.Status != ArtifactAccepted || strings.TrimSpace(record.ObjectKey) == "" {
+		return false, fmt.Errorf("Workshop mission record is invalid")
+	}
+	filename, err := NormalizeMissionFilename(record.Filename)
+	if err != nil || filename != record.Filename || missionFilenameFromObjectKey(record.ObjectKey) != filename {
+		return false, fmt.Errorf("Workshop mission filename or object key is invalid")
+	}
+	if session.LifecycleState == StateDeleting || session.LifecycleState == StateDeleted || session.LifecycleState == StateArchiving || session.LifecycleState == StateDestroying {
+		return false, fmt.Errorf("%w: Workshop missions cannot change in the current lifecycle", ErrInvalidTransition)
+	}
+	for _, source := range record.WorkshopSources {
+		matched := false
+		for _, persisted := range session.WorkshopMissionSources {
+			if persisted.Source == source && slices.Contains(persisted.AcceptedItemIDs, record.WorkshopItemID) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false, fmt.Errorf("Workshop mission provenance is not authorized")
+		}
+	}
+	for index := range session.MissionFiles {
+		if session.MissionFiles[index].ObjectKey == record.ObjectKey {
+			return false, nil
+		}
+		if session.MissionFiles[index].WorkshopItemID == record.WorkshopItemID && session.MissionFiles[index].Active() {
+			session.MissionFiles[index].RemovedAt = now.UTC()
+		}
+	}
+	record.AddedAt = now.UTC()
+	session.MissionFiles = append(session.MissionFiles, record)
+	return true, nil
+}
+
+func (session Session) withWorkshopMissions(records []MissionRecord, now time.Time) (Session, error) {
+	session.MissionFiles = append([]MissionRecord(nil), session.MissionFiles...)
+	for index := range session.MissionFiles {
+		session.MissionFiles[index].WorkshopSources = append([]WorkshopReference(nil), session.MissionFiles[index].WorkshopSources...)
+	}
+	for _, record := range records {
+		if _, err := session.attachWorkshopMissionWithoutVersion(record, now); err != nil {
+			return Session{}, err
+		}
+	}
+	return session, nil
 }
 
 func (record MissionRecord) Active() bool { return record.RemovedAt.IsZero() }
@@ -45,6 +105,35 @@ func (session Session) AcceptedMissionFiles() []MissionRecord {
 		missions = append(missions, MissionRecord{ObjectKey: selection.ObjectKey, Filename: missionFilenameFromObjectKey(selection.ObjectKey), Status: ArtifactAccepted})
 	}
 	return missions
+}
+
+// PendingWorkshopMissionItemIDs returns scenario snapshots that have not yet
+// been materialized into an accepted immutable mission record. A later source
+// resolution for the same item is pending until a record produced after that
+// resolution is attached.
+func (session Session) PendingWorkshopMissionItemIDs() []uint64 {
+	latestResolution := make(map[uint64]time.Time)
+	for _, source := range session.WorkshopMissionSources {
+		for _, itemID := range source.AcceptedItemIDs {
+			if source.ResolvedAt.After(latestResolution[itemID]) {
+				latestResolution[itemID] = source.ResolvedAt
+			}
+		}
+	}
+	for _, record := range session.MissionFiles {
+		resolvedAt, tracked := latestResolution[record.WorkshopItemID]
+		// A removed record still proves this source snapshot was materialized.
+		// Removal is user intent; only a later explicit resolution is pending.
+		if tracked && record.Status == ArtifactAccepted && strings.TrimSpace(record.ObjectKey) != "" && !record.AddedAt.Before(resolvedAt) {
+			delete(latestResolution, record.WorkshopItemID)
+		}
+	}
+	ids := make([]uint64, 0, len(latestResolution))
+	for itemID := range latestResolution {
+		ids = append(ids, itemID)
+	}
+	slices.Sort(ids)
+	return ids
 }
 
 func (session Session) LiveMissionCopyTarget(objectKey string) (MissionRecord, bool) {

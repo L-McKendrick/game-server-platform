@@ -85,6 +85,11 @@ data "aws_iam_policy_document" "reliability_worker" {
   }
 
   statement {
+    actions   = ["ssm:GetCommandInvocation", "ssm:ListCommands", "ssm:CancelCommand"]
+    resources = ["*"]
+  }
+
+  statement {
     actions = [
       "ec2:DescribeInstances",
       "ec2:DescribeSecurityGroups",
@@ -123,6 +128,12 @@ data "aws_iam_policy_document" "reliability_worker" {
       variable = "s3:prefix"
       values   = ["sessions/*"]
     }
+  }
+
+  statement {
+    sid       = "ReadWorkshopMissionManifests"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.session_assets.arn}/sessions/*/workshop-resolutions/*.tsv"]
   }
 
   statement {
@@ -193,6 +204,9 @@ resource "aws_lambda_function" "reliability_worker" {
       ARTIFACT_QUEUE_ARN       = aws_sqs_queue.artifact_ingest.arn
       ORPHAN_MINIMUM_AGE_HOURS = "24"
       ORPHAN_QUARANTINE_HOURS  = "24"
+      BOOTSTRAP_SCRIPT_KEY     = aws_s3_object.bootstrap_script.key
+      STEAM_AUTH_SECRET_ID     = aws_secretsmanager_secret.steam_authorization_cache.name
+      TEAMSPEAK_VERSION        = var.teamspeak_version
     }
   }
 

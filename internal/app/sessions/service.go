@@ -43,6 +43,7 @@ func (SystemClock) Now() time.Time {
 type Service struct {
 	repository           ports.SessionRepository
 	artifactQueue        ports.ArtifactQueue
+	workshopQueue        ports.WorkshopQueue
 	commandQueue         ports.CommandQueue
 	confirmations        ports.ConfirmationRepository
 	serverConfigs        ports.GuildServerConfigRepository
@@ -59,6 +60,10 @@ type Option func(*Service)
 // WithArtifactQueue enables asynchronous Discord attachment ingestion.
 func WithArtifactQueue(queue ports.ArtifactQueue) Option {
 	return func(service *Service) { service.artifactQueue = queue }
+}
+
+func WithWorkshopQueue(queue ports.WorkshopQueue) Option {
+	return func(service *Service) { service.workshopQueue = queue }
 }
 
 // WithCommandQueue enables asynchronous lifecycle command dispatch.
@@ -1049,6 +1054,111 @@ func (service *Service) RequestArtifactIngest(ctx context.Context, actor domain.
 		return fmt.Errorf("enqueue artifact ingestion: %w", err)
 	}
 	return nil
+}
+
+// RequestWorkshopResolve authorizes and queues public Workshop metadata
+// resolution. It records only the pending resolver state; mission and mod
+// configuration remain unchanged until the worker validates the snapshot.
+func (service *Service) RequestWorkshopResolve(ctx context.Context, actor domain.Actor, request domain.WorkshopSourceRequest) error {
+	if err := actor.Validate(); err != nil {
+		return fmt.Errorf("validate actor: %w", err)
+	}
+	if service.workshopQueue == nil {
+		return fmt.Errorf("Workshop resolution is not configured")
+	}
+	if request.ActorID != actor.ID {
+		return fmt.Errorf("Workshop actor does not match command actor: %w", domain.ErrForbidden)
+	}
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	session, err := service.repository.Get(ctx, strings.TrimSpace(request.SessionID))
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+	if err := authorizeOwner(actor, session); err != nil {
+		return err
+	}
+	if session.GuildID != request.GuildID || session.ChannelID != request.ChannelID {
+		return fmt.Errorf("Workshop request context does not match session: %w", domain.ErrForbidden)
+	}
+	if !session.CanChangeWorkshopSources() {
+		return fmt.Errorf("Workshop content cannot be changed in the current lifecycle: %w", domain.ErrInvalidTransition)
+	}
+	queuedKey, queuedHash := "workshop-queued:"+request.IdempotencyKey, string(request.Target)+":"+request.SourceURL
+	if existing, getErr := service.repository.GetIdempotency(ctx, queuedKey); getErr == nil {
+		if existing.RequestHash != queuedHash {
+			return domain.ErrIdempotencyConflict
+		}
+		if session.WorkshopResolutionTarget != request.Target || session.WorkshopResolutionRequestKey != request.IdempotencyKey {
+			expected, now := session.Version, service.clock.Now().UTC()
+			if err := session.BeginWorkshopResolution(request.Target, request.IdempotencyKey, now); err != nil {
+				return err
+			}
+			eventID, err := service.ids.New(now)
+			if err != nil {
+				return err
+			}
+			event := domain.SessionEvent{ID: eventID, SessionID: session.ID, Type: domain.EventWorkshopResolutionQueued, OccurredAt: now, ActorType: string(actor.Type), ActorID: actor.ID, CorrelationID: request.CorrelationID, Data: map[string]string{"target": string(request.Target), "replay": "true"}}
+			record, err := domain.NewCompletedIdempotencyRecord(fmt.Sprintf("workshop-requeued:%s:%d", request.IdempotencyKey, expected), queuedHash, session.ID, now, service.idempotencyRetention)
+			if err != nil {
+				return err
+			}
+			if err := service.repository.SaveWithEvent(ctx, session, expected, event, record); err != nil {
+				return fmt.Errorf("restore Workshop resolution marker: %w", err)
+			}
+		}
+		return service.workshopQueue.EnqueueWorkshop(ctx, request)
+	} else if !errors.Is(getErr, domain.ErrNotFound) {
+		return getErr
+	}
+	expected, now := session.Version, service.clock.Now().UTC()
+	if err := session.BeginWorkshopResolution(request.Target, request.IdempotencyKey, now); err != nil {
+		return err
+	}
+	eventID, err := service.ids.New(now)
+	if err != nil {
+		return err
+	}
+	event := domain.SessionEvent{ID: eventID, SessionID: session.ID, Type: domain.EventWorkshopResolutionQueued, OccurredAt: now, ActorType: string(actor.Type), ActorID: actor.ID, CorrelationID: request.CorrelationID, Data: map[string]string{"target": string(request.Target)}}
+	record, err := domain.NewCompletedIdempotencyRecord(queuedKey, queuedHash, session.ID, now, service.idempotencyRetention)
+	if err != nil {
+		return err
+	}
+	if err := service.repository.SaveWithEvent(ctx, session, expected, event, record); err != nil {
+		return fmt.Errorf("record Workshop resolution: %w", err)
+	}
+	if err := service.workshopQueue.EnqueueWorkshop(ctx, request); err != nil {
+		if clearErr := service.clearWorkshopResolution(ctx, session.ID, request, actor); clearErr != nil {
+			return fmt.Errorf("enqueue Workshop resolution: %v; clear pending state: %w", err, clearErr)
+		}
+		return fmt.Errorf("enqueue Workshop resolution: %w", err)
+	}
+	return nil
+}
+
+func (service *Service) clearWorkshopResolution(ctx context.Context, sessionID string, request domain.WorkshopSourceRequest, actor domain.Actor) error {
+	session, err := service.repository.Get(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	expected, now := session.Version, service.clock.Now().UTC()
+	if err := session.FinishWorkshopResolution(request.Target, request.IdempotencyKey, now); err != nil {
+		return err
+	}
+	if session.Version == expected {
+		return nil
+	}
+	eventID, err := service.ids.New(now)
+	if err != nil {
+		return err
+	}
+	event := domain.SessionEvent{ID: eventID, SessionID: session.ID, Type: domain.EventWorkshopResolutionCleared, OccurredAt: now, ActorType: string(actor.Type), ActorID: actor.ID, CorrelationID: request.CorrelationID, Data: map[string]string{"target": string(request.Target), "reason": "enqueue_failed"}}
+	record, err := domain.NewCompletedIdempotencyRecord("workshop-clear-enqueue:"+request.IdempotencyKey, string(request.Target), session.ID, now, service.idempotencyRetention)
+	if err != nil {
+		return err
+	}
+	return service.repository.SaveWithEvent(ctx, session, expected, event, record)
 }
 
 // CreateCommand contains the user-controlled values needed to create a session.

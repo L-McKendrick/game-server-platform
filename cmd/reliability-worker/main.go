@@ -12,11 +12,14 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ec2orphans"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/resourceinventory"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3objects"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sfnworkflow"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsdlq"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmbootstrap"
 	apporphan "github.com/L-McKendrick/game-server-platform/internal/app/orphan"
 	appreliability "github.com/L-McKendrick/game-server-platform/internal/app/reliability"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
+	"github.com/L-McKendrick/game-server-platform/internal/app/workshopcontent"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/identity"
@@ -28,6 +31,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sfn"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
 )
 
 type request struct {
@@ -81,6 +85,16 @@ func build(ctx context.Context) (*handler, error) {
 		return nil, err
 	}
 	reliability.WithExecutionInspector(sfnworkflow.NewInspector(sfnClient)).WithDeadLetterManager(dlq)
+	timeoutSeconds := int32(21600)
+	contentRunner, err := ssmbootstrap.New(ssm.NewFromConfig(awsConfig), ssmbootstrap.Config{Region: base.AWSRegion, AssetsBucket: bucket, BootstrapScriptKey: strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_KEY")), MetadataTableName: base.MetadataTable, SteamAuthSecretID: strings.TrimSpace(os.Getenv("STEAM_AUTH_SECRET_ID")), TeamSpeakVersion: env("TEAMSPEAK_VERSION", "3.13.8"), TimeoutSeconds: timeoutSeconds})
+	if err != nil {
+		return nil, err
+	}
+	contentSync, err := workshopcontent.New(repository, repository, contentRunner, ids, clock, workshopcontent.WithWorkshopMissionManifest(s3objects.New(s3Client, bucket)))
+	if err != nil {
+		return nil, err
+	}
+	reliability.WithActiveWorkflowReconciler(contentSync)
 	inventory, err := resourceinventory.New(ec2Client, s3Client, project, base.Environment, bucket)
 	if err != nil {
 		return nil, err

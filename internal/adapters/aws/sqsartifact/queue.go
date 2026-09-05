@@ -23,9 +23,31 @@ type Queue struct {
 }
 
 var _ ports.ArtifactQueue = (*Queue)(nil)
+var _ ports.WorkshopQueue = (*Queue)(nil)
 
 func New(client API, queueURL string) *Queue {
 	return &Queue{client: client, queueURL: strings.TrimSpace(queueURL)}
+}
+
+func (queue *Queue) EnqueueWorkshop(ctx context.Context, request domain.WorkshopSourceRequest) error {
+	if queue == nil || queue.client == nil || queue.queueURL == "" {
+		return fmt.Errorf("SQS Workshop queue is not configured")
+	}
+	if err := request.Validate(); err != nil {
+		return fmt.Errorf("validate Workshop request: %w", err)
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("marshal Workshop request: %w", err)
+	}
+	_, err = queue.client.SendMessage(ctx, &sqs.SendMessageInput{
+		QueueUrl: aws.String(queue.queueURL), MessageBody: aws.String(string(body)),
+		MessageGroupId: aws.String(request.SessionID), MessageDeduplicationId: aws.String(request.IdempotencyKey),
+	})
+	if err != nil {
+		return fmt.Errorf("send Workshop request: %w", err)
+	}
+	return nil
 }
 
 func (queue *Queue) Enqueue(ctx context.Context, request domain.ArtifactIngestRequest) error {

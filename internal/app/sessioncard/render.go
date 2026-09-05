@@ -109,17 +109,29 @@ func render(card Projection, detailed bool) string {
 		"\n\n**Mission:** %s\n**Preset:** %s\n**Mods:** %s",
 		artifactLine(card.Artifacts.Mission), artifactLine(card.Artifacts.Preset), safe(card.Mods.Status),
 	)
+	if detailed && card.Artifacts.Mission.Status == "Workshop source needs attention" && card.Artifacts.Mission.Issue != "" {
+		fmt.Fprintf(&builder, "\n**Workshop mission source:** %s", safe(card.Artifacts.Mission.Issue))
+	}
 	if card.Mods.ActiveRevision > 0 {
 		fmt.Fprintf(&builder, "\n**Active mod revision:** `%d`", card.Mods.ActiveRevision)
+		if card.Mods.ActiveWorkshopSourceID > 0 {
+			fmt.Fprintf(&builder, " — Workshop `%d`", card.Mods.ActiveWorkshopSourceID)
+		}
 		if !card.Mods.ActiveSince.IsZero() {
 			fmt.Fprintf(&builder, " — active %s", timestamp(card.Mods.ActiveSince))
 		}
+	}
+	if detailed && card.Mods.Issue != "" {
+		fmt.Fprintf(&builder, "\n**Workshop mod source:** %s", safe(card.Mods.Issue))
 	}
 	if len(card.Mods.CreatorDLCs) > 0 {
 		fmt.Fprintf(&builder, "\n**Creator DLC:** %s", safe(strings.Join(creatorDLCLabels(card.Mods.CreatorDLCs), ", ")))
 	}
 	if card.Mods.PendingRevision > 0 {
 		fmt.Fprintf(&builder, "\n**Pending mod revision:** `%d` — %s", card.Mods.PendingRevision, safe(card.Mods.PendingStatus))
+		if card.Mods.PendingWorkshopSourceID > 0 {
+			fmt.Fprintf(&builder, " — Workshop `%d`", card.Mods.PendingWorkshopSourceID)
+		}
 		if !card.Mods.PendingSince.IsZero() {
 			fmt.Fprintf(&builder, " %s", timestamp(card.Mods.PendingSince))
 		}

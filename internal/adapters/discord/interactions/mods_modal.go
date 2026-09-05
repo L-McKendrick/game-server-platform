@@ -15,6 +15,7 @@ const (
 	modsModalCustomIDPrefix  = "rb:mods:v2:"
 	createModsContinuePrefix = "rb:create-mods:v1:"
 	modsPresetCustomID       = "mods:preset"
+	modsWorkshopCustomID     = "mods:workshop"
 	modsServerPresetCustomID = "mods:server-preset"
 	modsCreatorDLCsCustomID  = "mods:creator-dlcs"
 	modsModeCreate           = "create"
@@ -130,7 +131,7 @@ func writeModsModal(writer http.ResponseWriter, session domain.Session, mode str
 	if err != nil {
 		return err
 	}
-	optional, minimumNone, maximumOne, maximumDLCs := false, 0, 1, len(domain.SupportedCreatorDLCs())
+	optional, minimumNone, maximumOne, maximumDLCs, maximumURL := false, 0, 1, len(domain.SupportedCreatorDLCs()), 200
 	labels := map[string]string{
 		domain.CreatorDLCGlobalMobilization:  "Global Mobilization – Cold War Germany",
 		domain.CreatorDLCSOGPrairieFire:      "S.O.G. Prairie Fire",
@@ -146,6 +147,7 @@ func writeModsModal(writer http.ResponseWriter, session domain.Session, mode str
 	}
 	components := []interactionComponent{
 		{Type: componentTypeLabel, Label: "Arma Launcher preset", Description: "Optional here. Upload .html/.htm to add or replace the Workshop modlist.", Component: &interactionComponent{Type: componentTypeFileUpload, CustomID: modsPresetCustomID, Required: &optional, MinValues: &minimumNone, MaxValues: &maximumOne}},
+		{Type: componentTypeLabel, Label: "Workshop mod link", Description: "Optional public Arma 3 mod item or collection; do not also upload a client preset.", Component: &interactionComponent{Type: componentTypeTextInput, CustomID: modsWorkshopCustomID, Style: textInputStyleShort, Placeholder: "https://steamcommunity.com/sharedfiles/filedetails/?id=...", MaxLength: &maximumURL, Required: &optional}},
 		{Type: componentTypeLabel, Label: "Server-only mod preset", Description: "Optional. These Workshop mods load only on the server and are not shared with players.", Component: &interactionComponent{Type: componentTypeFileUpload, CustomID: modsServerPresetCustomID, Required: &optional, MinValues: &minimumNone, MaxValues: &maximumOne}},
 		{Type: componentTypeLabel, Label: "Creator DLC to load", Description: "Select every official Creator DLC required by the mission.", Component: &interactionComponent{Type: componentTypeCheckboxGroup, CustomID: modsCreatorDLCsCustomID, Required: &optional, MinValues: &minimumNone, MaxValues: &maximumDLCs, Options: options}},
 	}
@@ -164,10 +166,11 @@ func containsString(values []string, wanted string) bool {
 
 func (handler *Handler) submitModsModal(ctx context.Context, payload interactionPayload, actor domain.Actor, correlationID string) (string, error) {
 	state, err := parseModsModalCustomID(payload.Data.CustomID)
-	if err != nil || len(payload.Data.Components) != 3 {
+	if err != nil || (len(payload.Data.Components) != 3 && len(payload.Data.Components) != 4) {
 		return "", newUserError("The mod options form is malformed or expired. Run `/rb edit` with section `mods` again.")
 	}
 	var attachment, serverAttachment *interactionAttachment
+	var workshopURL string
 	var creatorDLCs []string
 	seen := map[string]bool{}
 	for _, label := range payload.Data.Components {
@@ -178,6 +181,12 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 		switch label.Component.CustomID {
 		case modsPresetCustomID:
 			attachment, err = resolveModalAttachment(payload.Data, label.Component, false)
+		case modsWorkshopCustomID:
+			if label.Component.Type != componentTypeTextInput {
+				err = fmt.Errorf("invalid Workshop link control")
+			} else {
+				workshopURL = strings.TrimSpace(label.Component.Value)
+			}
 		case modsServerPresetCustomID:
 			serverAttachment, err = resolveModalAttachment(payload.Data, label.Component, false)
 		case modsCreatorDLCsCustomID:
@@ -193,8 +202,16 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 			return "", newUserError("Choose only supported Creator DLCs and at most one preset file.")
 		}
 	}
-	if !seen[modsPresetCustomID] || !seen[modsServerPresetCustomID] || !seen[modsCreatorDLCsCustomID] {
+	if !seen[modsPresetCustomID] || !seen[modsServerPresetCustomID] || !seen[modsCreatorDLCsCustomID] || (len(payload.Data.Components) == 4 && !seen[modsWorkshopCustomID]) {
 		return "", newUserError("The mod options form is incomplete. Run `/rb edit` with section `mods` again.")
+	}
+	if attachment != nil && workshopURL != "" {
+		return "", newUserError("Provide either a client preset upload or Workshop mod link, not both.")
+	}
+	if workshopURL != "" {
+		if _, parseErr := domain.ParseWorkshopURL(workshopURL); parseErr != nil {
+			return "", newUserError("Provide a public Steam Workshop item or collection link containing a valid `id`.")
+		}
 	}
 	keyPrefix := "discord:" + strings.TrimSpace(payload.ID) + ":mod-options"
 	current, err := handler.service.Get(ctx, appsession.GetQuery{Actor: actor, SessionID: state.sessionID, GuildID: payload.GuildID})
@@ -263,6 +280,14 @@ func (handler *Handler) submitModsModal(ctx context.Context, payload interaction
 			return "", modsStagingUserError(err)
 		}
 		presetStatus = fmt.Sprintf("Preset `%s` queued for validation.", sanitizeCode(attachment.Filename))
+	} else if workshopURL != "" {
+		request := createWorkshopRequest(payload, actor, correlationID, state.sessionID, domain.WorkshopTargetMods, workshopURL, keyPrefix+":workshop", handler.clock.Now().UTC())
+		request.ChannelID = current.ChannelID
+		request.ExpectedActivePresetRevision = state.activeRevision
+		if err := requestWorkshopResolve(ctx, handler.service, actor, request); err != nil {
+			return "", modsStagingUserError(err)
+		}
+		presetStatus = "Workshop mod link queued for metadata validation."
 	}
 	if current.LifecycleState == domain.StateDraft && attachment == nil && serverAttachment == nil {
 		presetStatus = "No preset was uploaded; this modded session remains a recoverable draft."

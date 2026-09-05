@@ -26,6 +26,11 @@ import (
 type fakeSSM struct {
 	sent       *ssm.SendCommandInput
 	invocation *ssm.GetCommandInvocationOutput
+	commands   *ssm.ListCommandsOutput
+}
+
+func (fake *fakeSSM) ListCommands(context.Context, *ssm.ListCommandsInput, ...func(*ssm.Options)) (*ssm.ListCommandsOutput, error) {
+	return fake.commands, nil
 }
 
 type fakeProgress struct {
@@ -85,6 +90,72 @@ func TestObserveProgressUsesWorkflowScopedLiveSnapshot(t *testing.T) {
 	}
 	if got := aws.ToString(progress.input.Key); got != "sessions/session-1/runtime/bootstrap-progress-workflow-1.txt" {
 		t.Fatalf("progress key = %q", got)
+	}
+}
+
+func TestResolveContentCommandRequiresOwnedCommentAndSingleInstance(t *testing.T) {
+	client := &fakeSSM{commands: &ssm.ListCommandsOutput{Commands: []types.Command{{Comment: aws.String("gsp:workshop-sync:session-1:workflow-1"), InstanceIds: []string{"i-1"}}}}}
+	runner, err := New(client, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID, workflowID, instanceID, err := runner.ResolveContentCommand(context.Background(), "command-1")
+	if err != nil || sessionID != "session-1" || workflowID != "workflow-1" || instanceID != "i-1" {
+		t.Fatalf("identity = %q %q %q, err=%v", sessionID, workflowID, instanceID, err)
+	}
+	client.commands.Commands[0].Comment = aws.String("unowned command")
+	if _, _, _, err := runner.ResolveContentCommand(context.Background(), "command-1"); err == nil {
+		t.Fatal("unowned command was accepted")
+	}
+}
+
+func TestFindContentCommandRequiresExactWorkflowCommentAndInstance(t *testing.T) {
+	client := &fakeSSM{commands: &ssm.ListCommandsOutput{Commands: []types.Command{
+		{CommandId: aws.String("wrong-instance"), Comment: aws.String("gsp:workshop-sync:session-1:workflow-1"), InstanceIds: []string{"i-2"}},
+		{CommandId: aws.String("command-1"), Comment: aws.String("gsp:workshop-sync:session-1:workflow-1"), InstanceIds: []string{"i-1"}},
+	}}}
+	runner, err := New(client, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandID, err := runner.FindContentCommand(context.Background(), "session-1", "workflow-1", "i-1")
+	if err != nil || commandID != "command-1" {
+		t.Fatalf("command = %q, err = %v", commandID, err)
+	}
+	if _, err := runner.FindContentCommand(context.Background(), "session-1", "workflow-other", "i-1"); err == nil {
+		t.Fatal("mismatched workflow command was accepted")
+	}
+}
+
+func TestStartContentRestartsOnlyWhenPromotingMods(t *testing.T) {
+	client := &fakeSSM{}
+	runner, err := New(client, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := domain.Session{ID: "session-1", DisplayName: "Test", Vanilla: true, ConfiguredMission: domain.DefaultMissionSelection(), CurrentMission: domain.DefaultMissionSelection(), ActiveWorkflowID: "workflow-1", Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}}
+	if _, err := runner.StartContent(context.Background(), session, domain.WorkshopTargetMods, true); err != nil {
+		t.Fatal(err)
+	}
+	script := client.sent.Parameters["commands"][0]
+	if !strings.HasPrefix(script, bashShebang+"export GSP_OPERATION_MODE=workshop_sync\n") {
+		t.Fatal("content command placed operation variables before its Bash shebang")
+	}
+	if !strings.Contains(script, "export WORKSHOP_PROMOTE_MODS=true") {
+		t.Fatal("promoting content command did not request mod promotion")
+	}
+	if _, err := runner.StartContent(context.Background(), session, domain.WorkshopTargetMission, false); err != nil {
+		t.Fatal(err)
+	}
+	missionScript := client.sent.Parameters["commands"][0]
+	if !strings.Contains(missionScript, "export WORKSHOP_SYNC_TARGET=mission\n") {
+		t.Fatal("mission-only content command did not use the canonical mission target")
+	}
+	if !strings.Contains(missionScript, "export WORKSHOP_PROMOTE_MODS=false") {
+		t.Fatal("mission-only content command did not disable mod promotion")
+	}
+	if strings.Index(missionScript, bashShebang) != 0 {
+		t.Fatal("mission-only content command did not retain Bash as its interpreter")
 	}
 }
 
@@ -270,14 +341,15 @@ func TestCommandInstallsApplyingPendingRevisionWithoutChangingActivePointer(t *t
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 8, 17, 23, 0, 0, 0, time.UTC)
-	session := domain.Session{ID: "session-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: "sessions/session-1/input/presets/v1.html", PresetRevisionSequence: 2, LifecycleState: domain.StateWaking, ActiveWorkflowID: "wake-1", ActiveWorkflowType: domain.WakeWorkflowType, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}, ActivePresetRevision: domain.PresetRevision{Number: 1, PresetObjectKey: "sessions/session-1/input/presets/v1.html", Status: domain.PresetRevisionActive, StagedAt: now, ActivatedAt: now}, PendingPresetRevision: domain.PresetRevision{Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/presets/v2.html", Status: domain.PresetRevisionApplying, StagedAt: now, ApplyWorkflowID: "wake-1", ApplyStartedAt: now}}
+	resolutionDigest := strings.Repeat("a", 64)
+	session := domain.Session{ID: "session-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: "sessions/session-1/input/presets/v1.html", PresetRevisionSequence: 2, LifecycleState: domain.StateWaking, ActiveWorkflowID: "wake-1", ActiveWorkflowType: domain.WakeWorkflowType, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}, ActivePresetRevision: domain.PresetRevision{Number: 1, PresetObjectKey: "sessions/session-1/input/presets/v1.html", Status: domain.PresetRevisionActive, StagedAt: now, ActivatedAt: now}, PendingPresetRevision: domain.PresetRevision{Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/presets/v2.html", Status: domain.PresetRevisionApplying, StagedAt: now, ApplyWorkflowID: "wake-1", ApplyStartedAt: now, WorkshopResolutionSHA256: resolutionDigest, WorkshopSourceID: 42}}
 	script, err := runner.command(session)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pendingEncoded := base64.StdEncoding.EncodeToString([]byte(session.PendingPresetRevision.PresetObjectKey))
 	activeEncoded := base64.StdEncoding.EncodeToString([]byte(session.PresetObjectKey))
-	if !strings.Contains(script, pendingEncoded) || strings.Contains(script, activeEncoded) || !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte("2"))) {
+	if !strings.Contains(script, pendingEncoded) || strings.Contains(script, activeEncoded) || !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte("2"))) || !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(resolutionDigest))) {
 		t.Fatalf("command did not select pending revision: %s", script)
 	}
 	if session.PresetObjectKey != session.ActivePresetRevision.PresetObjectKey {
@@ -385,7 +457,7 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"get-secret-value", "put-secret-value", "AWSCURRENT", "source_version_id", "config_sha256", "STEAM_AUTH#CACHE", "lease_expires_at < :now", "refresh_steam_auth_lock", "start_steam_auth_lock_heartbeat", "STEAM_AUTH_LOCK_LEASE_SECONDS=900", "STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=300", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "VANILLA_MODE", "PRESET_REVISION", "SERVER_PRESET_REVISION", "PRESET_ROLLBACK", "MOD_CONFIG_REVISION", "CONTENT_REVISION", "SERVER_CONFIG_KEY", "SERVER_CONFIG_SHA256", "server.cfg.pending", "sha256sum --check --status", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "revision-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete", "$stage.revision-$CONTENT_REVISION.complete", "rm -f -- \"$STATE_DIR/deploy_content.complete\" \"$STATE_DIR\"/deploy_content.revision-*.complete", "mod-revisions/revision-", "server-mod-revisions/revision-", "-serverMod=$server_mods", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "safe_mission_template=\"$(sqf_escape \"$mission_template\")\"", "template = \"$safe_mission_template\";", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
+	for _, required := range []string{"get-secret-value", "put-secret-value", "AWSCURRENT", "source_version_id", "config_sha256", "STEAM_AUTH#CACHE", "lease_expires_at < :now", "refresh_steam_auth_lock", "start_steam_auth_lock_heartbeat", "STEAM_AUTH_LOCK_LEASE_SECONDS=900", "STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=300", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "VANILLA_MODE", "PRESET_REVISION", "SERVER_PRESET_REVISION", "PRESET_ROLLBACK", "MOD_CONFIG_REVISION", "CONTENT_REVISION", "SERVER_CONFIG_KEY", "SERVER_CONFIG_SHA256", "server.cfg.pending", "sha256sum --check --status", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "$stage.missions-$WORKSHOP_MISSION_REVISION.client-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete", "$stage.revision-$CONTENT_REVISION.complete", "rm -f -- \"$STATE_DIR/deploy_content.complete\" \"$STATE_DIR\"/deploy_content.revision-*.complete", "mod-revisions/revision-", "server-mod-revisions/revision-", "-serverMod=$server_mods", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma sync_workshop_content", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "safe_mission_template=\"$(sqf_escape \"$mission_template\")\"", "template = \"$safe_mission_template\";", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
 		if !strings.Contains(string(script), required) {
 			t.Errorf("script missing %q", required)
 		}
@@ -399,6 +471,67 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 		t.Error("script does not normalize legacy digest-prefixed mission filenames")
 	}
 	assertBashSyntax(t, script)
+}
+
+func TestSteamAuthHeartbeatStopsPromptlyAcrossWaitStates(t *testing.T) {
+	path := filepath.Clean(filepath.Join("..", "..", "..", "..", "deploy", "bootstrap", "arma3-bootstrap.sh"))
+	script, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extract := func(startMarker, endMarker string) string {
+		t.Helper()
+		start := strings.Index(string(script), startMarker)
+		if start < 0 {
+			t.Fatalf("bootstrap script missing %q", startMarker)
+		}
+		endOffset := strings.Index(string(script)[start:], endMarker)
+		if endOffset < 0 {
+			t.Fatalf("bootstrap script missing %q after %q", endMarker, startMarker)
+		}
+		return string(script)[start : start+endOffset+2]
+	}
+	stopFunction := extract("stop_steam_auth_lock_heartbeat() {", "\n}\n\nrelease_steam_auth_lock()")
+	startFunction := extract("start_steam_auth_lock_heartbeat() {", "\n}\n\nacquire_steam_auth_lock()")
+	harness := `#!/usr/bin/env bash
+set -euo pipefail
+STEAM_AUTH_LOCK_HEARTBEAT_PID=""
+STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=30
+REFRESH_FAIL=false
+refresh_steam_auth_lock() { ! "$REFRESH_FAIL"; }
+log() { :; }
+` + stopFunction + "\n" + startFunction + `
+start_steam_auth_lock_heartbeat
+first_pid="$STEAM_AUTH_LOCK_HEARTBEAT_PID"
+start_steam_auth_lock_heartbeat
+[ "$STEAM_AUTH_LOCK_HEARTBEAT_PID" = "$first_pid" ]
+kill -0 "$first_pid"
+stop_steam_auth_lock_heartbeat
+stop_steam_auth_lock_heartbeat
+REFRESH_FAIL=true
+STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=0.05
+start_steam_auth_lock_heartbeat
+sleep 0.2
+stop_steam_auth_lock_heartbeat
+printf 'stopped\n'
+`
+	bash, err := bashExecutable()
+	if err != nil {
+		t.Skip("bash is unavailable")
+	}
+	harnessPath := filepath.Join(t.TempDir(), "heartbeat-test.sh")
+	if err := os.WriteFile(harnessPath, []byte(harness), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, bash, filepath.ToSlash(harnessPath)).CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("heartbeat cleanup exceeded 3 seconds: %v\n%s", ctx.Err(), output)
+	}
+	if err != nil || string(output) != "stopped\n" {
+		t.Fatalf("heartbeat cleanup: %v\n%s", err, output)
+	}
 }
 
 func TestBootstrapArtifactCreatesWorkshopDirectoryForCreatorDLCOnlySessions(t *testing.T) {
@@ -448,16 +581,29 @@ func TestObserveMapsSteamGuardChallengeToStableReauthorizationFailure(t *testing
 	}
 }
 
-func assertBashSyntax(t *testing.T, script []byte) {
-	t.Helper()
-	bash, err := exec.LookPath("bash")
-	if err != nil && runtime.GOOS == "windows" {
-		candidate := `C:\Program Files\Git\bin\bash.exe`
-		if _, statErr := os.Stat(candidate); statErr == nil {
-			bash = candidate
-			err = nil
+func TestObserveMapsWorkshopScenarioFailuresToActionableCodes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		stderr, code, message string
+	}{
+		{"package noise\nERR_WORKSHOP_SCENARIO_RESUBMIT: private detail", "ERR_WORKSHOP_SCENARIO_RESUBMIT", "The Workshop scenario changed after metadata resolution."},
+		{"package noise\nERR_WORKSHOP_SCENARIO_PAYLOAD: private detail", "ERR_WORKSHOP_SCENARIO_PAYLOAD", "The Workshop scenario download did not contain one safe deployable mission payload."},
+		{"package noise\nERR_WORKSHOP_DISK_SPACE: private detail", "ERR_WORKSHOP_DISK_SPACE", "The managed host does not have enough free disk space to stage the Workshop content."},
+		{"package noise\nERR_WORKSHOP_RESULT_PUBLISH: private detail", "ERR_WORKSHOP_RESULT_PUBLISH", "The platform could not publish the Workshop synchronization result."},
+	}
+	for _, test := range tests {
+		client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{Status: types.CommandInvocationStatusFailed, StandardErrorContent: aws.String(test.stderr)}}
+		runner, _ := New(client, testConfig())
+		status, err := runner.Observe(context.Background(), "i-1", "command-1")
+		if err != nil || status.ErrorCode != test.code || status.ErrorMessage != test.message || strings.Contains(status.ErrorMessage, "private detail") {
+			t.Fatalf("status = %#v, err = %v", status, err)
 		}
 	}
+}
+
+func assertBashSyntax(t *testing.T, script []byte) {
+	t.Helper()
+	bash, err := bashExecutable()
 	if err != nil {
 		t.Skip("bash is unavailable")
 	}
@@ -468,6 +614,16 @@ func assertBashSyntax(t *testing.T, script []byte) {
 	if output, err := exec.Command(bash, "-n", filepath.ToSlash(path)).CombinedOutput(); err != nil {
 		t.Fatalf("bash -n: %v\n%s", err, output)
 	}
+}
+
+func bashExecutable() (string, error) {
+	if runtime.GOOS == "windows" {
+		candidate := `C:\Program Files\Git\bin\bash.exe`
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			return candidate, nil
+		}
+	}
+	return exec.LookPath("bash")
 }
 
 func TestObserveReturnsBoundedError(t *testing.T) {

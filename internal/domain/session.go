@@ -19,29 +19,37 @@ const (
 
 // Session represents the persistent platform identity of a game server.
 type Session struct {
-	ID                    string
-	Slug                  string
-	DisplayName           string
-	Description           string
-	GameType              string
-	OwnerDiscordUserID    string
-	GuildID               string
-	ChannelID             string
-	GameProfileID         string
-	SleepAfterSeconds     int64
-	ArchiveAfterSeconds   int64
-	TeamSpeakEnabled      bool
-	Vanilla               bool
-	CreatorDLCs           []string
-	StartWhenReady        bool
-	ConfigurationRevision int64
-	ServerConfigRevision  int64
-	ServerConfigObjectKey string
-	ServerConfigSHA256    string
-	MissionObjectKey      string
-	MissionFiles          []MissionRecord
-	ConfiguredMission     MissionSelection
-	CurrentMission        MissionSelection
+	ID                            string
+	Slug                          string
+	DisplayName                   string
+	Description                   string
+	GameType                      string
+	OwnerDiscordUserID            string
+	GuildID                       string
+	ChannelID                     string
+	GameProfileID                 string
+	SleepAfterSeconds             int64
+	ArchiveAfterSeconds           int64
+	TeamSpeakEnabled              bool
+	Vanilla                       bool
+	CreatorDLCs                   []string
+	StartWhenReady                bool
+	ConfigurationRevision         int64
+	ServerConfigRevision          int64
+	ServerConfigObjectKey         string
+	ServerConfigSHA256            string
+	MissionObjectKey              string
+	MissionFiles                  []MissionRecord
+	ConfiguredMission             MissionSelection
+	CurrentMission                MissionSelection
+	WorkshopMissionSources        []WorkshopMissionSource
+	WorkshopModSources            []WorkshopModSource
+	WorkshopResolutionTarget      WorkshopTarget
+	WorkshopResolutionRequestKey  string
+	WorkshopResolutionRequestedAt time.Time
+	WorkshopResolutionLastTarget  WorkshopTarget
+	WorkshopResolutionIssue       string
+	WorkshopResolutionFailedAt    time.Time
 	// PresetObjectKey remains a write-through compatibility projection of the
 	// active preset revision for older workers and persisted rows.
 	PresetObjectKey              string
@@ -277,6 +285,41 @@ func (session *Session) ReleaseWorkflowLock(workflowID string, now time.Time) er
 	return session.Validate()
 }
 
+// CompleteWorkflowLock records the remaining milestones as complete before
+// releasing a generic workflow that does not own a lifecycle transition.
+func (session *Session) CompleteWorkflowLock(workflowID string, now time.Time) error {
+	if session.ActiveWorkflowID != strings.TrimSpace(workflowID) {
+		return fmt.Errorf("%w: workflow %s does not hold the session lock", ErrConflict, workflowID)
+	}
+	if err := session.completeProgressWithoutVersion(workflowID, now); err != nil {
+		return err
+	}
+	session.ActiveWorkflowID = ""
+	session.ActiveWorkflowType = ""
+	session.ActiveWorkflowStartedAt = time.Time{}
+	session.ActiveWorkflowLeaseExpiresAt = time.Time{}
+	session.Version++
+	session.UpdatedAt = now.UTC()
+	return session.Validate()
+}
+
+// CompleteWorkshopContentSync attaches every validated scenario result and
+// releases the live synchronization lease as one versioned mutation.
+func (session *Session) CompleteWorkshopContentSync(workflowID string, missions []MissionRecord, now time.Time) error {
+	if session.ActiveWorkflowType != WorkshopContentSyncWorkflowType {
+		return fmt.Errorf("%w: workflow does not hold the Workshop content lease", ErrConflict)
+	}
+	candidate, err := session.withWorkshopMissions(missions, now)
+	if err != nil {
+		return err
+	}
+	if err = candidate.CompleteWorkflowLock(workflowID, now); err != nil {
+		return err
+	}
+	*session = candidate
+	return nil
+}
+
 // RecordMutation advances optimistic-concurrency metadata for an event that
 // does not otherwise change the user-visible session fields.
 func (session *Session) RecordMutation(now time.Time) error {
@@ -421,6 +464,38 @@ func (session Session) Validate() error {
 	if session.CurrentMission.Template != "" {
 		if err := session.CurrentMission.Validate(); err != nil {
 			return fmt.Errorf("current mission: %w", err)
+		}
+	}
+	if len(session.WorkshopMissionSources) > MaximumWorkshopMissionSources {
+		return fmt.Errorf("too many Workshop mission sources")
+	}
+	if workshopMissionSnapshotItemCount(session.WorkshopMissionSources) > MaximumWorkshopMissionSnapshotItems || workshopMissionItemCount(session.WorkshopMissionSources) > MaximumWorkshopMissionItems {
+		return fmt.Errorf("Workshop mission snapshot limits exceeded")
+	}
+	for _, source := range session.WorkshopMissionSources {
+		if err := source.Validate(); err != nil {
+			return fmt.Errorf("Workshop mission source: %w", err)
+		}
+	}
+	if len(session.WorkshopModSources) > MaximumWorkshopMissionSources {
+		return fmt.Errorf("too many Workshop mod sources")
+	}
+	if workshopModSnapshotItemCount(session.WorkshopModSources) > MaximumWorkshopModSnapshotItems {
+		return fmt.Errorf("Workshop mod snapshot limits exceeded")
+	}
+	for _, source := range session.WorkshopModSources {
+		if err := source.Validate(); err != nil {
+			return fmt.Errorf("Workshop mod source: %w", err)
+		}
+	}
+	if session.WorkshopResolutionTarget != "" || session.WorkshopResolutionRequestKey != "" || !session.WorkshopResolutionRequestedAt.IsZero() {
+		if (session.WorkshopResolutionTarget != WorkshopTargetMission && session.WorkshopResolutionTarget != WorkshopTargetMods) || strings.TrimSpace(session.WorkshopResolutionRequestKey) == "" || session.WorkshopResolutionRequestedAt.IsZero() {
+			return fmt.Errorf("Workshop resolution pending state is invalid")
+		}
+	}
+	if session.WorkshopResolutionIssue != "" || session.WorkshopResolutionLastTarget != "" || !session.WorkshopResolutionFailedAt.IsZero() {
+		if (session.WorkshopResolutionLastTarget != WorkshopTargetMission && session.WorkshopResolutionLastTarget != WorkshopTargetMods) || strings.TrimSpace(session.WorkshopResolutionIssue) == "" || session.WorkshopResolutionFailedAt.IsZero() || session.WorkshopResolutionIssue != SanitizeDiagnostic(session.WorkshopResolutionIssue) {
+			return fmt.Errorf("Workshop resolution failure state is invalid")
 		}
 	}
 	switch {

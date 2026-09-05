@@ -126,6 +126,8 @@ type sessionItem struct {
 	MissionFilesJSON                 string   `dynamodbav:"mission_files_json,omitempty"`
 	ConfiguredMissionJSON            string   `dynamodbav:"configured_mission_json,omitempty"`
 	CurrentMissionJSON               string   `dynamodbav:"current_mission_json,omitempty"`
+	WorkshopMissionSourcesJSON       string   `dynamodbav:"workshop_mission_sources_json,omitempty"`
+	WorkshopModSourcesJSON           string   `dynamodbav:"workshop_mod_sources_json,omitempty"`
 	PresetObjectKey                  string   `dynamodbav:"preset_object_key,omitempty"`
 	PresetRevisionSequence           int64    `dynamodbav:"preset_revision_sequence,omitempty"`
 	ActivePresetRevision             int64    `dynamodbav:"active_preset_revision,omitempty"`
@@ -164,6 +166,12 @@ type sessionItem struct {
 	MissionArtifactIssue             string   `dynamodbav:"mission_artifact_issue,omitempty"`
 	PresetArtifactIssue              string   `dynamodbav:"preset_artifact_issue,omitempty"`
 	ServerPresetArtifactIssue        string   `dynamodbav:"server_preset_artifact_issue,omitempty"`
+	WorkshopResolutionTarget         string   `dynamodbav:"workshop_resolution_target,omitempty"`
+	WorkshopResolutionRequestKey     string   `dynamodbav:"workshop_resolution_request_key,omitempty"`
+	WorkshopResolutionRequestedAt    string   `dynamodbav:"workshop_resolution_requested_at,omitempty"`
+	WorkshopResolutionLastTarget     string   `dynamodbav:"workshop_resolution_last_target,omitempty"`
+	WorkshopResolutionIssue          string   `dynamodbav:"workshop_resolution_issue,omitempty"`
+	WorkshopResolutionFailedAt       string   `dynamodbav:"workshop_resolution_failed_at,omitempty"`
 	CapacitySlotID                   string   `dynamodbav:"capacity_slot_id,omitempty"`
 	AvailabilityZone                 string   `dynamodbav:"availability_zone,omitempty"`
 	SubnetID                         string   `dynamodbav:"subnet_id,omitempty"`
@@ -688,16 +696,17 @@ func (repository *Repository) SaveWithEvent(
 	}
 
 	if err := session.Validate(); err != nil {
-		return fmt.Errorf("validate session: %w", err)
+		return fmt.Errorf("%w: validate session: %v", domain.ErrPersistenceInvariant, err)
 	}
 
 	if expectedVersion < 1 {
-		return fmt.Errorf("expected version must be at least 1")
+		return fmt.Errorf("%w: expected version must be at least 1", domain.ErrPersistenceInvariant)
 	}
 
 	if session.Version != expectedVersion+1 {
 		return fmt.Errorf(
-			"session version %d must equal expected version %d plus one",
+			"%w: session version %d must equal expected version %d plus one",
+			domain.ErrPersistenceInvariant,
 			session.Version,
 			expectedVersion,
 		)
@@ -1083,6 +1092,8 @@ func toSessionItem(session domain.Session) sessionItem {
 		MissionFilesJSON:                 marshalSessionJSON(session.MissionFiles),
 		ConfiguredMissionJSON:            marshalSessionJSON(session.ConfiguredMission),
 		CurrentMissionJSON:               marshalSessionJSON(session.CurrentMission),
+		WorkshopMissionSourcesJSON:       marshalSessionJSON(session.WorkshopMissionSources),
+		WorkshopModSourcesJSON:           marshalSessionJSON(session.WorkshopModSources),
 		PresetObjectKey:                  session.PresetObjectKey,
 		PresetRevisionSequence:           presetSequence,
 		ActivePresetRevision:             activePreset.Number,
@@ -1121,6 +1132,12 @@ func toSessionItem(session domain.Session) sessionItem {
 		MissionArtifactIssue:             session.MissionArtifactIssue,
 		PresetArtifactIssue:              session.PresetArtifactIssue,
 		ServerPresetArtifactIssue:        session.ServerPresetArtifactIssue,
+		WorkshopResolutionTarget:         string(session.WorkshopResolutionTarget),
+		WorkshopResolutionRequestKey:     session.WorkshopResolutionRequestKey,
+		WorkshopResolutionRequestedAt:    optionalTimestamp(session.WorkshopResolutionRequestedAt),
+		WorkshopResolutionLastTarget:     string(session.WorkshopResolutionLastTarget),
+		WorkshopResolutionIssue:          session.WorkshopResolutionIssue,
+		WorkshopResolutionFailedAt:       optionalTimestamp(session.WorkshopResolutionFailedAt),
 		CapacitySlotID:                   session.Infrastructure.CapacitySlotID,
 		AvailabilityZone:                 session.Infrastructure.AvailabilityZone,
 		SubnetID:                         session.Infrastructure.SubnetID,
@@ -1291,12 +1308,22 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("parse pending preset rollback_at: %w", err)
 	}
+	workshopResolutionRequestedAt, err := parseOptionalTimestamp(item.WorkshopResolutionRequestedAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse Workshop resolution requested_at: %w", err)
+	}
+	workshopResolutionFailedAt, err := parseOptionalTimestamp(item.WorkshopResolutionFailedAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse Workshop resolution failed_at: %w", err)
+	}
 	missionStatus := domain.ArtifactStatus(item.MissionArtifactStatus)
 	if missionStatus == "" && strings.TrimSpace(item.MissionObjectKey) != "" {
 		missionStatus = domain.ArtifactAccepted
 	}
 	var missionFiles []domain.MissionRecord
 	var configuredMission, currentMission domain.MissionSelection
+	var workshopMissionSources []domain.WorkshopMissionSource
+	var workshopModSources []domain.WorkshopModSource
 	if item.MissionFilesJSON != "" {
 		if err := json.Unmarshal([]byte(item.MissionFilesJSON), &missionFiles); err != nil {
 			return domain.Session{}, fmt.Errorf("decode mission files: %w", err)
@@ -1310,6 +1337,16 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if item.CurrentMissionJSON != "" {
 		if err := json.Unmarshal([]byte(item.CurrentMissionJSON), &currentMission); err != nil {
 			return domain.Session{}, fmt.Errorf("decode current mission: %w", err)
+		}
+	}
+	if item.WorkshopMissionSourcesJSON != "" {
+		if err := json.Unmarshal([]byte(item.WorkshopMissionSourcesJSON), &workshopMissionSources); err != nil {
+			return domain.Session{}, fmt.Errorf("decode Workshop mission sources: %w", err)
+		}
+	}
+	if item.WorkshopModSourcesJSON != "" {
+		if err := json.Unmarshal([]byte(item.WorkshopModSourcesJSON), &workshopModSources); err != nil {
+			return domain.Session{}, fmt.Errorf("decode Workshop mod sources: %w", err)
 		}
 	}
 	if configuredMission.Template == "" {
@@ -1348,31 +1385,39 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	}
 
 	session := domain.Session{
-		ID:                     item.SessionID,
-		Slug:                   item.Slug,
-		DisplayName:            item.DisplayName,
-		Description:            item.Description,
-		GameType:               item.GameType,
-		OwnerDiscordUserID:     item.OwnerDiscordUserID,
-		GuildID:                item.GuildID,
-		ChannelID:              item.ChannelID,
-		GameProfileID:          item.GameProfileID,
-		SleepAfterSeconds:      item.SleepAfterSeconds,
-		ArchiveAfterSeconds:    item.ArchiveAfterSeconds,
-		TeamSpeakEnabled:       item.TeamSpeakEnabled,
-		Vanilla:                item.Vanilla,
-		CreatorDLCs:            append([]string(nil), item.CreatorDLCs...),
-		StartWhenReady:         item.StartWhenReady,
-		ConfigurationRevision:  item.ConfigurationRevision,
-		ServerConfigRevision:   item.ServerConfigRevision,
-		ServerConfigObjectKey:  item.ServerConfigObjectKey,
-		ServerConfigSHA256:     item.ServerConfigSHA256,
-		MissionObjectKey:       item.MissionObjectKey,
-		MissionFiles:           missionFiles,
-		ConfiguredMission:      configuredMission,
-		CurrentMission:         currentMission,
-		PresetObjectKey:        item.PresetObjectKey,
-		PresetRevisionSequence: item.PresetRevisionSequence,
+		ID:                            item.SessionID,
+		Slug:                          item.Slug,
+		DisplayName:                   item.DisplayName,
+		Description:                   item.Description,
+		GameType:                      item.GameType,
+		OwnerDiscordUserID:            item.OwnerDiscordUserID,
+		GuildID:                       item.GuildID,
+		ChannelID:                     item.ChannelID,
+		GameProfileID:                 item.GameProfileID,
+		SleepAfterSeconds:             item.SleepAfterSeconds,
+		ArchiveAfterSeconds:           item.ArchiveAfterSeconds,
+		TeamSpeakEnabled:              item.TeamSpeakEnabled,
+		Vanilla:                       item.Vanilla,
+		CreatorDLCs:                   append([]string(nil), item.CreatorDLCs...),
+		StartWhenReady:                item.StartWhenReady,
+		ConfigurationRevision:         item.ConfigurationRevision,
+		ServerConfigRevision:          item.ServerConfigRevision,
+		ServerConfigObjectKey:         item.ServerConfigObjectKey,
+		ServerConfigSHA256:            item.ServerConfigSHA256,
+		MissionObjectKey:              item.MissionObjectKey,
+		MissionFiles:                  missionFiles,
+		ConfiguredMission:             configuredMission,
+		CurrentMission:                currentMission,
+		WorkshopMissionSources:        workshopMissionSources,
+		WorkshopModSources:            workshopModSources,
+		WorkshopResolutionTarget:      domain.WorkshopTarget(item.WorkshopResolutionTarget),
+		WorkshopResolutionRequestKey:  item.WorkshopResolutionRequestKey,
+		WorkshopResolutionRequestedAt: workshopResolutionRequestedAt,
+		WorkshopResolutionLastTarget:  domain.WorkshopTarget(item.WorkshopResolutionLastTarget),
+		WorkshopResolutionIssue:       item.WorkshopResolutionIssue,
+		WorkshopResolutionFailedAt:    workshopResolutionFailedAt,
+		PresetObjectKey:               item.PresetObjectKey,
+		PresetRevisionSequence:        item.PresetRevisionSequence,
 		PendingPresetRevision: domain.PresetRevision{
 			Number: item.PendingPresetRevision, BaseRevision: item.PendingPresetBaseRevision, PresetObjectKey: item.PendingPresetObjectKey,
 			Modlist: domain.PresetModlistMetadata{ObjectKey: item.PendingPresetModlistKey, Filename: item.PendingPresetModlistName, SHA256: item.PendingPresetModlistSHA, SizeBytes: item.PendingPresetModlistSize, WorkshopCount: item.PendingPresetWorkshopCount},

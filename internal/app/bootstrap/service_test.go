@@ -132,6 +132,47 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 	}
 }
 
+func TestBootstrapServiceAtomicallyFinalizesWorkshopScenarioCollection(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 1, 4, 0, 0, 0, time.UTC)
+	source := domain.WorkshopMissionSource{
+		Source:     domain.WorkshopReference{PublishedFileID: 100, CanonicalURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=100"},
+		SourceKind: domain.WorkshopSourceCollection, ResolutionSHA256: strings.Repeat("a", 64),
+		AcceptedItemIDs: []uint64{200, 300}, ResolvedAt: now,
+	}
+	repository, workflow := seedBootstrapWithMutation(t, now, func(session *domain.Session) {
+		if err := session.RecordWorkshopMissionSource(source, now); err != nil {
+			t.Fatal(err)
+		}
+	})
+	firstDigest, secondDigest := strings.Repeat("b", 64), strings.Repeat("c", 64)
+	manifest := fmt.Sprintf("%s\tOne.Altis.pbo\tsessions/session-1/input/missions/%s-One.Altis.pbo\t200\n%s\tTwo.Stratis.pbo\tsessions/session-1/input/missions/%s-Two.Stratis.pbo\t300\n", firstDigest, firstDigest, secondDigest, secondDigest)
+	service, err := NewService(repository, repository, repository, &testRunner{}, nil, &testIDs{values: []string{"prepare-event", "ready-event"}}, testClock{now}, 6*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.workshopMissionManifest = &workshopManifestReader{body: []byte(manifest)}
+	request := TaskRequest{SessionID: workflow.SessionID, WorkflowID: workflow.ID, CorrelationID: workflow.CorrelationID, Action: ActionPrepare}
+	if _, err := service.Handle(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := repository.Get(context.Background(), workflow.SessionID)
+	request.Action = ActionComplete
+	if _, err := service.Handle(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	completed, _ := repository.Get(context.Background(), workflow.SessionID)
+	if completed.Version != before.Version+1 || completed.LifecycleState != domain.StateRunning || completed.ActiveWorkflowID != "" || len(completed.MissionFiles) != len(before.MissionFiles)+2 {
+		t.Fatalf("completed session = %#v", completed)
+	}
+	if completed.ConfiguredMission != before.ConfiguredMission || completed.CurrentMission != before.CurrentMission {
+		t.Fatal("Workshop collection changed configured or current mission")
+	}
+	if _, err := service.Handle(context.Background(), request); err != nil {
+		t.Fatalf("completion replay failed: %v", err)
+	}
+}
+
 func TestObserveTimesOutPersistedNonterminalCommandWithoutStepFunctionCounter(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
@@ -368,6 +409,10 @@ func TestBootstrapFailureRollsBackAndRetainsFailedPendingRevision(t *testing.T) 
 }
 
 func seedBootstrap(t *testing.T, now time.Time) (*memory.SessionRepository, domain.Workflow) {
+	return seedBootstrapWithMutation(t, now, nil)
+}
+
+func seedBootstrapWithMutation(t *testing.T, now time.Time, mutate func(*domain.Session)) (*memory.SessionRepository, domain.Workflow) {
 	t.Helper()
 	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "arma", DisplayName: "Arma", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
 	if err != nil {
@@ -381,6 +426,9 @@ func seedBootstrap(t *testing.T, now time.Time) (*memory.SessionRepository, doma
 	}
 	if err := session.AttachArtifact(domain.ArtifactPreset, "sessions/session-1/input/preset.html", now); err != nil {
 		t.Fatal(err)
+	}
+	if mutate != nil {
+		mutate(&session)
 	}
 	if err := session.AcquireProvisioningWorkflowLock("provision", time.Hour, now); err != nil {
 		t.Fatal(err)

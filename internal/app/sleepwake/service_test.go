@@ -3,6 +3,7 @@ package sleepwake
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,6 +80,11 @@ func (runner *presetRunner) Start(context.Context, domain.Session) (string, erro
 	return "mods-command-1", nil
 }
 
+func (runner *presetRunner) StartContent(context.Context, domain.Session, domain.WorkshopTarget, bool) (string, error) {
+	runner.starts++
+	return "mods-command-1", nil
+}
+
 func (runner *presetRunner) StartRollback(context.Context, domain.Session) (string, error) {
 	runner.starts++
 	return "rollback-command-1", nil
@@ -92,7 +98,7 @@ func TestWakeDispatchesApplyingPresetBeforeHealth(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 17, 23, 0, 0, 0, time.UTC)
 	runner := &presetRunner{status: ports.BootstrapCommandStatus{Status: "Success"}}
-	service := &Service{presetRunner: runner}
+	service := &Service{presetRunner: runner, contentRunner: runner}
 	session := domain.Session{ID: "session-1", ActiveWorkflowID: "wake-1", LifecycleState: domain.StateWaking, Infrastructure: domain.Infrastructure{InstanceID: "i-1"}, PendingPresetRevision: domain.PresetRevision{Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/v2.html", Status: domain.PresetRevisionApplying, StagedAt: now, ApplyWorkflowID: "wake-1", ApplyStartedAt: now}}
 	workflow := domain.Workflow{ID: "wake-1", Type: domain.WakeWorkflowType}
 	dispatched, err := service.dispatchMods(context.Background(), session, workflow)
@@ -107,5 +113,55 @@ func TestWakeDispatchesApplyingPresetBeforeHealth(t *testing.T) {
 	skipped, err := service.dispatchMods(context.Background(), session, workflow)
 	if err != nil || !skipped.Done || !skipped.Succeeded || runner.starts != 1 {
 		t.Fatalf("no-pending dispatch = %#v starts=%d err=%v", skipped, runner.starts, err)
+	}
+}
+
+func TestWakeDispatchesWorkshopMissionsWithoutPendingMods(t *testing.T) {
+	now := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
+	runner := &presetRunner{status: ports.BootstrapCommandStatus{Status: "Success"}}
+	service := &Service{presetRunner: runner, contentRunner: runner}
+	session := domain.Session{ID: "session-1", ActiveWorkflowID: "wake-1", LifecycleState: domain.StateWaking, Infrastructure: domain.Infrastructure{InstanceID: "i-1"}, WorkshopMissionSources: []domain.WorkshopMissionSource{{AcceptedItemIDs: []uint64{42}, ResolvedAt: now}}}
+	workflow := domain.Workflow{ID: "wake-1", Type: domain.WakeWorkflowType}
+	result, err := service.dispatchContent(context.Background(), session, workflow)
+	if err != nil || result.CommandID != "mods-command-1" || runner.starts != 1 {
+		t.Fatalf("dispatch = %#v starts=%d err=%v", result, runner.starts, err)
+	}
+}
+
+func TestWakeSkipsAlreadyMaterializedWorkshopMissions(t *testing.T) {
+	now := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
+	runner := &presetRunner{}
+	service := &Service{presetRunner: runner, contentRunner: runner}
+	session := domain.Session{
+		ID: "session-1", ActiveWorkflowID: "wake-1", LifecycleState: domain.StateWaking,
+		Infrastructure:         domain.Infrastructure{InstanceID: "i-1"},
+		WorkshopMissionSources: []domain.WorkshopMissionSource{{AcceptedItemIDs: []uint64{42}, ResolvedAt: now}},
+		MissionFiles:           []domain.MissionRecord{{WorkshopItemID: 42, ObjectKey: "sessions/session-1/input/missions/" + strings.Repeat("a", 64) + "-Scenario.Altis.pbo", Filename: "Scenario.Altis.pbo", Status: domain.ArtifactAccepted, AddedAt: now.Add(time.Minute)}},
+	}
+	workflow := domain.Workflow{ID: "wake-1", Type: domain.WakeWorkflowType}
+
+	result, err := service.dispatchContent(context.Background(), session, workflow)
+	if err != nil || !result.Done || !result.Succeeded || runner.starts != 0 {
+		t.Fatalf("dispatch = %#v starts=%d err=%v", result, runner.starts, err)
+	}
+}
+
+func TestWakeContentFailurePreservesActionableWorkshopCode(t *testing.T) {
+	now := time.Date(2026, 9, 4, 3, 0, 0, 0, time.UTC)
+	runner := &presetRunner{status: ports.BootstrapCommandStatus{
+		Status:       "Failed",
+		ErrorCode:    "ERR_WORKSHOP_DISK_SPACE",
+		ErrorMessage: "The managed host does not have enough free disk space to stage the Workshop content.",
+	}}
+	service := &Service{presetRunner: runner, contentRunner: runner}
+	session := domain.Session{ID: "session-1", ActiveWorkflowID: "wake-1", LifecycleState: domain.StateWaking, Infrastructure: domain.Infrastructure{InstanceID: "i-1"}, WorkshopMissionSources: []domain.WorkshopMissionSource{{AcceptedItemIDs: []uint64{42}, ResolvedAt: now}}}
+	workflow := domain.Workflow{ID: "wake-1", Type: domain.WakeWorkflowType}
+
+	result, err := service.observeContent(context.Background(), session, workflow, "command-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Done || result.Succeeded || result.ErrorCode != "ERR_WORKSHOP_DISK_SPACE" {
+		t.Fatalf("result = %#v", result)
 	}
 }

@@ -156,8 +156,14 @@ data "aws_iam_policy_document" "artifact_worker" {
 
   statement {
     sid       = "ObserveLiveMissionCopy"
-    actions   = ["ssm:GetCommandInvocation"]
+    actions   = ["ssm:GetCommandInvocation", "ssm:ListCommands", "ssm:CancelCommand"]
     resources = ["*"]
+  }
+
+  statement {
+    sid       = "ReadWorkshopMissionManifests"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.session_assets.arn}/sessions/*/workshop-resolutions/*.tsv"]
   }
 
   statement {
@@ -205,18 +211,22 @@ resource "aws_lambda_function" "artifact_worker" {
   architectures    = ["x86_64"]
   filename         = local.artifact_worker_package_path
   source_code_hash = var.artifact_worker_lambda_source_hash != null ? var.artifact_worker_lambda_source_hash : try(filebase64sha256(local.artifact_worker_package_path), null)
-  timeout          = 45
+  timeout          = 90
   memory_size      = 512
 
   environment {
     variables = {
-      APP_ENV                     = var.environment
-      LOG_LEVEL                   = "info"
-      METADATA_TABLE_NAME         = aws_dynamodb_table.metadata.name
-      SESSION_ASSETS_BUCKET       = aws_s3_bucket.session_assets.id
-      NOTIFICATION_QUEUE_URL      = aws_sqs_queue.notifications.url
-      COMMAND_QUEUE_URL           = aws_sqs_queue.commands.url
-      IDEMPOTENCY_RETENTION_HOURS = "168"
+      APP_ENV                           = var.environment
+      LOG_LEVEL                         = "info"
+      METADATA_TABLE_NAME               = aws_dynamodb_table.metadata.name
+      SESSION_ASSETS_BUCKET             = aws_s3_bucket.session_assets.id
+      NOTIFICATION_QUEUE_URL            = aws_sqs_queue.notifications.url
+      COMMAND_QUEUE_URL                 = aws_sqs_queue.commands.url
+      IDEMPOTENCY_RETENTION_HOURS       = "168"
+      BOOTSTRAP_SCRIPT_KEY              = aws_s3_object.bootstrap_script.key
+      STEAM_AUTH_SECRET_ID              = aws_secretsmanager_secret.steam_authorization_cache.name
+      TEAMSPEAK_VERSION                 = var.teamspeak_version
+      BOOTSTRAP_COMMAND_TIMEOUT_SECONDS = tostring(var.bootstrap_command_timeout_seconds)
     }
   }
 
@@ -224,6 +234,33 @@ resource "aws_lambda_function" "artifact_worker" {
     aws_cloudwatch_log_group.artifact_worker,
     aws_iam_role_policy.artifact_worker,
   ]
+}
+
+resource "aws_cloudwatch_event_rule" "workshop_content_sync_terminal" {
+  name        = "${local.name_prefix}-workshop-content-sync-terminal"
+  description = "Deliver terminal SSM command state changes for bounded Workshop content synchronization."
+  event_pattern = jsonencode({
+    source      = ["aws.ssm"]
+    detail-type = ["EC2 Command Status-change Notification"]
+    detail = {
+      document-name = ["AWS-RunShellScript"]
+      status        = ["Success", "Failed", "TimedOut", "Cancelled"]
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "workshop_content_sync_terminal" {
+  rule      = aws_cloudwatch_event_rule.workshop_content_sync_terminal.name
+  target_id = "artifact-worker"
+  arn       = aws_lambda_function.artifact_worker.arn
+}
+
+resource "aws_lambda_permission" "eventbridge_workshop_content_sync" {
+  statement_id  = "AllowEventBridgeWorkshopContentSync"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.artifact_worker.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.workshop_content_sync_terminal.arn
 }
 
 resource "aws_lambda_event_source_mapping" "artifact_worker" {

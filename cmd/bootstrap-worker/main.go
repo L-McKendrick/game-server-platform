@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3objects"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmbootstrap"
 	"github.com/L-McKendrick/game-server-platform/internal/app/bootstrap"
@@ -78,6 +79,7 @@ func build(ctx context.Context) (*handler, error) {
 		sqsnotification.New(sqs.NewFromConfig(awsConfig), baseConfig.NotificationQueueURL),
 		identity.Generator{}, appsession.SystemClock{},
 		time.Duration(timeout)*time.Second,
+		bootstrap.WithWorkshopMissionManifest(s3objects.New(s3.NewFromConfig(awsConfig), baseConfig.SessionAssetsBucket)),
 	)
 	if err != nil {
 		return nil, err

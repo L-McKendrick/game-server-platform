@@ -297,51 +297,55 @@ func (session Session) requireRestoreWorkflow(workflowID string) error {
 
 // ArchiveManifest is the versioned, portable description stored beside an archive.
 type ArchiveManifest struct {
-	SchemaVersion                int                    `json:"schema_version"`
-	ArchiveID                    string                 `json:"archive_id"`
-	SessionID                    string                 `json:"session_id"`
-	SessionName                  string                 `json:"session_name,omitempty"`
-	SessionSlug                  string                 `json:"session_slug,omitempty"`
-	Description                  string                 `json:"description,omitempty"`
-	CreatedAt                    string                 `json:"created_at"`
-	Format                       string                 `json:"format"`
-	ObjectKey                    string                 `json:"object_key"`
-	SHA256                       string                 `json:"sha256"`
-	SizeBytes                    int64                  `json:"size_bytes"`
-	ContentRoots                 []string               `json:"content_roots"`
-	GameProfileID                string                 `json:"game_profile_id"`
-	ConfigurationRevision        int64                  `json:"configuration_revision"`
-	MissionObjectKey             string                 `json:"mission_object_key"`
-	MissionFiles                 []MissionRecord        `json:"mission_files,omitempty"`
-	ConfiguredMission            MissionSelection       `json:"configured_mission"`
-	CurrentMission               MissionSelection       `json:"current_mission,omitempty"`
-	PresetObjectKey              string                 `json:"preset_object_key"`
-	PresetRevisionSequence       int64                  `json:"preset_revision_sequence,omitempty"`
-	ActivePresetRevision         *ArchivePresetRevision `json:"active_preset_revision,omitempty"`
-	PendingPresetRevision        *ArchivePresetRevision `json:"pending_preset_revision,omitempty"`
-	ServerPresetObjectKey        string                 `json:"server_preset_object_key,omitempty"`
-	ServerPresetRevisionSequence int64                  `json:"server_preset_revision_sequence,omitempty"`
-	ActiveServerPresetRevision   *ArchivePresetRevision `json:"active_server_preset_revision,omitempty"`
-	PendingServerPresetRevision  *ArchivePresetRevision `json:"pending_server_preset_revision,omitempty"`
-	Vanilla                      bool                   `json:"vanilla"`
-	CreatorDLCs                  []string               `json:"creator_dlcs,omitempty"`
-	SourceInstanceID             string                 `json:"source_instance_id"`
-	SourceDataVolumeID           string                 `json:"source_data_volume_id"`
+	SchemaVersion                int                     `json:"schema_version"`
+	ArchiveID                    string                  `json:"archive_id"`
+	SessionID                    string                  `json:"session_id"`
+	SessionName                  string                  `json:"session_name,omitempty"`
+	SessionSlug                  string                  `json:"session_slug,omitempty"`
+	Description                  string                  `json:"description,omitempty"`
+	CreatedAt                    string                  `json:"created_at"`
+	Format                       string                  `json:"format"`
+	ObjectKey                    string                  `json:"object_key"`
+	SHA256                       string                  `json:"sha256"`
+	SizeBytes                    int64                   `json:"size_bytes"`
+	ContentRoots                 []string                `json:"content_roots"`
+	GameProfileID                string                  `json:"game_profile_id"`
+	ConfigurationRevision        int64                   `json:"configuration_revision"`
+	MissionObjectKey             string                  `json:"mission_object_key"`
+	MissionFiles                 []MissionRecord         `json:"mission_files,omitempty"`
+	WorkshopMissionSources       []WorkshopMissionSource `json:"workshop_mission_sources,omitempty"`
+	WorkshopModSources           []WorkshopModSource     `json:"workshop_mod_sources,omitempty"`
+	ConfiguredMission            MissionSelection        `json:"configured_mission"`
+	CurrentMission               MissionSelection        `json:"current_mission,omitempty"`
+	PresetObjectKey              string                  `json:"preset_object_key"`
+	PresetRevisionSequence       int64                   `json:"preset_revision_sequence,omitempty"`
+	ActivePresetRevision         *ArchivePresetRevision  `json:"active_preset_revision,omitempty"`
+	PendingPresetRevision        *ArchivePresetRevision  `json:"pending_preset_revision,omitempty"`
+	ServerPresetObjectKey        string                  `json:"server_preset_object_key,omitempty"`
+	ServerPresetRevisionSequence int64                   `json:"server_preset_revision_sequence,omitempty"`
+	ActiveServerPresetRevision   *ArchivePresetRevision  `json:"active_server_preset_revision,omitempty"`
+	PendingServerPresetRevision  *ArchivePresetRevision  `json:"pending_server_preset_revision,omitempty"`
+	Vanilla                      bool                    `json:"vanilla"`
+	CreatorDLCs                  []string                `json:"creator_dlcs,omitempty"`
+	SourceInstanceID             string                  `json:"source_instance_id"`
+	SourceDataVolumeID           string                  `json:"source_data_volume_id"`
 }
 
 // ArchivePresetRevision is a redacted, portable snapshot of revision intent.
 // Workflow IDs and free-form failure text deliberately stay in audit storage.
 type ArchivePresetRevision struct {
-	Number              int64                     `json:"number"`
-	BaseRevision        int64                     `json:"base_revision"`
-	PresetObjectKey     string                    `json:"preset_object_key"`
-	Modlist             ArchivePresetModlist      `json:"modlist,omitempty"`
-	Status              PresetRevisionStatus      `json:"status"`
-	StagedAt            string                    `json:"staged_at"`
-	ActivatedAt         string                    `json:"activated_at,omitempty"`
-	FailedAt            string                    `json:"failed_at,omitempty"`
-	RollbackDisposition PresetRollbackDisposition `json:"rollback_disposition,omitempty"`
-	RollbackAt          string                    `json:"rollback_at,omitempty"`
+	Number                   int64                     `json:"number"`
+	BaseRevision             int64                     `json:"base_revision"`
+	PresetObjectKey          string                    `json:"preset_object_key"`
+	Modlist                  ArchivePresetModlist      `json:"modlist,omitempty"`
+	Status                   PresetRevisionStatus      `json:"status"`
+	StagedAt                 string                    `json:"staged_at"`
+	ActivatedAt              string                    `json:"activated_at,omitempty"`
+	FailedAt                 string                    `json:"failed_at,omitempty"`
+	RollbackDisposition      PresetRollbackDisposition `json:"rollback_disposition,omitempty"`
+	RollbackAt               string                    `json:"rollback_at,omitempty"`
+	WorkshopResolutionSHA256 string                    `json:"workshop_resolution_sha256,omitempty"`
+	WorkshopSourceID         uint64                    `json:"workshop_source_id,omitempty"`
 }
 
 type ArchivePresetModlist struct {
@@ -361,6 +365,7 @@ func ArchivePresetRevisionSnapshot(revision PresetRevision) *ArchivePresetRevisi
 		Modlist: ArchivePresetModlist{ObjectKey: revision.Modlist.ObjectKey, Filename: revision.Modlist.Filename, SHA256: revision.Modlist.SHA256, SizeBytes: revision.Modlist.SizeBytes, WorkshopCount: revision.Modlist.WorkshopCount},
 		Status:  revision.Status, StagedAt: archiveTime(revision.StagedAt), ActivatedAt: archiveTime(revision.ActivatedAt),
 		FailedAt: archiveTime(revision.FailedAt), RollbackDisposition: revision.RollbackDisposition, RollbackAt: archiveTime(revision.RollbackAt),
+		WorkshopResolutionSHA256: revision.WorkshopResolutionSHA256, WorkshopSourceID: revision.WorkshopSourceID,
 	}
 }
 
@@ -404,6 +409,37 @@ func (manifest ArchiveManifest) Validate() error {
 	}
 	if err := manifest.validateServerPresetRevisionIntent(); err != nil {
 		return err
+	}
+	if len(manifest.WorkshopMissionSources) > MaximumWorkshopMissionSources || workshopMissionSnapshotItemCount(manifest.WorkshopMissionSources) > MaximumWorkshopMissionSnapshotItems || workshopMissionItemCount(manifest.WorkshopMissionSources) > MaximumWorkshopMissionItems {
+		return fmt.Errorf("manifest Workshop mission history exceeds platform limits")
+	}
+	for _, source := range manifest.WorkshopMissionSources {
+		if err := source.Validate(); err != nil {
+			return fmt.Errorf("manifest Workshop mission source is invalid: %w", err)
+		}
+	}
+	if len(manifest.WorkshopModSources) > MaximumWorkshopMissionSources || workshopModSnapshotItemCount(manifest.WorkshopModSources) > MaximumWorkshopModSnapshotItems {
+		return fmt.Errorf("manifest Workshop mod history exceeds platform limits")
+	}
+	for _, source := range manifest.WorkshopModSources {
+		if err := source.Validate(); err != nil {
+			return fmt.Errorf("manifest Workshop mod source is invalid: %w", err)
+		}
+	}
+	for _, revision := range []*ArchivePresetRevision{manifest.ActivePresetRevision, manifest.PendingPresetRevision} {
+		if revision == nil || revision.WorkshopResolutionSHA256 == "" {
+			continue
+		}
+		matched := false
+		for _, source := range manifest.WorkshopModSources {
+			if source.ResolutionSHA256 == revision.WorkshopResolutionSHA256 && source.Source.PublishedFileID == revision.WorkshopSourceID && source.PresetObjectKey == revision.PresetObjectKey && source.ModlistObjectKey == revision.Modlist.ObjectKey {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("manifest Workshop preset revision has no matching source snapshot")
+		}
 	}
 	if !manifest.IncludesReadableIdentity() {
 		return nil
@@ -497,6 +533,9 @@ func (revision ArchivePresetRevision) validate(active bool) error {
 	}
 	if revision.Modlist.ObjectKey != "" && !validManagedObjectKey(revision.Modlist.ObjectKey) {
 		return fmt.Errorf("modlist object key is invalid")
+	}
+	if (revision.WorkshopResolutionSHA256 == "") != (revision.WorkshopSourceID == 0) || (revision.WorkshopResolutionSHA256 != "" && !validSHA256(revision.WorkshopResolutionSHA256)) {
+		return fmt.Errorf("Workshop revision provenance is invalid")
 	}
 	if !validArchiveTime(revision.StagedAt) {
 		return fmt.Errorf("staged timestamp is invalid")

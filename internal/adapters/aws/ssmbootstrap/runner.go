@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -24,11 +25,19 @@ import (
 const (
 	documentName                = "AWS-RunShellScript"
 	RuntimeConfigurationVersion = "steam-auth-cache-v1"
+	bashShebang                 = "#!/usr/bin/env bash\n"
 )
 
 type API interface {
 	SendCommand(context.Context, *ssm.SendCommandInput, ...func(*ssm.Options)) (*ssm.SendCommandOutput, error)
 	GetCommandInvocation(context.Context, *ssm.GetCommandInvocationInput, ...func(*ssm.Options)) (*ssm.GetCommandInvocationOutput, error)
+}
+
+type commandAPI interface {
+	ListCommands(context.Context, *ssm.ListCommandsInput, ...func(*ssm.Options)) (*ssm.ListCommandsOutput, error)
+}
+type commandCancelAPI interface {
+	CancelCommand(context.Context, *ssm.CancelCommandInput, ...func(*ssm.Options)) (*ssm.CancelCommandOutput, error)
 }
 
 type progressAPI interface {
@@ -53,6 +62,7 @@ type Runner struct {
 
 var _ ports.BootstrapRunner = (*Runner)(nil)
 var _ ports.PresetRevisionRunner = (*Runner)(nil)
+var _ ports.WorkshopContentRunner = (*Runner)(nil)
 
 func New(client API, config Config) (*Runner, error) {
 	config.Region = strings.TrimSpace(config.Region)
@@ -106,22 +116,112 @@ func (runner *Runner) StartRollback(ctx context.Context, session domain.Session)
 	return runner.start(ctx, session, true)
 }
 
-func (runner *Runner) start(ctx context.Context, session domain.Session, rollback bool) (string, error) {
-	script, err := runner.commandMode(session, rollback)
+func (runner *Runner) StartContent(ctx context.Context, session domain.Session, target domain.WorkshopTarget, promoteMods bool) (string, error) {
+	if session.ActiveWorkflowID == "" || session.Infrastructure.InstanceID == "" {
+		return "", fmt.Errorf("%w: content sync requires an active workflow and managed instance", domain.ErrInvalidTransition)
+	}
+	if target != domain.WorkshopTargetMission && target != domain.WorkshopTargetMods && target != domain.WorkshopTarget("all") {
+		return "", fmt.Errorf("unsupported Workshop sync target %q", target)
+	}
+	script, err := runner.commandMode(session, false, true)
 	if err != nil {
 		return "", err
 	}
+	prefix := "export GSP_OPERATION_MODE=workshop_sync\nexport WORKSHOP_SYNC_TARGET=" + string(target) + "\n"
+	if promoteMods {
+		prefix += "export WORKSHOP_PROMOTE_MODS=true\n"
+	} else {
+		prefix += "export WORKSHOP_PROMOTE_MODS=false\n"
+	}
+	if !strings.HasPrefix(script, bashShebang) {
+		return "", fmt.Errorf("generated Workshop sync command is missing its Bash interpreter boundary")
+	}
+	script = bashShebang + prefix + strings.TrimPrefix(script, bashShebang)
+	return runner.send(ctx, session, script, "gsp:workshop-sync:"+session.ID+":"+session.ActiveWorkflowID, "workshop-sync")
+}
+
+func (runner *Runner) ResolveContentCommand(ctx context.Context, commandID string) (string, string, string, error) {
+	client, ok := runner.client.(commandAPI)
+	if !ok {
+		return "", "", "", fmt.Errorf("Systems Manager command lookup is unavailable")
+	}
+	output, err := client.ListCommands(ctx, &ssm.ListCommandsInput{CommandId: aws.String(strings.TrimSpace(commandID))})
+	if err != nil || len(output.Commands) != 1 {
+		if err != nil {
+			return "", "", "", err
+		}
+		return "", "", "", domain.ErrNotFound
+	}
+	command := output.Commands[0]
+	const prefix = "gsp:workshop-sync:"
+	comment := strings.TrimSpace(aws.ToString(command.Comment))
+	if !strings.HasPrefix(comment, prefix) || len(command.InstanceIds) != 1 {
+		return "", "", "", fmt.Errorf("%w: untrusted Workshop sync command", domain.ErrForbidden)
+	}
+	parts := strings.Split(strings.TrimPrefix(comment, prefix), ":")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(parts[0]+parts[1], " \t\r\n/") {
+		return "", "", "", fmt.Errorf("%w: malformed Workshop sync identity", domain.ErrForbidden)
+	}
+	return parts[0], parts[1], command.InstanceIds[0], nil
+}
+
+func (runner *Runner) FindContentCommand(ctx context.Context, sessionID, workflowID, instanceID string) (string, error) {
+	client, ok := runner.client.(commandAPI)
+	if !ok {
+		return "", fmt.Errorf("Systems Manager command lookup is unavailable")
+	}
+	wantComment := "gsp:workshop-sync:" + strings.TrimSpace(sessionID) + ":" + strings.TrimSpace(workflowID)
+	instanceID = strings.TrimSpace(instanceID)
+	var token *string
+	for pages := 0; pages < 4; pages++ {
+		output, err := client.ListCommands(ctx, &ssm.ListCommandsInput{MaxResults: aws.Int32(50), NextToken: token})
+		if err != nil {
+			return "", err
+		}
+		for _, command := range output.Commands {
+			if strings.TrimSpace(aws.ToString(command.Comment)) == wantComment && len(command.InstanceIds) == 1 && command.InstanceIds[0] == instanceID {
+				if id := strings.TrimSpace(aws.ToString(command.CommandId)); id != "" {
+					return id, nil
+				}
+			}
+		}
+		token = output.NextToken
+		if token == nil || strings.TrimSpace(aws.ToString(token)) == "" {
+			break
+		}
+	}
+	return "", domain.ErrNotFound
+}
+
+func (runner *Runner) CancelContentCommand(ctx context.Context, commandID, instanceID string) error {
+	client, ok := runner.client.(commandCancelAPI)
+	if !ok {
+		return fmt.Errorf("Systems Manager command cancellation is unavailable")
+	}
+	_, err := client.CancelCommand(ctx, &ssm.CancelCommandInput{CommandId: aws.String(strings.TrimSpace(commandID)), InstanceIds: []string{strings.TrimSpace(instanceID)}})
+	return err
+}
+
+func (runner *Runner) start(ctx context.Context, session domain.Session, rollback bool) (string, error) {
+	script, err := runner.commandMode(session, rollback, false)
+	if err != nil {
+		return "", err
+	}
+	return runner.send(ctx, session, script, "game-server-platform bootstrap "+session.ID, "bootstrap")
+}
+
+func (runner *Runner) send(ctx context.Context, session domain.Session, script, comment, logKind string) (string, error) {
 	output, err := runner.client.SendCommand(ctx, &ssm.SendCommandInput{
 		DocumentName: aws.String(documentName),
 		InstanceIds:  []string{session.Infrastructure.InstanceID},
-		Comment:      aws.String("game-server-platform bootstrap " + session.ID),
+		Comment:      aws.String(comment),
 		Parameters: map[string][]string{
 			"commands":         {script},
 			"executionTimeout": {fmt.Sprintf("%d", runner.config.TimeoutSeconds)},
 		},
 		TimeoutSeconds:     aws.Int32(60),
 		OutputS3BucketName: aws.String(runner.config.AssetsBucket),
-		OutputS3KeyPrefix:  aws.String("sessions/" + session.ID + "/logs/bootstrap"),
+		OutputS3KeyPrefix:  aws.String("sessions/" + session.ID + "/logs/" + logKind),
 		OutputS3Region:     aws.String(runner.config.Region),
 	})
 	if err != nil {
@@ -215,6 +315,33 @@ func bootstrapFailure(stderr string) (string, string) {
 	if strings.Contains(stderr, "ERR_STEAM_REAUTH_REQUIRED") {
 		return "ERR_STEAM_REAUTH_REQUIRED", "Steam authorization requires operator re-enrollment."
 	}
+	if strings.Contains(stderr, "ERR_WORKSHOP_SCENARIO_RESUBMIT") {
+		return "ERR_WORKSHOP_SCENARIO_RESUBMIT", "The Workshop scenario changed after metadata resolution."
+	}
+	if strings.Contains(stderr, "ERR_WORKSHOP_SCENARIO_PAYLOAD") {
+		return "ERR_WORKSHOP_SCENARIO_PAYLOAD", "The Workshop scenario download did not contain one safe deployable mission payload."
+	}
+	if strings.Contains(stderr, "ERR_WORKSHOP_DISK_SPACE") {
+		return "ERR_WORKSHOP_DISK_SPACE", "The managed host does not have enough free disk space to stage the Workshop content."
+	}
+	if strings.Contains(stderr, "ERR_WORKSHOP_VISIBILITY") {
+		return "ERR_WORKSHOP_VISIBILITY", "A Workshop item is not publicly downloadable."
+	}
+	if strings.Contains(stderr, "ERR_WORKSHOP_ITEM_REMOVED") {
+		return "ERR_WORKSHOP_ITEM_REMOVED", "A recorded Workshop item was removed or is no longer downloadable."
+	}
+	if strings.Contains(stderr, "ERR_WORKSHOP_DOWNLOAD_TIMEOUT") {
+		return "ERR_WORKSHOP_DOWNLOAD_TIMEOUT", "Steam did not complete an individual Workshop item download within the bounded retries."
+	}
+	if strings.Contains(stderr, "ERR_WORKSHOP_ITEM_DOWNLOAD") {
+		return "ERR_WORKSHOP_ITEM_DOWNLOAD", "An individual Workshop item could not be downloaded."
+	}
+	if strings.Contains(stderr, "ERR_WORKSHOP_METADATA_DRIFT") {
+		return "ERR_WORKSHOP_METADATA_DRIFT", "Workshop publisher metadata changed after this snapshot was resolved."
+	}
+	if strings.Contains(stderr, "ERR_WORKSHOP_RESULT_PUBLISH") {
+		return "ERR_WORKSHOP_RESULT_PUBLISH", "The platform could not publish the Workshop synchronization result."
+	}
 	return "", domain.SanitizeDiagnostic(stderr)
 }
 
@@ -247,10 +374,10 @@ func parseCheckpoints(output string) []domain.ProgressMilestone {
 }
 
 func (runner *Runner) command(session domain.Session) (string, error) {
-	return runner.commandMode(session, false)
+	return runner.commandMode(session, false, false)
 }
 
-func (runner *Runner) commandMode(session domain.Session, rollback bool) (string, error) {
+func (runner *Runner) commandMode(session domain.Session, rollback, pendingWorkshopMissionsOnly bool) (string, error) {
 	creatorDLCFolders, err := domain.CreatorDLCModFolders(session.CreatorDLCs)
 	if err != nil {
 		return "", fmt.Errorf("creator DLC selection: %w", err)
@@ -264,43 +391,69 @@ func (runner *Runner) commandMode(session domain.Session, rollback bool) (string
 	if err != nil {
 		return "", err
 	}
+	workshopMissionManifest, workshopMissionRevision, err := resolvedWorkshopMissionManifest(session, pendingWorkshopMissionsOnly)
+	if err != nil {
+		return "", err
+	}
 	if rollback {
 		active := session.EffectiveActivePresetRevision()
 		presetObjectKey, presetRevision = active.PresetObjectKey, active.Number
 		serverActive := session.EffectiveActiveServerPresetRevision()
 		serverPresetObjectKey, serverPresetRevision = serverActive.PresetObjectKey, serverActive.Number
 	}
+	workshopModResolution := ""
+	if pending := session.PendingPresetRevision; pending.Number == presetRevision && pending.PresetObjectKey == presetObjectKey {
+		workshopModResolution = pending.WorkshopResolutionSHA256
+	} else if active := session.EffectiveActivePresetRevision(); active.Number == presetRevision && active.PresetObjectKey == presetObjectKey {
+		workshopModResolution = active.WorkshopResolutionSHA256
+	}
+	workshopModManifest := ""
+	if workshopModResolution != "" {
+		for _, source := range session.WorkshopModSources {
+			if source.ResolutionSHA256 != workshopModResolution {
+				continue
+			}
+			for _, item := range source.AcceptedItems {
+				workshopModManifest += fmt.Sprintf("%d\t%d\n", item.PublishedFileID, item.UpdatedAt.Unix())
+			}
+			break
+		}
+	}
 	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || mission.Template == "" || (!session.Vanilla && presetObjectKey == "" && serverPresetObjectKey == "" && len(creatorDLCFolders) == 0) {
 		return "", fmt.Errorf("instance, data volume, mission selection, and modded content are required")
 	}
 	values := map[string]string{
-		"SESSION_ID_B64":             session.ID,
-		"WORKFLOW_ID_B64":            session.ActiveWorkflowID,
-		"DISPLAY_NAME_B64":           session.DisplayName,
-		"DATA_VOLUME_ID_B64":         session.Infrastructure.DataVolumeID,
-		"MISSION_KEY_B64":            mission.ObjectKey,
-		"MISSION_TEMPLATE_B64":       mission.Template,
-		"MISSION_MANIFEST_B64":       missionManifest,
-		"CONTENT_REVISION_B64":       contentDeploymentRevision(session, missionManifest, runner.config.BootstrapScriptKey),
-		"SERVER_CONFIG_KEY_B64":      session.ServerConfigObjectKey,
-		"SERVER_CONFIG_SHA_B64":      session.ServerConfigSHA256,
-		"SERVER_CONFIG_REV_B64":      fmt.Sprintf("%d", session.ServerConfigRevision),
-		"PRESET_KEY_B64":             presetObjectKey,
-		"PRESET_REVISION_B64":        fmt.Sprintf("%d", presetRevision),
-		"PRESET_ROLLBACK_B64":        fmt.Sprintf("%t", rollback),
-		"SERVER_PRESET_KEY_B64":      serverPresetObjectKey,
-		"SERVER_PRESET_REVISION_B64": fmt.Sprintf("%d", serverPresetRevision),
-		"CREATOR_DLC_MODS_B64":       strings.Join(creatorDLCFolders, ";"),
-		"MOD_CONFIG_REVISION_B64":    fmt.Sprintf("%d", session.ConfigurationRevision),
-		"ASSETS_BUCKET_B64":          runner.config.AssetsBucket,
-		"METADATA_TABLE_B64":         runner.config.MetadataTableName,
-		"STEAM_AUTH_SECRET_B64":      runner.config.SteamAuthSecretID,
-		"AWS_REGION_B64":             runner.config.Region,
-		"TEAMSPEAK_VERSION_B64":      runner.config.TeamSpeakVersion,
+		"SESSION_ID_B64":                session.ID,
+		"WORKFLOW_ID_B64":               session.ActiveWorkflowID,
+		"DISPLAY_NAME_B64":              session.DisplayName,
+		"DATA_VOLUME_ID_B64":            session.Infrastructure.DataVolumeID,
+		"MISSION_KEY_B64":               mission.ObjectKey,
+		"MISSION_TEMPLATE_B64":          mission.Template,
+		"MISSION_MANIFEST_B64":          missionManifest,
+		"CONTENT_REVISION_B64":          contentDeploymentRevision(session, missionManifest, runner.config.BootstrapScriptKey),
+		"WORKSHOP_MISSION_MANIFEST_B64": workshopMissionManifest,
+		"WORKSHOP_MISSION_REVISION_B64": workshopMissionRevision,
+		"SERVER_CONFIG_KEY_B64":         session.ServerConfigObjectKey,
+		"SERVER_CONFIG_SHA_B64":         session.ServerConfigSHA256,
+		"SERVER_CONFIG_REV_B64":         fmt.Sprintf("%d", session.ServerConfigRevision),
+		"PRESET_KEY_B64":                presetObjectKey,
+		"PRESET_REVISION_B64":           fmt.Sprintf("%d", presetRevision),
+		"WORKSHOP_MOD_RESOLUTION_B64":   workshopModResolution,
+		"WORKSHOP_MOD_MANIFEST_B64":     workshopModManifest,
+		"PRESET_ROLLBACK_B64":           fmt.Sprintf("%t", rollback),
+		"SERVER_PRESET_KEY_B64":         serverPresetObjectKey,
+		"SERVER_PRESET_REVISION_B64":    fmt.Sprintf("%d", serverPresetRevision),
+		"CREATOR_DLC_MODS_B64":          strings.Join(creatorDLCFolders, ";"),
+		"MOD_CONFIG_REVISION_B64":       fmt.Sprintf("%d", session.ConfigurationRevision),
+		"ASSETS_BUCKET_B64":             runner.config.AssetsBucket,
+		"METADATA_TABLE_B64":            runner.config.MetadataTableName,
+		"STEAM_AUTH_SECRET_B64":         runner.config.SteamAuthSecretID,
+		"AWS_REGION_B64":                runner.config.Region,
+		"TEAMSPEAK_VERSION_B64":         runner.config.TeamSpeakVersion,
 	}
 	var command strings.Builder
-	command.WriteString("#!/usr/bin/env bash\nset -Eeuo pipefail\numask 077\n")
-	for _, key := range []string{"SESSION_ID_B64", "WORKFLOW_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "MISSION_MANIFEST_B64", "CONTENT_REVISION_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
+	command.WriteString(bashShebang + "set -Eeuo pipefail\numask 077\n")
+	for _, key := range []string{"SESSION_ID_B64", "WORKFLOW_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "MISSION_MANIFEST_B64", "CONTENT_REVISION_B64", "WORKSHOP_MISSION_MANIFEST_B64", "WORKSHOP_MISSION_REVISION_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "WORKSHOP_MOD_RESOLUTION_B64", "WORKSHOP_MOD_MANIFEST_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
 		command.WriteString("export " + key + "='" + base64.StdEncoding.EncodeToString([]byte(values[key])) + "'\n")
 	}
 	if session.TeamSpeakEnabled {
@@ -373,4 +526,81 @@ func acceptedMissionManifest(session domain.Session) (string, error) {
 		manifest.WriteString(checksum + "\t" + mission.Filename + "\t" + mission.ObjectKey + "\n")
 	}
 	return manifest.String(), nil
+}
+
+func resolvedWorkshopMissionManifest(session domain.Session, pendingOnly bool) (string, string, error) {
+	type snapshot struct {
+		id       uint64
+		digest   string
+		filename string
+		fileSize int64
+	}
+	snapshots := make([]snapshot, 0, len(session.WorkshopMissionSources))
+	pending := map[uint64]bool{}
+	if pendingOnly {
+		for _, itemID := range session.PendingWorkshopMissionItemIDs() {
+			pending[itemID] = true
+		}
+	}
+	for _, source := range session.WorkshopMissionSources {
+		if err := source.Validate(); err != nil {
+			return "", "", fmt.Errorf("Workshop mission source: %w", err)
+		}
+		if pendingOnly {
+			sourcePending := false
+			for _, itemID := range source.AcceptedItemIDs {
+				if pending[itemID] {
+					sourcePending = true
+					break
+				}
+			}
+			if !sourcePending {
+				continue
+			}
+		}
+		if len(source.AcceptedItems) == 0 {
+			return "", "", fmt.Errorf("Workshop mission source must be resubmitted to capture its canonical filename")
+		}
+		for _, item := range source.AcceptedItems {
+			if pendingOnly && !pending[item.PublishedFileID] {
+				continue
+			}
+			snapshots = append(snapshots, snapshot{id: item.PublishedFileID, digest: source.ResolutionSHA256, filename: item.Filename, fileSize: item.FileSize})
+		}
+	}
+	slices.SortFunc(snapshots, func(a, b snapshot) int {
+		if a.id < b.id {
+			return -1
+		}
+		if a.id > b.id {
+			return 1
+		}
+		if compared := strings.Compare(a.digest, b.digest); compared != 0 {
+			return compared
+		}
+		return strings.Compare(a.filename, b.filename)
+	})
+	revision, err := session.WorkshopMissionRevision()
+	if err != nil {
+		return "", "", err
+	}
+	items := make([]snapshot, 0, len(snapshots))
+	for _, item := range snapshots {
+		if len(items) > 0 && items[len(items)-1].id == item.id {
+			prior := items[len(items)-1]
+			if prior.filename != item.filename || prior.fileSize != item.fileSize {
+				return "", "", fmt.Errorf("Workshop scenario %d has conflicting immutable metadata; resubmit its sources", item.id)
+			}
+			continue
+		}
+		items = append(items, item)
+	}
+	var manifest strings.Builder
+	for _, item := range items {
+		fmt.Fprintf(&manifest, "%d\t%s\t%s\t%d\n", item.id, revision, item.filename, item.fileSize)
+	}
+	if len(items) > domain.MaximumWorkshopMissionItems {
+		return "", "", fmt.Errorf("Workshop mission item limit exceeded")
+	}
+	return manifest.String(), revision, nil
 }

@@ -57,6 +57,7 @@ func run() error {
 		clock,
 		baseConfig.IdempotencyRetention,
 		appsession.WithArtifactQueue(artifactQueue),
+		appsession.WithWorkshopQueue(artifactQueue),
 		appsession.WithNotificationQueue(notificationQueue),
 	)
 	if err != nil {
