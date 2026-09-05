@@ -372,3 +372,5 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **17.20.3** [x] Run full proportional validation, refresh the exact deployment handoff, commit and push the wrap-up, and prepare the Phase 17 pull-request title and description without deploying or merging.
     - **17.21** [x] Repair Workshop mod visibility on the managed host after live verification.
       - **17.21.1** [x] Give the unprivileged Arma service read/traverse access to root-owned Workshop revision parents without granting write access, cover the permission contract, validate and document the correction, then commit and push it.
+    - **17.22** [x] Repair live Workshop mission synchronization after `test-43` exposed a target-contract mismatch.
+      - **17.22.1** [x] Align the bootstrap mission target with the domain's canonical singular value, add focused live-dispatch coverage, validate the affected path, refresh the deployment handoff, then commit and push the correction.

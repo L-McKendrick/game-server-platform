@@ -100,6 +100,8 @@ func TestBootstrapScriptContainsIsolatedWorkshopMissionGuards(t *testing.T) {
 func TestBootstrapScriptUsesWorkflowIsolatedWorkshopStaging(t *testing.T) {
 	script := readBootstrapArtifact(t)
 	for _, required := range []string{
+		`[[ "$WORKSHOP_SYNC_TARGET" =~ ^(all|mission|mods)$ ]]`,
+		`mission) install_workshop_missions ;;`,
 		`WORKSHOP_STAGING_ROOT="$ROOT/workshop-staging/$WORKFLOW_ID"`,
 		`ln -s "$WORKSHOP_STAGING_ROOT/steamapps"`,
 		`source="$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/$id"`,
@@ -126,6 +128,9 @@ func TestBootstrapScriptUsesWorkflowIsolatedWorkshopStaging(t *testing.T) {
 		if !strings.Contains(script, required) {
 			t.Errorf("bootstrap script missing isolated-sync guard %q", required)
 		}
+	}
+	if strings.Contains(script, `missions) install_workshop_missions ;;`) {
+		t.Error("bootstrap script retained the incompatible plural mission target")
 	}
 }
 

@@ -147,10 +147,14 @@ func TestStartContentRestartsOnlyWhenPromotingMods(t *testing.T) {
 	if _, err := runner.StartContent(context.Background(), session, domain.WorkshopTargetMission, false); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(client.sent.Parameters["commands"][0], "export WORKSHOP_PROMOTE_MODS=false") {
+	missionScript := client.sent.Parameters["commands"][0]
+	if !strings.Contains(missionScript, "export WORKSHOP_SYNC_TARGET=mission\n") {
+		t.Fatal("mission-only content command did not use the canonical mission target")
+	}
+	if !strings.Contains(missionScript, "export WORKSHOP_PROMOTE_MODS=false") {
 		t.Fatal("mission-only content command did not disable mod promotion")
 	}
-	if strings.Index(client.sent.Parameters["commands"][0], bashShebang) != 0 {
+	if strings.Index(missionScript, bashShebang) != 0 {
 		t.Fatal("mission-only content command did not retain Bash as its interpreter")
 	}
 }

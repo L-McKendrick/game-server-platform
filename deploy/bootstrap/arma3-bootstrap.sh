@@ -386,7 +386,7 @@ download_workshop_item() {
 
 prepare_workshop_staging() {
   [[ "$WORKFLOW_ID" =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { log "Workshop workflow identity is invalid"; return 1; }
-  [[ "$WORKSHOP_SYNC_TARGET" =~ ^(all|missions|mods)$ ]] || { log "Workshop sync target is invalid"; return 1; }
+  [[ "$WORKSHOP_SYNC_TARGET" =~ ^(all|mission|mods)$ ]] || { log "Workshop sync target is invalid"; return 1; }
   [ -z "$WORKSHOP_MOD_RESOLUTION" ] || [[ "$WORKSHOP_MOD_RESOLUTION" =~ ^[0-9a-f]{64}$ ]] || { log "Workshop mod resolution is invalid"; return 1; }
   WORKSHOP_STAGING_ROOT="$ROOT/workshop-staging/$WORKFLOW_ID"
   [ ! -L "$ROOT/workshop-staging" ] || { log "Workshop staging root cannot be a symbolic link"; return 1; }
@@ -683,7 +683,7 @@ sync_workshop_content() {
   prepare_workshop_staging
   case "$WORKSHOP_SYNC_TARGET" in
     all) install_workshop_missions; install_workshop ;;
-    missions) install_workshop_missions ;;
+    mission) install_workshop_missions ;;
     mods) install_workshop ;;
   esac
   publish_workshop_sync_results
