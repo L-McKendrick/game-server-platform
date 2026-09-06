@@ -25,10 +25,21 @@ func downloadActivity(value string) string {
 		index, _ := strconv.Atoi(parts[2])
 		total, _ := strconv.Atoi(parts[3])
 		if err == nil && index <= total && total <= 250 {
-			return fmt.Sprintf("%s (Item %d/%d)", workshopLink(id), index, total)
+			return workshopLink(id)
 		}
 	}
 	return safe(value)
+}
+
+func downloadStage(card Projection) string {
+	parts := workshopActivityPattern.FindStringSubmatch(card.Progress.Activity)
+	if parts != nil && downloadActivity(card.Progress.Activity) != safe(card.Progress.Activity) {
+		return fmt.Sprintf("Downloading and installing workshop files (%s of %s)", parts[2], parts[3])
+	}
+	if card.Stage == "Synchronizing Workshop content" || card.Stage == "Downloading and validating" {
+		return "Downloading and installing workshop files"
+	}
+	return card.Stage
 }
 
 func workshopLink(id uint64) string {
@@ -103,8 +114,8 @@ func render(card Projection, detailed bool) string {
 		if detailed {
 			builder.WriteString("\n\n### Progress")
 		}
-		fmt.Fprintf(&builder, "\n**Progress:** `%s` — Step %d/%d\n**Current stage:** %s", safeCode(card.Progress.Bar), card.Progress.Step, card.Progress.Total, safe(card.Stage))
-		if card.Progress.Condition != "" {
+		fmt.Fprintf(&builder, "\n**Progress:** `%s` — Step %d/%d\n**Current stage:** %s", safeCode(card.Progress.Bar), card.Progress.Step, card.Progress.Total, safe(downloadStage(card)))
+		if card.Progress.Condition != "" && (detailed || card.Progress.Condition != "Active") {
 			fmt.Fprintf(&builder, "\n**Progress state:** %s", safe(card.Progress.Condition))
 		}
 		if detailed && card.Progress.Guidance != "" {
@@ -114,7 +125,7 @@ func render(card Projection, detailed bool) string {
 			fmt.Fprintf(&builder, "\n**Current download:** %s", downloadActivity(card.Progress.Activity))
 		}
 	} else if !detailed {
-		fmt.Fprintf(&builder, "\n**Current stage:** %s", safe(card.Stage))
+		fmt.Fprintf(&builder, "\n**Current stage:** %s", safe(downloadStage(card)))
 	}
 	if card.CurrentOperation != "" {
 		fmt.Fprintf(&builder, "\n**Current operation:** %s", safe(card.CurrentOperation))
@@ -123,7 +134,7 @@ func render(card Projection, detailed bool) string {
 		if detailed || card.OperationStartedAt.IsZero() {
 			fmt.Fprintf(&builder, "\n**Elapsed:** %s", formatDuration(card.Elapsed))
 		} else {
-			fmt.Fprintf(&builder, "\n**Started:** %s", timestamp(card.OperationStartedAt))
+			fmt.Fprintf(&builder, "\n\n**Started:** %s", timestamp(card.OperationStartedAt))
 		}
 	}
 	if detailed && card.LifecycleTiming.Label != "" && !card.LifecycleTiming.DueAt.IsZero() {

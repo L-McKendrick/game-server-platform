@@ -65,7 +65,7 @@ func RenderPublicEmbed(card Projection) *domain.NotificationEmbed {
 
 func publicEmbedStatus(card Projection) (string, int) {
 	if card.Failure.Present || strings.Contains(card.Health, "action required") || card.Lifecycle == "Action required" {
-		return "🔴 ACTION REQUIRED · " + strings.ToUpper(safe(card.Stage)), embedColorError
+		return "🔴 ACTION REQUIRED · " + strings.ToUpper(safe(downloadStage(card))), embedColorError
 	}
 	switch card.Lifecycle {
 	case "Running":
@@ -80,7 +80,7 @@ func publicEmbedStatus(card Projection) (string, int) {
 	case "Sleeping":
 		return "⚪ OFFLINE · " + strings.ToUpper(safe(card.Lifecycle)), embedColorInactive
 	default:
-		return "🟠 " + strings.ToUpper(safe(card.Lifecycle)) + " · " + strings.ToUpper(safe(card.Stage)), embedColorSetup
+		return "🟠 " + strings.ToUpper(safe(card.Lifecycle)) + " · " + strings.ToUpper(safe(downloadStage(card))), embedColorSetup
 	}
 }
 
@@ -113,15 +113,15 @@ func publicProgressValue(card Projection) string {
 	if !card.Progress.Visible {
 		return ""
 	}
-	value := fmt.Sprintf("`%s` — Step %d/%d\n**Current stage:** %s", safeCode(card.Progress.Bar), card.Progress.Step, card.Progress.Total, safe(card.Stage))
-	if card.Progress.Condition != "" {
+	value := fmt.Sprintf("`%s` — Step %d/%d\n**Current stage:** %s", safeCode(card.Progress.Bar), card.Progress.Step, card.Progress.Total, safe(downloadStage(card)))
+	if card.Progress.Condition != "" && card.Progress.Condition != "Active" {
 		value += "\n**State:** " + safe(card.Progress.Condition)
 	}
 	if card.Progress.Activity != "" {
 		value += "\n**Current download:** " + downloadActivity(card.Progress.Activity)
 	}
 	if !card.OperationStartedAt.IsZero() {
-		value += "\n**Started:** " + timestamp(card.OperationStartedAt)
+		value += "\n\n**Started:** " + timestamp(card.OperationStartedAt)
 	}
 	return value
 }

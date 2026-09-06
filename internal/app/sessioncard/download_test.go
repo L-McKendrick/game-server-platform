@@ -3,6 +3,7 @@ package sessioncard
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDownloadActivityOnlyLinksCanonicalWorkshopItems(t *testing.T) {
@@ -11,7 +12,7 @@ func TestDownloadActivityOnlyLinksCanonicalWorkshopItems(t *testing.T) {
 			t.Fatalf("unsafe or altered fallback: %q", got)
 		}
 	}
-	if got := downloadActivity("Workshop item 450814997 (3/7)"); got != "[450814997](https://steamcommunity.com/sharedfiles/filedetails/?id=450814997) (Item 3/7)" {
+	if got := downloadActivity("Workshop item 450814997 (3/7)"); got != "[450814997](https://steamcommunity.com/sharedfiles/filedetails/?id=450814997)" {
 		t.Fatal(got)
 	}
 }
@@ -35,5 +36,25 @@ func TestDetailedStatusGroupsSourcesAndPrioritizesFailure(t *testing.T) {
 	}
 	if strings.Index(got, "Action required") > strings.Index(got, "### Content") {
 		t.Fatal("failure follows content")
+	}
+}
+
+func TestPublicProgressUsesWorkshopCountAndSeparatesStarted(t *testing.T) {
+	card := Projection{Stage: "Synchronizing Workshop content", Progress: ProgressProjection{Visible: true, Condition: "Active", Activity: "Workshop item 450814997 (3/7)"}, OperationStartedAt: time.Unix(1800000000, 0)}
+	for _, got := range []string{publicProgressValue(card), RenderPublic(card)} {
+		for _, want := range []string{"**Current stage:** Downloading and installing workshop files ", "3 of 7", "**Current download:** [450814997](https://steamcommunity.com/sharedfiles/filedetails/?id=450814997)", "\n\n**Started:**"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("missing %q: %s", want, got)
+			}
+		}
+		for _, unwanted := range []string{"State:** Active", "Progress state:** Active", "Item 3/7", "Synchronizing"} {
+			if strings.Contains(got, unwanted) {
+				t.Fatalf("unexpected %q: %s", unwanted, got)
+			}
+		}
+	}
+	card.Progress.Condition = "Retrying"
+	if !strings.Contains(publicProgressValue(card), "**State:** Retrying") {
+		t.Fatal("actionable condition omitted")
 	}
 }

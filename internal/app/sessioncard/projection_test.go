@@ -211,7 +211,7 @@ func TestBootstrapActivityAndInactivityDeadlinesRenderFromAuthoritativeState(t *
 	installing.Progress.Milestone = domain.ProgressModsApplied
 	installing.Progress.Activity = "Workshop item 450814997 (3/7)"
 	workshopCard := Project(installing, Options{Now: now})
-	line := `**Current download:** [450814997](https://steamcommunity.com/sharedfiles/filedetails/?id=450814997) (Item 3/7)`
+	line := `**Current download:** [450814997](https://steamcommunity.com/sharedfiles/filedetails/?id=450814997)`
 	if !strings.Contains(RenderPublicEmbed(workshopCard).Fields[1].Value, line) || !strings.Contains(RenderPublic(workshopCard), line) {
 		t.Fatalf("Workshop download must render as one ID/position line: %#v", workshopCard)
 	}
@@ -302,7 +302,7 @@ func TestProgressConditionAndGuidanceCoverOperationalStates(t *testing.T) {
 			}
 			public := RenderPublic(projection)
 			detailed := RenderDetailed(projection)
-			if !strings.Contains(public, "**Progress state:** "+test.want) || strings.Contains(public, "**Guidance:**") || !strings.Contains(detailed, "**Guidance:**") {
+			if (test.want != "Active" && !strings.Contains(public, "**Progress state:** "+test.want)) || strings.Contains(public, "**Guidance:**") || !strings.Contains(detailed, "**Guidance:**") {
 				t.Fatalf("public = %q detailed = %q", public, detailed)
 			}
 		})
