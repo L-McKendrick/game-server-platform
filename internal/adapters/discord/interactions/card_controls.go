@@ -173,9 +173,9 @@ func sessionNextAction(session domain.Session) string {
 	case domain.StateRunning, domain.StateIdle:
 		next = "use `/rb status` for live details, `/rb edit` to change mods or mission files, or `/rb sleep` when the server is no longer needed."
 	case domain.StateStopping:
-		next = "use `/rb status` until the stop completes, then `/rb wake` when the retained server is needed again."
+		next = "use `/rb status` until the stop completes, then `/rb start` when the retained server is needed again."
 	case domain.StateSleeping, domain.StateWarning1, domain.StateWarning2:
-		next = "use `/rb wake` to bring the retained server back online."
+		next = "use `/rb start` to bring the retained server back online."
 	case domain.StateArchiving, domain.StateDestroying:
 		next = "use `/rb status` while the verified archive workflow completes. No retry is scheduled by this help action."
 	case domain.StateArchived:

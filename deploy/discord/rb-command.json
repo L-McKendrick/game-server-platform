@@ -133,7 +133,7 @@
     {
       "type": 1,
       "name": "start",
-      "description": "Start a configured session and verify playable health",
+      "description": "Start a configured session or wake a sleeping server",
       "options": [
         {
           "type": 3,
@@ -150,12 +150,6 @@
       "type": 1,
       "name": "sleep",
       "description": "Stop a running server while retaining its EBS volumes",
-      "options": [{"type": 3, "name": "session", "description": "Choose a session or enter its exact slug", "required": true, "autocomplete": true}]
-    },
-    {
-      "type": 1,
-      "name": "wake",
-      "description": "Start a sleeping server and verify its health",
       "options": [{"type": 3, "name": "session", "description": "Choose a session or enter its exact slug", "required": true, "autocomplete": true}]
     },
     {

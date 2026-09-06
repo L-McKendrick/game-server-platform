@@ -2465,3 +2465,43 @@ func marshalPayload(value any) []byte {
 }
 
 var _ SessionService = (*appsession.Service)(nil)
+
+func TestHandlerUnifiedStartSleepingAndArchived(t *testing.T) {
+	for _, tc := range []struct {
+		name                              string
+		state                             domain.LifecycleState
+		actor, permissions, command, want string
+	}{
+		{"owner wake", domain.StateSleeping, "owner-1", "0", "start", "Start request accepted"},
+		{"admin wake", domain.StateSleeping, "admin-1", "32", "start", "Start request accepted"},
+		{"nonowner denied", domain.StateSleeping, "other-1", "0", "start", "Session not found"},
+		{"archive guidance", domain.StateArchived, "owner-1", "0", "start", "Use `/rb restore`"},
+		{"unsupported running", domain.StateRunning, "owner-1", "0", "start", "cannot start in its current state"},
+		{"removed command", domain.StateSleeping, "owner-1", "0", "wake", "not supported yet"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, repository, key := newTestHandler(t, []string{"correlation-1"}, nil)
+			session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, testNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.LifecycleState, session.DesiredState, session.ObservedState = tc.state, tc.state, tc.state
+			session.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c7i.large", InstanceID: "i-1", DataVolumeID: "vol-1", LastObservedAt: testNow}
+			actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}
+			event := domain.NewSessionCreatedEvent("event-1", "correlation-1", actor, session, testNow)
+			record, _ := domain.NewCompletedIdempotencyRecord("create-1", "hash-1", session.ID, testNow, time.Hour)
+			if err := repository.Create(context.Background(), session, event, record); err != nil {
+				t.Fatal(err)
+			}
+			body := []byte(fmt.Sprintf(`{"id":"interaction-1","application_id":"app-1","type":2,"guild_id":"guild-1","channel_id":"channel-1","member":{"user":{"id":%q},"roles":["role-1"],"permissions":%q},"data":{"name":"rb","options":[{"type":1,"name":%q,"options":[{"type":3,"name":"session","value":"session-1"}]}]}}`, tc.actor, tc.permissions, tc.command))
+			response := executeSignedRequest(t, handler, key, body, testNow)
+			var payload interactionResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Data == nil || !strings.Contains(payload.Data.Content, tc.want) {
+				t.Fatalf("response=%s want=%s", response.Body.String(), tc.want)
+			}
+		})
+	}
+}

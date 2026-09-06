@@ -67,9 +67,12 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAdminMenu(t *testing.T
 	}
 	targeting := map[string]bool{
 		"status": true, "setup": true, "edit": true,
-		"start": true, "sleep": true, "wake": true, "archive": true, "restore": true, "terminate": true,
+		"start": true, "sleep": true, "archive": true, "restore": true, "terminate": true,
 	}
 	for _, subcommand := range received[0].Options {
+		if subcommand.Name == "wake" {
+			t.Fatal("wake must not be registered; use start")
+		}
 		if subcommand.Name == "create" && (len(subcommand.Options) != 1 || subcommand.Options[0].Name != "game" ||
 			subcommand.Options[0].Type != 3 || !subcommand.Options[0].Required || len(subcommand.Options[0].Choices) != 1 ||
 			subcommand.Options[0].Choices[0].Name != "Arma 3" || subcommand.Options[0].Choices[0].Value != "arma-3") {

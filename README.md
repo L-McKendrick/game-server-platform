@@ -120,3 +120,8 @@ Never place the bot token in a `.tfvars` file, command definition, log, or Terra
   scenarios managed through `/rb edit`; sessions use `MP_ZGM_m12.Stratis` by
   default
 - Deployment archive: a long-term backup of a deployment
+
+Use `/rb start` to provision a configured session or wake a sleeping server.
+Archived sessions still require `/rb restore`. Administrators and Manage Server
+members retain permission to wake sleeping sessions; initial provisioning remains
+owner-only. `/rb wake` is no longer registered.

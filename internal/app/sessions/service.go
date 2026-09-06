@@ -123,8 +123,9 @@ func NewService(
 }
 
 // StartCommand contains the signed Discord context used to request
-// infrastructure provisioning.
+// provisioning, bootstrap retry, or waking a sleeping session.
 type StartCommand struct {
+	CanManageGuild bool
 	Actor          domain.Actor
 	Roles          []string
 	SessionID      string
@@ -539,6 +540,14 @@ func (service *Service) RequestStart(ctx context.Context, command StartCommand) 
 	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
+	}
+	if session.LifecycleState == domain.StateSleeping || session.ActiveWorkflowType == domain.WakeWorkflowType {
+		return service.RequestLifecycle(ctx, LifecycleCommand{
+			Actor: command.Actor, Roles: command.Roles, SessionID: command.SessionID,
+			GuildID: command.GuildID, ChannelID: command.ChannelID, CommandID: command.CommandID,
+			CorrelationID: command.CorrelationID, IdempotencyKey: command.IdempotencyKey,
+			CommandType: domain.CommandWakeSession, CanManageGuild: command.CanManageGuild,
+		})
 	}
 	if err := authorizeOwner(command.Actor, session); err != nil {
 		return err

@@ -6,9 +6,11 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
 
 ## Remaining Delivery Order
 
-1. Complete the core product with maximum-duration cost guardrails (Phase 15).
-2. Harden production operations and optimize measured bottlenecks (Phase 16).
-3. Future enhancements (Phase 17).
+1. Complete the consolidated Discord lifecycle UX, restart, readiness, and
+   public-card improvements (Phase 18).
+2. Complete the core product with maximum-duration cost guardrails (Phase 19).
+3. Harden production operations and optimize measured bottlenecks (Phase 20).
+4. Evaluate deferred platform enhancements (Phase 21).
 
 ## Phases
 
@@ -281,14 +283,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **20.1** [x] Make wake/bootstrap content deployment replay when its exact mission or server-configuration inputs change instead of trusting the stale host-wide completion marker.
       - **20.1.1** [x] Bind the resumable content marker to a deterministic digest of the accepted mission manifest, selected mission, server configuration, display identity, and bootstrap revision; add regression coverage for unchanged replay and changed sleeping-session content.
 
-15. **Maximum Session Duration Guardrails — Pending**
-    - **15.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
-
-16. **Production Hardening and Optimization — Pending**
-    - **16.1** [ ] Complete least-privilege and threat-model reviews across Discord, AWS, artifacts, workflows, and destructive lifecycle boundaries.
-    - **16.2** [ ] Add OIDC deployment, staging, dashboards, alert validation, and tested production and disaster-recovery runbooks.
-    - **16.3** [ ] Verify costs, quotas, failure recovery, backup restoration, and operational readiness against explicit release gates.
-    - **16.4** [ ] Benchmark bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements, then optimize only demonstrated bottlenecks within cost and reliability guardrails.
+16. **Completed Production Hardening and Optimization Work**
     - **16.5** [x] Reduce AWS orchestration overhead without weakening bounded lifecycle behavior, progress visibility, or recovery safeguards.
       - **16.5.1** [x] Enforce the persisted bootstrap command deadline in the existing observer and remove counter-only workflow states while preserving terminal SSM results, rollback, replay, and backward compatibility.
       - **16.5.2** [x] Publish bounded Workshop item ID/position snapshots and explicit shell stages; use 120-second Arma/Workshop installation polling with 30-second fallback and deadline capping; validate download/cache/retry behavior.
@@ -299,23 +294,13 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **16.6.1** [x] Link the current Workshop ID with `(Item x/y)` formatting and shorten Refresh feedback.
       - **16.6.2** [x] Group private status information, link active/pending Workshop sources, and suppress irrelevant detail while retaining failure guidance.
       - **16.6.3** [x] Capture the latest Arma download percentage in the existing snapshot with bounded host sampling and prompt cleanup; validate the combined changes and refresh deployment/commit handoff.
-    - **16.7** [ ] Repair restore prerequisites and terminal-failure handling exposed by the test-44 restore failure.
-      - **16.7.1** [ ] Ensure every replacement host has a verified supported AWS CLI before archive restoration begins, and fail with an actionable bounded error if the prerequisite is unavailable.
-      - **16.7.2** [ ] Make the restore Step Functions result branch handle unsuccessful terminal command results without referencing absent fields, and route all runtime/task failures through the restore failure handler so lifecycle state, failure detail, and workflow locks are finalized.
-      - **16.7.3** [ ] Add focused missing-CLI, failed-command-result, malformed-result, failure-handler, replay, lock-release, and retained-resource regression coverage; run proportional Go, packaging, Terraform, and live restore validation before completing the step.
-
     - **16.8** [x] Refine public setup progress presentation.
       - **16.8.1** [x] Remove redundant active state, separate Started, move Workshop batch position into the stage label, and assess honest per-item percentage reporting; validate and refresh the handoff.
 
     - **16.9** [x] Review setup-polling branch release readiness.
       - **16.9.1** [x] Review polling, snapshot, sampler, and presentation failure paths; correct demonstrated gaps, validate, reconcile documentation, and prepare the PR handoff without opening a PR.
 
-17. **Potential Enhancements — Pending**
-    - **17.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.
-    - **17.2** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; extend `/rb create` beyond Arma 3 through explicit game-specific setup contracts.
-    - **17.3** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.
-    - **17.4** [ ] Provide options of different EC2 instance types (weaker or more powerful options with explanations).
-    - **17.5** [ ] Let administrators configure the active-session capacity limit while preserving atomic slot enforcement and clear start/wake feedback.
+17. **Completed Potential-Enhancement Work**
     - **17.6** [x] Establish one safe, reusable Steam Workshop source-resolution boundary for Arma 3 missions and mods supplied as either individual items or collections.
       - **17.6.1** [x] Define backward-compatible Workshop source, requested target (`mission` or `mods`), immutable resolution snapshot, provenance, digest, lifecycle, audit, and mixed-collection child-classification contracts without weakening existing uploaded mission or preset revisions.
       - **17.6.2** [x] Add a bounded Steam metadata client that accepts only canonical public Workshop URLs, verifies Arma 3 consumer app `107410`, distinguishes individual items from collections, normalizes tags, expands one collection level into deterministic children, and classifies unavailable, private, malformed, nested, cross-game, rate-limited, and transient responses.
@@ -396,3 +381,48 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **17.23.1** [x] Make the Steam authorization lease heartbeat promptly and safely interruptible across its normal and retry waits, preserve owner-checked release and parent-failure behavior, add focused regression coverage, validate the affected bootstrap path, and refresh the deployment handoff.
     - **17.24** [x] Reconcile Workshop documentation after the merged live verification fixes.
       - **17.24.1** [x] Correct stale host-target and deployment wording, document prompt authorization-heartbeat shutdown, and align the README and mission-management guide with Workshop-backed scenarios.
+
+## Remaining Work
+
+18. **Discord Lifecycle UX and Restart — Pending**
+    - **18.1** [x] Unify start and wake behind `/rb start` with state-aware behavior.
+      - **18.1.1** [x] Make `/rb start` provision a ready draft and wake a sleeping session through the existing lifecycle workflows, while returning current progress for duplicate requests and rejecting unsupported states with actionable feedback. Keep `/rb restore` separate; archived-session routing is deferred to 20.7.4.
+      - **18.1.2** [x] Remove `/rb wake` from command registration, help, and user documentation without weakening authorization, capacity, pending-content application, restore, replay, or idempotency safeguards.
+      - **18.1.3** [x] Add focused command-routing, lifecycle-state, authorization, capacity, pending-change, duplicate-request, registration, and backward-compatibility coverage.
+    - **18.2** [ ] Add a simple, robust `/rb restart` operation for active game servers.
+      - **18.2.1** [ ] Define `/rb restart` as an owner/admin-authorized operation for a stable running or idle session that uses the existing session workflow lock and rejects conflicting or inapplicable lifecycle states. Restart immediately without confirmation even when players are connected; restart only the game server, leaving TeamSpeak and the EC2 host running.
+      - **18.2.2** [ ] Reuse the bounded managed-host content and service-control paths to apply pending mod, server-mod, and game-server settings changes, restart Arma, and verify health. Reuse installation of genuinely pending mission files when present; already installed missions need no restart-specific handling. Do not add mission selection handling or rollback scope; preserve existing shared-path safeguards and report failures truthfully.
+      - **18.2.3** [ ] Expose concise restart progress and actionable failure state through existing private status and public-card update contracts without adding a new persistent service or overcomplicated orchestration.
+      - **18.2.4** [ ] Add focused authorization, state-drift, workflow-conflict, pending-change, no-change, restart failure, health-check, replay, and command-registration coverage.
+    - **18.3** [ ] Complete creation readiness automation and notification behavior.
+      - **18.3.1** [ ] Add an off-by-default `Notify when ready?` option to `/rb create`, persist the owner preference and invoking channel needed for delivery, and suppress all unrelated mentions.
+      - **18.3.2** [ ] On initial creation readiness after successful health verification, make one best-effort notification attempt in the creation command channel: mention only the session owner and say `<session title> is ready to join.` Link the title when a public card is available; otherwise use plain text. Suppress duplicate attempts and do not add delivery retries. Do not notify when disabled or on subsequent wake, restore, or restart.
+      - **18.3.3** [ ] Fix automatic startup after mod input acceptance/validation, including asynchronous Steam Workshop collection resolution: when creation automatic startup is enabled and the existing readiness requirements are satisfied, queue the normal session start command once. Use the same authorization, capacity, lifecycle, and failure behavior as a user invoking `/rb start`; do not introduce a separate automatic-start retry or scheduling policy.
+      - **18.3.4** [ ] Add focused modal, persistence, mention-safety, channel/card-link, readiness-transition, collection-resolution, replay, partial-failure, and notification-delivery coverage.
+    - **18.4** [ ] Simplify public cards for setup, sleeping, archived, and terminated lifecycle states.
+      - **18.4.1** [ ] Render the `Current mission` field only while the session is running or idle; omit it entirely during setup, sleeping, archived, terminated, and other non-active states instead of showing an unavailable placeholder.
+      - **18.4.2** [ ] Give archived cards a light bluish-gray color that remains visually distinct from terminated cards and preserves text-plus-state accessibility.
+      - **18.4.3** [ ] After archive completion, remove progress information and the `Show players` control, matching terminal-card control cleanup while retaining repair and backward-compatible update behavior.
+      - **18.4.4** [ ] Reduce a successfully completed archived card to its title, description, linked last-used modlist name, and Discord-native `Archived` timestamp. Retain actionable diagnostic information when present, including later restore failures. Use safe fallback behavior when a legacy session has no modlist or archive-completion timestamp; never substitute a pending mod revision or invent a timestamp.
+      - **18.4.5** [ ] Add focused lifecycle rendering, color, field omission, control cleanup, modlist-link, timestamp, refresh, repair, and legacy-record coverage.
+
+19. **Maximum Session Duration Guardrails — Pending**
+    - **19.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
+
+20. **Production Hardening and Optimization — Pending**
+    - **20.1** [ ] Complete least-privilege and threat-model reviews across Discord, AWS, artifacts, workflows, and destructive lifecycle boundaries.
+    - **20.2** [ ] Add OIDC deployment, staging, dashboards, alert validation, and tested production and disaster-recovery runbooks.
+    - **20.3** [ ] Verify costs, quotas, failure recovery, backup restoration, and operational readiness against explicit release gates.
+    - **20.4** [ ] Benchmark bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements, then optimize only demonstrated bottlenecks within cost and reliability guardrails.
+    - **20.7** [ ] Repair restore prerequisites and terminal-failure handling exposed by the test-44 restore failure.
+      - **20.7.1** [ ] Ensure every replacement host has a verified supported AWS CLI before archive restoration begins, and fail with an actionable bounded error if the prerequisite is unavailable.
+      - **20.7.2** [ ] Make the restore Step Functions result branch handle unsuccessful terminal command results without referencing absent fields, and route all runtime/task failures through the restore failure handler so lifecycle state, failure detail, and workflow locks are finalized.
+      - **20.7.3** [ ] Add focused missing-CLI, failed-command-result, malformed-result, failure-handler, replay, lock-release, and retained-resource regression coverage; run proportional Go, packaging, Terraform, and live restore validation before completing the step.
+      - **20.7.4** [ ] After restore prerequisites and terminal-failure handling are repaired and validated, route `/rb start` for archived sessions through the existing restore workflow, preserving authorization, capacity, pending-content, idempotency, and failure safeguards; update help and add focused routing coverage. Keep `/rb restore` available unless separately changed.
+
+21. **Potential Enhancements — Pending**
+    - **21.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.
+    - **21.2** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; extend `/rb create` beyond Arma 3 through explicit game-specific setup contracts.
+    - **21.3** [ ] Reevaluate a web UI, multi-account, and multi-region support only against demonstrated product or operational requirements.
+    - **21.4** [ ] Provide options of different EC2 instance types (weaker or more powerful options with explanations).
+    - **21.5** [ ] Let administrators configure the active-session capacity limit while preserving atomic slot enforcement and clear start/wake feedback.

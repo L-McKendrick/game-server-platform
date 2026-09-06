@@ -575,7 +575,7 @@ func (handler *Handler) routeCommand(
 	case "start":
 		content, err := handler.startSession(ctx, payload, subcommand.Options, actor, correlationID)
 		return content, commandName, err
-	case "sleep", "wake", "restore":
+	case "sleep", "restore":
 		content, err := handler.requestLifecycle(ctx, payload, subcommand.Options, actor, correlationID, subcommand.Name)
 		return content, commandName, err
 	case "archive", "terminate":
@@ -729,33 +729,39 @@ func (handler *Handler) startSession(
 	actor domain.Actor,
 	correlationID string,
 ) (string, error) {
-	sessionID, err := handler.resolveSessionID(ctx, options, actor, payload.GuildID, false, false)
+	sessionID, err := handler.resolveSessionID(ctx, options, actor, payload.GuildID, payload.memberCanManageGuild(), false)
 	if err != nil {
 		return "", err
 	}
-	session, err := handler.service.Get(ctx, appsession.GetQuery{Actor: actor, SessionID: sessionID, GuildID: payload.GuildID})
+	session, err := handler.service.Get(ctx, appsession.GetQuery{Actor: actor, SessionID: sessionID, GuildID: payload.GuildID, AllowGuildMember: payload.memberCanManageGuild()})
 	if err != nil {
 		return "", err
 	}
-	if session.WorkshopResolutionRequestKey != "" {
+	if session.ActiveWorkflowID == "" && session.WorkshopResolutionRequestKey != "" {
 		return "", newUserError("Steam Workshop metadata is still being checked. Wait for `/rb status` to show the source as accepted or rejected, then run `/rb start` when the session is ready.")
 	}
 	if session.LifecycleState == domain.StateDraft {
 		return "", newUserError("This session is still a draft and is not ready to start. Review `/rb status` and provide any missing or rejected mission and mod configuration through `/rb edit`.")
+	}
+	if session.LifecycleState == domain.StateArchived && session.ActiveWorkflowID == "" {
+		return "", newUserError("This session is archived. Use `/rb restore` to recreate its server from the archive.")
 	}
 	roles := []string{}
 	if payload.Member != nil {
 		roles = append(roles, payload.Member.Roles...)
 	}
 	if err := handler.service.RequestStart(ctx, appsession.StartCommand{
-		Actor: actor, Roles: roles, SessionID: sessionID,
+		Actor: actor, Roles: roles, SessionID: sessionID, CanManageGuild: payload.memberCanManageGuild(),
 		GuildID: strings.TrimSpace(payload.GuildID), ChannelID: strings.TrimSpace(payload.ChannelID),
 		CommandID: strings.TrimSpace(payload.ID), CorrelationID: correlationID,
 		IdempotencyKey: "discord:" + strings.TrimSpace(payload.ID),
 	}); err != nil {
+		if errors.Is(err, domain.ErrInvalidTransition) {
+			return "", newUserError("This session cannot start in its current state. Use `/rb status` for its current state and next action; use `/rb restore` for archived sessions.")
+		}
 		return "", fmt.Errorf("request session start: %w", err)
 	}
-	return "**Start request accepted**\nUse `/rb status` to follow provisioning or bootstrap progress.", nil
+	return "**Start request accepted**\nUse `/rb status` to follow startup progress.", nil
 }
 
 func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actorID, correlationID string) error {

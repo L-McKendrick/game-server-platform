@@ -2,70 +2,62 @@
 
 ## State and Objective
 
-Branch review for `codex/setup-polling-progress` is complete against `main`.
-The branch reduces setup polling transitions and improves download/status
-presentation. No PR has been opened, and this review performs no deployment.
-See `docs/setup-polling-review.md` for findings, validation, and proposed PR text.
+Phase 18.1 is implemented on `codex/discord-lifecycle-ux`. Next: complete
+18.2 (restart), then perform item-level checks, review, and commit before
+ending the turn. The user authorizes all nested tasks within each item.
+At phase completion, review the branch and provide a PR title/description;
+do not publish a PR.
 
-## Review Findings and Changes
+## Current Handoff
 
-- Fixed sampler shutdown during an in-flight S3 upload. Both upload and sleep
-  are interruptible; telemetry children release inherited host/bootstrap locks.
-- Added slow-upload and Steam reauthorization failure regression coverage while
-  preserving success/transient-failure exit codes and private-output redaction.
-- Reviewed provisioning counters/replay, readiness precedence, bootstrap deadline
-  and terminal precedence, snapshot bounds/fallback, cached/retried Workshop
-  positions, safe links, activity clearing, and card revision/rate limits.
-- Workshop percentage is not implemented: no reliable per-item percentage signal
-  was verified in the current command output. Arma percentages use latest-only
-  local sampling; normal visibility lag can reach roughly 150 seconds plus
-  delivery overhead, and unavailable snapshots can remain stale longer.
-
-## Validation and Remaining Attention
-
-Go 1.26.5 coverage tests, vet, all command builds, Bash behavior/syntax,
-Terraform 1.15.8 formatting/validation, and Lambda packaging all pass.
-No local C compiler is available; race testing remains the required CI gate.
-
-The pre-existing test-44 restore failure is still unresolved: replacement-host
-AWS CLI prerequisites and restore failure finalization need Phase 16.7. Test-44
-was reconciled to FAILED with its workflow lock cleared. Default: do not attempt
-another live restore as part of this branch review. This branch does not claim
-restore release readiness.
-
-Branch deployment scope: provisioning/bootstrap state-machine definitions,
-bootstrap script object/key, and all shared-renderer Lambda consumers in the
-standard packaging script. No new AWS resources, IAM grants, migrations, or
-Discord command definitions. Review unrelated Terraform differences separately.
+- `/rb start` now routes sleeping sessions through the existing wake command.
+  Owner/admin wake authorization, capacity checks, workflow progress, pending
+  content handling, and worker revalidation remain on the existing path.
+  Initial provisioning remains owner-only; provisioned bootstrap retry remains.
+- `/rb wake` is removed from registration and routing; help directs sleeping
+  sessions to start. Archived sessions still use `/rb restore`; unification is
+  deferred to 20.7.4 after the known test-44 restore repairs.
+- No infrastructure definitions changed and nothing was deployed or registered.
+- Validation: Go 1.26.5 coverage suite, vet, command builds, Lambda packaging,
+  registration contracts, focused lifecycle/authorization/capacity tests, and
+  diff review. Local CGO is disabled; race coverage remains a CI requirement.
+- The first full run hit the existing bootstrap sampler timing test; it passed
+  in isolation and the full coverage rerun passed. No bootstrap code changed.
+- Restart and notification/card requirements remain recorded in PROJECT_PLAN.md.
+  No further requirements clarification is needed before 18.2.
 
 ## Commands to Apply Current Changes
 
-Run from the repository root. The earlier setup-polling plan is not reused.
+Run from the repository root when deploying this item. Package before creating
+and reviewing a fresh plan; preserve existing plan files. Keep provisioning and
+budget configuration unchanged. Do not deploy as part of routine validation.
 
 ```powershell
-$ErrorActionPreference = "Stop"
-$env:AWS_PROFILE = "game-server-dev"
-$env:AWS_REGION = "us-west-2"
-$env:AWS_EC2_METADATA_DISABLED = "true"
 $env:GOTOOLCHAIN = "go1.26.5"
-$env:GOCACHE = Join-Path (Get-Location) ".cache/go-build"
+$env:AWS_PROFILE = "game-server-dev"
 ./scripts/package-discord-lambda.ps1
-if ($LASTEXITCODE -ne 0) { throw "Lambda packaging failed" }
-if (Test-Path -LiteralPath "infra/terraform/environments/dev/setup-polling-review-20260906.tfplan") {
-    throw "Plan already exists; choose a new descriptive filename in all commands below."
-}
-terraform -chdir=infra/terraform/environments/dev plan -out setup-polling-review-20260906.tfplan
-if ($LASTEXITCODE -ne 0) { throw "Terraform plan failed" }
-terraform -chdir=infra/terraform/environments/dev show setup-polling-review-20260906.tfplan
-if ($LASTEXITCODE -ne 0) { throw "Terraform plan review failed" }
-# Review the displayed plan before running the following apply command.
-terraform -chdir=infra/terraform/environments/dev apply setup-polling-review-20260906.tfplan
-if ($LASTEXITCODE -ne 0) { throw "Terraform apply failed" }
-./scripts/verify-bootstrap-worker-deployment.ps1
+$phase18Plan = "phase18-1-start-wake-$(Get-Date -Format 'yyyyMMdd-HHmmss').tfplan"
+terraform -chdir=infra/terraform/environments/dev plan "-out=$phase18Plan"
+terraform -chdir=infra/terraform/environments/dev show $phase18Plan
 ```
 
-Verify a fresh setup shows Arma percentages, then the Workshop count in the stage
-and linked ID on the download line; verify a blank line before Started and no
-Active condition. Existing in-flight bootstrap commands keep their already
-loaded script. Check `/rb status` source links and Refresh feedback. Discord
-registration is not required.
+After reviewing and approving that exact plan, in the same PowerShell session:
+
+```powershell
+terraform -chdir=infra/terraform/environments/dev apply $phase18Plan
+aws lambda get-function-configuration --function-name game-server-platform-dev-discord-interactions --profile game-server-dev --region us-west-2 --query '{Status:LastUpdateStatus,CodeSHA256:CodeSha256}'
+```
+
+Register the updated commands with the existing application/guild IDs and a
+short-lived bot token in the process environment, as described in
+`docs/runbooks/deploy-discord-interactions.md`:
+
+```powershell
+go run ./cmd/discord-register
+Remove-Item Env:DISCORD_BOT_TOKEN
+```
+
+Verify `/rb wake` is absent and sleeping-session help recommends `/rb start`.
+When a live wake is approved, use `/rb start` on a sleeping session and verify
+private progress, final health, and pending-content application with `/rb status`.
+Do not attempt live restore before 20.7 repairs are validated.
