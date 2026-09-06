@@ -97,7 +97,7 @@ func TestProjectMapsEveryAuthoritativeCardSectionWithoutInternalIDs(t *testing.T
 			t.Fatalf("rendered projection exposed internal ID %q", internalID)
 		}
 	}
-	if strings.Contains(public, "Alice") || !strings.Contains(detailed, "Player names: Alice, Bob") ||
+	if strings.Contains(public, "Alice") || !strings.Contains(detailed, "Alice, Bob") ||
 		!strings.Contains(public, "**Progress:** `■■■■■■□□` — Step 7/8") || !strings.Contains(public, "**Current stage:** Verifying health") ||
 		!strings.Contains(public, "Started:** <t:") || strings.Contains(public, "**Guidance:**") || !strings.Contains(public, "Active mod revision:** `2` — active <t:") ||
 		!strings.Contains(public, "Pending mod revision:** `3` — Applying <t:") || !strings.Contains(detailed, "Players observed <t:") {
@@ -211,7 +211,7 @@ func TestBootstrapActivityAndInactivityDeadlinesRenderFromAuthoritativeState(t *
 	installing.Progress.Milestone = domain.ProgressModsApplied
 	installing.Progress.Activity = "Workshop item 450814997 (3/7)"
 	workshopCard := Project(installing, Options{Now: now})
-	line := `**Current download:** Workshop item 450814997 \(3/7\)`
+	line := `**Current download:** [450814997](https://steamcommunity.com/sharedfiles/filedetails/?id=450814997) (Item 3/7)`
 	if !strings.Contains(RenderPublicEmbed(workshopCard).Fields[1].Value, line) || !strings.Contains(RenderPublic(workshopCard), line) {
 		t.Fatalf("Workshop download must render as one ID/position line: %#v", workshopCard)
 	}

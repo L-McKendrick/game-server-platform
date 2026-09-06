@@ -295,6 +295,11 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **16.5.3** [x] Move provisioning poll counters into existing observers while preserving 15-second cadence and 40-observation limits. Retain persisted Refresh behavior because live overlays would require separate persistence and ordering integration.
       - **16.5.4** [x] Validate the combined authorized changes, document deployment and progress semantics, and prepare the scoped commit and branch push without deploying.
 
+    - **16.6** [x] Polish download and detailed-status presentation using existing session data.
+      - **16.6.1** [x] Link the current Workshop ID with `(Item x/y)` formatting and shorten Refresh feedback.
+      - **16.6.2** [x] Group private status information, link active/pending Workshop sources, and suppress irrelevant detail while retaining failure guidance.
+      - **16.6.3** [x] Capture the latest Arma download percentage in the existing snapshot with bounded host sampling and prompt cleanup; validate the combined changes and refresh deployment/commit handoff.
+
 17. **Potential Enhancements — Pending**
     - **17.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.
     - **17.2** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; extend `/rb create` beyond Arma 3 through explicit game-specific setup contracts.

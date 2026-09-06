@@ -320,6 +320,12 @@ func parseActivity(output string) string {
 			}
 		case value == "ARMA_SERVER":
 			activity = "Arma 3 server files"
+		case strings.HasPrefix(value, "ARMA_SERVER:"):
+			percent := strings.TrimPrefix(value, "ARMA_SERVER:")
+			parsed, err := strconv.Atoi(percent)
+			if err == nil && parsed >= 0 && parsed <= 100 && strconv.Itoa(parsed) == percent {
+				activity = fmt.Sprintf("Arma 3 server files (%d%%)", parsed)
+			}
 		case strings.HasPrefix(value, "WORKSHOP_ITEMS:"):
 			count := strings.TrimPrefix(value, "WORKSHOP_ITEMS:")
 			parsed, err := strconv.Atoi(count)

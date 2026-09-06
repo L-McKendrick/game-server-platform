@@ -94,12 +94,12 @@ func (handler *Handler) refreshSessionCard(ctx context.Context, payload interact
 		return "", fmt.Errorf("refresh session card: %w", err)
 	}
 	if errors.Is(err, domain.ErrIdempotencyConflict) {
-		return "**Card refresh already queued**\nA refresh for the latest revision is already queued in this one-minute window.", nil
+		return "Refresh already requested. Please wait a moment.", nil
 	}
 	if requestedRevision != uint64(session.Version) {
-		return "**Card refresh queued**\nThe session changed after this button was shown, so the latest persisted revision was queued instead.", nil
+		return "Refresh requested using the latest session status.", nil
 	}
-	return "**Card refresh queued**\nThe latest persisted status and a bounded live-player check will update the public card.", nil
+	return "Refresh requested.", nil
 }
 
 func (handler *Handler) activeModlistLink(ctx context.Context, actor domain.Actor, session domain.Session) (string, error) {

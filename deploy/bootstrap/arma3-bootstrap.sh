@@ -376,12 +376,43 @@ steam_login_file() {
   chown steam:steam "$target"
 }
 
+# Read only the latest update line from a bounded tail of private Steam output.
+# Percentages describe the current Steam phase, not total setup completion.
+arma_download_activity() {
+  local line percent
+  line="$(tail -c 8192 "$1" 2>/dev/null | tr '\r' '\n' | grep 'Update state ' | tail -n 1)" || true
+  if [[ "$line" =~ downloading,\ progress:\ ([0-9]{1,3})\.[0-9]+\  ]] && [ "${BASH_REMATCH[1]}" -le 100 ]; then
+    percent="${BASH_REMATCH[1]}"
+    printf 'ARMA_SERVER:%d\n' "$((10#$percent))"
+  else
+    printf 'ARMA_SERVER\n'
+  fi
+}
+
+sample_arma_download() {
+  trap - EXIT ERR
+  local output_file="$1" owner="$2" sleeper="" value previous=""
+  trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null || true; exit 0' TERM INT
+  # Keep telemetry best-effort and bounded even when S3 is unavailable.
+  publish_progress() { AWS_MAX_ATTEMPTS=1 aws s3 cp "$PROGRESS_FILE" "s3://$ASSETS_BUCKET/$PROGRESS_KEY" --region "$AWS_REGION" --cli-connect-timeout 3 --cli-read-timeout 3 --only-show-errors >/dev/null 2>&1 || true; }
+  while kill -0 "$owner" 2>/dev/null; do
+    value="$(arma_download_activity "$output_file")"
+    if [ "$value" != "$previous" ]; then activity "$value" >/dev/null; previous="$value"; fi
+    sleep 30 & sleeper=$!
+    wait "$sleeper" || true
+    sleeper=""
+  done
+}
+
 run_steamcmd() {
-  local runfile="$1" output_file code
+  local runfile="$1" output_file code progress_pid="" progress_owner="$BASHPID"
   output_file="${STEAM_AUTH_ROOT:-/run}/steamcmd-output.$$.log"
+  : > "$output_file"
+  if [ "${2:-}" = arma ]; then sample_arma_download "$output_file" "$progress_owner" & progress_pid=$!; fi
   set +e
   runuser -u steam -- env HOME="$STEAM_AUTH_ROOT/home" "$ROOT/steamcmd/steamcmd.sh" +runscript "$runfile" >"$output_file" 2>&1
   code=$?
+  if [ -n "$progress_pid" ]; then kill "$progress_pid" 2>/dev/null; wait "$progress_pid" 2>/dev/null; fi
   set -e
   if grep -Eqi 'Steam Guard|two[- ]factor|Account Logon Denied|InvalidPassword|Invalid Password|login failure|password required' "$output_file"; then
     STEAM_AUTH_VALID=false
@@ -616,7 +647,7 @@ install_arma() (
     printf 'app_update 233780 -beta creatordlc validate\nquit\n' >> "$runfile"
   fi
   activity ARMA_SERVER
-  run_steamcmd "$runfile"
+  run_steamcmd "$runfile" arma
   activity ""
   test -x "$ROOT/arma3/arma3server_x64"
 )

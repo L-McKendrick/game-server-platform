@@ -22,7 +22,7 @@ legacy snapshots without an explicit stage retain the 30-second poll interval.
 The next wait is capped by the existing persisted command deadline. Terminal
 SSM results still take precedence over deadline expiry.
 
-The card shows one line, for example `Current download: Workshop item 450814997 (3/7)`. The position counts items in the current batch:
+The card shows one line, for example `Current download: <linked ID> (Item 3/7)`. The position counts items in the current batch:
 Workshop missions have their own batch; client and server-only mods share one
 ordered batch. Cached items keep their position but emit no download activity;
 retries retain the same position. Activity clears when SteamCMD returns
@@ -74,3 +74,23 @@ The persistent volume mounts at `/srv/game-server`. Arma, SteamCMD, Workshop con
 Game hosts use the official Canonical Ubuntu Server 24.04 LTS AMI. Bootstrap enables the `i386` package architecture and installs the 32-bit C/C++ runtime required by SteamCMD. The short SSM launcher installs AWS CLI v2 from the official distribution when the image does not already provide it.
 
 Phase 6 marks the session playable only when the Arma service is active and UDP `2302` is listening; optional TeamSpeak also requires UDP `9987`. Phase 7 adds continuous player, process, and application-level monitoring.
+
+### Download presentation
+
+The card renders Workshop activity as `Current download: <linked ID> (Item x/y)`.
+Links are constructed from canonical numeric IDs, never raw Steam output.
+Arma download activity includes the most recent observed whole percentage, for
+example `Current download: Arma 3 server files (88%)`. A host-local sampler reads
+only the final 8 KiB of private SteamCMD output every 30 seconds and publishes
+changed values through the existing workflow-scoped snapshot. The existing
+120-second installation observer remains unchanged. Percentages describe the
+current Steam download phase, not total setup progress; verification, missing,
+or unrecognized output falls back to the generic Arma label. Completion stops
+the sampler before clearing activity. No speed, ETA, history, or new AWS polling
+is introduced. Snapshot uploads are best effort with bounded CLI timeouts.
+
+Private `/rb status` groups progress, connection, content, players, and diagnostic
+observation times. Active and pending Workshop mod sources link to their original
+item or collection. Disabled TeamSpeak and absent server-only mods are omitted;
+actionable failures precede content details. Refresh replies simply acknowledge
+the request and retain existing persistence, revision, and rate-limit behavior.

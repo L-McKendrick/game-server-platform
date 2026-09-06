@@ -817,7 +817,7 @@ func TestHandlerExecutesAuthorizedRevisionBoundCardControls(t *testing.T) {
 		t.Fatalf("download = %q", download.Data.Content)
 	}
 	refresh := click(componentid.ActionRefresh, uint64(session.Version-1))
-	if !strings.Contains(refresh.Data.Content, "latest persisted revision was queued") {
+	if !strings.Contains(refresh.Data.Content, "Refresh requested using the latest session status.") {
 		t.Fatalf("refresh = %q", refresh.Data.Content)
 	}
 	requests := notifications.Requests()
@@ -826,7 +826,7 @@ func TestHandlerExecutesAuthorizedRevisionBoundCardControls(t *testing.T) {
 		t.Fatalf("refresh notifications = %#v", requests)
 	}
 	currentRefresh := click(componentid.ActionRefresh, uint64(session.Version))
-	if !strings.Contains(currentRefresh.Data.Content, "bounded live-player check") || len(notifications.Requests()) != 1 {
+	if !strings.Contains(currentRefresh.Data.Content, "Refresh requested.") || len(notifications.Requests()) != 1 {
 		t.Fatalf("bounded refresh = %q notifications=%#v", currentRefresh.Data.Content, notifications.Requests())
 	}
 
@@ -859,8 +859,8 @@ func TestHandlerRateLimitsChangedLiveRefreshWithinWindow(t *testing.T) {
 	var firstResponse, secondResponse interactionResponse
 	decodeResponse(t, first, &firstResponse)
 	decodeResponse(t, second, &secondResponse)
-	if firstResponse.Data == nil || !strings.Contains(firstResponse.Data.Content, "refresh queued") ||
-		secondResponse.Data == nil || !strings.Contains(secondResponse.Data.Content, "already queued") {
+	if firstResponse.Data == nil || !strings.Contains(firstResponse.Data.Content, "Refresh requested.") ||
+		secondResponse.Data == nil || !strings.Contains(secondResponse.Data.Content, "Refresh already requested.") {
 		t.Fatalf("refresh responses first=%#v second=%#v", firstResponse, secondResponse)
 	}
 	requests := notifications.Requests()
@@ -1315,7 +1315,7 @@ func TestHandlerListsAndShowsSessionStatus(t *testing.T) {
 	)
 	var statusDecoded interactionResponse
 	decodeResponse(t, statusResponse, &statusDecoded)
-	if statusDecoded.Data == nil || !strings.Contains(statusDecoded.Data.Content, "Status: Setting up") || strings.Contains(statusDecoded.Data.Content, "session-1") {
+	if statusDecoded.Data == nil || !strings.Contains(statusDecoded.Data.Content, "## Setting up:") || strings.Contains(statusDecoded.Data.Content, "session-1") {
 		t.Fatalf("status content = %#v; want readable status without immutable ID", statusDecoded.Data)
 	}
 }
