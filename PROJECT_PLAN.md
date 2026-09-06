@@ -307,6 +307,9 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **16.8** [x] Refine public setup progress presentation.
       - **16.8.1** [x] Remove redundant active state, separate Started, move Workshop batch position into the stage label, and assess honest per-item percentage reporting; validate and refresh the handoff.
 
+    - **16.9** [x] Review setup-polling branch release readiness.
+      - **16.9.1** [x] Review polling, snapshot, sampler, and presentation failure paths; correct demonstrated gaps, validate, reconcile documentation, and prepare the PR handoff without opening a PR.
+
 17. **Potential Enhancements — Pending**
     - **17.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.
     - **17.2** [ ] Add games only after extracting stable game-specific configuration, artifact, bootstrap, health, and presentation capabilities; extend `/rb create` beyond Arma 3 through explicit game-specific setup contracts.

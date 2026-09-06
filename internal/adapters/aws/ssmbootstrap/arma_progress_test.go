@@ -55,6 +55,25 @@ runuser() { printf 'connection timeout\n'; return 1; }
 code=0; run_steamcmd "$work/runfile" arma || code=$?
 [ "$code" = 75 ]
 ! jobs -pr | grep -q .
+mark_steam_reauthorization_required() { :; }
+runuser() { printf 'Steam Guard secret-do-not-publish\n'; return 1; }
+code=0; run_steamcmd "$work/runfile" arma 2>/dev/null || code=$?
+[ "$code" = 42 ]
+[ "$STEAM_AUTH_VALID" = false ]
+! grep -q secret "$work/activity"
+! jobs -pr | grep -q .
+
+# Exercise the real publisher with a slow external command, not an activity stub.
+mkdir "$work/bin"
+printf '#!/usr/bin/env bash\ntouch "$UPLOAD_STARTED"\nexec sleep 30\n' > "$work/bin/aws"
+chmod +x "$work/bin/aws"
+export PATH="$work/bin:$PATH" UPLOAD_STARTED="$work/upload-started"
+PROGRESS_FILE="$work/progress"; ASSETS_BUCKET=test; PROGRESS_KEY=test; AWS_REGION=test
+activity() { printf '%s\n' "$1" > "$PROGRESS_FILE"; publish_progress; }
+runuser() { for n in $(seq 1 100); do [ ! -f "$UPLOAD_STARTED" ] || return 0; sleep 0.01; done; return 1; }
+run_steamcmd "$work/runfile" arma
+[ -f "$UPLOAD_STARTED" ]
+! jobs -pr | grep -q .
 `
 	bash, err := bashExecutable()
 	if err != nil {

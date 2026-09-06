@@ -391,10 +391,16 @@ arma_download_activity() {
 
 sample_arma_download() {
   trap - EXIT ERR
-  local output_file="$1" owner="$2" sleeper="" value previous=""
-  trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null || true; exit 0' TERM INT
+  # Telemetry must not keep host/bootstrap locks alive after its owner exits.
+  exec 8>&- 9>&-
+  local output_file="$1" owner="$2" sleeper="" uploader="" value previous=""
+  trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null || true; [ -z "$uploader" ] || kill "$uploader" 2>/dev/null || true; wait 2>/dev/null || true; exit 0' TERM INT
   # Keep telemetry best-effort and bounded even when S3 is unavailable.
-  publish_progress() { AWS_MAX_ATTEMPTS=1 aws s3 cp "$PROGRESS_FILE" "s3://$ASSETS_BUCKET/$PROGRESS_KEY" --region "$AWS_REGION" --cli-connect-timeout 3 --cli-read-timeout 3 --only-show-errors >/dev/null 2>&1 || true; }
+  publish_progress() {
+    AWS_MAX_ATTEMPTS=1 aws s3 cp "$PROGRESS_FILE" "s3://$ASSETS_BUCKET/$PROGRESS_KEY" --region "$AWS_REGION" --cli-connect-timeout 3 --cli-read-timeout 3 --only-show-errors >/dev/null 2>&1 & uploader=$!
+    wait "$uploader" || true
+    uploader=""
+  }
   while kill -0 "$owner" 2>/dev/null; do
     value="$(arma_download_activity "$output_file")"
     if [ "$value" != "$previous" ]; then activity "$value" >/dev/null; previous="$value"; fi

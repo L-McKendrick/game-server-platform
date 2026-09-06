@@ -27,8 +27,8 @@ Workshop missions have their own batch; client and server-only mods share one
 ordered batch. Cached items keep their position but emit no download activity;
 retries retain the same position. Activity clears when SteamCMD returns
 successfully, before payload validation, and when the shell stage changes.
-No titles, byte percentages, per-item history, or new event infrastructure are
-required. Snapshots may skip fast intermediate items between observations.
+Workshop titles, byte percentages, per-item history, and new event infrastructure
+are not introduced. Snapshots may skip fast intermediate items between observations.
 
 The existing Refresh button queues persisted progress; it does not fetch the
 host snapshot. Progress can therefore be roughly two minutes old during
@@ -90,8 +90,12 @@ changed values through the existing workflow-scoped snapshot. The existing
 120-second installation observer remains unchanged. Percentages describe the
 current Steam download phase, not total setup progress; verification, missing,
 or unrecognized output falls back to the generic Arma label. Completion stops
-the sampler before clearing activity. No speed, ETA, history, or new AWS polling
+the sampler before clearing activity, cancelling an in-flight upload as well as
+its sleep. Telemetry children do not retain host/bootstrap file locks. No speed, ETA, history, or new AWS polling
 is introduced. Snapshot uploads are best effort with bounded CLI timeouts.
+Under normal conditions Arma percentages can lag by the 30-second local sample
+interval plus the 120-second observer interval and delivery overhead; upload
+failures can leave an older value until a later successful update.
 
 Private `/rb status` groups progress, connection, content, players, and diagnostic
 observation times. Active and pending Workshop mod sources link to their original

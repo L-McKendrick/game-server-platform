@@ -2,45 +2,41 @@
 
 ## State and Objective
 
-Phase 16.8 public setup-card formatting is implemented on
-`codex/setup-polling-progress`; deployment is pending. Prior polling and Arma
-percentage behavior remains unchanged.
-Test-44 later exposed a missing AWS CLI on the replacement host and an unsafe
-restore result choice that bypassed failure finalization. The live session was
-reconciled to `FAILED` with its workflow lock cleared. Phase 16.7 is now the next
-planned repair step; it has not been implemented.
+Branch review for `codex/setup-polling-progress` is complete against `main`.
+The branch reduces setup polling transitions and improves download/status
+presentation. No PR has been opened, and this review performs no deployment.
+See `docs/setup-polling-review.md` for findings, validation, and proposed PR text.
 
-## Implemented Behavior
+## Review Findings and Changes
 
-- Public setup progress hides the redundant Active condition and separates
-  Started with a blank line. Other conditions (such as Retrying) remain visible.
-- Workshop stage reads `Downloading and installing workshop files (x of y)`;
-  Current download contains the linked numeric ID. Missing batch evidence omits
-  the count. Workshop percentages are not fabricated: the verified SteamCMD
-  Workshop output lacks the Arma-style download percentage signal. A separate
-  measured-progress source remains to be investigated if requested.
-- Arma activity shows the latest observed whole download percentage. One local
-  sampler reads a bounded SteamCMD log tail every 30 seconds and publishes only
-  changed values. Existing two-minute installation observations remain intact.
-  Missing/verification output uses the generic label; sampler cleanup precedes
-  activity clearing. No speed estimates, history, or extra AWS polling states.
-- Private status groups progress, connection, content, players, and diagnostics;
-  active/pending Workshop mod sources are linked. Irrelevant optional settings
-  are omitted, and failure guidance precedes content detail.
-- Refresh feedback is concise; persisted status and revision/rate limits remain.
+- Fixed sampler shutdown during an in-flight S3 upload. Both upload and sleep
+  are interruptible; telemetry children release inherited host/bootstrap locks.
+- Added slow-upload and Steam reauthorization failure regression coverage while
+  preserving success/transient-failure exit codes and private-output redaction.
+- Reviewed provisioning counters/replay, readiness precedence, bootstrap deadline
+  and terminal precedence, snapshot bounds/fallback, cached/retried Workshop
+  positions, safe links, activity clearing, and card revision/rate limits.
+- Workshop percentage is not implemented: no reliable per-item percentage signal
+  was verified in the current command output. Arma percentages use latest-only
+  local sampling; normal visibility lag can reach roughly 150 seconds plus
+  delivery overhead, and unavailable snapshots can remain stale longer.
 
-## Validation and Deployment Scope
+## Validation and Remaining Attention
 
-Go 1.26.5 full coverage tests, vet, builds, and affected Lambda packaging pass.
-No Terraform or bootstrap script changes were needed in this follow-up. No local C compiler is available;
-race testing remains the CI gate. All affected Lambda packages build successfully.
-No deployment or Discord command registration performed.
-Shared card rendering affects all Lambda packages in the standard packaging
-script. This follow-up changes presentation only. No new AWS
-resources, permissions, state-machine changes, or command definitions required.
-Review any unrelated Terraform differences separately.
-The Phase 16.7 roadmap-only addition requires no deployment or Discord command
-registration.
+Go 1.26.5 coverage tests, vet, all command builds, Bash behavior/syntax,
+Terraform 1.15.8 formatting/validation, and Lambda packaging all pass.
+No local C compiler is available; race testing remains the required CI gate.
+
+The pre-existing test-44 restore failure is still unresolved: replacement-host
+AWS CLI prerequisites and restore failure finalization need Phase 16.7. Test-44
+was reconciled to FAILED with its workflow lock cleared. Default: do not attempt
+another live restore as part of this branch review. This branch does not claim
+restore release readiness.
+
+Branch deployment scope: provisioning/bootstrap state-machine definitions,
+bootstrap script object/key, and all shared-renderer Lambda consumers in the
+standard packaging script. No new AWS resources, IAM grants, migrations, or
+Discord command definitions. Review unrelated Terraform differences separately.
 
 ## Commands to Apply Current Changes
 
@@ -55,15 +51,15 @@ $env:GOTOOLCHAIN = "go1.26.5"
 $env:GOCACHE = Join-Path (Get-Location) ".cache/go-build"
 ./scripts/package-discord-lambda.ps1
 if ($LASTEXITCODE -ne 0) { throw "Lambda packaging failed" }
-if (Test-Path -LiteralPath "infra/terraform/environments/dev/setup-card-layout-20260906.tfplan") {
+if (Test-Path -LiteralPath "infra/terraform/environments/dev/setup-polling-review-20260906.tfplan") {
     throw "Plan already exists; choose a new descriptive filename in all commands below."
 }
-terraform -chdir=infra/terraform/environments/dev plan -out setup-card-layout-20260906.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out setup-polling-review-20260906.tfplan
 if ($LASTEXITCODE -ne 0) { throw "Terraform plan failed" }
-terraform -chdir=infra/terraform/environments/dev show setup-card-layout-20260906.tfplan
+terraform -chdir=infra/terraform/environments/dev show setup-polling-review-20260906.tfplan
 if ($LASTEXITCODE -ne 0) { throw "Terraform plan review failed" }
 # Review the displayed plan before running the following apply command.
-terraform -chdir=infra/terraform/environments/dev apply setup-card-layout-20260906.tfplan
+terraform -chdir=infra/terraform/environments/dev apply setup-polling-review-20260906.tfplan
 if ($LASTEXITCODE -ne 0) { throw "Terraform apply failed" }
 ./scripts/verify-bootstrap-worker-deployment.ps1
 ```
