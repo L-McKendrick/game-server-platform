@@ -9,10 +9,33 @@ Phase 6 turns a managed `BOOTSTRAPPING` instance into a playable Arma 3 server. 
 3. The command downloads the content-addressed host script from the private assets bucket, prepares and mounts the persistent data volume, then serializes work with a host lock.
 4. Durable markers skip completed SteamCMD, the Arma `creatordlc` server branch, Workshop, content, and optional TeamSpeak stages on retry.
 5. The final service and UDP health gate always reruns; it is never satisfied by an old marker.
-6. Step Functions polls Systems Manager without holding a Lambda invocation open.
+6. Step Functions polls Systems Manager without holding a Lambda invocation open: 120 seconds during explicitly observed Arma and Workshop installation, 30 seconds during other stages and rollback.
 7. Success records `RUNNING`/`HEALTHY` and notifies Discord. Failure records `FAILED`, retains infrastructure and markers, and remains retryable.
 
 Command dispatch is intentionally single-attempt because Systems Manager Run Command has no caller idempotency token. A transient dispatch failure fails closed and is retried by running `/session start` again; it cannot create two concurrent installers.
+
+## Installation progress and polling
+
+The managed command publishes a bounded workflow-scoped S3 snapshot with an
+explicit shell stage and the latest download activity. Missing, oversized, or
+legacy snapshots without an explicit stage retain the 30-second poll interval.
+The next wait is capped by the existing persisted command deadline. Terminal
+SSM results still take precedence over deadline expiry.
+
+The stage shows `Downloading and installing workshop files (3 of 7)` and the download line shows the linked item ID. The position counts items in the current batch:
+Workshop missions have their own batch; client and server-only mods share one
+ordered batch. Cached items keep their position but emit no download activity;
+retries retain the same position. Activity clears when SteamCMD returns
+successfully, before payload validation, and when the shell stage changes.
+Workshop titles, byte percentages, per-item history, and new event infrastructure
+are not introduced. Snapshots may skip fast intermediate items between observations.
+
+The existing Refresh button queues persisted progress; it does not fetch the
+host snapshot. Progress can therefore be roughly two minutes old during
+installation. The host proceeds immediately between stages, but recognizing a
+new stage, completion, or failure can take up to the current two-minute wait
+plus observation overhead. Wake, restore, and standalone synchronization retain
+their existing orchestration cadence.
 
 ## Credential and content handling
 
@@ -51,3 +74,31 @@ The persistent volume mounts at `/srv/game-server`. Arma, SteamCMD, Workshop con
 Game hosts use the official Canonical Ubuntu Server 24.04 LTS AMI. Bootstrap enables the `i386` package architecture and installs the 32-bit C/C++ runtime required by SteamCMD. The short SSM launcher installs AWS CLI v2 from the official distribution when the image does not already provide it.
 
 Phase 6 marks the session playable only when the Arma service is active and UDP `2302` is listening; optional TeamSpeak also requires UDP `9987`. Phase 7 adds continuous player, process, and application-level monitoring.
+
+### Download presentation
+
+The card renders Workshop activity as `Current download: <linked ID>` and places
+`(x of y)` in the Workshop stage line. Active is omitted from public progress;
+a blank line separates Started. Other progress conditions remain visible.
+Workshop percentages require a verified per-item progress source; the current
+SteamCMD Workshop output does not provide the Arma-style update percentage.
+Links are constructed from canonical numeric IDs, never raw Steam output.
+Arma download activity includes the most recent observed whole percentage, for
+example `Current download: Arma 3 server files (88%)`. A host-local sampler reads
+only the final 8 KiB of private SteamCMD output every 30 seconds and publishes
+changed values through the existing workflow-scoped snapshot. The existing
+120-second installation observer remains unchanged. Percentages describe the
+current Steam download phase, not total setup progress; verification, missing,
+or unrecognized output falls back to the generic Arma label. Completion stops
+the sampler before clearing activity, cancelling an in-flight upload as well as
+its sleep. Telemetry children do not retain host/bootstrap file locks. No speed, ETA, history, or new AWS polling
+is introduced. Snapshot uploads are best effort with bounded CLI timeouts.
+Under normal conditions Arma percentages can lag by the 30-second local sample
+interval plus the 120-second observer interval and delivery overhead; upload
+failures can leave an older value until a later successful update.
+
+Private `/rb status` groups progress, connection, content, players, and diagnostic
+observation times. Active and pending Workshop mod sources link to their original
+item or collection. Disabled TeamSpeak and absent server-only mods are omitted;
+actionable failures precede content details. Refresh replies simply acknowledge
+the request and retain existing persistence, revision, and rate-limit behavior.

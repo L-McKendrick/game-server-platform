@@ -4,6 +4,8 @@ package sessioncard
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -12,6 +14,37 @@ import (
 )
 
 const maximumContentRunes = 1900
+
+var workshopActivityPattern = regexp.MustCompile(`^Workshop item ([1-9][0-9]{0,19}) \(([1-9][0-9]{0,2})/([1-9][0-9]{0,2})\)$`)
+
+// Construct links only from canonical numeric IDs; arbitrary activity stays escaped.
+func downloadActivity(value string) string {
+	parts := workshopActivityPattern.FindStringSubmatch(value)
+	if parts != nil {
+		id, err := strconv.ParseUint(parts[1], 10, 64)
+		index, _ := strconv.Atoi(parts[2])
+		total, _ := strconv.Atoi(parts[3])
+		if err == nil && index <= total && total <= 250 {
+			return workshopLink(id)
+		}
+	}
+	return safe(value)
+}
+
+func downloadStage(card Projection) string {
+	parts := workshopActivityPattern.FindStringSubmatch(card.Progress.Activity)
+	if parts != nil && downloadActivity(card.Progress.Activity) != safe(card.Progress.Activity) {
+		return fmt.Sprintf("Downloading and installing workshop files (%s of %s)", parts[2], parts[3])
+	}
+	if card.Stage == "Synchronizing Workshop content" || card.Stage == "Downloading and validating" {
+		return "Downloading and installing workshop files"
+	}
+	return card.Stage
+}
+
+func workshopLink(id uint64) string {
+	return fmt.Sprintf("[%d](https://steamcommunity.com/sharedfiles/filedetails/?id=%d)", id, id)
+}
 
 // RenderPublic renders the concise public form of an authoritative projection.
 func RenderPublic(card Projection) string {
@@ -65,24 +98,34 @@ func render(card Projection, detailed bool) string {
 			fmt.Fprintf(&builder, "\n%s", safe(card.Description))
 		}
 	}
-	fmt.Fprintf(
-		&builder,
-		"\n\n**Game:** %s\n**Mode:** %s\n**TeamSpeak:** %s\nStatus: %s\nHealth: %s",
-		safe(card.Game), safe(card.Mode), enabled(card.TeamSpeak), safe(card.Lifecycle), safe(card.Health),
-	)
+	if detailed {
+		fmt.Fprintf(&builder, "\n\n**Game:** %s · %s\n**Health:** %s", safe(card.Game), safe(card.Mode), safe(card.Health))
+		if card.TeamSpeak {
+			builder.WriteString("\n**TeamSpeak:** On")
+		}
+	} else {
+		fmt.Fprintf(
+			&builder,
+			"\n\n**Game:** %s\n**Mode:** %s\n**TeamSpeak:** %s\nStatus: %s\nHealth: %s",
+			safe(card.Game), safe(card.Mode), enabled(card.TeamSpeak), safe(card.Lifecycle), safe(card.Health),
+		)
+	}
 	if card.Progress.Visible {
-		fmt.Fprintf(&builder, "\n**Progress:** `%s` — Step %d/%d\n**Current stage:** %s", safeCode(card.Progress.Bar), card.Progress.Step, card.Progress.Total, safe(card.Stage))
-		if card.Progress.Condition != "" {
+		if detailed {
+			builder.WriteString("\n\n### Progress")
+		}
+		fmt.Fprintf(&builder, "\n**Progress:** `%s` — Step %d/%d\n**Current stage:** %s", safeCode(card.Progress.Bar), card.Progress.Step, card.Progress.Total, safe(downloadStage(card)))
+		if card.Progress.Condition != "" && (detailed || card.Progress.Condition != "Active") {
 			fmt.Fprintf(&builder, "\n**Progress state:** %s", safe(card.Progress.Condition))
 		}
 		if detailed && card.Progress.Guidance != "" {
 			fmt.Fprintf(&builder, "\n**Guidance:** %s", safe(card.Progress.Guidance))
 		}
 		if card.Progress.Activity != "" {
-			fmt.Fprintf(&builder, "\n**Current download:** %s", safe(card.Progress.Activity))
+			fmt.Fprintf(&builder, "\n**Current download:** %s", downloadActivity(card.Progress.Activity))
 		}
-	} else {
-		fmt.Fprintf(&builder, "\n**Current stage:** %s", safe(card.Stage))
+	} else if !detailed {
+		fmt.Fprintf(&builder, "\n**Current stage:** %s", safe(downloadStage(card)))
 	}
 	if card.CurrentOperation != "" {
 		fmt.Fprintf(&builder, "\n**Current operation:** %s", safe(card.CurrentOperation))
@@ -91,19 +134,26 @@ func render(card Projection, detailed bool) string {
 		if detailed || card.OperationStartedAt.IsZero() {
 			fmt.Fprintf(&builder, "\n**Elapsed:** %s", formatDuration(card.Elapsed))
 		} else {
-			fmt.Fprintf(&builder, "\n**Started:** %s", timestamp(card.OperationStartedAt))
+			fmt.Fprintf(&builder, "\n\n**Started:** %s", timestamp(card.OperationStartedAt))
 		}
 	}
 	if detailed && card.LifecycleTiming.Label != "" && !card.LifecycleTiming.DueAt.IsZero() {
 		fmt.Fprintf(&builder, "\n**%s:** %s", safe(card.LifecycleTiming.Label), detailedTimestamp(card.LifecycleTiming.DueAt))
 	}
 	if card.Endpoints.Game.Available {
+		if detailed {
+			builder.WriteString("\n\n### Connection")
+		}
 		fmt.Fprintf(&builder, "\n\n%s", connectionLine("Arma", card.Endpoints.Game))
 	}
 	if card.Endpoints.TeamSpeak.Available {
 		fmt.Fprintf(&builder, "\n%s", connectionLine("TeamSpeak", card.Endpoints.TeamSpeak))
 	}
 
+	if detailed {
+		renderFailure(&builder, card.Failure, true)
+		builder.WriteString("\n\n### Content")
+	}
 	fmt.Fprintf(
 		&builder,
 		"\n\n**Mission:** %s\n**Preset:** %s\n**Mods:** %s",
@@ -115,7 +165,11 @@ func render(card Projection, detailed bool) string {
 	if card.Mods.ActiveRevision > 0 {
 		fmt.Fprintf(&builder, "\n**Active mod revision:** `%d`", card.Mods.ActiveRevision)
 		if card.Mods.ActiveWorkshopSourceID > 0 {
-			fmt.Fprintf(&builder, " — Workshop `%d`", card.Mods.ActiveWorkshopSourceID)
+			if detailed {
+				fmt.Fprintf(&builder, "\n**Active Workshop source:** %s", workshopLink(card.Mods.ActiveWorkshopSourceID))
+			} else {
+				fmt.Fprintf(&builder, " — Workshop `%d`", card.Mods.ActiveWorkshopSourceID)
+			}
 		}
 		if !card.Mods.ActiveSince.IsZero() {
 			fmt.Fprintf(&builder, " — active %s", timestamp(card.Mods.ActiveSince))
@@ -130,7 +184,11 @@ func render(card Projection, detailed bool) string {
 	if card.Mods.PendingRevision > 0 {
 		fmt.Fprintf(&builder, "\n**Pending mod revision:** `%d` — %s", card.Mods.PendingRevision, safe(card.Mods.PendingStatus))
 		if card.Mods.PendingWorkshopSourceID > 0 {
-			fmt.Fprintf(&builder, " — Workshop `%d`", card.Mods.PendingWorkshopSourceID)
+			if detailed {
+				fmt.Fprintf(&builder, "\n**Pending Workshop source:** %s", workshopLink(card.Mods.PendingWorkshopSourceID))
+			} else {
+				fmt.Fprintf(&builder, " — Workshop `%d`", card.Mods.PendingWorkshopSourceID)
+			}
 		}
 		if !card.Mods.PendingSince.IsZero() {
 			fmt.Fprintf(&builder, " %s", timestamp(card.Mods.PendingSince))
@@ -139,7 +197,7 @@ func render(card Projection, detailed bool) string {
 	if card.Mods.DownloadURL != "" {
 		fmt.Fprintf(&builder, "\n%s", modlistLinkLine(card.Mods.DownloadURL))
 	}
-	if detailed {
+	if detailed && card.ServerMods.Status != "Awaiting upload" && card.ServerMods.Status != "Not required for vanilla" && card.ServerMods.Status != "" {
 		fmt.Fprintf(&builder, "\n**Server-only mods:** %s", artifactLine(ArtifactView{Status: card.ServerMods.Status, Issue: card.ServerMods.Issue}))
 		if card.ServerMods.ActiveRevision > 0 {
 			fmt.Fprintf(&builder, "\n**Active server-mod revision:** `%d`", card.ServerMods.ActiveRevision)
@@ -148,20 +206,22 @@ func render(card Projection, detailed bool) string {
 			fmt.Fprintf(&builder, "\n**Pending server-mod revision:** `%d` — %s", card.ServerMods.PendingRevision, safe(card.ServerMods.PendingStatus))
 		}
 	}
-	renderFailure(&builder, card.Failure, detailed)
+	if !detailed {
+		renderFailure(&builder, card.Failure, false)
+	}
 
 	if card.Players.Available {
 		if detailed {
-			fmt.Fprintf(&builder, "\n\nLive players (A2S): `%d/%d`\nPlayer names: %s", card.Players.Count, card.Players.Capacity, boundedNames(card.Players.Names))
+			fmt.Fprintf(&builder, "\n\n### Players\n**Online:** `%d/%d`\n%s", card.Players.Count, card.Players.Capacity, boundedNames(card.Players.Names))
 		} else {
 			fmt.Fprintf(&builder, "\n\n**Players:** `%d/%d`", card.Players.Count, card.Players.Capacity)
 		}
 	} else if detailed {
-		builder.WriteString("\n\nLive players (A2S): unavailable")
+		builder.WriteString("\n\n**Live players:** Unavailable")
 	}
 
 	if detailed && !card.Freshness.SessionUpdatedAt.IsZero() {
-		fmt.Fprintf(&builder, "\n\nUpdated: %s", detailedTimestamp(card.Freshness.SessionUpdatedAt))
+		fmt.Fprintf(&builder, "\n\n### Diagnostics\n**Status changed:** %s", timestamp(card.Freshness.SessionUpdatedAt))
 	}
 	if detailed && !card.Freshness.InfrastructureObservedAt.IsZero() {
 		fmt.Fprintf(&builder, "\nInfrastructure observed %s.", timestamp(card.Freshness.InfrastructureObservedAt))

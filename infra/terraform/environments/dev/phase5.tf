@@ -743,14 +743,8 @@ resource "aws_sfn_state_machine" "provision_session" {
 
   definition = jsonencode({
     Comment = "Phase 5 idempotent EC2/EBS provisioning boundary."
-    StartAt = "InitializeAttempts"
+    StartAt = "Prepare"
     States = {
-      InitializeAttempts = {
-        Type       = "Pass"
-        Result     = { instance = 0, ssm = 0 }
-        ResultPath = "$.attempts"
-        Next       = "Prepare"
-      }
       Prepare = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
@@ -795,6 +789,7 @@ resource "aws_sfn_state_machine" "provision_session" {
           FunctionName = aws_lambda_function.provisioning_worker.function_name
           Payload = {
             action             = "observe_instance"
+            "attempts.$"       = "$.stage.result.attempts"
             "session_id.$"     = "$.session_id"
             "workflow_id.$"    = "$.workflow_id"
             "correlation_id.$" = "$.correlation_id"
@@ -807,22 +802,11 @@ resource "aws_sfn_state_machine" "provision_session" {
         Next           = "InstanceReady"
       }
       InstanceReady = {
-        Type    = "Choice"
-        Choices = [{ Variable = "$.stage.result.ready", BooleanEquals = true, Next = "WaitForManagedNode" }]
-        Default = "IncrementInstanceAttempts"
-      }
-      IncrementInstanceAttempts = {
-        Type = "Pass"
-        Parameters = {
-          "instance.$" = "States.MathAdd($.attempts.instance, 1)"
-          "ssm.$"      = "$.attempts.ssm"
-        }
-        ResultPath = "$.attempts"
-        Next       = "InstanceAttemptsAvailable"
-      }
-      InstanceAttemptsAvailable = {
-        Type    = "Choice"
-        Choices = [{ Variable = "$.attempts.instance", NumericGreaterThanEquals = 40, Next = "InstanceTimeout" }]
+        Type = "Choice"
+        Choices = [
+          { Variable = "$.stage.result.ready", BooleanEquals = true, Next = "WaitForManagedNode" },
+          { Variable = "$.stage.result.exhausted", BooleanEquals = true, Next = "InstanceTimeout" },
+        ]
         Default = "WaitForInstance"
       }
       InstanceTimeout = {
@@ -839,6 +823,7 @@ resource "aws_sfn_state_machine" "provision_session" {
           FunctionName = aws_lambda_function.provisioning_worker.function_name
           Payload = {
             action             = "check_managed"
+            "attempts.$"       = "$.stage.result.attempts"
             "session_id.$"     = "$.session_id"
             "workflow_id.$"    = "$.workflow_id"
             "correlation_id.$" = "$.correlation_id"
@@ -851,22 +836,11 @@ resource "aws_sfn_state_machine" "provision_session" {
         Next           = "ManagedNodeReady"
       }
       ManagedNodeReady = {
-        Type    = "Choice"
-        Choices = [{ Variable = "$.stage.result.managed", BooleanEquals = true, Next = "Complete" }]
-        Default = "IncrementSSMAttempts"
-      }
-      IncrementSSMAttempts = {
-        Type = "Pass"
-        Parameters = {
-          "instance.$" = "$.attempts.instance"
-          "ssm.$"      = "States.MathAdd($.attempts.ssm, 1)"
-        }
-        ResultPath = "$.attempts"
-        Next       = "SSMAttemptsAvailable"
-      }
-      SSMAttemptsAvailable = {
-        Type    = "Choice"
-        Choices = [{ Variable = "$.attempts.ssm", NumericGreaterThanEquals = 40, Next = "SSMTimeout" }]
+        Type = "Choice"
+        Choices = [
+          { Variable = "$.stage.result.managed", BooleanEquals = true, Next = "Complete" },
+          { Variable = "$.stage.result.exhausted", BooleanEquals = true, Next = "SSMTimeout" },
+        ]
         Default = "WaitForManagedNode"
       }
       SSMTimeout = {

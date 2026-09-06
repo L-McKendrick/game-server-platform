@@ -63,20 +63,45 @@ func (config Config) Validate() error {
 	}
 }
 
+// PollAttempts travels in execution input, so transient Lambda retries do not
+// consume additional observations and no per-poll database write is needed.
+type PollAttempts struct {
+	Instance int `json:"instance"`
+	SSM      int `json:"ssm"`
+}
+
+func nextPollAttempts(previous PollAttempts, managedStage, ready bool) (PollAttempts, bool, error) {
+	if previous.Instance < 0 || previous.Instance > 40 || previous.SSM < 0 || previous.SSM > 40 {
+		return previous, false, fmt.Errorf("invalid provisioning poll counters")
+	}
+	if ready {
+		return previous, false, nil
+	}
+	if managedStage {
+		previous.SSM = min(40, previous.SSM+1)
+	} else {
+		previous.Instance = min(40, previous.Instance+1)
+	}
+	return previous, previous.Instance >= 40 || previous.SSM >= 40, nil
+}
+
 type TaskRequest struct {
-	Action        string `json:"action"`
-	SessionID     string `json:"session_id"`
-	WorkflowID    string `json:"workflow_id"`
-	CorrelationID string `json:"correlation_id"`
-	ErrorCode     string `json:"error_code,omitempty"`
-	ErrorMessage  string `json:"error_message,omitempty"`
+	Attempts      PollAttempts `json:"attempts"`
+	Action        string       `json:"action"`
+	SessionID     string       `json:"session_id"`
+	WorkflowID    string       `json:"workflow_id"`
+	CorrelationID string       `json:"correlation_id"`
+	ErrorCode     string       `json:"error_code,omitempty"`
+	ErrorMessage  string       `json:"error_message,omitempty"`
 }
 
 type TaskResult struct {
+	Attempts     PollAttempts            `json:"attempts"`
+	Exhausted    bool                    `json:"exhausted"`
 	SessionID    string                  `json:"session_id"`
 	WorkflowID   string                  `json:"workflow_id"`
-	Ready        bool                    `json:"ready,omitempty"`
-	Managed      bool                    `json:"managed,omitempty"`
+	Ready        bool                    `json:"ready"`
+	Managed      bool                    `json:"managed"`
 	State        string                  `json:"state,omitempty"`
 	Warning      string                  `json:"warning,omitempty"`
 	Continuation *domain.CommandEnvelope `json:"continuation,omitempty"`
@@ -224,7 +249,8 @@ func (service *Service) observe(ctx context.Context, request TaskRequest) (TaskR
 	}
 	response := resultWithObservation(session, workflow, observation)
 	response.Ready = ready
-	return response, nil
+	response.Attempts, response.Exhausted, err = nextPollAttempts(request.Attempts, false, ready)
+	return response, err
 }
 
 func (service *Service) checkManaged(ctx context.Context, request TaskRequest) (TaskResult, error) {
@@ -238,7 +264,8 @@ func (service *Service) checkManaged(ctx context.Context, request TaskRequest) (
 	}
 	response := result(session, workflow)
 	response.Managed = managed
-	return response, nil
+	response.Attempts, response.Exhausted, err = nextPollAttempts(request.Attempts, true, managed)
+	return response, err
 }
 
 func (service *Service) complete(ctx context.Context, request TaskRequest) (TaskResult, error) {

@@ -289,8 +289,26 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **16.2** [ ] Add OIDC deployment, staging, dashboards, alert validation, and tested production and disaster-recovery runbooks.
     - **16.3** [ ] Verify costs, quotas, failure recovery, backup restoration, and operational readiness against explicit release gates.
     - **16.4** [ ] Benchmark bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements, then optimize only demonstrated bottlenecks within cost and reliability guardrails.
-    - **16.5** [ ] Reduce measured AWS orchestration overhead without weakening bounded lifecycle behavior, progress visibility, or recovery safeguards.
-      - **16.5.1** [x] Reduce bootstrap Step Functions polling transitions by enforcing the persisted command deadline in the existing observer and removing counter-only workflow states, while preserving 30-second progress, terminal SSM results, rollback, replay, and backward compatibility.
+    - **16.5** [x] Reduce AWS orchestration overhead without weakening bounded lifecycle behavior, progress visibility, or recovery safeguards.
+      - **16.5.1** [x] Enforce the persisted bootstrap command deadline in the existing observer and remove counter-only workflow states while preserving terminal SSM results, rollback, replay, and backward compatibility.
+      - **16.5.2** [x] Publish bounded Workshop item ID/position snapshots and explicit shell stages; use 120-second Arma/Workshop installation polling with 30-second fallback and deadline capping; validate download/cache/retry behavior.
+      - **16.5.3** [x] Move provisioning poll counters into existing observers while preserving 15-second cadence and 40-observation limits. Retain persisted Refresh behavior because live overlays would require separate persistence and ordering integration.
+      - **16.5.4** [x] Validate the combined authorized changes, document deployment and progress semantics, and prepare the scoped commit and branch push without deploying.
+
+    - **16.6** [x] Polish download and detailed-status presentation using existing session data.
+      - **16.6.1** [x] Link the current Workshop ID with `(Item x/y)` formatting and shorten Refresh feedback.
+      - **16.6.2** [x] Group private status information, link active/pending Workshop sources, and suppress irrelevant detail while retaining failure guidance.
+      - **16.6.3** [x] Capture the latest Arma download percentage in the existing snapshot with bounded host sampling and prompt cleanup; validate the combined changes and refresh deployment/commit handoff.
+    - **16.7** [ ] Repair restore prerequisites and terminal-failure handling exposed by the test-44 restore failure.
+      - **16.7.1** [ ] Ensure every replacement host has a verified supported AWS CLI before archive restoration begins, and fail with an actionable bounded error if the prerequisite is unavailable.
+      - **16.7.2** [ ] Make the restore Step Functions result branch handle unsuccessful terminal command results without referencing absent fields, and route all runtime/task failures through the restore failure handler so lifecycle state, failure detail, and workflow locks are finalized.
+      - **16.7.3** [ ] Add focused missing-CLI, failed-command-result, malformed-result, failure-handler, replay, lock-release, and retained-resource regression coverage; run proportional Go, packaging, Terraform, and live restore validation before completing the step.
+
+    - **16.8** [x] Refine public setup progress presentation.
+      - **16.8.1** [x] Remove redundant active state, separate Started, move Workshop batch position into the stage label, and assess honest per-item percentage reporting; validate and refresh the handoff.
+
+    - **16.9** [x] Review setup-polling branch release readiness.
+      - **16.9.1** [x] Review polling, snapshot, sampler, and presentation failure paths; correct demonstrated gaps, validate, reconcile documentation, and prepare the PR handoff without opening a PR.
 
 17. **Potential Enhancements — Pending**
     - **17.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.

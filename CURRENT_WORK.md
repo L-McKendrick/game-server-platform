@@ -2,33 +2,70 @@
 
 ## State and Objective
 
-Phase 17 Workshop content sources, including the live mission target and Steam
-authorization-heartbeat corrections, is merged into `main` and verified in the
-development environment. Phase 17.24 reconciles the durable documentation with
-that final behavior on `codex/workshop-docs-sync`.
+Branch review for `codex/setup-polling-progress` is complete against `main`.
+The branch reduces setup polling transitions and improves download/status
+presentation. No PR has been opened, and this review performs no deployment.
+See `docs/setup-polling-review.md` for findings, validation, and proposed PR text.
 
-## Documentation Review
+## Review Findings and Changes
 
-- The host sync target is documented with its canonical values: `all`,
-  `mission`, and `mods`.
-- The Workshop and Steam authorization guides document prompt heartbeat-worker
-  shutdown without changing the five-minute renewal or 15-minute lease policy.
-- The mission-management guide and README now include uploaded and
-  Workshop-backed scenarios, live running-session availability, deferred
-  lifecycle behavior, and pending mod activation.
-- Existing documentation already accurately covers the 50-direct-child limit,
-  unsupported nested collections, public/ephemeral response boundaries,
-  immutable collection snapshots, ordinary-wake download skipping, and
-  EventBridge plus reconciliation completion behavior.
+- Fixed sampler shutdown during an in-flight S3 upload. Both upload and sleep
+  are interruptible; telemetry children release inherited host/bootstrap locks.
+- Added slow-upload and Steam reauthorization failure regression coverage while
+  preserving success/transient-failure exit codes and private-output redaction.
+- Reviewed provisioning counters/replay, readiness precedence, bootstrap deadline
+  and terminal precedence, snapshot bounds/fallback, cached/retried Workshop
+  positions, safe links, activity clearing, and card revision/rate limits.
+- Workshop percentage is not implemented: no reliable per-item percentage signal
+  was verified in the current command output. Arma percentages use latest-only
+  local sampling; normal visibility lag can reach roughly 150 seconds plus
+  delivery overhead, and unavailable snapshots can remain stale longer.
 
-## Validation
+## Validation and Remaining Attention
 
-- Documentation references were checked against the merged implementation and
-  Phase 17 roadmap.
-- Markdown link targets resolve locally.
-- `git diff --check` passes.
+Go 1.26.5 coverage tests, vet, all command builds, Bash behavior/syntax,
+Terraform 1.15.8 formatting/validation, and Lambda packaging all pass.
+No local C compiler is available; race testing remains the required CI gate.
+
+The pre-existing test-44 restore failure is still unresolved: replacement-host
+AWS CLI prerequisites and restore failure finalization need Phase 16.7. Test-44
+was reconciled to FAILED with its workflow lock cleared. Default: do not attempt
+another live restore as part of this branch review. This branch does not claim
+restore release readiness.
+
+Branch deployment scope: provisioning/bootstrap state-machine definitions,
+bootstrap script object/key, and all shared-renderer Lambda consumers in the
+standard packaging script. No new AWS resources, IAM grants, migrations, or
+Discord command definitions. Review unrelated Terraform differences separately.
 
 ## Commands to Apply Current Changes
 
-No deployment, Lambda packaging, Terraform plan, apply, verification, or
-Discord command registration is required. These are documentation-only changes.
+Run from the repository root. The earlier setup-polling plan is not reused.
+
+```powershell
+$ErrorActionPreference = "Stop"
+$env:AWS_PROFILE = "game-server-dev"
+$env:AWS_REGION = "us-west-2"
+$env:AWS_EC2_METADATA_DISABLED = "true"
+$env:GOTOOLCHAIN = "go1.26.5"
+$env:GOCACHE = Join-Path (Get-Location) ".cache/go-build"
+./scripts/package-discord-lambda.ps1
+if ($LASTEXITCODE -ne 0) { throw "Lambda packaging failed" }
+if (Test-Path -LiteralPath "infra/terraform/environments/dev/setup-polling-review-20260906.tfplan") {
+    throw "Plan already exists; choose a new descriptive filename in all commands below."
+}
+terraform -chdir=infra/terraform/environments/dev plan -out setup-polling-review-20260906.tfplan
+if ($LASTEXITCODE -ne 0) { throw "Terraform plan failed" }
+terraform -chdir=infra/terraform/environments/dev show setup-polling-review-20260906.tfplan
+if ($LASTEXITCODE -ne 0) { throw "Terraform plan review failed" }
+# Review the displayed plan before running the following apply command.
+terraform -chdir=infra/terraform/environments/dev apply setup-polling-review-20260906.tfplan
+if ($LASTEXITCODE -ne 0) { throw "Terraform apply failed" }
+./scripts/verify-bootstrap-worker-deployment.ps1
+```
+
+Verify a fresh setup shows Arma percentages, then the Workshop count in the stage
+and linked ID on the download line; verify a blank line before Started and no
+Active condition. Existing in-flight bootstrap commands keep their already
+loaded script. Check `/rb status` source links and Refresh feedback. Discord
+registration is not required.

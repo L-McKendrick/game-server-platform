@@ -230,9 +230,11 @@ type MonitoringRunner interface {
 }
 
 type BootstrapCommandStatus struct {
-	Status       string
-	ErrorCode    string
-	ErrorMessage string
+	// InstallationActive is set only by an explicit game/Workshop snapshot stage.
+	InstallationActive bool
+	Status             string
+	ErrorCode          string
+	ErrorMessage       string
 	// Activity is one bounded, allowlisted description of the current download
 	// target. Raw managed-command output never crosses this port.
 	Activity string

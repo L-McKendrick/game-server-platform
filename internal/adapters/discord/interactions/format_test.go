@@ -16,7 +16,7 @@ func TestFormatSessionStatus_IncludesLivePlayersAndNames(t *testing.T) {
 		MaxPlayers:  32,
 		PlayerNames: []string{"Alice", "Bob"},
 	})
-	if !strings.Contains(content, "Live players (A2S): `2/32`") || !strings.Contains(content, "Player names: Alice, Bob") {
+	if !strings.Contains(content, "**Online:** `2/32`") || !strings.Contains(content, "Alice, Bob") {
 		t.Fatalf("formatSessionStatus() = %q", content)
 	}
 }
@@ -34,8 +34,8 @@ func TestDiscordRendererUsesSafeReadableSessionPresentation(t *testing.T) {
 
 	content := renderer.sessionStatus(session, nil)
 	for _, expected := range []string{
-		`\*Saturday\*`, "Slug: `saturday-arma`", `Description: Weekly \*co-op\*`, "Status: Running", "Health: Healthy",
-		"<t:1786710600:F> (<t:1786710600:R>)",
+		`\*Saturday\*`, "Slug: `saturday-arma`", `Description: Weekly \*co-op\*`, "## Running:", "**Health:** Healthy",
+		"<t:1786710600:R>",
 	} {
 		if !strings.Contains(content, expected) {
 			t.Errorf("content missing %q: %q", expected, content)
@@ -98,7 +98,7 @@ func TestDiscordRendererBoundsLongSessionListWithoutExposingIDs(t *testing.T) {
 func TestFormatSessionStatus_QueryUnavailableIsNotShownAsZero(t *testing.T) {
 	t.Parallel()
 	content := formatSessionStatus(domain.Session{DisplayName: "Saturday Arma", ID: "session-1"}, nil)
-	if !strings.Contains(content, "Live players (A2S): unavailable") || strings.Contains(content, "Live players (A2S): `0/") {
+	if !strings.Contains(content, "**Live players:** Unavailable") || strings.Contains(content, "**Online:** `0/") {
 		t.Fatalf("formatSessionStatus() = %q", content)
 	}
 }

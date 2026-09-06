@@ -61,6 +61,14 @@ publish_progress() { aws s3 cp "$PROGRESS_FILE" "s3://$ASSETS_BUCKET/$PROGRESS_K
 checkpoint() { printf 'GSP_CHECKPOINT:%s\n' "$1" | tee -a "$PROGRESS_FILE"; publish_progress; }
 activity() { sed -i '/^GSP_ACTIVITY:/d' "$PROGRESS_FILE"; printf 'GSP_ACTIVITY:%s\n' "$1" | tee -a "$PROGRESS_FILE"; publish_progress; }
 
+# Stage is independent of user-facing milestone vocabulary. Clear stale activity
+# in the same snapshot whenever the actual shell stage changes.
+progress_stage() {
+  sed -i '/^GSP_STAGE:/d; /^GSP_ACTIVITY:/d' "$PROGRESS_FILE"
+  printf 'GSP_STAGE:%s\n' "$1" >> "$PROGRESS_FILE"
+  publish_progress
+}
+
 prepare_host() {
   command -v apt-get >/dev/null 2>&1 || { log "bootstrap requires the approved Ubuntu game-host image"; return 1; }
   dpkg --add-architecture i386
@@ -368,12 +376,49 @@ steam_login_file() {
   chown steam:steam "$target"
 }
 
+# Read only the latest update line from a bounded tail of private Steam output.
+# Percentages describe the current Steam phase, not total setup completion.
+arma_download_activity() {
+  local line percent
+  line="$(tail -c 8192 "$1" 2>/dev/null | tr '\r' '\n' | grep 'Update state ' | tail -n 1)" || true
+  if [[ "$line" =~ downloading,\ progress:\ ([0-9]{1,3})\.[0-9]+\  ]] && [ "${BASH_REMATCH[1]}" -le 100 ]; then
+    percent="${BASH_REMATCH[1]}"
+    printf 'ARMA_SERVER:%d\n' "$((10#$percent))"
+  else
+    printf 'ARMA_SERVER\n'
+  fi
+}
+
+sample_arma_download() {
+  trap - EXIT ERR
+  # Telemetry must not keep host/bootstrap locks alive after its owner exits.
+  exec 8>&- 9>&-
+  local output_file="$1" owner="$2" sleeper="" uploader="" value previous=""
+  trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null || true; [ -z "$uploader" ] || kill "$uploader" 2>/dev/null || true; wait 2>/dev/null || true; exit 0' TERM INT
+  # Keep telemetry best-effort and bounded even when S3 is unavailable.
+  publish_progress() {
+    AWS_MAX_ATTEMPTS=1 aws s3 cp "$PROGRESS_FILE" "s3://$ASSETS_BUCKET/$PROGRESS_KEY" --region "$AWS_REGION" --cli-connect-timeout 3 --cli-read-timeout 3 --only-show-errors >/dev/null 2>&1 & uploader=$!
+    wait "$uploader" || true
+    uploader=""
+  }
+  while kill -0 "$owner" 2>/dev/null; do
+    value="$(arma_download_activity "$output_file")"
+    if [ "$value" != "$previous" ]; then activity "$value" >/dev/null; previous="$value"; fi
+    sleep 30 & sleeper=$!
+    wait "$sleeper" || true
+    sleeper=""
+  done
+}
+
 run_steamcmd() {
-  local runfile="$1" output_file code
+  local runfile="$1" output_file code progress_pid="" progress_owner="$BASHPID"
   output_file="${STEAM_AUTH_ROOT:-/run}/steamcmd-output.$$.log"
+  : > "$output_file"
+  if [ "${2:-}" = arma ]; then sample_arma_download "$output_file" "$progress_owner" & progress_pid=$!; fi
   set +e
   runuser -u steam -- env HOME="$STEAM_AUTH_ROOT/home" "$ROOT/steamcmd/steamcmd.sh" +runscript "$runfile" >"$output_file" 2>&1
   code=$?
+  if [ -n "$progress_pid" ]; then kill "$progress_pid" 2>/dev/null; wait "$progress_pid" 2>/dev/null; fi
   set -e
   if grep -Eqi 'Steam Guard|two[- ]factor|Account Logon Denied|InvalidPassword|Invalid Password|login failure|password required' "$output_file"; then
     STEAM_AUTH_VALID=false
@@ -460,7 +505,7 @@ ensure_workshop_revision_root() {
 }
 
 ensure_staged_workshop_mod() {
-  local id="$1" expected_update="$2" revision_root="$3" download_count="$4" source source_size pending marker marker_pending actual_update
+  local id="$1" expected_update="$2" revision_root="$3" download_count="$4" download_index="$5" source source_size pending marker marker_pending actual_update
   [[ "$id" =~ ^[1-9][0-9]{0,19}$ && "$expected_update" =~ ^-?[0-9]+$ && "$download_count" =~ ^[1-9][0-9]{0,3}$ ]] || return 1
   ensure_workshop_revision_root "$revision_root"
   source="$revision_root/$id"
@@ -473,8 +518,9 @@ ensure_staged_workshop_mod() {
     fi
   fi
   require_workshop_space 5368709120
-  activity "WORKSHOP_ITEMS:$download_count"
+  activity "WORKSHOP_ITEM:$id:$download_index:$download_count"
   download_workshop_item "$id"
+  activity ""
   source="$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/$id"
   [ -d "$source" ] && [ ! -L "$source" ] || { log "Workshop item $id was not downloaded safely"; return 1; }
   ! find "$source" -type l -print -quit | grep -q . || { log "Workshop mod content contains a symbolic link"; return 1; }
@@ -522,7 +568,7 @@ publish_workshop_sync_results() {
 }
 
 install_workshop_missions() (
-	local id revision expected_filename expected_size extra source pbo size parent pending='' final attempt code checksum runfile filename object_key manifest_file candidate_name expected_total=0
+	local id revision expected_filename expected_size extra source pbo size parent pending='' final attempt code checksum runfile filename object_key manifest_file candidate_name expected_total=0 download_index=0
   local -a ids=() pbos=()
   declare -A seen=()
 	declare -A filename_seen=()
@@ -541,10 +587,12 @@ install_workshop_missions() (
 	manifest_file="$(mktemp /run/gsp-workshop-missions.XXXXXX)"
 	trap '[ -z "$pending" ] || rm -rf -- "$pending"; rm -f -- "$manifest_file"' EXIT
   for id in "${ids[@]}"; do
+    download_index=$((download_index + 1))
 	expected_filename="${expected_filenames[$id]}"; expected_size="${expected_sizes[$id]}"
     parent="$ROOT/workshop-missions/$id"; final="$parent/$WORKSHOP_MISSION_REVISION"
 	if ! { [ -f "$final/mission.pbo" ] && [ -f "$final/mission.sha256" ] && [ -f "$final/metadata" ] && (cd "$final" && sha256sum --check --status mission.sha256); }; then
 	  [ ! -e "$final" ] || { log "Workshop mission staging destination is inconsistent"; return 1; }
+	  activity "WORKSHOP_ITEM:$id:$download_index:${#ids[@]}"
 	  code=1
 	  for attempt in 1 2 3; do
 		runfile="$(mktemp /run/gsp-steam-mission.XXXXXX)"; steam_login_file "$runfile"
@@ -554,6 +602,7 @@ install_workshop_missions() (
 		log "Retrying transient Workshop mission download"
 	  done
 	  [ "$code" -eq 0 ] || { printf 'ERR_WORKSHOP_DOWNLOAD_TIMEOUT: Workshop scenario download retries were exhausted.\n' >&2; return 1; }
+	  activity ""
 	  source="$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/$id"
 	  [ -d "$source" ] || { printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario content was not downloaded.\n' >&2; return 1; }
 	  ! find "$source" -type l -print -quit | grep -q . || { printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario content contains a symbolic link.\n' >&2; return 1; }
@@ -604,7 +653,8 @@ install_arma() (
     printf 'app_update 233780 -beta creatordlc validate\nquit\n' >> "$runfile"
   fi
   activity ARMA_SERVER
-  run_steamcmd "$runfile"
+  run_steamcmd "$runfile" arma
+  activity ""
   test -x "$ROOT/arma3/arma3server_x64"
 )
 
@@ -665,7 +715,7 @@ install_workshop() (
     [ -d "$ROOT/arma3/$dlc" ] || { log "Selected Creator DLC $dlc was not installed"; return 1; }
     mods="${mods:+$mods;}$dlc"
   done
-	local id source link revision_root expected_update extra
+	local id source link revision_root expected_update extra download_index=0
 	declare -A expected_updates=()
 	while IFS=$'\t' read -r id expected_update extra; do
 		[ -z "$id" ] && continue
@@ -678,7 +728,8 @@ install_workshop() (
   for id in "${ids[@]}"; do
 	expected_update="${expected_updates[$id]:-0}"
 	revision_root="$ROOT/workshop/mod-revisions/client-$PRESET_REVISION"
-	ensure_staged_workshop_mod "$id" "$expected_update" "$revision_root" "$workshop_count"
+	download_index=$((download_index + 1))
+	ensure_staged_workshop_mod "$id" "$expected_update" "$revision_root" "$workshop_count" "$download_index"
 	source="$STAGED_WORKSHOP_MOD_PATH"
 	mods="${mods:+$mods;}@workshop_$id"
 	if [ "$WORKSHOP_PROMOTE_MODS" = true ]; then
@@ -689,7 +740,8 @@ install_workshop() (
   done
 	for id in "${server_ids[@]}"; do
 		revision_root="$ROOT/workshop/mod-revisions/server-$SERVER_PRESET_REVISION"
-		ensure_staged_workshop_mod "$id" 0 "$revision_root" "$workshop_count"
+		download_index=$((download_index + 1))
+		ensure_staged_workshop_mod "$id" 0 "$revision_root" "$workshop_count" "$download_index"
 		source="$STAGED_WORKSHOP_MOD_PATH"
 		server_mods="${server_mods:+$server_mods;}@workshop_$id"
 		if [ "$WORKSHOP_PROMOTE_MODS" = true ]; then
@@ -711,6 +763,7 @@ install_workshop() (
 )
 
 sync_workshop_content() {
+  progress_stage sync_workshop_content
   prepare_workshop_staging
   case "$WORKSHOP_SYNC_TARGET" in
     all) install_workshop_missions; install_workshop ;;
@@ -719,6 +772,7 @@ sync_workshop_content() {
   esac
   publish_workshop_sync_results
   cleanup_workshop_staging
+  progress_stage content_ready
 }
 
 sqf_escape() { printf '%s' "$1" | sed 's/"/""/g'; }
@@ -929,6 +983,7 @@ for stage in install_steamcmd install_arma sync_workshop_content deploy_content 
     if [ "$stage" = sync_workshop_content ] && $STEAM_AUTH_ACTIVE; then persist_steam_auth; cleanup_steam_auth; fi
     continue
   fi
+  progress_stage "$stage"
   log "starting stage $stage"
   "$stage"
   if [ "$stage" = deploy_content ]; then
@@ -941,6 +996,7 @@ for stage in install_steamcmd install_arma sync_workshop_content deploy_content 
   log "completed stage $stage"
 	if [ "$stage" = sync_workshop_content ] && $STEAM_AUTH_ACTIVE; then persist_steam_auth; cleanup_steam_auth; fi
 done
+progress_stage launch_and_verify
 checkpoint SERVICE_STARTED
 log "starting stage launch_and_verify"
 launch_and_verify
