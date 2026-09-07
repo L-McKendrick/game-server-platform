@@ -354,7 +354,7 @@ func (handler *handler) requestAutomaticStart(ctx context.Context, session domai
 	if handler.startService == nil {
 		return fmt.Errorf("automatic start service is not configured")
 	}
-	return handler.startService.RequestAutomaticStart(ctx, session, request.CorrelationID, nil)
+	return handler.startService.RequestAutomaticStart(ctx, session, request.CorrelationID, request.Roles)
 }
 
 // decodeWorkshopRequest retains the strict domain validation boundary while

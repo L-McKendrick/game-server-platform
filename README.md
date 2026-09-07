@@ -9,10 +9,11 @@ Arma 3 servers through `/rb` commands. It deploys each server to AWS, installs
 the selected mission and mods, publishes connection details, and reports live
 status in Discord.
 
-Members can start, sleep, wake, archive, restore, or permanently terminate a
-server without using the AWS console. Server owners can revise mods and mission
-files between runs. Discord administrators control access, upload a shared
-`server.cfg`, repair session cards, and reset runtime data.
+Members can start, sleep, restart, archive, restore, or permanently terminate a
+server without using the AWS console; `/rb start` also wakes sleeping servers.
+Server owners can revise mods and mission files between runs. Discord
+administrators control access, upload a shared `server.cfg`, repair session
+cards, and reset runtime data.
 
 Running servers automatically sleep after 30 continuous minutes of verified
 zero-player activity. A server that remains sleeping for 72 continuous hours
@@ -31,6 +32,11 @@ mission; Workshop mod revisions remain pending until a controlled restart.
 Creation can queue the normal start automatically after required mod input is
 accepted, and owners may opt into one creation-channel ping after initial
 health verification succeeds.
+
+The public card shows live mission/player information only while the game
+server is active. A completed archived card is reduced to its description,
+last active modlist link, and archive time; it retains only the `Refresh`
+control. Actionable archive/restore failures continue to show diagnostics.
 
 ## Deploy to your Discord server
 

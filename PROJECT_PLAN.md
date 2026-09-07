@@ -403,6 +403,10 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **18.4.3** [x] After archive completion, remove progress information and the `Show players` control, matching terminal-card control cleanup while retaining repair and backward-compatible update behavior.
       - **18.4.4** [x] Reduce a successfully completed archived card to its title, description, linked last-used modlist name, and Discord-native `Archived` timestamp. Retain actionable diagnostic information when present, including later restore failures. Use safe fallback behavior when a legacy session has no modlist or archive-completion timestamp; never substitute a pending mod revision or invent a timestamp.
       - **18.4.5** [x] Add focused lifecycle rendering, color, field omission, control cleanup, modlist-link, timestamp, refresh, repair, and legacy-record coverage.
+    - **18.5** [x] Complete the Phase 18 release-readiness review and documentation reconciliation.
+      - **18.5.1** [x] Review the full branch for lifecycle drift, authorization, idempotency, replay, failure resolution, backward compatibility, and deployment safety; correct demonstrated defects.
+      - **18.5.2** [x] Reconcile user, architecture, lifecycle, Discord acceptance, restart, deployment, and roadmap documentation with implemented behavior.
+      - **18.5.3** [x] Run proportional branch validation, refresh the deployment handoff, commit and push the review correction without deploying.
 
 19. **Maximum Session Duration Guardrails — Pending**
     - **19.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.

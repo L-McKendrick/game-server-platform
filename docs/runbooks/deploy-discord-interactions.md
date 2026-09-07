@@ -159,9 +159,12 @@ Run the non-billable checks first:
 3. `/rb list`, `/rb status session:<choice>`, `/rb setup session:<choice>`, and
    `/rb help session:<choice>` use readable labels/slugs, never visible
    immutable IDs, and return private mobile-safe output.
-4. The public card is created once, retains `Show players` and `Refresh` only,
-   and uses text/icon labels in addition to color. A stale card or modal returns
-   refresh/reopen guidance without state leakage.
+4. The public card is created once and uses text/icon labels in addition to
+   color. Running/idle cards show `Current mission`, `Show players`, and
+   `Refresh`; setup and sleeping cards omit `Current mission`; completed
+   archives use the compact bluish-gray card with only `Refresh`; terminated
+   cards have no controls. A stale card or modal returns refresh/reopen guidance
+   without state leakage.
 5. A normal member is denied `/rb admin`; a manager can open `/rb admin`,
    replace allowed Discord roles, confirm removal of all normal-role access,
    and repair a card. Verify the manager recovery path after removing roles.
@@ -178,7 +181,9 @@ session:
 2. After files are accepted, run `/rb start session:<choice>` and use
    `/rb status` to follow the durable milestones. Repeating start during an
    active operation must show progress and queue nothing new.
-3. Verify playable health and connection details, then test sleep/wake.
+3. Verify playable health and connection details, test `/rb sleep` followed by
+   `/rb start`, and verify `/rb restart` leaves the EC2 instance and TeamSpeak
+   process unchanged while rechecking Arma health.
 4. Exercise archive/restore only when replacement-resource cost is approved.
    Exercise terminate only when permanent deletion of the disposable session
    is approved. `/rb confirm` and `/rb cancel-confirmation` take no options;

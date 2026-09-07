@@ -23,6 +23,9 @@ downloads it skips Steam authorization enrollment/login. Missing or invalid
 staged content fails safely rather than declaring success.
 
 Health verification promotes pending mod metadata only after Arma is healthy.
+The shared SSM health adapter explicitly accepts the `RESTARTING` lifecycle
+state and ignores TeamSpeak health for restart acceptance because restart never
+touches that service.
 Failure retains runtime resources, records actionable status, and releases the
 workflow lock without claiming a rollback. Runtime links or settings may already
 have changed, and EC2/EBS remain billable. An operator should inspect the support

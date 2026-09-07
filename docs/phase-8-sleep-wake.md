@@ -1,9 +1,9 @@
-# Phase 8: Sleep and Wake
+# Phase 8: Sleep, Start, and Restart
 
-Phase 8 adds a safe manual sleep/wake lifecycle. It stops an already healthy
-session's EC2 instance while retaining its root and data EBS volumes, then
-starts the same instance and waits for the existing Arma service/UDP health
-boundary before publishing the refreshed endpoint.
+Phase 8 established the safe sleep/wake lifecycle. The current Discord surface
+uses `/rb sleep` and routes `/rb start` to wake a sleeping session; `/rb wake`
+is no longer registered. Phase 18 also adds `/rb restart`, which restarts only
+Arma on a running host while leaving EC2 and TeamSpeak running.
 
 ## Boundary
 
@@ -16,18 +16,23 @@ boundary before publishing the refreshed endpoint.
 - After EC2 reports `running`, wake waits for the instance to report `Online`
   in Systems Manager before dispatching the service-health probe. This wait is
   bounded to 40 checks at 15-second intervals.
+- Restart is permitted only from stable `RUNNING` or `IDLE`, transitions through
+  `RESTARTING`, applies pending client/server mods, Workshop missions, and the
+  captured `server.cfg`, then returns to `RUNNING` only after Arma service/UDP
+  health succeeds. It does not wait for player confirmation and performs no
+  automatic rollback.
 - A stopped instance retains both EBS volumes. No snapshot, termination,
   bootstrap, credential retrieval, or content mutation occurs in this phase.
 - The session owner or a signed Discord Administrator/Manage Server member may
-  request `/session sleep` or `/session wake`. The verified administrator
-  capability is carried through the private command queue and applies only to
-  those two implemented lifecycle workflows.
-- Phase 8 registered `/session archive` as a discoverable, fail-closed command.
+  request `/rb sleep`, use `/rb start` to wake, or request `/rb restart`. The
+  verified administrator capability is carried through the private command
+  queue and does not grant initial provisioning authority.
+- Phase 8 registered archive as a discoverable, fail-closed command.
   Phase 9 later replaced that placeholder with guarded archive/destruction and
   restore workflows documented separately.
 - The public IPv4 address may change on wake. The observed endpoint is
   refreshed from EC2 only after health succeeds.
-- `/session status` uses a bounded, direct A2S `INFO` query to UDP `2303` for
+- `/rb status` uses a bounded, direct A2S `INFO` query to UDP `2303` for
   a live player count whenever a session is `RUNNING` or `IDLE`. A missing,
   malformed, or timed-out response is displayed as unavailable, never as zero.
 - The status path makes a best-effort `A2S_PLAYER` query only to display names

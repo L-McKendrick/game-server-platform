@@ -92,7 +92,10 @@ The artifact worker honors `Begin server setup` only after the authoritative
 session reaches `NEW`, then calls the existing start use case with a stable
 idempotency identity. Artifact replay can retry a failed queue handoff without
 creating a parallel lifecycle path. Successful asynchronous Workshop mod
-resolution enters this same boundary, including collection resolution. After
+resolution enters this same boundary, including collection resolution. The
+bounded signed role list from the originating interaction travels with the
+Workshop request so the command worker performs its normal authorization checks;
+the worker does not invent roles or bypass access policy. After
 initial bootstrap health succeeds, an opted-in session claims one best-effort
 notification attempt in the creation command channel. It mentions only the
 owner and links the session title when the public card reference is available;
@@ -164,11 +167,13 @@ and text labels in addition to color or icons. Use the shared vocabulary:
 `Setting up`, `Ready`, `Starting`, `Running`, `Sleeping`, `Archived`,
 `Action required`, and `Terminated`.
 
-The card exposes `Show players` and `Refresh`. `Show players` returns the
-bounded live roster ephemerally; the modlist link is part of the card, and help
-remains available through `/rb help`. Reauthorize and revalidate session/card
-revision on every click. Lifecycle and destructive controls remain slash
-commands in this phase.
+Active and transitional cards expose `Show players` and `Refresh`; `Show
+players` returns the bounded live roster ephemerally. Once archive completes,
+the card keeps only `Refresh` for repair and drops progress/player controls.
+Terminated cards expose no controls. The modlist link is part of the card, and
+help remains available through `/rb help`. Reauthorize and revalidate
+session/card revision on every click. Lifecycle and destructive controls remain
+slash commands in this phase.
 
 ### Status, list, and help
 
@@ -309,8 +314,12 @@ wake, and restore determinism. Private prior artifacts remain available for
 those existing snapshots and are preserved by platform reset.
 
 Public cards retain stacked plain-text fallbacks and pair explicit state
-labels/icons with embed color. Their only default buttons are `Show players`
-and `Refresh`. Unknown, expired, revision-drifted, and deleted-state controls
+labels/icons with embed color. `Current mission` appears only for running/idle
+sessions. A successful archived card uses a distinct light bluish-gray and is
+reduced to title, description, last active modlist link, and the durable native
+archive timestamp when available; it never substitutes a pending revision or
+invents a legacy timestamp. Archived restore failures retain actionable
+diagnostics. Unknown, expired, revision-drifted, and deleted-state controls
 return ephemeral reopen/refresh guidance without echoing custom IDs or raw
 state.
 

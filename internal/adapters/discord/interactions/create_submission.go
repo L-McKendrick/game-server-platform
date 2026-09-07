@@ -292,7 +292,11 @@ func createWorkshopRequest(payload interactionPayload, actor domain.Actor, corre
 	if reference, err := domain.ParseWorkshopURL(sourceURL); err == nil {
 		sourceURL = reference.CanonicalURL
 	}
-	return domain.WorkshopSourceRequest{MessageType: "workshop_resolution", SchemaVersion: 1, SessionID: sessionID, Target: target, SourceURL: sourceURL, ActorID: actor.ID, GuildID: strings.TrimSpace(payload.GuildID), ChannelID: strings.TrimSpace(payload.ChannelID), CorrelationID: correlationID, IdempotencyKey: idempotencyKey, RequestedAt: requestedAt.UTC()}
+	roles := []string{}
+	if payload.Member != nil {
+		roles = append(roles, payload.Member.Roles...)
+	}
+	return domain.WorkshopSourceRequest{MessageType: "workshop_resolution", SchemaVersion: 1, SessionID: sessionID, Target: target, SourceURL: sourceURL, ActorID: actor.ID, GuildID: strings.TrimSpace(payload.GuildID), ChannelID: strings.TrimSpace(payload.ChannelID), Roles: roles, CorrelationID: correlationID, IdempotencyKey: idempotencyKey, RequestedAt: requestedAt.UTC()}
 }
 
 func resolveModalAttachment(

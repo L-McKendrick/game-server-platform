@@ -32,6 +32,25 @@ func TestParseWorkshopURLCanonicalizesItem(t *testing.T) {
 	}
 }
 
+func TestWorkshopSourceRequestBoundsSignedRoleContext(t *testing.T) {
+	t.Parallel()
+	request := WorkshopSourceRequest{MessageType: "workshop_resolution", SchemaVersion: 1, SessionID: "session", Target: WorkshopTargetMods, SourceURL: "https://steamcommunity.com/sharedfiles/filedetails/?id=12345", ActorID: "owner", GuildID: "guild", ChannelID: "channel", Roles: []string{"role-allowed"}, CorrelationID: "correlation", IdempotencyKey: "key", RequestedAt: time.Now().UTC()}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("valid request error = %v", err)
+	}
+	request.Roles = []string{""}
+	if err := request.Validate(); err == nil {
+		t.Fatal("empty role was accepted")
+	}
+	request.Roles = make([]string, 251)
+	for index := range request.Roles {
+		request.Roles[index] = "role"
+	}
+	if err := request.Validate(); err == nil {
+		t.Fatal("oversized role set was accepted")
+	}
+}
+
 func TestClassifyWorkshopItemUsesTarget(t *testing.T) {
 	scenario := WorkshopItem{PublishedFileID: 1, ConsumerAppID: Arma3WorkshopAppID, Available: true, Tags: []string{"Scenario", "Coop"}}
 	if got := ClassifyWorkshopItem(scenario, WorkshopTargetMission); got.Class != WorkshopItemMultiplayerScenario || !got.MatchesTarget {

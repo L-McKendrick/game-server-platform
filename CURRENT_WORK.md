@@ -2,54 +2,84 @@
 
 ## State and Objective
 
-Phase 18 (Discord lifecycle UX and restart) is complete on
-`codex/discord-lifecycle-ux`. Next: prepare and review the Phase 18 pull request,
-then proceed to Phase 19 only after the branch is merged.
+Phase 18 (Discord lifecycle UX and restart) is release-ready on
+`codex/discord-lifecycle-ux` after the full branch review. Next: review and merge
+the Phase 18 pull request, then start Phase 19 on a new branch.
 
 ## Current Handoff
 
-- Public cards show `Current mission` only for running or idle sessions.
-- Successfully archived cards now use a light bluish-gray color and reduce to
-  the game/session title, description, active modlist filename/link, and the
-  native relative archive-completion timestamp when that timestamp exists.
-- Archived legacy records safely show an unavailable or vanilla modlist
-  fallback and do not invent an archive timestamp or use a pending revision.
-- Archived cards retain `Refresh` for repair and lose `Show players`; terminated
-  cards continue to clear all controls. Delivery revalidates this policy against
-  current lifecycle state so queued legacy card updates cannot restore controls.
-- Archived sessions with actionable failures retain diagnostic fields instead
-  of using the reduced successful-archive presentation.
-- Focused session-card, domain, session-service, Discord notification,
-  interaction, and notification-worker tests passed with the installed Go
-  toolchain. Full repository validation was intentionally deferred by request.
-- No Terraform resources or Discord command definitions changed. Nothing was
-  deployed or registered against Discord or AWS.
+- `/rb start` provisions ready drafts and wakes sleeping sessions; `/rb wake`
+  is retired. `/rb restart` applies pending content/settings and restarts only
+  Arma while leaving EC2 and TeamSpeak running.
+- Creation supports off-by-default automatic setup and one best-effort initial
+  ready ping. Async Workshop requests now retain their bounded signed Discord
+  role context so the command worker can perform its normal authorization after
+  resolution instead of rejecting the internal start as `forbidden`.
+- The real SSM health adapter now accepts `RESTARTING`; without this correction,
+  deployed restarts would always have failed before their health probe.
+- Public cards show mission/player data only while active. Completed archives
+  use the compact bluish-gray title/description/active-modlist/time view, retain
+  only `Refresh`, preserve legacy fallbacks, and keep actionable restore errors.
+  Terminated cards retain no controls.
+- The review found no remaining authorization, lifecycle-lock, replay,
+  idempotency, failure-resolution, backward-compatibility, or deployment-scope
+  blocker. Automatic-start delivery remains bounded by normal queue retry/DLQ
+  behavior; ready-message delivery remains deliberately best effort with no
+  retry.
+- Validation passed with the installed Go toolchain: `go test ./...`, `go vet
+  ./...`, Lambda packaging, Terraform recursive formatting and development
+  validation, Git Bash syntax validation for the bootstrap script, and diff
+  checks. One initial timing-sensitive bootstrap sampler test failed during a
+  parallel run and passed on the focused and subsequent full runs.
+- Read-only live evidence from `test-47` confirmed Workshop resolution reached
+  `NEW` and queued automatic start, but the deployed command worker rejected the
+  old request as `forbidden` because it lacked roles. That already-queued legacy
+  request cannot be repaired by this deployment; run `/rb start` manually for
+  `test-47` after confirming its content remains accepted.
+- Nothing was deployed, registered, restarted, or otherwise mutated in AWS or
+  Discord during this review.
 
 ## Commands to Apply Current Changes
 
-Run from the repository root. Package the affected Discord interaction and
-notification worker Lambdas, then create and review a fresh saved Terraform
-plan. Preserve existing plan files.
+Run from the repository root. Package the changed Lambda archives, then create
+and review a fresh saved Terraform plan. Preserve all existing plan files and do
+not change provisioning or budget settings.
 
 ```powershell
 $env:GOTOOLCHAIN = "go1.26.5"
 $env:AWS_PROFILE = "game-server-dev"
 ./scripts/package-discord-lambda.ps1
-$phase18Plan = "phase18-4-public-card-lifecycle-$(Get-Date -Format 'yyyyMMdd-HHmmss').tfplan"
+$phase18Plan = "phase18-release-review-$(Get-Date -Format 'yyyyMMdd-HHmmss').tfplan"
 terraform -chdir=infra/terraform/environments/dev plan "-out=$phase18Plan"
 terraform -chdir=infra/terraform/environments/dev show $phase18Plan
 ```
 
-After reviewing and approving that exact plan, in the same PowerShell session:
+After approving that exact plan, in the same PowerShell session:
 
 ```powershell
 terraform -chdir=infra/terraform/environments/dev apply $phase18Plan
-foreach ($component in @("discord-interactions", "notification-worker")) {
+foreach ($component in @("discord-interactions", "artifact-worker", "notification-worker", "command-worker", "bootstrap-worker", "monitor-worker", "sleepwake-worker")) {
   aws lambda get-function-configuration --function-name "game-server-platform-dev-$component" --profile game-server-dev --region us-west-2 --query '{Status:LastUpdateStatus,CodeSHA256:CodeSha256}'
 }
+$env:DISCORD_APPLICATION_ID = "<development-application-id>"
+$env:DISCORD_GUILD_ID = "<development-guild-id>"
+$discordSecret = aws secretsmanager get-secret-value --secret-id game-server-platform/dev/discord --profile game-server-dev --region us-west-2 --query SecretString --output text
+try { $env:DISCORD_BOT_TOKEN = ($discordSecret | ConvertFrom-Json).token } catch { $env:DISCORD_BOT_TOKEN = $discordSecret }
+go run ./cmd/discord-register
+Remove-Item Env:DISCORD_BOT_TOKEN
+$discordSecret = $null
 ```
 
-Discord command re-registration is not required. Verify setup and sleeping cards
-omit `Current mission`; active cards retain it; archived cards use the reduced
-bluish-gray presentation with an active modlist link and relative timestamp;
-archived cards expose only `Refresh`; and terminated cards expose no controls.
+Registration is required because Phase 18 removes `/rb wake` and adds `/rb
+restart`. Verify automatic setup through a new Workshop item/collection, one
+opted-in ready ping, `/rb sleep` followed by `/rb start`, no-change and
+pending-change restart health, lifecycle-specific cards/controls, and manual
+`/rb start` recovery for `test-47`.
+
+## Important Operator Attention
+
+- `test-47` needs a manual `/rb start` after content acceptance is confirmed.
+  Default action: do not redrive or alter its old role-less queue message.
+- Restart live acceptance mutates a running game service and may interrupt
+  players. Default action: do not run it without explicit approval for a
+  disposable session.

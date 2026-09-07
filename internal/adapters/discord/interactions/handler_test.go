@@ -334,9 +334,12 @@ func TestHandlerNormalizesWorkshopModQueryParametersBeforeMutation(t *testing.T)
 	if err != nil || invalid.Data == nil || !strings.Contains(invalid.Data.Content, "valid `id`") || afterInvalid.Version != before.Version || len(queue.WorkshopRequests()) != 0 {
 		t.Fatalf("invalid response=%#v before=%d after=%#v requests=%#v err=%v", invalid.Data, before.Version, afterInvalid, queue.WorkshopRequests(), err)
 	}
-	request := createWorkshopRequest(interactionPayload{GuildID: "guild-1", ChannelID: "channel-1"}, domain.Actor{ID: "owner-1"}, "correlation-1", "session-1", domain.WorkshopTargetMods, "https://steamcommunity.com/sharedfiles/filedetails/?id=12345&l=english&utm_source=copy", "key-1", testNow)
+	request := createWorkshopRequest(interactionPayload{GuildID: "guild-1", ChannelID: "channel-1", Member: &interactionMember{Roles: []string{"role-allowed"}}}, domain.Actor{ID: "owner-1"}, "correlation-1", "session-1", domain.WorkshopTargetMods, "https://steamcommunity.com/sharedfiles/filedetails/?id=12345&l=english&utm_source=copy", "key-1", testNow)
 	if request.SourceURL != "https://steamcommunity.com/sharedfiles/filedetails/?id=12345" {
 		t.Fatalf("canonical Workshop request URL = %q", request.SourceURL)
+	}
+	if len(request.Roles) != 1 || request.Roles[0] != "role-allowed" {
+		t.Fatalf("Workshop request roles = %#v", request.Roles)
 	}
 }
 

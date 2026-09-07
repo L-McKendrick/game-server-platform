@@ -157,6 +157,9 @@ write. This small variable cost replaces continuous polling and another worker.
 `/rb create` does not synchronize content into a live host. Accepted sources
 remain queued for initial bootstrap; when `Begin server setup` was selected,
 successful mod metadata validation queues the same start command as `/rb start`.
+The bounded signed role list from the originating Discord interaction travels
+with the asynchronous request so the command worker performs its normal guild,
+channel, role, owner, readiness, capacity, and idempotency checks.
 `/rb edit` starts a live stage-only sync only while the session is
 stably running or idle. Sleeping and pre-runtime sessions show that content is
 queued for the next wake or start, while lifecycle transitions and active
