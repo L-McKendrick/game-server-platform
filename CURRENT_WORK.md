@@ -45,6 +45,9 @@ the Phase 18 pull request, then start Phase 19 on a new branch.
   updates follow the bounded bootstrap observation cadence (about two minutes
   while installation is active); no telemetry defect was found. The same test
   exposed the setup-card `Show players` defect corrected above.
+- Development command registration now rejects malformed snowflakes locally;
+  the handoff discovers the deployed non-secret application/guild IDs and uses
+  the secure prompting script instead of copyable placeholder values.
 - Nothing was deployed, registered, restarted, or otherwise mutated in AWS or
   Discord during this review.
 
@@ -70,13 +73,12 @@ terraform -chdir=infra/terraform/environments/dev apply $phase18Plan
 foreach ($component in @("discord-interactions", "artifact-worker", "notification-worker", "command-worker", "bootstrap-worker", "monitor-worker", "sleepwake-worker")) {
   aws lambda get-function-configuration --function-name "game-server-platform-dev-$component" --profile game-server-dev --region us-west-2 --query '{Status:LastUpdateStatus,CodeSHA256:CodeSha256}'
 }
-$env:DISCORD_APPLICATION_ID = "<development-application-id>"
-$env:DISCORD_GUILD_ID = "<development-guild-id>"
-$discordSecret = aws secretsmanager get-secret-value --secret-id game-server-platform/dev/discord --profile game-server-dev --region us-west-2 --query SecretString --output text
-try { $env:DISCORD_BOT_TOKEN = ($discordSecret | ConvertFrom-Json).token } catch { $env:DISCORD_BOT_TOKEN = $discordSecret }
-go run ./cmd/discord-register
-Remove-Item Env:DISCORD_BOT_TOKEN
-$discordSecret = $null
+$discordConfig = aws lambda get-function-configuration --function-name game-server-platform-dev-discord-interactions --profile game-server-dev --region us-west-2 --query 'Environment.Variables.{ApplicationId:DISCORD_APPLICATION_ID,GuildIds:DISCORD_ALLOWED_GUILD_IDS}' --output json | ConvertFrom-Json
+$guildIds = @($discordConfig.GuildIds -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if ($discordConfig.ApplicationId -notmatch '^[1-9][0-9]{0,19}$' -or $guildIds.Count -ne 1 -or $guildIds[0] -notmatch '^[1-9][0-9]{0,19}$') { throw "Expected one deployed development Discord application and guild." }
+./scripts/register-discord-command.ps1 -ApplicationId $discordConfig.ApplicationId -GuildId $guildIds[0]
+$discordConfig = $null
+$guildIds = $null
 ```
 
 Registration is required because Phase 18 removes `/rb wake` and adds `/rb

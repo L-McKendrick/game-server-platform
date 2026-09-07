@@ -10,6 +10,26 @@ import (
 	"testing"
 )
 
+func TestValidSnowflakeRejectsPlaceholdersAndMalformedIDs(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		value string
+		want  bool
+	}{
+		{"1533676701354299402", true},
+		{"1192304488351019008", true},
+		{"<development-application-id>", false},
+		{"", false},
+		{"0123", false},
+		{"123abc", false},
+		{"18446744073709551616", false},
+	} {
+		if got := validSnowflake(test.value); got != test.want {
+			t.Errorf("validSnowflake(%q) = %t; want %t", test.value, got, test.want)
+		}
+	}
+}
+
 func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAdminMenu(t *testing.T) {
 	t.Parallel()
 

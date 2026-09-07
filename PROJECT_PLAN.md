@@ -415,6 +415,10 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **18.7.1** [x] Hide successfully completed sleep-workflow progress while retaining in-flight and actionable failure details.
       - **18.7.2** [x] Add focused sleeping-card progress and lifecycle-control regression coverage.
       - **18.7.3** [x] Refresh documentation and the deployment handoff, then commit without deploying.
+    - **18.8** [x] Harden development Discord command registration.
+      - **18.8.1** [x] Reject placeholder and malformed application/guild IDs locally before contacting Discord.
+      - **18.8.2** [x] Replace placeholder handoff commands with deployed non-secret configuration discovery and secure token prompting.
+      - **18.8.3** [x] Run focused registration validation, refresh the handoff, and commit without registering commands.
 
 19. **Maximum Session Duration Guardrails — Pending**
     - **19.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.

@@ -122,9 +122,21 @@ signed `PING` must receive `PONG`. Confirm Lambda/API alarms remain clear.
 ## 7. Bulk-register the guild command
 
 ```powershell
+$DiscordConfig = aws lambda get-function-configuration `
+  --function-name game-server-platform-dev-discord-interactions `
+  --profile game-server-dev `
+  --region us-west-2 `
+  --query 'Environment.Variables.{ApplicationId:DISCORD_APPLICATION_ID,GuildIds:DISCORD_ALLOWED_GUILD_IDS}' `
+  --output json | ConvertFrom-Json
+$GuildIds = @($DiscordConfig.GuildIds -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if ($DiscordConfig.ApplicationId -notmatch '^[1-9][0-9]{0,19}$' -or $GuildIds.Count -ne 1 -or $GuildIds[0] -notmatch '^[1-9][0-9]{0,19}$') {
+  throw "Expected one deployed development Discord application and guild."
+}
 ./scripts/register-discord-command.ps1 `
-  -ApplicationId "<application-id>" `
-  -GuildId "<development-guild-id>"
+  -ApplicationId $DiscordConfig.ApplicationId `
+  -GuildId $GuildIds[0]
+$DiscordConfig = $null
+$GuildIds = $null
 ```
 
 The script prompts securely when `DISCORD_BOT_TOKEN` is absent and bulk
