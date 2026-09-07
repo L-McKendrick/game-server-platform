@@ -20,9 +20,10 @@ const (
 	createMissionWorkshopID   = "create:mission-workshop"
 	createPresetCustomID      = "create:preset"
 
-	createFeatureModded    = "modded"
-	createFeatureTeamSpeak = "teamspeak"
-	createFeatureAutoStart = "auto-start"
+	createFeatureModded      = "modded"
+	createFeatureTeamSpeak   = "teamspeak"
+	createFeatureAutoStart   = "auto-start"
+	createFeatureNotifyReady = "notify-ready"
 
 	defaultGameProfileID = "arma3-default"
 	defaultSleepMinutes  = int64(30)
@@ -72,7 +73,7 @@ func writeSessionSetupModal(writer http.ResponseWriter, customID, title string, 
 	maximumDescription := 64
 	minimumNone, minimumOne, maximumOne, maximumFeatures := 0, 1, 1, 2
 	if creation {
-		maximumFeatures = 3
+		maximumFeatures = 4
 	}
 	missionMinimum := minimumNone
 	if missionRequired {
@@ -86,10 +87,11 @@ func writeSessionSetupModal(writer http.ResponseWriter, customID, title string, 
 	}
 	if creation {
 		featureOptions = append(featureOptions, interactionSelectOption{Label: "Begin server setup", Value: createFeatureAutoStart, Description: "Automatically start the server setup process", Default: session.StartWhenReady})
+		featureOptions = append(featureOptions, interactionSelectOption{Label: "Notify when ready?", Value: createFeatureNotifyReady, Description: "Ping you here after initial setup completes", Default: false})
 	}
 	featureDescription := "Modded is the platform default; clear it for vanilla. TeamSpeak is optional."
 	if creation {
-		featureDescription = "Choose modded/vanilla, optional TeamSpeak, and automatic setup after validation."
+		featureDescription = "Choose mode, TeamSpeak, automatic setup, and an optional ready ping."
 	}
 	components := []interactionComponent{
 		{

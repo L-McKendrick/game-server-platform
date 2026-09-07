@@ -151,8 +151,11 @@ Run the non-billable checks first:
 1. `/rb help` shows first-run or existing-user guidance privately.
 2. `/rb create` opens one private five-field modal. Submit a disposable Arma 3
    name, optional description, mode/features, valid mission, and optional
-   preset. Confirm the response says validation is pending and no game-server
-   infrastructure was allocated.
+   preset. Confirm `Notify when ready?` defaults off. When testing it on, verify
+   initial healthy bootstrap posts one owner-only mention in the command
+   channel, linking the title only when the public card exists. Confirm the
+   response says validation is pending and no game-server infrastructure was
+   allocated before required input is accepted.
 3. `/rb list`, `/rb status session:<choice>`, `/rb setup session:<choice>`, and
    `/rb help session:<choice>` use readable labels/slugs, never visible
    immutable IDs, and return private mobile-safe output.

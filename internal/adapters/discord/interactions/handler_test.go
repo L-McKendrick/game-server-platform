@@ -380,7 +380,7 @@ func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testi
 		[]string{"session-modal", "event-created", "event-configured", "event-artifacts"},
 	)
 	body := createModalSubmissionBody(
-		"interaction-modal", "Saturday Arma", []string{createFeatureModded, createFeatureTeamSpeak, createFeatureAutoStart}, true, "mission.pbo",
+		"interaction-modal", "Saturday Arma", []string{createFeatureModded, createFeatureTeamSpeak, createFeatureAutoStart, createFeatureNotifyReady}, true, "mission.pbo",
 	)
 
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -405,7 +405,7 @@ func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testi
 	}
 	session := sessions[0]
 	if session.ID != "session-modal" || session.Description != "Weekly co-op" ||
-		session.ConfigurationRevision != 1 || session.Vanilla || !session.TeamSpeakEnabled || !session.StartWhenReady ||
+		session.ConfigurationRevision != 1 || session.Vanilla || !session.TeamSpeakEnabled || !session.StartWhenReady || !session.NotifyWhenReady || session.ReadyNotificationChannelID != "channel-1" ||
 		session.SleepAfterSeconds != defaultSleepMinutes*60 || session.ArchiveAfterSeconds != defaultArchiveDays*86400 {
 		t.Fatalf("configured draft = %#v", session)
 	}
@@ -926,10 +926,11 @@ func TestHandlerOpensCreateModalWithoutPersistingSession(t *testing.T) {
 	}
 	features := components[2].Component
 	if features.CustomID != createFeaturesCustomID || features.MinValues == nil || *features.MinValues != 0 ||
-		features.MaxValues == nil || *features.MaxValues != 3 || len(features.Options) != 3 ||
+		features.MaxValues == nil || *features.MaxValues != 4 || len(features.Options) != 4 ||
 		features.Options[0].Value != createFeatureModded || !features.Options[0].Default ||
 		features.Options[1].Value != createFeatureTeamSpeak || features.Options[1].Default ||
-		features.Options[2].Value != createFeatureAutoStart || features.Options[2].Default {
+		features.Options[2].Value != createFeatureAutoStart || features.Options[2].Default ||
+		features.Options[3].Value != createFeatureNotifyReady || features.Options[3].Default {
 		t.Fatalf("feature defaults = %#v; want modded on and TeamSpeak off", features.Options)
 	}
 	mission := components[3].Component

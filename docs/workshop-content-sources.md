@@ -154,8 +154,10 @@ invocation and bounded `ListCommands` lookup. Commands without the exact
 session/workflow comment and recorded instance are ignored without a session
 write. This small variable cost replaces continuous polling and another worker.
 
-`/rb create` never starts host work; accepted sources remain queued for initial
-bootstrap. `/rb edit` starts a live stage-only sync only while the session is
+`/rb create` does not synchronize content into a live host. Accepted sources
+remain queued for initial bootstrap; when `Begin server setup` was selected,
+successful mod metadata validation queues the same start command as `/rb start`.
+`/rb edit` starts a live stage-only sync only while the session is
 stably running or idle. Sleeping and pre-runtime sessions show that content is
 queued for the next wake or start, while lifecycle transitions and active
 workflows reject the edit. A persisted request marker shows metadata as

@@ -458,3 +458,29 @@ func TestSessionWorkflowLockRejectsConcurrentMutationAndCanBeReleased(t *testing
 		t.Fatalf("workflow lock was not cleared: %#v", session)
 	}
 }
+
+func TestSessionReadyNotificationClaimIsCreationScopedAndSingleUse(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC)
+	session, err := NewSession(NewSessionInput{ID: "session-ready", Slug: "ready", DisplayName: "Ready", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "card-channel"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 86400, Vanilla: true, NotifyWhenReady: true, ReadyNotificationChannelID: "creation-channel"}, now); err != nil {
+		t.Fatal(err)
+	}
+	claimedAt := now.Add(time.Minute)
+	if !session.ClaimInitialReadyNotification(claimedAt) || session.ReadyNotificationAttemptedAt != claimedAt {
+		t.Fatalf("ready claim = %#v", session.ReadyNotificationAttemptedAt)
+	}
+	if session.ClaimInitialReadyNotification(claimedAt.Add(time.Minute)) {
+		t.Fatal("duplicate ready notification claim succeeded")
+	}
+	disabled := session
+	disabled.NotifyWhenReady = false
+	disabled.ReadyNotificationChannelID = ""
+	disabled.ReadyNotificationAttemptedAt = time.Time{}
+	if disabled.ClaimInitialReadyNotification(claimedAt) {
+		t.Fatal("disabled ready notification was claimed")
+	}
+}

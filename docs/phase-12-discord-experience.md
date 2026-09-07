@@ -69,8 +69,9 @@ Administrator or Manage Server permission.
 1. session name;
 2. optional description;
 3. combined mode/features control, with vanilla implied when modded is not
-   selected, TeamSpeak independently selectable, and an optional durable
-   `Begin server setup` intent;
+   selected, TeamSpeak independently selectable, an optional durable
+   `Begin server setup` intent, and an off-by-default `Notify when ready?`
+   preference for initial creation;
 4. optional mission upload; when omitted, Arma uses BI's
    `MP_ZGM_m12.Stratis` built-in mission.
 
@@ -90,7 +91,13 @@ without unsupported icon placeholders.
 The artifact worker honors `Begin server setup` only after the authoritative
 session reaches `NEW`, then calls the existing start use case with a stable
 idempotency identity. Artifact replay can retry a failed queue handoff without
-creating a parallel lifecycle path. Creator DLCs likewise reuse the revisioned
+creating a parallel lifecycle path. Successful asynchronous Workshop mod
+resolution enters this same boundary, including collection resolution. After
+initial bootstrap health succeeds, an opted-in session claims one best-effort
+notification attempt in the creation command channel. It mentions only the
+owner and links the session title when the public card reference is available;
+delivery failure is acknowledged without a retry. Wake, restore, and restart
+never emit this creation notification. Creator DLCs likewise reuse the revisioned
 mod pipeline: bootstrap maps the supported catalog to the server directories
 `gm`, `vn`, `csla`, `ws`, `spe`, `rf`, and `ef`, verifies each selected
 directory, and writes them before Workshop links in the same `mods.txt` read by

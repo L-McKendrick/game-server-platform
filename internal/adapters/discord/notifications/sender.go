@@ -80,9 +80,12 @@ func (sender *Sender) Send(ctx context.Context, request domain.NotificationReque
 	if err != nil {
 		return err
 	}
+	allowedMentions := map[string]any{"parse": []string{}}
+	if request.Kind == domain.NotificationSessionReady {
+		allowedMentions["users"] = append([]string(nil), request.AllowedUserIDs...)
+	}
 	body, err := json.Marshal(map[string]any{
-		"content":          request.Content,
-		"allowed_mentions": map[string]any{"parse": []string{}},
+		"content": request.Content, "allowed_mentions": allowedMentions,
 	})
 	if err != nil {
 		return err

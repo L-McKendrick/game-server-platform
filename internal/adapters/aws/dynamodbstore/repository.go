@@ -118,6 +118,9 @@ type sessionItem struct {
 	Vanilla                          bool     `dynamodbav:"vanilla"`
 	CreatorDLCs                      []string `dynamodbav:"creator_dlcs,omitempty"`
 	StartWhenReady                   bool     `dynamodbav:"start_when_ready,omitempty"`
+	NotifyWhenReady                  bool     `dynamodbav:"notify_when_ready,omitempty"`
+	ReadyNotificationChannelID       string   `dynamodbav:"ready_notification_channel_id,omitempty"`
+	ReadyNotificationAttemptedAt     string   `dynamodbav:"ready_notification_attempted_at,omitempty"`
 	ConfigurationRevision            int64    `dynamodbav:"configuration_revision"`
 	ServerConfigRevision             int64    `dynamodbav:"server_config_revision,omitempty"`
 	ServerConfigObjectKey            string   `dynamodbav:"server_config_object_key,omitempty"`
@@ -1084,6 +1087,9 @@ func toSessionItem(session domain.Session) sessionItem {
 		Vanilla:                          session.Vanilla,
 		CreatorDLCs:                      append([]string(nil), session.CreatorDLCs...),
 		StartWhenReady:                   session.StartWhenReady,
+		NotifyWhenReady:                  session.NotifyWhenReady,
+		ReadyNotificationChannelID:       session.ReadyNotificationChannelID,
+		ReadyNotificationAttemptedAt:     optionalTimestamp(session.ReadyNotificationAttemptedAt),
 		ConfigurationRevision:            session.ConfigurationRevision,
 		ServerConfigRevision:             session.ServerConfigRevision,
 		ServerConfigObjectKey:            session.ServerConfigObjectKey,
@@ -1384,6 +1390,10 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		progressCompleted = legacyCompletedMilestones(item.ProgressWorkflowType, progressMilestone)
 	}
 
+	readyNotificationAttemptedAt, err := parseOptionalTimestamp(item.ReadyNotificationAttemptedAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse ready notification attempt timestamp: %w", err)
+	}
 	session := domain.Session{
 		ID:                            item.SessionID,
 		Slug:                          item.Slug,
@@ -1400,6 +1410,9 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		Vanilla:                       item.Vanilla,
 		CreatorDLCs:                   append([]string(nil), item.CreatorDLCs...),
 		StartWhenReady:                item.StartWhenReady,
+		NotifyWhenReady:               item.NotifyWhenReady,
+		ReadyNotificationChannelID:    item.ReadyNotificationChannelID,
+		ReadyNotificationAttemptedAt:  readyNotificationAttemptedAt,
 		ConfigurationRevision:         item.ConfigurationRevision,
 		ServerConfigRevision:          item.ServerConfigRevision,
 		ServerConfigObjectKey:         item.ServerConfigObjectKey,

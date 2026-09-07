@@ -347,6 +347,10 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 	if err := session.CompleteBootstrapWithWorkshopMissions(workflow.ID, missions, now); err != nil {
 		return TaskResult{}, err
 	}
+	notifyReady := session.ClaimInitialReadyNotification(now)
+	if err := session.Validate(); err != nil {
+		return TaskResult{}, err
+	}
 	workflow.Status = domain.WorkflowSucceeded
 	workflow.CurrentStage = "GameServerReady"
 	workflow.CompletedAt = now
@@ -359,6 +363,14 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 	}
 	result := taskResult(session, workflow)
 	service.notify(ctx, &result, session, workflow)
+	if notifyReady {
+		if err := service.enqueueReadyNotification(ctx, session, workflow, now); err != nil {
+			if result.Warning != "" {
+				result.Warning += "; "
+			}
+			result.Warning += err.Error()
+		}
+	}
 	if err := sessioncard.EnqueueActivatedModlist(ctx, service.notifications, session, workflow, now); err != nil {
 		if result.Warning != "" {
 			result.Warning += "; "
@@ -366,6 +378,29 @@ func (service *Service) complete(ctx context.Context, request TaskRequest) (Task
 		result.Warning += err.Error()
 	}
 	return result, nil
+}
+
+func (service *Service) enqueueReadyNotification(ctx context.Context, session domain.Session, workflow domain.Workflow, now time.Time) error {
+	if service.notifications == nil {
+		return nil
+	}
+	title := session.DisplayName
+	if cards, ok := service.sessions.(ports.SessionCardRepository); ok {
+		if reference, err := cards.GetCardReference(ctx, session.ID); err == nil && strings.TrimSpace(reference.MessageID) != "" {
+			url := sessioncard.DiscordMessageURL(session.GuildID, reference.ChannelID, reference.MessageID)
+			if url != "" {
+				title = "[" + strings.NewReplacer("\\", "\\\\", "[", "\\[", "]", "\\]").Replace(title) + "](" + url + ")"
+			}
+		}
+	}
+	request := domain.NotificationRequest{
+		SchemaVersion: 1, NotificationID: "session-ready-" + session.ID,
+		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ReadyNotificationChannelID,
+		Content: fmt.Sprintf("<@%s> %s is ready to join.", session.OwnerDiscordUserID, title),
+		Kind:    domain.NotificationSessionReady, AllowedUserIDs: []string{session.OwnerDiscordUserID},
+		CorrelationID: workflow.CorrelationID, RequestedAt: now,
+	}
+	return service.notifications.Enqueue(ctx, request)
 }
 
 func (service *Service) fail(ctx context.Context, request TaskRequest) (TaskResult, error) {

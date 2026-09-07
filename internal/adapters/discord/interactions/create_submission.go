@@ -19,6 +19,7 @@ type createModalSubmission struct {
 	modded          bool
 	teamSpeak       bool
 	autoStart       bool
+	notifyWhenReady bool
 	mission         *interactionAttachment
 	missionWorkshop string
 	preset          *interactionAttachment
@@ -64,17 +65,19 @@ func (handler *Handler) submitCreateModal(
 	}
 
 	session, err = handler.service.Configure(ctx, appsession.ConfigureCommand{
-		Actor:               actor,
-		SessionID:           session.ID,
-		GuildID:             strings.TrimSpace(payload.GuildID),
-		CorrelationID:       correlationID,
-		IdempotencyKey:      keyPrefix + ":configure",
-		GameProfileID:       defaultGameProfileID,
-		SleepAfterSeconds:   defaultSleepMinutes * 60,
-		ArchiveAfterSeconds: defaultArchiveDays * 86400,
-		TeamSpeakEnabled:    submission.teamSpeak,
-		Vanilla:             !submission.modded,
-		StartWhenReady:      submission.autoStart,
+		Actor:                      actor,
+		SessionID:                  session.ID,
+		GuildID:                    strings.TrimSpace(payload.GuildID),
+		CorrelationID:              correlationID,
+		IdempotencyKey:             keyPrefix + ":configure",
+		GameProfileID:              defaultGameProfileID,
+		SleepAfterSeconds:          defaultSleepMinutes * 60,
+		ArchiveAfterSeconds:        defaultArchiveDays * 86400,
+		TeamSpeakEnabled:           submission.teamSpeak,
+		Vanilla:                    !submission.modded,
+		StartWhenReady:             submission.autoStart,
+		NotifyWhenReady:            submission.notifyWhenReady,
+		ReadyNotificationChannelID: readyNotificationChannel(submission.notifyWhenReady, payload.ChannelID),
 	})
 	if err != nil {
 		return createModalResult{}, fmt.Errorf("configure modal draft: %w", err)
@@ -136,9 +139,13 @@ func (handler *Handler) submitCreateModal(
 	if submission.autoStart {
 		setup = "Automatic after required files validate"
 	}
+	readyNotification := "Off"
+	if submission.notifyWhenReady {
+		readyNotification = "On"
+	}
 	return createModalResult{content: fmt.Sprintf(
-		"**Draft session created**\nName: %s\nSlug: `%s`\nMode: %s\nTeamSpeak: %s\nServer setup: %s\n%s\nUploads have not been validated yet.%s\n\nNext: %s",
-		sanitizeInline(session.DisplayName), sanitizeCode(session.Slug), mode, teamSpeak, setup,
+		"**Draft session created**\nName: %s\nSlug: `%s`\nMode: %s\nTeamSpeak: %s\nServer setup: %s\nReady notification: %s\n%s\nUploads have not been validated yet.%s\n\nNext: %s",
+		sanitizeInline(session.DisplayName), sanitizeCode(session.Slug), mode, teamSpeak, setup, readyNotification,
 		queued, payload.channelCapabilities().plainTextNotice(), createNextAction(submission.modded, submission.autoStart),
 	), components: components}, nil
 }
@@ -151,6 +158,13 @@ func createNextAction(modded, autoStart bool) string {
 		return "use `/rb status`; setup will begin automatically after mission validation."
 	}
 	return "use `/rb status` while validation finishes, then `/rb start` when ready."
+}
+
+func readyNotificationChannel(enabled bool, channelID string) string {
+	if !enabled {
+		return ""
+	}
+	return strings.TrimSpace(channelID)
 }
 
 func parseCreateModalSubmission(
@@ -192,7 +206,7 @@ func parseCreateModalSubmission(
 			}
 			submission.description = description
 		case createFeaturesCustomID:
-			if component.Type != componentTypeCheckboxGroup || len(component.Values) > 3 {
+			if component.Type != componentTypeCheckboxGroup || len(component.Values) > 4 {
 				return createModalSubmission{}, newUserError("Choose only the supported mode and TeamSpeak options.")
 			}
 			featureSeen := map[string]bool{}
@@ -208,6 +222,8 @@ func parseCreateModalSubmission(
 					submission.teamSpeak = true
 				case createFeatureAutoStart:
 					submission.autoStart = true
+				case createFeatureNotifyReady:
+					submission.notifyWhenReady = true
 				default:
 					return createModalSubmission{}, newUserError("Choose only the supported mode and TeamSpeak options.")
 				}

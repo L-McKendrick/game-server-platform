@@ -453,6 +453,9 @@ func TestSessionItemRoundTripPreservesCreatorDLCSelection(t *testing.T) {
 	session := testSession(t, time.Date(2026, 8, 23, 6, 0, 0, 0, time.UTC))
 	session.CreatorDLCs = []string{domain.CreatorDLCGlobalMobilization, domain.CreatorDLCReactionForces}
 	session.StartWhenReady = true
+	session.NotifyWhenReady = true
+	session.ReadyNotificationChannelID = "creation-channel"
+	session.ReadyNotificationAttemptedAt = session.CreatedAt.Add(time.Minute)
 	stored, err := fromSessionItem(toSessionItem(session))
 	if err != nil {
 		t.Fatal(err)
@@ -462,6 +465,9 @@ func TestSessionItemRoundTripPreservesCreatorDLCSelection(t *testing.T) {
 	}
 	if !stored.StartWhenReady {
 		t.Fatal("start-when-ready intent was not preserved")
+	}
+	if !stored.NotifyWhenReady || stored.ReadyNotificationChannelID != session.ReadyNotificationChannelID || !stored.ReadyNotificationAttemptedAt.Equal(session.ReadyNotificationAttemptedAt) {
+		t.Fatalf("ready notification metadata = %#v", stored)
 	}
 }
 

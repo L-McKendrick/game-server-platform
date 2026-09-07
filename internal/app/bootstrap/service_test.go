@@ -60,7 +60,13 @@ func (queue *testNotifications) Enqueue(_ context.Context, request domain.Notifi
 func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC)
-	repository, workflow := seedBootstrap(t, now)
+	repository, workflow := seedBootstrapWithMutation(t, now, func(session *domain.Session) {
+		session.NotifyWhenReady = true
+		session.ReadyNotificationChannelID = "creation-channel"
+	})
+	if err := repository.SaveCardReference(context.Background(), domain.SessionCardReference{SessionID: workflow.SessionID, ChannelID: "channel-1", MessageID: "card-1"}); err != nil {
+		t.Fatal(err)
+	}
 	runner := &testRunner{commandID: "command-1", status: ports.BootstrapCommandStatus{Status: "Success"}}
 	notifications := &testNotifications{}
 	service, err := NewService(repository, repository, repository, runner, notifications, &testIDs{values: []string{"stage-event", "health-event", "ready-event"}}, testClock{now}, 6*time.Hour)
@@ -113,7 +119,7 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 	if session.LifecycleState != domain.StateRunning || session.HealthStatus != domain.HealthHealthy || session.ActiveWorkflowID != "" || session.ActivePresetRevision.Number != 2 || !session.PendingPresetRevision.Empty() || session.PresetObjectKey != "sessions/session-1/input/preset-v2.html" {
 		t.Fatalf("session = %#v", session)
 	}
-	if len(notifications.requests) != 4 {
+	if len(notifications.requests) != 5 {
 		t.Fatalf("notifications = %#v", notifications.requests)
 	}
 	wantMilestones := []domain.ProgressMilestone{domain.ProgressHostPrepared, domain.ProgressHealthVerification, domain.ProgressCompleted}
@@ -123,12 +129,31 @@ func TestBootstrapServiceCompletesOnlyAfterSuccessfulManagedCommand(t *testing.T
 			t.Fatalf("notification %d = %#v", index, request)
 		}
 	}
-	modlist := notifications.requests[3]
+	ready := notifications.requests[3]
+	if ready.Kind != domain.NotificationSessionReady || ready.ChannelID != "creation-channel" || len(ready.AllowedUserIDs) != 1 || ready.AllowedUserIDs[0] != "owner-1" || !strings.Contains(ready.Content, "[Arma](https://discord.com/channels/guild-1/channel-1/card-1)") {
+		t.Fatalf("ready notification = %#v", ready)
+	}
+	modlist := notifications.requests[4]
 	if modlist.Kind != domain.NotificationSessionModlist || modlist.Attachment == nil || modlist.Attachment.ObjectKey != session.ActivePresetRevision.Modlist.ObjectKey || modlist.Attachment.Revision != session.Version {
 		t.Fatalf("promoted modlist notification = %#v", modlist)
 	}
 	if session.Progress.Milestone != domain.ProgressCompleted || session.Progress.WorkflowID != workflow.ID {
 		t.Fatalf("progress = %#v", session.Progress)
+	}
+	if session.ReadyNotificationAttemptedAt.IsZero() {
+		t.Fatal("ready notification attempt was not persisted")
+	}
+	if _, err := service.Handle(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	readyCount := 0
+	for _, notification := range notifications.requests {
+		if notification.Kind == domain.NotificationSessionReady {
+			readyCount++
+		}
+	}
+	if readyCount != 1 {
+		t.Fatalf("ready notifications after completion replay = %d; want 1", readyCount)
 	}
 }
 
@@ -170,6 +195,25 @@ func TestBootstrapServiceAtomicallyFinalizesWorkshopScenarioCollection(t *testin
 	}
 	if _, err := service.Handle(context.Background(), request); err != nil {
 		t.Fatalf("completion replay failed: %v", err)
+	}
+}
+
+func TestReadyNotificationFallsBackToPlainTitleWithoutCard(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 6, 11, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	notifications := &testNotifications{}
+	service, err := NewService(repository, repository, repository, &testRunner{}, notifications, &testIDs{}, testClock{now}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := domain.Session{ID: "session-no-card", DisplayName: "No Card", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ReadyNotificationChannelID: "creation-channel"}
+	workflow := domain.Workflow{CorrelationID: "correlation-ready"}
+	if err := service.enqueueReadyNotification(context.Background(), session, workflow, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(notifications.requests) != 1 || notifications.requests[0].Content != "<@owner-1> No Card is ready to join." {
+		t.Fatalf("plain ready notification = %#v", notifications.requests)
 	}
 }
 

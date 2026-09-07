@@ -28,6 +28,9 @@ Arma missions and client mods may come from validated uploads or public Steam
 Workshop items and direct-child collections. Eligible Workshop scenarios added
 to a stable running server become mission choices without changing the current
 mission; Workshop mod revisions remain pending until a controlled restart.
+Creation can queue the normal start automatically after required mod input is
+accepted, and owners may opt into one creation-channel ping after initial
+health verification succeeds.
 
 ## Deploy to your Discord server
 

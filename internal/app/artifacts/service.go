@@ -258,7 +258,7 @@ func (service *Service) copyMissionLive(ctx context.Context, session domain.Sess
 }
 
 func (service *Service) autoStart(ctx context.Context, session domain.Session, request domain.ArtifactIngestRequest) error {
-	if service.autoStarter == nil || !session.StartWhenReady || request.IsModRevision() || !session.CanStartInfrastructureProvisioning() {
+	if service.autoStarter == nil || !session.StartWhenReady || !session.CanStartInfrastructureProvisioning() {
 		return nil
 	}
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", session.ID, session.ConfigurationRevision)))
@@ -362,7 +362,13 @@ func (service *Service) stagePresetRevision(ctx context.Context, session domain.
 		if getErr != nil {
 			return getErr
 		}
+		if err := service.autoStart(ctx, persisted, request); err != nil {
+			return err
+		}
 		return service.notify(ctx, persisted, request, nil)
+	}
+	if err := service.autoStart(ctx, session, request); err != nil {
+		return err
 	}
 	return service.notify(ctx, session, request, nil)
 }
@@ -395,7 +401,13 @@ func (service *Service) stageServerPresetRevision(ctx context.Context, session d
 		if getErr != nil {
 			return getErr
 		}
+		if err := service.autoStart(ctx, persisted, request); err != nil {
+			return err
+		}
 		return service.notify(ctx, persisted, request, nil)
+	}
+	if err := service.autoStart(ctx, session, request); err != nil {
+		return err
 	}
 	return service.notify(ctx, session, request, nil)
 }

@@ -46,9 +46,14 @@ type handler struct {
 	workshop         *appworkshop.Service
 	workshopRecorder *appworkshop.Recorder
 	contentSync      *workshopcontent.Service
+	startService     automaticStarter
 	sessions         ports.SessionRepository
 	notifications    ports.NotificationQueue
 	logger           *slog.Logger
+}
+
+type automaticStarter interface {
+	RequestAutomaticStart(context.Context, domain.Session, string, []string) error
 }
 
 func main() {
@@ -123,7 +128,7 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &handler{service: service, serverConfig: serverConfig, workshop: workshopService, workshopRecorder: workshopRecorder, contentSync: contentSync, sessions: repository, notifications: sqsnotification.New(queueClient, cfg.NotificationQueueURL), logger: logger}, nil
+	return &handler{service: service, serverConfig: serverConfig, workshop: workshopService, workshopRecorder: workshopRecorder, contentSync: contentSync, startService: startService, sessions: repository, notifications: sqsnotification.New(queueClient, cfg.NotificationQueueURL), logger: logger}, nil
 }
 
 func artifactPositiveInt32(name string, fallback int32) (int32, error) {
@@ -244,6 +249,15 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 				}
 				content := fmt.Sprintf("Workshop mission source accepted: %d scenario(s), %d excluded. Download will be staged without changing the current mission.", len(source.AcceptedItemIDs), len(source.ExcludedItems))
 				handler.logger.Info("Workshop mission resolution recorded", slog.String("session_id", request.SessionID), slog.String("source_kind", string(source.SourceKind)), slog.Int("accepted_count", len(source.AcceptedItemIDs)), slog.Int("excluded_count", len(source.ExcludedItems)), slog.String("status_summary", content), slog.String("correlation_id", request.CorrelationID))
+				if session, getErr := handler.sessions.Get(ctx, request.SessionID); getErr != nil {
+					handler.logger.Warn("automatic start session lookup failed", slog.String("session_id", request.SessionID), slog.Any("error", getErr))
+					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+					continue
+				} else if startErr := handler.requestAutomaticStart(ctx, session, request); startErr != nil {
+					handler.logger.Warn("automatic start request failed", slog.String("session_id", request.SessionID), slog.Any("error", startErr))
+					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+					continue
+				}
 				revision, revisionErr := workshopMissionRevision(ctx, request.SessionID, handler.sessions)
 				if revisionErr == nil {
 					_, revisionErr = handler.contentSync.Start(ctx, request.SessionID, request.Target, revision, request.ActorID, request.CorrelationID, request.IdempotencyKey)
@@ -285,6 +299,11 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 					}
 				}
 				handler.logger.Info("Workshop mod resolution recorded", slog.String("session_id", request.SessionID), slog.String("source_kind", string(source.SourceKind)), slog.Int("accepted_count", len(source.AcceptedItems)), slog.Int("excluded_count", len(source.ExcludedItems)), slog.Int64("preset_revision", result.Revision.Number), slog.String("revision_status", string(result.Revision.Status)), slog.String("correlation_id", request.CorrelationID))
+				if startErr := handler.requestAutomaticStart(ctx, result.Session, request); startErr != nil {
+					handler.logger.Warn("automatic start request failed", slog.String("session_id", request.SessionID), slog.Any("error", startErr))
+					response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+					continue
+				}
 				if _, syncErr := handler.contentSync.Start(ctx, request.SessionID, request.Target, result.Revision.WorkshopResolutionSHA256, request.ActorID, request.CorrelationID, request.IdempotencyKey); syncErr != nil && !errors.Is(syncErr, domain.ErrInvalidTransition) {
 					handler.logger.Warn("Workshop content sync dispatch deferred", slog.String("session_id", request.SessionID), slog.Any("error", syncErr))
 				}
@@ -329,6 +348,13 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 		handler.logger.Info("artifact processed", slog.String("session_id", request.SessionID), slog.String("correlation_id", request.CorrelationID))
 	}
 	return response, nil
+}
+
+func (handler *handler) requestAutomaticStart(ctx context.Context, session domain.Session, request domain.WorkshopSourceRequest) error {
+	if handler.startService == nil {
+		return fmt.Errorf("automatic start service is not configured")
+	}
+	return handler.startService.RequestAutomaticStart(ctx, session, request.CorrelationID, nil)
 }
 
 // decodeWorkshopRequest retains the strict domain validation boundary while
