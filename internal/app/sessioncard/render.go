@@ -88,6 +88,7 @@ func render(card Projection, detailed bool) string {
 		return renderArchivedPublic(card)
 	}
 	var builder strings.Builder
+	progressVisible := card.Progress.Visible && (detailed || !card.Progress.HideWhenPublic)
 	fmt.Fprintf(&builder, "## %s: %s", safe(card.Lifecycle), safe(card.Name))
 	if detailed {
 		fmt.Fprintf(&builder, "\nSlug: `%s`", safeCode(card.Slug))
@@ -113,7 +114,7 @@ func render(card Projection, detailed bool) string {
 			safe(card.Game), safe(card.Mode), enabled(card.TeamSpeak), safe(card.Lifecycle), safe(card.Health),
 		)
 	}
-	if card.Progress.Visible {
+	if progressVisible {
 		if detailed {
 			builder.WriteString("\n\n### Progress")
 		}
@@ -127,13 +128,13 @@ func render(card Projection, detailed bool) string {
 		if card.Progress.Activity != "" {
 			fmt.Fprintf(&builder, "\n**Current download:** %s", downloadActivity(card.Progress.Activity))
 		}
-	} else if !detailed {
+	} else if !detailed && !card.Progress.HideWhenPublic {
 		fmt.Fprintf(&builder, "\n**Current stage:** %s", safe(downloadStage(card)))
 	}
 	if card.CurrentOperation != "" {
 		fmt.Fprintf(&builder, "\n**Current operation:** %s", safe(card.CurrentOperation))
 	}
-	if card.Progress.Visible || card.Elapsed > 0 {
+	if progressVisible || (card.Elapsed > 0 && (detailed || !card.Progress.HideWhenPublic)) {
 		if detailed || card.OperationStartedAt.IsZero() {
 			fmt.Fprintf(&builder, "\n**Elapsed:** %s", formatDuration(card.Elapsed))
 		} else {

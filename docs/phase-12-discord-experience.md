@@ -171,6 +171,9 @@ Running and idle cards expose `Show players` and `Refresh`; `Show players`
 returns the bounded live roster ephemerally. Setup, transitional, sleeping,
 failed, and archived cards omit `Show players`. Once archive completes, the
 card keeps only `Refresh` for repair and drops progress/player controls.
+Successfully completed sleep cards also omit the finished progress block;
+in-flight and failed sleep progress remains visible, and the private detailed
+status retains completed workflow history.
 Terminated cards expose no controls. The modlist link is part of the card, and
 help remains available through `/rb help`. Reauthorize and revalidate
 session/card revision on every click. Lifecycle and destructive controls remain

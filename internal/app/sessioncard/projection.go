@@ -52,14 +52,15 @@ type Projection struct {
 }
 
 type ProgressProjection struct {
-	Visible   bool
-	Bar       string
-	Step      int
-	Total     int
-	Completed int
-	Condition string
-	Guidance  string
-	Activity  string
+	Visible        bool
+	HideWhenPublic bool
+	Bar            string
+	Step           int
+	Total          int
+	Completed      int
+	Condition      string
+	Guidance       string
+	Activity       string
 }
 
 type LifecycleTimingProjection struct {
@@ -459,7 +460,8 @@ func progressProjection(session domain.Session, workflow *domain.Workflow, now t
 	}
 	condition := progressCondition(session, workflow, now)
 	return ProgressProjection{
-		Visible: true, Bar: bar.String(), Step: current + 1,
+		Visible: true, HideWhenPublic: session.LifecycleState == domain.StateSleeping && progress.WorkflowType == domain.SleepWorkflowType && progress.State == domain.ProgressCompletedState && progress.Milestone == domain.ProgressCompleted,
+		Bar: bar.String(), Step: current + 1,
 		Total: len(milestones), Completed: len(progress.CompletedMilestones),
 		Condition: condition, Guidance: progressGuidance(progress.Milestone, condition), Activity: progressActivity(progress),
 	}

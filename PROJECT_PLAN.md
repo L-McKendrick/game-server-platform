@@ -411,6 +411,10 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **18.6.1** [x] Restrict `Show players` to running and idle public cards at both enqueue and delivery boundaries.
       - **18.6.2** [x] Add focused coverage for setup, active, archived, and terminated control behavior.
       - **18.6.3** [x] Reconcile the live progress observation and deployment handoff, then commit the correction without deploying.
+    - **18.7** [x] Simplify completed sleeping cards.
+      - **18.7.1** [x] Hide successfully completed sleep-workflow progress while retaining in-flight and actionable failure details.
+      - **18.7.2** [x] Add focused sleeping-card progress and lifecycle-control regression coverage.
+      - **18.7.3** [x] Refresh documentation and the deployment handoff, then commit without deploying.
 
 19. **Maximum Session Duration Guardrails — Pending**
     - **19.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.

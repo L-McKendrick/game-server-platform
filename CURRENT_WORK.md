@@ -22,7 +22,9 @@ the Phase 18 pull request, then start Phase 19 on a new branch.
   only `Refresh`, preserve legacy fallbacks, and keep actionable restore errors.
   `Show players` is now emitted only for `RUNNING` and `IDLE`; all setup,
   transition, sleeping, archived, failed, and terminated cards omit it.
-  Terminated cards retain no controls.
+  Successfully completed sleep cards omit the finished progress block while
+  `/rb status` retains its diagnostic history; in-flight and failed sleep
+  progress remains visible. Terminated cards retain no controls.
 - The review found no remaining authorization, lifecycle-lock, replay,
   idempotency, failure-resolution, backward-compatibility, or deployment-scope
   blocker. Automatic-start delivery remains bounded by normal queue retry/DLQ
@@ -82,7 +84,8 @@ restart`. Verify automatic setup through a new Workshop item/collection, one
 opted-in ready ping, `/rb sleep` followed by `/rb start`, no-change and
 pending-change restart health, download-percentage updates across at least two
 bootstrap observations, lifecycle-specific cards/controls (including no `Show
-players` before `RUNNING`), and manual `/rb start` recovery for `test-47`.
+players` before `RUNNING` or while sleeping), no completed progress block after
+sleep, and manual `/rb start` recovery for `test-47`.
 
 ## Important Operator Attention
 

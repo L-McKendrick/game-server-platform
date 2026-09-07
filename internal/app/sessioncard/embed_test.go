@@ -88,6 +88,37 @@ func TestRenderPublicEmbedOmitsMissionOutsideActiveStates(t *testing.T) {
 	}
 }
 
+func TestRenderPublicHidesCompletedSleepProgressButDetailedStatusRetainsIt(t *testing.T) {
+	t.Parallel()
+	finishedAt := time.Date(2026, 9, 7, 20, 0, 0, 0, time.UTC)
+	session := domain.Session{
+		DisplayName: "Sleeping Ops", GameType: "arma3", LifecycleState: domain.StateSleeping, HealthStatus: domain.HealthStopped,
+		Progress: domain.SessionProgress{
+			WorkflowID: "sleep-1", WorkflowType: domain.SleepWorkflowType,
+			Milestone: domain.ProgressCompleted, State: domain.ProgressCompletedState,
+			CompletedMilestones: []domain.ProgressMilestone{domain.ProgressAccepted, domain.ProgressInstanceStopped, domain.ProgressCompleted},
+			StartedAt:           finishedAt.Add(-time.Minute), LastProgressAt: finishedAt,
+		},
+		UpdatedAt: finishedAt,
+	}
+	card := Project(session, Options{Now: finishedAt.Add(time.Minute)})
+	embed := RenderPublicEmbed(card)
+	for _, field := range embed.Fields {
+		if strings.TrimSpace(strings.TrimPrefix(field.Name, "\u200b")) == "PROGRESS" {
+			t.Fatalf("completed sleeping card retained progress: %#v", embed.Fields)
+		}
+	}
+	public := RenderPublic(card)
+	for _, unwanted := range []string{"**Progress:**", "**Current stage:** Completed", "**Progress state:** Completed", "**Started:**"} {
+		if strings.Contains(public, unwanted) {
+			t.Fatalf("completed sleeping fallback retained %q: %q", unwanted, public)
+		}
+	}
+	if detailed := RenderDetailed(card); !strings.Contains(detailed, "### Progress") || !strings.Contains(detailed, "**Progress state:** Completed") {
+		t.Fatalf("detailed sleeping status lost completed progress: %q", detailed)
+	}
+}
+
 func TestRenderPublicEmbedReducesCompletedArchiveAndUsesActiveModlist(t *testing.T) {
 	t.Parallel()
 	archivedAt := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)

@@ -141,7 +141,7 @@ func publicMissionValue(card Projection) string {
 }
 
 func publicProgressValue(card Projection) string {
-	if !card.Progress.Visible {
+	if !card.Progress.Visible || card.Progress.HideWhenPublic {
 		return ""
 	}
 	value := fmt.Sprintf("`%s` — Step %d/%d\n**Current stage:** %s", safeCode(card.Progress.Bar), card.Progress.Step, card.Progress.Total, safe(downloadStage(card)))
