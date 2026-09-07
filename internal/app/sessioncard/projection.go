@@ -100,6 +100,7 @@ type ModsProjection struct {
 	PendingStatus           string
 	PendingSince            time.Time
 	DownloadURL             string
+	DownloadName            string
 	CreatorDLCs             []string
 	ActiveWorkshopSourceID  uint64
 	PendingWorkshopSourceID uint64
@@ -206,6 +207,10 @@ func Project(session domain.Session, options Options) Projection {
 		if session.Progress.State == domain.ProgressCompletedState && !session.Progress.LastProgressAt.IsZero() {
 			projection.StatusSince = session.Progress.LastProgressAt.UTC()
 		}
+	}
+	if session.LifecycleState == domain.StateArchived && session.Progress.WorkflowType == domain.ArchiveWorkflowType &&
+		session.Progress.State == domain.ProgressCompletedState && !session.Progress.LastProgressAt.IsZero() {
+		projection.StatusSince = session.Progress.LastProgressAt.UTC()
 	}
 
 	if projection.Progress.Visible && !session.Progress.StartedAt.IsZero() {
@@ -785,6 +790,7 @@ func modProjection(session domain.Session, modlistURL string) ModsProjection {
 	active := session.EffectiveActivePresetRevision()
 	if !active.Empty() {
 		projection.ActiveRevision = active.Number
+		projection.DownloadName = active.Modlist.Filename
 		projection.ActiveSince = active.ActivatedAt.UTC()
 		projection.ActiveWorkshopSourceID = active.WorkshopSourceID
 	}

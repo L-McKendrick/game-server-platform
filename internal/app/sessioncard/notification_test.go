@@ -66,7 +66,7 @@ func TestEnqueueTerminatedProgressSuppressesPublicCardControls(t *testing.T) {
 		t.Fatal(err)
 	}
 	requests := queue.Requests()
-	if len(requests) != 1 || !requests[0].SuppressCardControls || requests[0].CardRevision != session.Version {
+	if len(requests) != 1 || !requests[0].SuppressCardControls || !requests[0].SuppressPlayerControl || requests[0].CardRevision != session.Version {
 		t.Fatalf("terminated card request = %#v", requests)
 	}
 }

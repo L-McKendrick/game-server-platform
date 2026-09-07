@@ -238,6 +238,19 @@ func TestSenderClearsControlsWhenEditingTerminatedCard(t *testing.T) {
 	}
 }
 
+func TestSenderKeepsOnlyRefreshForArchivedCard(t *testing.T) {
+	t.Parallel()
+	request := domain.NotificationRequest{SchemaVersion: 1, NotificationID: "card-archived", Kind: domain.NotificationSessionCard, SessionID: "session-1", GuildID: "guild-1", ChannelID: "channel-1", Content: "archived", CardRevision: 9, SuppressPlayerControl: true, CorrelationID: "correlation-1", RequestedAt: time.Now().UTC()}
+	rows, err := sessionCardControls(request)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("archived controls = %#v, %v", rows, err)
+	}
+	buttons := rows[0]["components"].([]map[string]any)
+	if len(buttons) != 1 || buttons[0]["label"] != "Refresh" {
+		t.Fatalf("archived buttons = %#v", buttons)
+	}
+}
+
 func TestSenderRecreatesDeletedCardAndPreservesRevisionControls(t *testing.T) {
 	t.Parallel()
 	var methods []string

@@ -54,12 +54,12 @@ func TestRenderModlistMessageAndCardLinkAreSafeAndIdempotent(t *testing.T) {
 
 	card := "## Saturday Ops\n\n**Mission:** Accepted\n**Preset:** Accepted\n**Mods:** Accepted\n\nLast updated now."
 	url := "https://discord.com/channels/guild-1/channel-1/message-1"
-	linked := WithModlistLink(card, url)
-	replayed := WithModlistLink(linked, url)
+	linked := WithModlistLink(card, "saturday-ops-modlist.html", url)
+	replayed := WithModlistLink(linked, "saturday-ops-modlist.html", url)
 	if linked != replayed || strings.Count(linked, "**Active modlist:**") != 1 || !strings.Contains(linked, url) {
 		t.Fatalf("linked card=%q replayed=%q", linked, replayed)
 	}
-	if got := WithModlistLink(card, "https://example.test/steal"); got != card {
+	if got := WithModlistLink(card, "saturday-ops-modlist.html", "https://example.test/steal"); got != card {
 		t.Fatalf("untrusted link changed card: %q", got)
 	}
 }

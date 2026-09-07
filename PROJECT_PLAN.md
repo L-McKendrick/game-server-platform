@@ -6,11 +6,9 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
 
 ## Remaining Delivery Order
 
-1. Complete the consolidated Discord lifecycle UX, restart, readiness, and
-   public-card improvements (Phase 18).
-2. Complete the core product with maximum-duration cost guardrails (Phase 19).
-3. Harden production operations and optimize measured bottlenecks (Phase 20).
-4. Evaluate deferred platform enhancements (Phase 21).
+1. Complete the core product with maximum-duration cost guardrails (Phase 19).
+2. Harden production operations and optimize measured bottlenecks (Phase 20).
+3. Evaluate deferred platform enhancements (Phase 21).
 
 ## Phases
 
@@ -384,7 +382,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
 
 ## Remaining Work
 
-18. **Discord Lifecycle UX and Restart — Pending**
+18. **Discord Lifecycle UX and Restart — Done**
     - **18.1** [x] Unify start and wake behind `/rb start` with state-aware behavior.
       - **18.1.1** [x] Make `/rb start` provision a ready draft and wake a sleeping session through the existing lifecycle workflows, while returning current progress for duplicate requests and rejecting unsupported states with actionable feedback. Keep `/rb restore` separate; archived-session routing is deferred to 20.7.4.
       - **18.1.2** [x] Remove `/rb wake` from command registration, help, and user documentation without weakening authorization, capacity, pending-content application, restore, replay, or idempotency safeguards.
@@ -399,12 +397,12 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **18.3.2** [x] On initial creation readiness after successful health verification, make one best-effort notification attempt in the creation command channel: mention only the session owner and say `<session title> is ready to join.` Link the title when a public card is available; otherwise use plain text. Suppress duplicate attempts and do not add delivery retries. Do not notify when disabled or on subsequent wake, restore, or restart.
       - **18.3.3** [x] Fix automatic startup after mod input acceptance/validation, including asynchronous Steam Workshop collection resolution: when creation automatic startup is enabled and the existing readiness requirements are satisfied, queue the normal session start command once. Use the same authorization, capacity, lifecycle, and failure behavior as a user invoking `/rb start`; do not introduce a separate automatic-start retry or scheduling policy.
       - **18.3.4** [x] Add focused modal, persistence, mention-safety, channel/card-link, readiness-transition, collection-resolution, replay, partial-failure, and notification-delivery coverage.
-    - **18.4** [ ] Simplify public cards for setup, sleeping, archived, and terminated lifecycle states.
-      - **18.4.1** [ ] Render the `Current mission` field only while the session is running or idle; omit it entirely during setup, sleeping, archived, terminated, and other non-active states instead of showing an unavailable placeholder.
-      - **18.4.2** [ ] Give archived cards a light bluish-gray color that remains visually distinct from terminated cards and preserves text-plus-state accessibility.
-      - **18.4.3** [ ] After archive completion, remove progress information and the `Show players` control, matching terminal-card control cleanup while retaining repair and backward-compatible update behavior.
-      - **18.4.4** [ ] Reduce a successfully completed archived card to its title, description, linked last-used modlist name, and Discord-native `Archived` timestamp. Retain actionable diagnostic information when present, including later restore failures. Use safe fallback behavior when a legacy session has no modlist or archive-completion timestamp; never substitute a pending mod revision or invent a timestamp.
-      - **18.4.5** [ ] Add focused lifecycle rendering, color, field omission, control cleanup, modlist-link, timestamp, refresh, repair, and legacy-record coverage.
+    - **18.4** [x] Simplify public cards for setup, sleeping, archived, and terminated lifecycle states.
+      - **18.4.1** [x] Render the `Current mission` field only while the session is running or idle; omit it entirely during setup, sleeping, archived, terminated, and other non-active states instead of showing an unavailable placeholder.
+      - **18.4.2** [x] Give archived cards a light bluish-gray color that remains visually distinct from terminated cards and preserves text-plus-state accessibility.
+      - **18.4.3** [x] After archive completion, remove progress information and the `Show players` control, matching terminal-card control cleanup while retaining repair and backward-compatible update behavior.
+      - **18.4.4** [x] Reduce a successfully completed archived card to its title, description, linked last-used modlist name, and Discord-native `Archived` timestamp. Retain actionable diagnostic information when present, including later restore failures. Use safe fallback behavior when a legacy session has no modlist or archive-completion timestamp; never substitute a pending mod revision or invent a timestamp.
+      - **18.4.5** [x] Add focused lifecycle rendering, color, field omission, control cleanup, modlist-link, timestamp, refresh, repair, and legacy-record coverage.
 
 19. **Maximum Session Duration Guardrails — Pending**
     - **19.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.

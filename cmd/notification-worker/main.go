@@ -132,6 +132,8 @@ func (handler *handler) deliverCard(ctx context.Context, request domain.Notifica
 	if session.GuildID != request.GuildID || session.ChannelID != request.ChannelID {
 		return fmt.Errorf("session card destination does not match session metadata")
 	}
+	request.SuppressCardControls = session.LifecycleState == domain.StateDeleted
+	request.SuppressPlayerControl = session.LifecycleState == domain.StateArchived || session.LifecycleState == domain.StateDeleted
 	reference, err := handler.cards.GetCardReference(ctx, session.ID)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return fmt.Errorf("get persisted session card: %w", err)
@@ -145,8 +147,8 @@ func (handler *handler) deliverCard(ctx context.Context, request domain.Notifica
 	if modlist, modlistErr := handler.cards.GetModlistReference(ctx, session.ID); modlistErr == nil {
 		if sessioncard.IsActiveModlistReference(session, modlist) {
 			messageURL := sessioncard.DiscordMessageURL(session.GuildID, modlist.ChannelID, modlist.MessageID)
-			request.Content = sessioncard.WithModlistLink(request.Content, messageURL)
-			request.Embed = sessioncard.WithModlistLinkEmbed(request.Embed, session.DisplayName, messageURL)
+			request.Content = sessioncard.WithModlistLink(request.Content, modlist.Filename, messageURL)
+			request.Embed = sessioncard.WithModlistLinkEmbed(request.Embed, modlist.Filename, messageURL)
 			if err := request.Validate(); err != nil {
 				return fmt.Errorf("validate enriched session card notification: %w", err)
 			}
@@ -252,7 +254,8 @@ func (handler *handler) deliverModlist(ctx context.Context, request domain.Notif
 		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
 		Content: sessioncard.RenderPublic(projection), Embed: sessioncard.RenderPublicEmbed(projection),
 		Kind: domain.NotificationSessionCard, CardRevision: session.Version,
-		CorrelationID: request.CorrelationID, RequestedAt: request.RequestedAt,
+		SuppressPlayerControl: session.LifecycleState == domain.StateArchived || session.LifecycleState == domain.StateDeleted,
+		CorrelationID:         request.CorrelationID, RequestedAt: request.RequestedAt,
 	}
 	return handler.deliverCard(ctx, card)
 }

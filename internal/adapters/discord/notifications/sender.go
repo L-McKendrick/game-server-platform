@@ -253,6 +253,9 @@ func sessionCardControls(request domain.NotificationRequest) ([]map[string]any, 
 	}
 	buttons := make([]map[string]any, 0, len(controls))
 	for _, control := range controls {
+		if request.SuppressPlayerControl && control.action == componentid.ActionShowPlayers {
+			continue
+		}
 		customID, customIDErr := componentid.New(control.action, revision, token)
 		if customIDErr != nil {
 			return nil, fmt.Errorf("build session card control: %w", customIDErr)
