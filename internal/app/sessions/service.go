@@ -331,7 +331,7 @@ func (service *Service) RequestSessionCard(ctx context.Context, command SessionC
 		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
 		Content: command.Content, Embed: command.Embed, Kind: domain.NotificationSessionCard, CardRevision: command.CardRevision,
 		SuppressCardControls:  session.LifecycleState == domain.StateDeleted,
-		SuppressPlayerControl: session.LifecycleState == domain.StateArchived || session.LifecycleState == domain.StateDeleted,
+		SuppressPlayerControl: !sessioncard.PlayerControlVisible(session.LifecycleState),
 		CorrelationID:         strings.TrimSpace(command.CorrelationID), RequestedAt: service.clock.Now().UTC(),
 	})
 }

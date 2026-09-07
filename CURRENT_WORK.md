@@ -20,6 +20,8 @@ the Phase 18 pull request, then start Phase 19 on a new branch.
 - Public cards show mission/player data only while active. Completed archives
   use the compact bluish-gray title/description/active-modlist/time view, retain
   only `Refresh`, preserve legacy fallbacks, and keep actionable restore errors.
+  `Show players` is now emitted only for `RUNNING` and `IDLE`; all setup,
+  transition, sleeping, archived, failed, and terminated cards omit it.
   Terminated cards retain no controls.
 - The review found no remaining authorization, lifecycle-lock, replay,
   idempotency, failure-resolution, backward-compatibility, or deployment-scope
@@ -36,6 +38,11 @@ the Phase 18 pull request, then start Phase 19 on a new branch.
   old request as `forbidden` because it lacked roles. That already-queued legacy
   request cannot be repaired by this deployment; run `/rb start` manually for
   `test-47` after confirming its content remains accepted.
+- Read-only live evidence from `test-49` confirmed install telemetry persisted
+  and delivered `Arma 3 server files (42%)` on card revision 17. Percentage
+  updates follow the bounded bootstrap observation cadence (about two minutes
+  while installation is active); no telemetry defect was found. The same test
+  exposed the setup-card `Show players` defect corrected above.
 - Nothing was deployed, registered, restarted, or otherwise mutated in AWS or
   Discord during this review.
 
@@ -73,8 +80,9 @@ $discordSecret = $null
 Registration is required because Phase 18 removes `/rb wake` and adds `/rb
 restart`. Verify automatic setup through a new Workshop item/collection, one
 opted-in ready ping, `/rb sleep` followed by `/rb start`, no-change and
-pending-change restart health, lifecycle-specific cards/controls, and manual
-`/rb start` recovery for `test-47`.
+pending-change restart health, download-percentage updates across at least two
+bootstrap observations, lifecycle-specific cards/controls (including no `Show
+players` before `RUNNING`), and manual `/rb start` recovery for `test-47`.
 
 ## Important Operator Attention
 

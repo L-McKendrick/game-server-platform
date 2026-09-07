@@ -47,7 +47,7 @@ func EnqueueProgress(ctx context.Context, queue ports.NotificationQueue, session
 		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
 		Content: RenderPublic(projection), Embed: RenderPublicEmbed(projection), CardRevision: session.Version,
 		SuppressCardControls:  session.LifecycleState == domain.StateDeleted,
-		SuppressPlayerControl: session.LifecycleState == domain.StateArchived || session.LifecycleState == domain.StateDeleted,
+		SuppressPlayerControl: !PlayerControlVisible(session.LifecycleState),
 		CorrelationID:         workflow.CorrelationID, RequestedAt: now.UTC(),
 	}
 	return queue.Enqueue(ctx, request)

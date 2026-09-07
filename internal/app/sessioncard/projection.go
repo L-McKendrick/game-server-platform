@@ -420,6 +420,12 @@ func ProgressStageLabel(milestone domain.ProgressMilestone) string {
 	return progressLabel(milestone)
 }
 
+// PlayerControlVisible keeps the public A2S control aligned with the lifecycle
+// states in which a live game server can actually answer player queries.
+func PlayerControlVisible(state domain.LifecycleState) bool {
+	return state == domain.StateRunning || state == domain.StateIdle
+}
+
 func ProgressStep(workflowType string, milestone domain.ProgressMilestone) (int, int, bool) {
 	milestones, ok := domain.MilestonesForWorkflow(workflowType)
 	if !ok {

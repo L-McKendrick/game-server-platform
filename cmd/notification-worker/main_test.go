@@ -199,6 +199,9 @@ func TestDeliverCardCreatesOnceSkipsReplayAndEditsNewRevision(t *testing.T) {
 	if err := handler.deliverCard(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
+	if len(sender.cardRequests) != 1 || !sender.cardRequests[0].SuppressPlayerControl {
+		t.Fatalf("setup card requests = %#v; want player control suppressed", sender.cardRequests)
+	}
 	stored, err := repository.GetCardReference(context.Background(), session.ID)
 	if err != nil {
 		t.Fatal(err)
