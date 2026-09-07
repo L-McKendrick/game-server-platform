@@ -148,6 +148,12 @@
     },
     {
       "type": 1,
+      "name": "restart",
+      "description": "Restart the game server immediately and apply pending mods and settings",
+      "options": [{"type": 3, "name": "session", "description": "Choose a running or idle session", "required": true, "autocomplete": true}]
+    },
+    {
+      "type": 1,
       "name": "sleep",
       "description": "Stop a running server while retaining its EBS volumes",
       "options": [{"type": 3, "name": "session", "description": "Choose a session or enter its exact slug", "required": true, "autocomplete": true}]

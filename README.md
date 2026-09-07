@@ -125,3 +125,11 @@ Use `/rb start` to provision a configured session or wake a sleeping server.
 Archived sessions still require `/rb restore`. Administrators and Manage Server
 members retain permission to wake sleeping sessions; initial provisioning remains
 owner-only. `/rb wake` is no longer registered.
+
+Use `/rb restart session:<slug>` to immediately restart a running or idle game
+server, including when players are connected. It applies pending client/server
+mods and game-server settings, then verifies Arma health. It leaves EC2 and
+TeamSpeak running. Owners and Administrator/Manage Server members may restart;
+other active workflows block the operation. Restart failures require checking
+`/rb status`; there is no automatic rollback. See
+[restart operations](docs/runbooks/restart-game-server.md).

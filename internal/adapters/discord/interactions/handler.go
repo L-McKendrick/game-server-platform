@@ -575,7 +575,7 @@ func (handler *Handler) routeCommand(
 	case "start":
 		content, err := handler.startSession(ctx, payload, subcommand.Options, actor, correlationID)
 		return content, commandName, err
-	case "sleep", "restore":
+	case "sleep", "restart", "restore":
 		content, err := handler.requestLifecycle(ctx, payload, subcommand.Options, actor, correlationID, subcommand.Name)
 		return content, commandName, err
 	case "archive", "terminate":
@@ -688,7 +688,7 @@ func confirmationUserError(err error) error {
 func (handler *Handler) requestLifecycle(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, correlationID, action string) (string, error) {
 	sessionID, err := handler.resolveSessionID(
 		ctx, options, actor, payload.GuildID,
-		payload.memberCanManageGuild() && (action == "sleep" || action == "wake"),
+		payload.memberCanManageGuild() && (action == "sleep" || action == "wake" || action == "restart"),
 		false,
 	)
 	if err != nil {
@@ -701,6 +701,8 @@ func (handler *Handler) requestLifecycle(ctx context.Context, payload interactio
 	typeName := domain.CommandSleepSession
 	if action == "wake" {
 		typeName = domain.CommandWakeSession
+	} else if action == "restart" {
+		typeName = domain.CommandRestartSession
 	} else if action == "archive" {
 		typeName = domain.CommandArchiveSession
 	} else if action == "restore" {
@@ -709,6 +711,9 @@ func (handler *Handler) requestLifecycle(ctx context.Context, payload interactio
 		typeName = domain.CommandDestroySession
 	}
 	if err := handler.service.RequestLifecycle(ctx, appsession.LifecycleCommand{Actor: actor, Roles: roles, SessionID: sessionID, GuildID: payload.GuildID, ChannelID: payload.ChannelID, CommandID: payload.ID, CorrelationID: correlationID, IdempotencyKey: "discord:" + payload.ID, CommandType: typeName, CanManageGuild: payload.memberCanManageGuild()}); err != nil {
+		if action == "restart" && errors.Is(err, domain.ErrInvalidTransition) {
+			return "", newUserError("Restart requires a running or idle game server with no other operation in progress. Check `/rb status`; use `/rb start` if the server is sleeping.")
+		}
 		return "", err
 	}
 	message := fmt.Sprintf("**%s request accepted**\nUse `/rb status` to follow progress.", strings.ToUpper(action[:1])+action[1:])
@@ -1377,7 +1382,7 @@ func sessionListStates(filter string) ([]domain.LifecycleState, string, error) {
 	case "ready":
 		return []domain.LifecycleState{domain.StateReady}, "Ready", nil
 	case "starting":
-		return []domain.LifecycleState{domain.StateWaking, domain.StateRestoring}, "Starting", nil
+		return []domain.LifecycleState{domain.StateWaking, domain.StateRestoring, domain.StateRestarting}, "Starting", nil
 	case "running":
 		return []domain.LifecycleState{domain.StateRunning, domain.StateIdle}, "Running", nil
 	case "sleeping":

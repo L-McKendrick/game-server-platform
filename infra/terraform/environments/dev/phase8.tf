@@ -21,7 +21,8 @@ locals {
       Fail     = { Type = "Task", Resource = "arn:aws:states:::lambda:invoke", Parameters = { FunctionName = aws_lambda_function.sleepwake_worker.function_name, Payload = { action = "fail", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id", "error_code.$" = "$.failure.Error", "error_message.$" = "$.failure.Cause" } }, End = true }
     } })
     WakeSession = jsonencode({ StartAt = "Dispatch", States = {
-      Dispatch                  = { Type = "Task", Resource = "arn:aws:states:::lambda:invoke", Parameters = { FunctionName = aws_lambda_function.sleepwake_worker.function_name, Payload = { action = "dispatch", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }, ResultPath = "$.stage", Retry = [local.lambda_transient_retry], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }], Next = "WaitForEC2" }
+      Dispatch                  = { Type = "Task", Resource = "arn:aws:states:::lambda:invoke", Parameters = { FunctionName = aws_lambda_function.sleepwake_worker.function_name, Payload = { action = "dispatch", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }, ResultPath = "$.stage", Retry = [local.lambda_transient_retry], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }], Next = "DispatchResult" }
+      DispatchResult            = { Type = "Choice", Choices = [{ And = [{ Variable = "$.stage.Payload.restart", IsPresent = true }, { Variable = "$.stage.Payload.restart", BooleanEquals = true }], Next = "DispatchContent" }], Default = "WaitForEC2" }
       WaitForEC2                = { Type = "Wait", Seconds = 15, Next = "ObserveEC2" }
       ObserveEC2                = { Type = "Task", Resource = "arn:aws:states:::lambda:invoke", Parameters = { FunctionName = aws_lambda_function.sleepwake_worker.function_name, Payload = { action = "observe", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }, ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.stage", Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }], Next = "EC2Ready" }
       EC2Ready                  = { Type = "Choice", Choices = [{ Variable = "$.stage.result.succeeded", BooleanEquals = true, Next = "InitializeManagedAttempts" }], Default = "WaitForEC2" }
@@ -53,7 +54,7 @@ locals {
       ObserveHealth              = { Type = "Task", Resource = "arn:aws:states:::lambda:invoke", Parameters = { FunctionName = aws_lambda_function.sleepwake_worker.function_name, Payload = { action = "observe_health", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id", "command_id.$" = "$.health.result.command_id" } }, ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.health", Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }], Next = "HealthResult" }
       HealthResult               = { Type = "Choice", Choices = [{ Variable = "$.health.result.succeeded", BooleanEquals = true, Next = "Complete" }, { Variable = "$.health.result.done", BooleanEquals = true, Next = "HealthFailed" }], Default = "WaitForHealth" }
       HealthFailed               = { Type = "Pass", Parameters = { "Error.$" = "$.health.result.error_code", "Cause.$" = "$.health.result.error_message" }, ResultPath = "$.failure", Next = "DispatchRollback" }
-      Complete                   = { Type = "Task", Resource = "arn:aws:states:::lambda:invoke", Parameters = { FunctionName = aws_lambda_function.sleepwake_worker.function_name, Payload = { action = "complete", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }, End = true }
+      Complete                   = { Type = "Task", Resource = "arn:aws:states:::lambda:invoke", Parameters = { FunctionName = aws_lambda_function.sleepwake_worker.function_name, Payload = { action = "complete", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }, Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], End = true }
       DispatchRollback           = { Type = "Task", Resource = "arn:aws:states:::lambda:invoke", Parameters = { FunctionName = aws_lambda_function.sleepwake_worker.function_name, Payload = { action = "dispatch_rollback", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }, ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.rollback", Retry = [local.lambda_transient_retry], Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.rollback_failure", Next = "Fail" }], Next = "RollbackDispatched" }
       RollbackDispatched         = { Type = "Choice", Choices = [{ Variable = "$.rollback.result.succeeded", BooleanEquals = true, Next = "Fail" }], Default = "InitializeRollbackAttempts" }
       InitializeRollbackAttempts = { Type = "Pass", Result = 0, ResultPath = "$.rollback_attempt", Next = "WaitForRollback" }
@@ -103,7 +104,7 @@ data "aws_iam_policy_document" "sleepwake_worker" {
     }
   }
   statement {
-    actions   = ["ssm:GetCommandInvocation"]
+    actions   = ["ssm:GetCommandInvocation", "ssm:ListCommands"]
     resources = ["*"]
   }
   statement {

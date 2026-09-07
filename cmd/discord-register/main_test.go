@@ -67,7 +67,7 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAdminMenu(t *testing.T
 	}
 	targeting := map[string]bool{
 		"status": true, "setup": true, "edit": true,
-		"start": true, "sleep": true, "archive": true, "restore": true, "terminate": true,
+		"start": true, "sleep": true, "restart": true, "archive": true, "restore": true, "terminate": true,
 	}
 	for _, subcommand := range received[0].Options {
 		if subcommand.Name == "wake" {

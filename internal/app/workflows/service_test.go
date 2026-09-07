@@ -514,3 +514,35 @@ func workflowCommand(now time.Time) domain.CommandEnvelope {
 		Parameters: map[string]string{},
 	}
 }
+
+func TestStart_AllowsGuildAdministratorForRestartWorkflow(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC)
+	repository := seedRunningWorkflowRepository(t, now)
+	starter := &workflowStarter{arn: "arn:aws:states:us-west-2:123456789012:execution:SleepSession:command-admin"}
+	service, err := NewService(repository, repository, starter, rejectAuthorizer{}, &workflowIDs{ids: []string{"workflow-start-event"}}, workflowClock{now}, 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := domain.CommandEnvelope{
+		SchemaVersion: 1, CommandID: "command-admin", CommandType: domain.CommandRestartSession, RequestedAt: now,
+		Actor:     domain.CommandActor{DiscordUserID: "admin-1", GuildID: "guild-1", ChannelID: "channel-1", CanManageGuild: true},
+		SessionID: "running-session", IdempotencyKey: "discord:command-admin", CorrelationID: "correlation-admin", Parameters: map[string]string{},
+	}
+	command.Parameters = map[string]string{domain.ServerConfigModeParameter: domain.ServerConfigModeCustom, domain.ServerConfigRevisionParameter: "1", domain.ServerConfigSHAParameter: strings.Repeat("a", 64), domain.ServerConfigObjectParameter: "guilds/guild-1/server-config/revisions/000001-" + strings.Repeat("a", 64) + "/server.cfg"}
+	workflow, err := service.Start(context.Background(), command)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if workflow.Type != domain.RestartWorkflowType || starter.calls != 1 {
+		t.Fatalf("workflow = %#v, starter calls = %d", workflow, starter.calls)
+	}
+	stored, err := repository.Get(context.Background(), command.SessionID)
+	if err != nil || stored.ServerConfigRevision != 1 || stored.ServerConfigObjectKey != command.Parameters[domain.ServerConfigObjectParameter] {
+		t.Fatalf("settings snapshot=%#v err=%v", stored, err)
+	}
+	replayed, err := service.Start(context.Background(), command)
+	if err != nil || replayed.ID != workflow.ID || starter.calls != 1 {
+		t.Fatalf("replay=%#v err=%v calls=%d", replayed, err, starter.calls)
+	}
+}

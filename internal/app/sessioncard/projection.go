@@ -548,6 +548,8 @@ func LifecycleLabel(state domain.LifecycleState) string {
 		return "Setting up"
 	case domain.StateReady:
 		return "Ready"
+	case domain.StateRestarting:
+		return "Restarting"
 	case domain.StateWaking, domain.StateRestoring:
 		return "Starting"
 	case domain.StateRunning, domain.StateIdle:
@@ -597,7 +599,7 @@ func stageLabel(session domain.Session) string {
 		return "Infrastructure"
 	case domain.StateBootstrapping, domain.StateInstalling:
 		return "Game and content setup"
-	case domain.StateReady, domain.StateWaking, domain.StateRestoring:
+	case domain.StateReady, domain.StateWaking, domain.StateRestoring, domain.StateRestarting:
 		return "Health verification"
 	case domain.StateRunning, domain.StateIdle:
 		return "Playable"
@@ -616,6 +618,8 @@ func operationLabel(value string) string {
 		return "Setting up game and content"
 	case domain.SleepWorkflowType:
 		return "Putting server to sleep"
+	case domain.RestartWorkflowType:
+		return "Restarting game server"
 	case domain.WakeWorkflowType:
 		return "Waking server"
 	case domain.ArchiveWorkflowType:

@@ -168,10 +168,10 @@ func sessionNextAction(session domain.Session) string {
 		next = "use `/rb status` for connection details or `/rb sleep` when the ready server is no longer needed."
 	case domain.StateValidating:
 		next = "use `/rb status` to follow the accepted start request; no second operation is needed."
-	case domain.StateProvisioning, domain.StateBootstrapping, domain.StateInstalling, domain.StateWaking, domain.StateRestoring:
+	case domain.StateProvisioning, domain.StateBootstrapping, domain.StateInstalling, domain.StateWaking, domain.StateRestoring, domain.StateRestarting:
 		next = "use `/rb status` to follow the current stage. No second operation is needed."
 	case domain.StateRunning, domain.StateIdle:
-		next = "use `/rb status` for live details, `/rb edit` to change mods or mission files, or `/rb sleep` when the server is no longer needed."
+		next = "use `/rb status` for live details, `/rb edit` to change mods or mission files, `/rb restart` to apply pending changes immediately, or `/rb sleep` when the server is no longer needed."
 	case domain.StateStopping:
 		next = "use `/rb status` until the stop completes, then `/rb start` when the retained server is needed again."
 	case domain.StateSleeping, domain.StateWarning1, domain.StateWarning2:

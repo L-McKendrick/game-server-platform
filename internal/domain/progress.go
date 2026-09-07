@@ -75,6 +75,7 @@ var workflowMilestoneSets = map[string][]ProgressMilestone{
 	SleepWorkflowType: {
 		ProgressAccepted, ProgressInstanceStopped, ProgressCompleted,
 	},
+	RestartWorkflowType: {ProgressAccepted, ProgressModsApplied, ProgressServiceStarted, ProgressHealthVerification, ProgressCompleted},
 	WakeWorkflowType: {
 		ProgressAccepted, ProgressComputeReady, ProgressModsApplied,
 		ProgressServiceStarted, ProgressHealthVerification, ProgressCompleted,

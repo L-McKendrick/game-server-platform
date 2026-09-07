@@ -208,7 +208,7 @@ func (session *Session) FailActiveWorkflowForReconciliation(workflowID string, n
 		return session.FailInfrastructureProvisioning(workflowID, now)
 	case BootstrapWorkflowType:
 		return session.FailBootstrap(workflowID, now)
-	case SleepWorkflowType, WakeWorkflowType:
+	case SleepWorkflowType, WakeWorkflowType, RestartWorkflowType:
 		return session.FailSleepWake(workflowID, now)
 	case ArchiveWorkflowType:
 		return session.FailArchive(workflowID, now)

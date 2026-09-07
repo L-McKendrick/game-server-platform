@@ -46,6 +46,7 @@ type TaskRequest struct {
 	ErrorMessage  string `json:"error_message,omitempty"`
 }
 type TaskResult struct {
+	Restart      bool   `json:"restart"`
 	SessionID    string `json:"session_id"`
 	WorkflowID   string `json:"workflow_id"`
 	State        string `json:"state"`
@@ -111,6 +112,9 @@ func (s *Service) Handle(ctx context.Context, r TaskRequest) (TaskResult, error)
 	case ActionPrepare:
 		return result(session, wf), nil
 	case ActionDispatch:
+		if wf.Type == domain.RestartWorkflowType {
+			return result(session, wf), nil
+		}
 		if wf.Type == domain.SleepWorkflowType {
 			err = s.compute.StopInstance(ctx, session.Infrastructure.InstanceID)
 		} else {
@@ -159,9 +163,12 @@ func (s *Service) Handle(ctx context.Context, r TaskRequest) (TaskResult, error)
 		out := result(session, wf)
 		out.CommandID = r.CommandID
 		out.Done = status.Status == "Success" || status.Status == "Failed" || status.Status == "TimedOut" || status.Status == "Cancelled"
-		out.Succeeded = status.Status == "Success" && status.Observation.Classify(session.TeamSpeakEnabled) == domain.HealthHealthy
+		out.Succeeded = status.Status == "Success" && status.Observation.Classify(session.TeamSpeakEnabled && wf.Type != domain.RestartWorkflowType) == domain.HealthHealthy
 		if out.Done && !out.Succeeded {
 			out.ErrorCode = "ERR_WAKE_HEALTH"
+			if wf.Type == domain.RestartWorkflowType {
+				out.ErrorCode = "ERR_RESTART_FAILED"
+			}
 			out.ErrorMessage = bounded(status.ErrorMessage, "post-wake health check failed")
 		}
 		return out, nil
@@ -178,7 +185,7 @@ func (s *Service) dispatchContent(ctx context.Context, session domain.Session, w
 	out := result(session, wf)
 	hasMissions := len(session.PendingWorkshopMissionItemIDs()) > 0
 	hasMods := session.HasApplyingPresetRevision(wf.ID)
-	if !hasMissions && !hasMods {
+	if !hasMissions && !hasMods && wf.Type != domain.RestartWorkflowType {
 		if wf.Type == domain.WakeWorkflowType && session.Progress.Milestone == domain.ProgressModsApplied {
 			updated, err := s.skipProgress(ctx, session, wf, domain.ProgressModsApplied, domain.ProgressServiceStarted)
 			if err != nil {
@@ -190,7 +197,7 @@ func (s *Service) dispatchContent(ctx context.Context, session domain.Session, w
 		out.Done, out.Succeeded = true, true
 		return out, nil
 	}
-	if wf.Type != domain.WakeWorkflowType {
+	if wf.Type != domain.WakeWorkflowType && wf.Type != domain.RestartWorkflowType {
 		return TaskResult{}, fmt.Errorf("%w: mod revision dispatch requires a wake workflow", domain.ErrInvalidTransition)
 	}
 	if s.contentRunner == nil {
@@ -206,7 +213,7 @@ func (s *Service) dispatchContent(ctx context.Context, session domain.Session, w
 
 func (s *Service) observeContent(ctx context.Context, session domain.Session, wf domain.Workflow, commandID string) (TaskResult, error) {
 	out := result(session, wf)
-	if len(session.PendingWorkshopMissionItemIDs()) == 0 && !session.HasApplyingPresetRevision(wf.ID) {
+	if wf.Type != domain.RestartWorkflowType && len(session.PendingWorkshopMissionItemIDs()) == 0 && !session.HasApplyingPresetRevision(wf.ID) {
 		out.Done, out.Succeeded = true, true
 		return out, nil
 	}
@@ -250,7 +257,7 @@ func (s *Service) observeMods(ctx context.Context, session domain.Session, wf do
 
 func (s *Service) dispatchRollback(ctx context.Context, session domain.Session, wf domain.Workflow) (TaskResult, error) {
 	out := result(session, wf)
-	if !session.HasApplyingPresetRevision(wf.ID) {
+	if wf.Type == domain.RestartWorkflowType || !session.HasApplyingPresetRevision(wf.ID) {
 		out.Done, out.Succeeded = true, true
 		return out, nil
 	}
@@ -367,7 +374,11 @@ func (s *Service) complete(ctx context.Context, session domain.Session, wf domai
 		if observation.State != "running" {
 			return TaskResult{}, fmt.Errorf("instance is not running")
 		}
-		err = session.CompleteWakeWithWorkshopMissions(wf.ID, observation.PublicIPv4, missions, now)
+		if wf.Type == domain.RestartWorkflowType {
+			err = session.CompleteRestart(wf.ID, missions, now)
+		} else {
+			err = session.CompleteWakeWithWorkshopMissions(wf.ID, observation.PublicIPv4, missions, now)
+		}
 	}
 	if err != nil {
 		return TaskResult{}, err
@@ -376,6 +387,9 @@ func (s *Service) complete(ctx context.Context, session domain.Session, wf domai
 	wf.CurrentStage = string(session.LifecycleState)
 	wf.CompletedAt = now
 	eventType := domain.EventSessionSleeping
+	if wf.Type == domain.RestartWorkflowType {
+		eventType = domain.EventSessionRestarted
+	}
 	if wf.Type == domain.WakeWorkflowType {
 		eventType = domain.EventSessionWoken
 	}
@@ -400,8 +414,12 @@ func (s *Service) fail(ctx context.Context, session domain.Session, wf domain.Wo
 	if err := session.FailPresetRevisionApplication(wf.ID, r.ErrorMessage, now); err != nil {
 		return TaskResult{}, err
 	}
-	if err := failurestate.Record(&session, wf, r.ErrorCode, "ERR_SLEEP_WAKE_FAILED", wf.CurrentStage,
-		"The sleep or wake operation stopped before its target state was verified.", failurestate.Impact(session, false), now); err != nil {
+	fallback := "ERR_SLEEP_WAKE_FAILED"
+	if wf.Type == domain.RestartWorkflowType {
+		fallback = "ERR_RESTART_FAILED"
+	}
+	if err := failurestate.Record(&session, wf, r.ErrorCode, fallback, wf.CurrentStage,
+		"The operation stopped before game-server health was verified.", failurestate.Impact(session, false), now); err != nil {
 		return TaskResult{}, err
 	}
 	if err := session.FailSleepWake(wf.ID, now); err != nil {
@@ -409,7 +427,7 @@ func (s *Service) fail(ctx context.Context, session domain.Session, wf domain.Wo
 	}
 	wf.Status = domain.WorkflowFailed
 	wf.CurrentStage = "Failed"
-	wf.ErrorCode = bounded(r.ErrorCode, "ERR_SLEEP_WAKE_FAILED")
+	wf.ErrorCode = bounded(r.ErrorCode, fallback)
 	wf.ErrorMessage = bounded(r.ErrorMessage, "sleep/wake workflow failed")
 	wf.CompletedAt = now
 	id, err := s.ids.New(now)
@@ -435,7 +453,13 @@ func (s *Service) load(ctx context.Context, r TaskRequest) (domain.Session, doma
 	if err != nil {
 		return domain.Session{}, domain.Workflow{}, err
 	}
-	if session.ActiveWorkflowID != wf.ID || (wf.Type != domain.SleepWorkflowType && wf.Type != domain.WakeWorkflowType) {
+	if wf.Type != domain.SleepWorkflowType && wf.Type != domain.WakeWorkflowType && wf.Type != domain.RestartWorkflowType {
+		return domain.Session{}, domain.Workflow{}, domain.ErrConflict
+	}
+	if (r.Action == ActionComplete && wf.Status == domain.WorkflowSucceeded) || (r.Action == ActionFail && wf.Status == domain.WorkflowFailed) {
+		return session, wf, nil
+	}
+	if session.ActiveWorkflowID != wf.ID || session.ActiveWorkflowType != wf.Type {
 		return domain.Session{}, domain.Workflow{}, domain.ErrConflict
 	}
 	return session, wf, nil
@@ -502,7 +526,7 @@ func (s *Service) setProgressState(ctx context.Context, session domain.Session, 
 	return session, nil
 }
 func result(s domain.Session, w domain.Workflow) TaskResult {
-	return TaskResult{SessionID: s.ID, WorkflowID: w.ID, State: string(s.LifecycleState)}
+	return TaskResult{SessionID: s.ID, WorkflowID: w.ID, State: string(s.LifecycleState), Restart: w.Type == domain.RestartWorkflowType}
 }
 func bounded(v, f string) string {
 	v = strings.TrimSpace(v)

@@ -726,7 +726,7 @@ func (session *Session) UpdateModOptions(values []string, preparePreset, prepare
 		return fmt.Errorf("%w: wait for the active lifecycle operation before changing mods", ErrWorkflowLocked)
 	}
 	switch session.LifecycleState {
-	case StateDeleting, StateDeleted, StateArchiving, StateDestroying, StateRestoring, StateWaking, StateStopping:
+	case StateDeleting, StateDeleted, StateArchiving, StateDestroying, StateRestoring, StateWaking, StateRestarting, StateStopping:
 		return fmt.Errorf("%w: mods cannot be changed in lifecycle state %s", ErrInvalidTransition, session.LifecycleState)
 	}
 	normalized, err := NormalizeCreatorDLCs(values)

@@ -2472,6 +2472,10 @@ func TestHandlerUnifiedStartSleepingAndArchived(t *testing.T) {
 		state                             domain.LifecycleState
 		actor, permissions, command, want string
 	}{
+		{"owner restart", domain.StateRunning, "owner-1", "0", "restart", "Restart request accepted"},
+		{"admin restart", domain.StateIdle, "admin-1", "32", "restart", "Restart request accepted"},
+		{"sleeping restart", domain.StateSleeping, "owner-1", "0", "restart", "Restart requires"},
+		{"unauthorized restart", domain.StateRunning, "other-1", "0", "restart", "Session not found"},
 		{"owner wake", domain.StateSleeping, "owner-1", "0", "start", "Start request accepted"},
 		{"admin wake", domain.StateSleeping, "admin-1", "32", "start", "Start request accepted"},
 		{"nonowner denied", domain.StateSleeping, "other-1", "0", "start", "Session not found"},

@@ -93,7 +93,7 @@ func build(ctx context.Context) (*handler, error) {
 		repository, repository,
 		sfnworkflow.New(sfn.NewFromConfig(awsConfig), map[string]string{
 			"ProvisionSession": provisionARN, domain.BootstrapWorkflowType: bootstrapARN,
-			domain.SleepWorkflowType: sleepARN, domain.WakeWorkflowType: wakeARN,
+			domain.SleepWorkflowType: sleepARN, domain.WakeWorkflowType: wakeARN, domain.RestartWorkflowType: wakeARN,
 			domain.ArchiveWorkflowType:     archiveARN,
 			domain.RestoreWorkflowType:     restoreARN,
 			domain.TerminationWorkflowType: terminateARN,

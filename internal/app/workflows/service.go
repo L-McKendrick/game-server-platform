@@ -111,7 +111,7 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 	}
 	workflowID := command.CommandID
 	expectedVersion := session.Version
-	if !trustedContinuation && (workflowType == domain.ProvisionWorkflowType || workflowType == domain.BootstrapWorkflowType) {
+	if !trustedContinuation && (workflowType == domain.ProvisionWorkflowType || workflowType == domain.BootstrapWorkflowType || workflowType == domain.RestartWorkflowType) {
 		if err := applyServerConfigSnapshot(&session, command); err != nil {
 			return domain.Workflow{}, err
 		}
@@ -207,7 +207,7 @@ func (service *Service) validateBootstrapContinuation(ctx context.Context, comma
 }
 
 func isOwnerOrAdminLifecycle(workflowType string) bool {
-	return workflowType == domain.SleepWorkflowType || workflowType == domain.WakeWorkflowType
+	return workflowType == domain.SleepWorkflowType || workflowType == domain.WakeWorkflowType || workflowType == domain.RestartWorkflowType
 }
 
 func acquireWorkflowLock(session *domain.Session, workflowID string, workflowType string, lease time.Duration, now time.Time) error {
@@ -219,6 +219,9 @@ func acquireWorkflowLock(session *domain.Session, workflowID string, workflowTyp
 	}
 	if workflowType == domain.SleepWorkflowType {
 		return session.BeginSleep(workflowID, lease, now)
+	}
+	if workflowType == domain.RestartWorkflowType {
+		return session.BeginRestart(workflowID, lease, now)
 	}
 	if workflowType == domain.WakeWorkflowType {
 		return session.BeginWake(workflowID, lease, now)
@@ -273,6 +276,8 @@ func (service *Service) failStart(ctx context.Context, session domain.Session, w
 	var releaseErr error
 	if workflow.Type == "ProvisionSession" {
 		releaseErr = session.AbortProvisioningWorkflowStart(workflow.ID, now)
+	} else if workflow.Type == domain.RestartWorkflowType {
+		releaseErr = session.FailSleepWake(workflow.ID, now)
 	} else if workflow.Type == domain.ArchiveWorkflowType {
 		releaseErr = session.AbortArchiveWorkflowStart(workflow.ID, now)
 	} else if workflow.Type == domain.RestoreWorkflowType {

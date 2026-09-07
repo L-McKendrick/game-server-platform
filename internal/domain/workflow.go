@@ -115,6 +115,7 @@ const (
 	CommandBootstrapServer  = "BootstrapGameServer"
 	CommandSleepSession     = "SleepSession"
 	CommandWakeSession      = "WakeSession"
+	CommandRestartSession   = "RestartSession"
 	CommandArchiveSession   = "ArchiveSession"
 	CommandRestoreSession   = "RestoreSession"
 	CommandDestroySession   = "DestroySession"
@@ -126,6 +127,7 @@ var commandWorkflowTypes = map[string]string{
 	CommandBootstrapServer:  "BootstrapGameServer",
 	CommandSleepSession:     "SleepSession",
 	CommandWakeSession:      "WakeSession",
+	CommandRestartSession:   RestartWorkflowType,
 	CommandArchiveSession:   "ArchiveSession",
 	CommandRestoreSession:   "RestoreSession",
 	CommandDestroySession:   "DestroySession",

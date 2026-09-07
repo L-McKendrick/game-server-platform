@@ -494,7 +494,7 @@ func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleC
 	if err != nil {
 		return err
 	}
-	canManageLifecycle := command.CanManageGuild && (command.CommandType == domain.CommandSleepSession || command.CommandType == domain.CommandWakeSession)
+	canManageLifecycle := command.CanManageGuild && (command.CommandType == domain.CommandSleepSession || command.CommandType == domain.CommandWakeSession || command.CommandType == domain.CommandRestartSession)
 	if err := authorizeLifecycleActor(command.Actor, session, canManageLifecycle); err != nil {
 		return err
 	}
@@ -516,7 +516,10 @@ func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleC
 	if command.CommandType == domain.CommandRestoreSession && !session.CanRestore() {
 		return fmt.Errorf("session cannot restore now: %w", domain.ErrInvalidTransition)
 	}
-	if command.CommandType != domain.CommandSleepSession && command.CommandType != domain.CommandWakeSession && command.CommandType != domain.CommandRestoreSession {
+	if command.CommandType == domain.CommandRestartSession && !session.CanRestart() {
+		return fmt.Errorf("session cannot restart now: %w", domain.ErrInvalidTransition)
+	}
+	if command.CommandType != domain.CommandRestartSession && command.CommandType != domain.CommandSleepSession && command.CommandType != domain.CommandWakeSession && command.CommandType != domain.CommandRestoreSession {
 		return fmt.Errorf("unsupported lifecycle command")
 	}
 	if command.CommandType == domain.CommandWakeSession {
@@ -524,7 +527,14 @@ func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleC
 			return err
 		}
 	}
-	return service.commandQueue.Enqueue(ctx, domain.CommandEnvelope{SchemaVersion: 1, CommandID: strings.TrimSpace(command.CommandID), CommandType: command.CommandType, RequestedAt: service.clock.Now().UTC(), Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID), Roles: append([]string(nil), command.Roles...), CanManageGuild: command.CanManageGuild}, SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: map[string]string{}})
+	parameters := map[string]string{}
+	if command.CommandType == domain.CommandRestartSession {
+		parameters, err = service.serverConfigParameters(ctx, session)
+		if err != nil {
+			return err
+		}
+	}
+	return service.commandQueue.Enqueue(ctx, domain.CommandEnvelope{SchemaVersion: 1, CommandID: strings.TrimSpace(command.CommandID), CommandType: command.CommandType, RequestedAt: service.clock.Now().UTC(), Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID), Roles: append([]string(nil), command.Roles...), CanManageGuild: command.CanManageGuild}, SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: parameters})
 }
 
 // RequestStart validates the synchronous boundary and queues a normalized
@@ -569,20 +579,9 @@ func (service *Service) RequestStart(ctx context.Context, command StartCommand) 
 	if err := service.repository.CheckCapacity(ctx, session.ID, activeSessionCapacity); err != nil {
 		return err
 	}
-	parameters := map[string]string{}
-	if service.serverConfigs != nil {
-		config, configErr := service.serverConfigs.GetGuildServerConfig(ctx, session.GuildID)
-		switch {
-		case errors.Is(configErr, domain.ErrNotFound), configErr == nil && !config.Active():
-			parameters[domain.ServerConfigModeParameter] = domain.ServerConfigModeGenerated
-		case configErr != nil:
-			return fmt.Errorf("read guild server configuration: %w", configErr)
-		default:
-			parameters[domain.ServerConfigModeParameter] = domain.ServerConfigModeCustom
-			parameters[domain.ServerConfigRevisionParameter] = strconv.FormatInt(config.Revision, 10)
-			parameters[domain.ServerConfigObjectParameter] = config.ObjectKey
-			parameters[domain.ServerConfigSHAParameter] = config.SHA256
-		}
+	parameters, err := service.serverConfigParameters(ctx, session)
+	if err != nil {
+		return err
 	}
 	envelope := domain.CommandEnvelope{
 		SchemaVersion: 1,
@@ -1770,4 +1769,23 @@ func (service *Service) newID(
 	}
 
 	return id, nil
+}
+
+func (service *Service) serverConfigParameters(ctx context.Context, session domain.Session) (map[string]string, error) {
+	parameters := map[string]string{}
+	if service.serverConfigs != nil {
+		config, configErr := service.serverConfigs.GetGuildServerConfig(ctx, session.GuildID)
+		switch {
+		case errors.Is(configErr, domain.ErrNotFound), configErr == nil && !config.Active():
+			parameters[domain.ServerConfigModeParameter] = domain.ServerConfigModeGenerated
+		case configErr != nil:
+			return nil, fmt.Errorf("read guild server configuration: %w", configErr)
+		default:
+			parameters[domain.ServerConfigModeParameter] = domain.ServerConfigModeCustom
+			parameters[domain.ServerConfigRevisionParameter] = strconv.FormatInt(config.Revision, 10)
+			parameters[domain.ServerConfigObjectParameter] = config.ObjectKey
+			parameters[domain.ServerConfigSHAParameter] = config.SHA256
+		}
+	}
+	return parameters, nil
 }
