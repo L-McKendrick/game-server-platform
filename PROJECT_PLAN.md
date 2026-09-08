@@ -431,6 +431,9 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **18.11.2** [x] Resolve button interactions through the direct claim while retaining a bounded legacy fallback that backfills claims for existing cards.
       - **18.11.3** [x] Add focused memory, DynamoDB, service, collision, legacy, and over-1,000-item regression coverage; refresh the handoff and commit without deploying.
 
+    - **18.12** [x] Correct the final restart mission review finding.
+      - **18.12.1** [x] Deploy accepted mission files before Workshop synchronization so new scenarios survive restart; cover current and legacy records with a reproducing shell regression, refresh documentation, and prepare the local review-fix commit without pushing or opening a PR.
+
 19. **Maximum Session Duration Guardrails — Pending**
     - **19.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
 

@@ -2,73 +2,53 @@
 
 ## State and Objective
 
-Phase 18 (Discord lifecycle UX and restart) is release-ready on
-`codex/discord-lifecycle-ux` after the full branch review. Next: review and merge
-the Phase 18 pull request, then start Phase 19 on a new branch.
+Phase 18 (Discord lifecycle UX and restart) is ready for PR review on
+`codex/discord-lifecycle-ux`. The final review correction is committed locally;
+per user instruction, do not push or create a PR. Next: user reviews the proposed
+PR title/description and chooses when to publish the branch.
 
 ## Current Handoff
 
-- `/rb start` provisions ready drafts and wakes sleeping sessions; `/rb wake`
-  is retired. `/rb restart` applies pending content/settings and restarts only
-  Arma while leaving EC2 and TeamSpeak running.
-- Creation supports off-by-default automatic setup and one best-effort initial
-  ready ping. Async Workshop requests now retain their bounded signed Discord
-  role context so the command worker can perform its normal authorization after
-  resolution instead of rejecting the internal start as `forbidden`.
-- The real SSM health adapter now accepts `RESTARTING`; without this correction,
-  deployed restarts would always have failed before their health probe.
-- Public cards show mission/player data only while active. Completed archives
-  use the compact bluish-gray title/description/active-modlist/time view, retain
-  no controls, preserve legacy fallbacks, and keep actionable restore errors.
-  `Show players` is now emitted only for `RUNNING` and `IDLE`; all setup,
-  transition, sleeping, archived, failed, and terminated cards omit it.
-  Successfully completed sleep cards omit the finished progress block while
-  `/rb status` retains its diagnostic history; in-flight and failed sleep
-  progress remains visible. Fully sleeping, archived, and terminated cards
-  retain no controls; transition and failure cards retain `Refresh`.
-- The review found no remaining authorization, lifecycle-lock, replay,
-  idempotency, failure-resolution, backward-compatibility, or deployment-scope
-  blocker. Automatic-start delivery remains bounded by normal queue retry/DLQ
-  behavior; ready-message delivery remains deliberately best effort with no
-  retry.
-- Validation passed with the installed Go toolchain: `go test ./...`, `go vet
-  ./...`, Lambda packaging, Terraform recursive formatting and development
-  validation, Git Bash syntax validation for the bootstrap script, and diff
-  checks. One initial timing-sensitive bootstrap sampler test failed during a
-  parallel run and passed on the focused and subsequent full runs.
-- Read-only live evidence from `test-47` confirmed Workshop resolution reached
-  `NEW` and queued automatic start, but the deployed command worker rejected the
-  old request as `forbidden` because it lacked roles. That already-queued legacy
-  request cannot be repaired by this deployment; run `/rb start` manually for
-  `test-47` after confirming its content remains accepted.
-- Read-only live evidence from `test-49` confirmed install telemetry persisted
-  and delivered `Arma 3 server files (42%)` on card revision 17. Percentage
-  updates follow the bounded bootstrap observation cadence (about two minutes
-  while installation is active); no telemetry defect was found. The same test
-  exposed the setup-card `Show players` defect corrected above.
-- Development command registration now rejects malformed snowflakes locally;
-  the handoff discovers the deployed non-secret application/guild IDs and uses
-  the secure prompting script instead of copyable placeholder values.
-- Live `test-50` button failures were caused by resolving opaque card tokens
-  through a guild-session scan that stopped after 1,000 of 2,012 metadata
-  items. Card delivery now atomically writes a direct token claim. Existing
-  cards use a one-time scan of up to 10,000 items and backfill the claim, so
-  `test-50` is repaired on its first button click after deployment.
-- Nothing was deployed, registered, restarted, or otherwise mutated in AWS or
-  Discord during this review.
+- Reviewed the branch against merge base `53373c028ce20904f5f79eabc1fe2ba0b5e1bf27`.
+  Corrected one confirmed defect: restart synchronized a new Workshop scenario
+  and then overwrote it with an older accepted file sharing its filename.
+  Accepted mission files/settings now deploy before pending Workshop content.
+- Added a shell regression using the actual restart block and mission deployment
+  code. Both manifest and legacy single-mission cases failed before the fix and
+  passed afterward; restart replay and TeamSpeak-preservation checks passed.
+- Go 1.26.5 validation passed: `go test -cover ./...`, `go vet ./...`,
+  `go build ./cmd/...`, and Lambda packaging. Terraform 1.15.8 recursive formatting
+  and development validation passed. No local C compiler was available; the
+  required GitHub CI race check remains the release gate.
+- Release behavior: `/rb start` handles ready drafts and sleeping sessions;
+  `/rb restart` applies content/settings while leaving EC2 and TeamSpeak running;
+  creation supports optional automatic setup and a best-effort initial ready ping.
+  Public cards hide inapplicable mission/player/progress/control information.
+  Direct card-token claims remove the normal guild-scan lookup dependency.
+- Updated the restart runbook and roadmap. Nothing was deployed, registered,
+  restarted, pushed, or opened as a PR during this review.
+
+## Important Operator Attention
+
+- Prior live evidence showed `test-47` needs manual `/rb start` after its content
+  acceptance is confirmed. Default: do not redrive its old role-less message.
+- Verify both controls on the existing `test-50` card after deployment to exercise
+  legacy token backfill, then repeat a click to check the direct lookup path.
+- Live restart acceptance interrupts players. Default: do not run it without
+  explicit approval for a disposable session.
 
 ## Commands to Apply Current Changes
 
-Run from the repository root. Package the changed Lambda archives, then create
-and review a fresh saved Terraform plan. Preserve all existing plan files and do
-not change provisioning or budget settings.
+Run from the repository root. Lambda archives were already packaged with Go
+1.26.5 during this review; no further packaging is needed for this checkout.
+The restart script has a new content-addressed S3 key and Terraform updates the
+workers' script references. Review the full release plan, preserving existing
+plan files and provisioning/budget settings.
 
 ```powershell
-$env:GOTOOLCHAIN = "go1.26.5"
 $env:AWS_PROFILE = "game-server-dev"
-./scripts/package-discord-lambda.ps1
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$phase18Plan = "phase18-release-review-$timestamp.tfplan"
+$phase18Plan = "phase18-restart-mission-review-$timestamp.tfplan"
 terraform -chdir=infra/terraform/environments/dev plan "-out=$phase18Plan"
 terraform -chdir=infra/terraform/environments/dev show $phase18Plan
 ```
@@ -87,21 +67,10 @@ $discordSecret = $null
 $discordSecretJson = $null
 ```
 
-Registration is required because Phase 18 removes `/rb wake` and adds `/rb
-restart`. Verify automatic setup through a new Workshop item/collection, one
-opted-in ready ping, `/rb sleep` followed by `/rb start`, no-change and
-pending-change restart health, download-percentage updates across at least two
-bootstrap observations, lifecycle-specific cards/controls (including no `Show
-players` before `RUNNING` or while sleeping), no completed progress block after
-sleep, no `Refresh` after fully sleeping or archived, and manual `/rb start`
-recovery for `test-47`. Click both `Show players` and `Refresh` on the existing
-`test-50` card to confirm legacy claim backfill, then repeat a click to confirm
-the direct lookup path.
-
-## Important Operator Attention
-
-- `test-47` needs a manual `/rb start` after content acceptance is confirmed.
-  Default action: do not redrive or alter its old role-less queue message.
-- Restart live acceptance mutates a running game service and may interrupt
-  players. Default action: do not run it without explicit approval for a
-  disposable session.
+Registration remains required for the Phase 18 release, which removes `/rb wake`
+and adds `/rb restart`; this review correction introduces no further command
+changes. Verify optional automatic setup/ready ping, sleep followed by start,
+lifecycle-specific cards and controls, and legacy card-token backfill. With live
+restart approval, verify no-change and pending-content restarts and an updated
+Workshop scenario retaining its new checksum when it shares the old filename.
+Confirm unchanged EC2/TeamSpeak and promotion only after health verification.

@@ -16,9 +16,11 @@ existing content/service/health milestones.
 The RestartSession workflow uses the existing wake state machine and sleep/wake
 worker. Its initial branch bypasses EC2 control and wake waits. The bounded SSM
 host path stops Arma before changing active content, reuses validated staged
-mods, installs genuinely pending Workshop scenarios, applies server settings,
-and restarts only Arma. Accepted mission files already matching their checksum
-are reused; no new mission selection operation is introduced. Without pending
+mods, applies accepted mission files and server settings before synchronizing
+pending Workshop scenarios, and restarts only Arma. Synchronizing last ensures
+an updated scenario with the same filename replaces its previously accepted
+file, including legacy single-mission records. Accepted files matching their
+checksum are reused; no new mission selection operation is introduced. Without pending
 downloads it skips Steam authorization enrollment/login. Missing or invalid
 staged content fails safely rather than declaring success.
 
@@ -47,7 +49,9 @@ register the updated `/rb` commands. Keep provisioning and budget settings
 unchanged. Use the commands in CURRENT_WORK.md for the current release.
 
 With a live restart explicitly approved, verify a no-change restart and one with
-pending client/server mods or server settings. Confirm one game-server restart,
-unchanged EC2 instance and TeamSpeak process, truthful progress/failure output,
+pending client/server mods or server settings. Confirm one game-server restart
+and that a refreshed Workshop scenario with the same filename retains its
+new content on disk after restart, matching the newly accepted mission record.
+Verify the unchanged EC2 instance and TeamSpeak process, truthful progress/failure output,
 and promotion only after health verification. Live acceptance is separate from
 offline unit, shell, packaging, and Terraform validation.

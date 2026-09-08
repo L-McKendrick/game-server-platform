@@ -954,9 +954,10 @@ if [ "$GSP_OPERATION_MODE" = restart ]; then
   mkdir -p "$STATE_DIR" "$LOG_DIR"
   if [ "${RESTART_DOWNLOADS:-false}" = true ]; then begin_steam_auth; fi
   systemctl stop arma3-server.service
+  # Deploy accepted files first so pending Workshop replacements win by filename.
+  deploy_content
   sync_workshop_content
   if $STEAM_AUTH_ACTIVE; then persist_steam_auth; cleanup_steam_auth; fi
-  deploy_content
   checkpoint SERVICE_STARTED
   launch_and_verify
   touch "$restart_marker"

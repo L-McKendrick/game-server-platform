@@ -103,3 +103,55 @@ func TestRestartReusesPreviouslyDispatchedCommand(t *testing.T) {
 		t.Fatalf("id=%s err=%v sent=%#v", id, err, client.sent)
 	}
 }
+
+func TestRestartPreservesNewWorkshopMissionOverPreviouslyAcceptedFile(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "deploy", "bootstrap", "arma3-bootstrap.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := strings.ReplaceAll(string(source), "\r\n", "\n")
+	deployStart := strings.Index(s, "deploy_content() {")
+	restartStart := strings.Index(s, "if [ \"$GSP_OPERATION_MODE\" = restart ]; then\n  [ -d")
+	if deployStart < 0 || restartStart < 0 {
+		t.Fatal("restart shell boundaries missing")
+	}
+	deployEnd := strings.Index(s[deployStart:], "  safe_name=")
+	restartEnd := strings.Index(s[restartStart:], "if [ \"$GSP_OPERATION_MODE\" = workshop_sync ]; then")
+	if deployEnd < 0 || restartEnd < 0 {
+		t.Fatal("mission deployment shell boundaries missing")
+	}
+	bash, err := bashExecutable()
+	if err != nil {
+		t.Skip("bash unavailable")
+	}
+	for _, mode := range []string{"manifest", "legacy"} {
+		t.Run(mode, func(t *testing.T) {
+			harness := `set -Eeuo pipefail
+work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+ROOT="$work"; STATE_DIR="$work/state"; LOG_DIR="$work/log"; WORKFLOW_ID=restart-mission
+mkdir -p "$ROOT/arma3/mpmissions"; printf '#!/usr/bin/env bash\nexit 0\n' > "$ROOT/arma3/arma3server_x64"; chmod +x "$ROOT/arma3/arma3server_x64"
+printf old > "$work/accepted.pbo"
+MISSION_KEY=missions/scenario.Altis.pbo; MISSION_TEMPLATE=scenario.Altis
+MISSION_MANIFEST="$(printf '%s\tscenario.Altis.pbo\t%s' "$(sha256sum "$work/accepted.pbo" | cut -d' ' -f1)" "$MISSION_KEY")"
+if [ MODE = legacy ]; then MISSION_MANIFEST=''; fi
+GSP_OPERATION_MODE=restart; RESTART_DOWNLOADS=true; STEAM_AUTH_ACTIVE=false
+ASSETS_BUCKET=assets; AWS_REGION=test
+log(){ :; }; checkpoint(){ :; }; chown(){ :; }; systemctl(){ :; }
+begin_steam_auth(){ STEAM_AUTH_ACTIVE=true; }; persist_steam_auth(){ :; }; cleanup_steam_auth(){ STEAM_AUTH_ACTIVE=false; }
+aws(){ cp "$work/accepted.pbo" "$4"; }
+sync_workshop_content(){ printf new > "$ROOT/arma3/mpmissions/scenario.Altis.pbo"; }
+launch_and_verify(){ [ "$(cat "$ROOT/arma3/mpmissions/scenario.Altis.pbo")" = new ]; }
+` + s[deployStart:deployStart+deployEnd] + "}\n" + s[restartStart:restartStart+restartEnd]
+			harness = strings.ReplaceAll(harness, "[ MODE = legacy ]", "[ "+mode+" = legacy ]")
+			path := filepath.Join(t.TempDir(), "restart-mission.sh")
+			if err := os.WriteFile(path, []byte(harness), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if out, err := exec.CommandContext(ctx, bash, path).CombinedOutput(); err != nil {
+				t.Fatalf("restarted mission must contain the newly synchronized revision: %v: %s", err, out)
+			}
+		})
+	}
+}
