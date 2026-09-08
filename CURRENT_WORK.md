@@ -2,11 +2,11 @@
 
 ## State and Objective
 
-Phase 20 development is paused after 20.2 on
-`codex/phase-20-production-hardening`, as requested. Restore correctness and
-archived `/rb start` routing are implemented and offline-validated; the live
-archive/restore acceptance gate in 20.1.7 remains pending. The Phase 20 security
-review is complete. Do not begin 20.3 OIDC work without new user direction.
+Phase 20 development remains limited to restore acceptance and completed step
+20.2 on `codex/phase-20-production-hardening`. Test-52 exposed a fresh-host
+service-account ordering defect; the focused correction is implemented and
+offline-validated. The live archive/restore acceptance gate in 20.1.7 remains
+pending. Do not begin 20.3 OIDC work without new user direction.
 
 ## Current Handoff
 
@@ -20,6 +20,11 @@ review is complete. Do not begin 20.3 OIDC work without new user direction.
 - Archived `/rb start` now queues the existing owner-authorized restore command;
   `/rb restore` remains registered and supported. Help and lifecycle documents
   describe both paths.
+- Test-52 restore `1546824696438464522` failed on replacement instance
+  `i-0fcb93e5a1e34d129` because restore applied `steam:steam` ownership before
+  bootstrap created that service account. Restore now creates the existing
+  Steam and optional TeamSpeak accounts idempotently before extraction and
+  ownership. No new service, IAM permission, or workflow state was introduced.
 - Added TLS-only S3 bucket policies for Terraform state and session assets.
   Sleep/wake EC2 start/stop permissions now require exact Project and
   Environment resource tags; wildcard access remains only for Describe APIs.
@@ -40,41 +45,36 @@ review is complete. Do not begin 20.3 OIDC work without new user direction.
 - Phase 19 maximum-duration enforcement is still pending because Phase 20 was
   started out of order by explicit approval. Default: keep use non-production
   and manually supervised until Phase 19 is complete.
-- The test-44 restore correction is not live-accepted. A live exercise creates
-  billable replacement EC2/EBS resources and may affect a session. Default: do
-  not deploy or run it without explicit approval for a disposable archived
-  session.
+- The restore correction is not live-accepted. Test-52 retains running instance
+  `i-0fcb93e5a1e34d129` and its EBS volumes after the failed restore. Default:
+  stop the instance if validation will be delayed, deploy the correction through
+  a fresh reviewed plan, and retry only this disposable archived session.
 
 ## Commands to Apply Current Changes
 
 Run from the repository root. Lambda archives were packaged during validation.
-Create and review fresh plans for both state-bootstrap security and the
-development platform; preserve all existing user-owned plan files.
+Only the development restore-worker package changed; preserve all existing
+user-owned plan files.
 
 ```powershell
 $env:AWS_PROFILE = "game-server-dev"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$phase20BootstrapPlan = "phase20-tls-state-$timestamp.tfplan"
-$phase20DevPlan = "phase20-restore-security-$timestamp.tfplan"
-terraform -chdir=infra/terraform/bootstrap plan "-out=$phase20BootstrapPlan"
-terraform -chdir=infra/terraform/bootstrap show $phase20BootstrapPlan
-terraform -chdir=infra/terraform/environments/dev plan "-out=$phase20DevPlan"
-terraform -chdir=infra/terraform/environments/dev show $phase20DevPlan
+$test52RestorePlan = "test52-restore-account-fix-$timestamp.tfplan"
+./scripts/package-discord-lambda.ps1
+terraform -chdir=infra/terraform/environments/dev plan "-out=$test52RestorePlan"
+terraform -chdir=infra/terraform/environments/dev show $test52RestorePlan
 ```
 
-After approving both exact plans, in the same PowerShell session:
+After approving that exact plan, in the same PowerShell session:
 
 ```powershell
-terraform -chdir=infra/terraform/bootstrap apply $phase20BootstrapPlan
-terraform -chdir=infra/terraform/environments/dev apply $phase20DevPlan
+terraform -chdir=infra/terraform/environments/dev apply $test52RestorePlan
 aws lambda get-function-configuration --function-name game-server-platform-dev-restore-worker --region us-west-2 --query "{State:State,LastUpdateStatus:LastUpdateStatus,RevisionId:RevisionId}" --output table
 $workflowArns = terraform -chdir=infra/terraform/environments/dev output -json workflow_state_machine_arns | ConvertFrom-Json
 aws stepfunctions describe-state-machine --state-machine-arn $workflowArns.RestoreSession --region us-west-2 --query "{Status:status,RevisionId:revisionId}" --output table
 ```
 
-No Discord command registration is required because command definitions did
-not change. After separate approval, use a disposable archived session to run
-`/rb start`, confirm AWS CLI prerequisite success, archive restoration,
-bootstrap/health completion, workflow-lock release, and retained-resource truth
-on a forced terminal failure. Do not proceed to 20.3 after verification without
-new direction.
+No Discord command registration is required. After the reviewed apply, run
+`/rb start` for Test-52 and confirm restore extraction, bootstrap/health
+completion, workflow-lock release, and truthful retained-resource state. Do not
+proceed to 20.3 after verification without new direction.

@@ -449,6 +449,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **20.1.5** [x] Run proportional Go, packaging, and Terraform validation and record the deployment boundary.
       - **20.1.6** [x] Route `/rb start` for archived sessions through the existing restore workflow after offline restore validation, preserving authorization, capacity, pending-content, idempotency, and failure safeguards; retain `/rb restore` and update help and focused routing coverage.
       - **20.1.7** [ ] Deploy through fresh reviewed Terraform plans and perform a separately approved live archive/restore exercise before claiming live acceptance or completing the step.
+      - **20.1.8** [x] Create the existing bootstrap service accounts idempotently before restore applies extracted-file ownership, and add focused fresh-host regression coverage for Steam and optional TeamSpeak restores.
     - **20.2** [x] Complete the least-privilege and threat-model review across Discord, AWS, artifacts, workflows, and destructive lifecycle boundaries.
       - **20.2.1** [x] Inventory trust boundaries, protected data, external inputs, runtime and operator identities, and destructive operations.
       - **20.2.2** [x] Create a detailed threat model with abuse cases, existing mitigations, residual risks, owners, and concrete verification evidence.

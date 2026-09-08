@@ -56,8 +56,9 @@ extends the same workflow through guarded destruction and adds restore.
 - Restore creates a new encrypted root and data volume and a new tagged EC2
   instance with a restore-specific idempotency token. It waits for EC2 and SSM,
   verifies or installs AWS CLI v2 on the replacement host, downloads and
-  validates the recorded archive, and then runs the normal software/bootstrap
-  process against the restored portable data.
+  validates the recorded archive, idempotently establishes the same Steam and
+  optional TeamSpeak service accounts used by bootstrap, and then runs the
+  normal software/bootstrap process against the restored portable data.
 - Before extraction, the host verifies compressed size and SHA-256, rejects
   absolute paths, traversal, links, devices, unexpected roots, more than
   200,000 entries, or more than 20 GiB expanded content. It restores only the
