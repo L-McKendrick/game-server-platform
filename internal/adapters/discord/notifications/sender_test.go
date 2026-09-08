@@ -80,6 +80,37 @@ func TestSenderRetriesSecretReadAndDisablesMentions(t *testing.T) {
 	}
 }
 
+func TestSenderAllowsOnlyTheReadyOwnerMention(t *testing.T) {
+	t.Parallel()
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&received); err != nil {
+			t.Fatal(err)
+		}
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	sender := New(&fakeSecrets{}, "secret")
+	sender.apiBase = server.URL
+	request := domain.NotificationRequest{
+		SchemaVersion: 1, NotificationID: "ready-session-1", SessionID: "session-1",
+		GuildID: "guild-1", ChannelID: "creation-channel", Content: "<@owner-1> Session is ready to join.",
+		Kind: domain.NotificationSessionReady, AllowedUserIDs: []string{"owner-1"},
+		CorrelationID: "correlation-1", RequestedAt: time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC),
+	}
+	if err := sender.Send(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	mentions, ok := received["allowed_mentions"].(map[string]any)
+	if !ok || len(mentions["parse"].([]any)) != 0 {
+		t.Fatalf("allowed mentions = %#v", mentions)
+	}
+	users, ok := mentions["users"].([]any)
+	if !ok || len(users) != 1 || users[0] != "owner-1" {
+		t.Fatalf("allowed users = %#v", mentions["users"])
+	}
+}
+
 func TestSenderCreatesCardWithEnforcedNonceAndEditsKnownMessage(t *testing.T) {
 	t.Parallel()
 	var methods []string
@@ -204,6 +235,15 @@ func TestSenderClearsControlsWhenEditingTerminatedCard(t *testing.T) {
 	}
 	if values, ok := components.([]any); !ok || len(values) != 0 {
 		t.Fatalf("terminated components = %#v; want explicit empty array", components)
+	}
+}
+
+func TestSenderRemovesControlsForArchivedCard(t *testing.T) {
+	t.Parallel()
+	request := domain.NotificationRequest{SchemaVersion: 1, NotificationID: "card-archived", Kind: domain.NotificationSessionCard, SessionID: "session-1", GuildID: "guild-1", ChannelID: "channel-1", Content: "archived", CardRevision: 9, SuppressCardControls: true, SuppressPlayerControl: true, CorrelationID: "correlation-1", RequestedAt: time.Now().UTC()}
+	rows, err := sessionCardControls(request)
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("archived controls = %#v, %v", rows, err)
 	}
 }
 

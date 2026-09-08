@@ -512,24 +512,24 @@ Discord is the primary user interface.
 
 The application uses slash commands, buttons, select menus, modals, embeds, and attachment options. Commands are registered per development guild during development and globally for production when stable.
 
-Initial command set:
+Current command set:
 
 | Command | Purpose |
 |---|---|
-| `/session create` | Create a draft session |
-| `/session configure` | Set game profile and options |
-| `/session upload-mission` | Attach a mission file |
-| `/session upload-preset` | Attach a launcher preset |
-| `/session start` | Provision or wake a session |
-| `/session status` | Show lifecycle, workflow, endpoint, and health |
-| `/session list` | List accessible sessions |
-| `/session stop` | Gracefully stop and sleep a session |
-| `/session wake` | Start a sleeping session |
-| `/session archive` | Archive and destroy active infrastructure |
-| `/session restore` | Restore an archived session |
-| `/session delete` | Permanently delete metadata and retained artifacts according to policy |
-| `/session logs` | Retrieve a diagnostic summary or signed log link |
-| `/session cancel` | Request cancellation of a cancellable workflow |
+| `/rb create` | Create and optionally auto-start a draft through one setup modal |
+| `/rb setup` | Repair missing or rejected draft setup |
+| `/rb edit` | Change mission, client/server mods, and supported runtime options |
+| `/rb start` | Provision a configured draft, retry eligible bootstrap, or wake a sleeping session |
+| `/rb restart` | Restart only Arma and apply pending content/settings on a running host |
+| `/rb status` | Show private lifecycle, workflow, endpoint, health, and diagnostics |
+| `/rb list` | List accessible sessions |
+| `/rb sleep` | Stop EC2 while retaining active EBS volumes |
+| `/rb archive` | Request guarded archive and infrastructure removal |
+| `/rb restore` | Restore an archived session |
+| `/rb terminate` | Request permanent runtime/artifact deletion with a retained tombstone |
+| `/rb confirm`, `/rb cancel-confirmation` | Resolve the caller's pending destructive confirmation |
+| `/rb cancel` | Request cancellation at a supported safe workflow boundary |
+| `/rb help` | Show general or state-aware guidance |
 | `/rb admin` | Open a protected component menu for access, public-card channel selection, card repair, and other implemented administration actions |
 
 Permissions are based on Discord guild, role, channel, user identity, and session ownership.
@@ -658,6 +658,8 @@ Canonical state machines:
 - `BootstrapGameServer`
 - `SleepSession`
 - `WakeSession`
+- `RestartSession` (reuses the wake state machine and worker while bypassing
+  EC2 start/managed-node waits)
 - `ArchiveSession`
 - `RestoreSession`
 - `DestroySession`
@@ -667,8 +669,11 @@ Workshop metadata uses the existing artifact FIFO worker. Live content staging
 uses a durable `WorkshopContentSync` record, one bounded Systems Manager
 command, terminal EventBridge delivery, and the existing reconciliation scan;
 it intentionally does not add a polling Step Functions state machine. Start,
-wake, and restore consume the same host content-sync implementation inside
-their existing lifecycle workflows.
+wake, restart, and restore consume the same host content-sync implementation
+inside their existing lifecycle workflows. Restart stops and restarts only the
+game service, leaves EC2 and TeamSpeak running, applies pending content and the
+captured server configuration, and verifies Arma health before promoting
+pending metadata.
 
 Each workflow receives:
 

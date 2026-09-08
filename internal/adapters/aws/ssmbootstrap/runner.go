@@ -123,11 +123,27 @@ func (runner *Runner) StartContent(ctx context.Context, session domain.Session, 
 	if target != domain.WorkshopTargetMission && target != domain.WorkshopTargetMods && target != domain.WorkshopTarget("all") {
 		return "", fmt.Errorf("unsupported Workshop sync target %q", target)
 	}
+	if session.ActiveWorkflowType == domain.RestartWorkflowType {
+		if !promoteMods || target != domain.WorkshopTarget("all") || session.LifecycleState != domain.StateRestarting {
+			return "", domain.ErrInvalidTransition
+		}
+		existing, err := runner.findCommand(ctx, "gsp:restart:"+session.ID+":"+session.ActiveWorkflowID, session.Infrastructure.InstanceID)
+		if err == nil {
+			return existing, nil
+		}
+		if !errors.Is(err, domain.ErrNotFound) {
+			return "", err
+		}
+	}
 	script, err := runner.commandMode(session, false, true)
 	if err != nil {
 		return "", err
 	}
 	prefix := "export GSP_OPERATION_MODE=workshop_sync\nexport WORKSHOP_SYNC_TARGET=" + string(target) + "\n"
+	if session.ActiveWorkflowType == domain.RestartWorkflowType {
+		prefix = "export GSP_OPERATION_MODE=restart\nexport WORKSHOP_SYNC_TARGET=all\n"
+		prefix += fmt.Sprintf("export RESTART_DOWNLOADS=%t\n", session.HasApplyingPresetRevision(session.ActiveWorkflowID) || len(session.PendingWorkshopMissionItemIDs()) > 0)
+	}
 	if promoteMods {
 		prefix += "export WORKSHOP_PROMOTE_MODS=true\n"
 	} else {
@@ -137,6 +153,9 @@ func (runner *Runner) StartContent(ctx context.Context, session domain.Session, 
 		return "", fmt.Errorf("generated Workshop sync command is missing its Bash interpreter boundary")
 	}
 	script = bashShebang + prefix + strings.TrimPrefix(script, bashShebang)
+	if session.ActiveWorkflowType == domain.RestartWorkflowType {
+		return runner.send(ctx, session, script, "gsp:restart:"+session.ID+":"+session.ActiveWorkflowID, "restart")
+	}
 	return runner.send(ctx, session, script, "gsp:workshop-sync:"+session.ID+":"+session.ActiveWorkflowID, "workshop-sync")
 }
 
@@ -166,17 +185,23 @@ func (runner *Runner) ResolveContentCommand(ctx context.Context, commandID strin
 }
 
 func (runner *Runner) FindContentCommand(ctx context.Context, sessionID, workflowID, instanceID string) (string, error) {
+	return runner.findCommand(ctx, "gsp:workshop-sync:"+strings.TrimSpace(sessionID)+":"+strings.TrimSpace(workflowID), instanceID)
+}
+
+func (runner *Runner) findCommand(ctx context.Context, wantComment, instanceID string) (string, error) {
 	client, ok := runner.client.(commandAPI)
 	if !ok {
 		return "", fmt.Errorf("Systems Manager command lookup is unavailable")
 	}
-	wantComment := "gsp:workshop-sync:" + strings.TrimSpace(sessionID) + ":" + strings.TrimSpace(workflowID)
 	instanceID = strings.TrimSpace(instanceID)
 	var token *string
 	for pages := 0; pages < 4; pages++ {
 		output, err := client.ListCommands(ctx, &ssm.ListCommandsInput{MaxResults: aws.Int32(50), NextToken: token})
 		if err != nil {
 			return "", err
+		}
+		if output == nil {
+			return "", domain.ErrNotFound
 		}
 		for _, command := range output.Commands {
 			if strings.TrimSpace(aws.ToString(command.Comment)) == wantComment && len(command.InstanceIds) == 1 && command.InstanceIds[0] == instanceID {

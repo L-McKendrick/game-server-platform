@@ -13,7 +13,6 @@ import (
 
 	"github.com/L-McKendrick/game-server-platform/internal/app/modlist"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
-	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -23,7 +22,7 @@ type IDGenerator interface {
 	New(time.Time) (string, error)
 }
 type AutoStarter interface {
-	RequestStart(context.Context, appsession.StartCommand) error
+	RequestAutomaticStart(context.Context, domain.Session, string, []string) error
 }
 type Option func(*Service)
 
@@ -258,17 +257,10 @@ func (service *Service) copyMissionLive(ctx context.Context, session domain.Sess
 }
 
 func (service *Service) autoStart(ctx context.Context, session domain.Session, request domain.ArtifactIngestRequest) error {
-	if service.autoStarter == nil || !session.StartWhenReady || request.IsModRevision() || !session.CanStartInfrastructureProvisioning() {
+	if service.autoStarter == nil || !session.StartWhenReady || !session.CanStartInfrastructureProvisioning() {
 		return nil
 	}
-	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", session.ID, session.ConfigurationRevision)))
-	commandID := hex.EncodeToString(digest[:16])
-	if err := service.autoStarter.RequestStart(ctx, appsession.StartCommand{
-		Actor: domain.Actor{Type: domain.ActorTypeDiscordUser, ID: session.OwnerDiscordUserID}, Roles: append([]string(nil), request.Roles...),
-		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
-		CommandID: commandID, CorrelationID: request.CorrelationID,
-		IdempotencyKey: "auto-start:" + commandID,
-	}); err != nil {
+	if err := service.autoStarter.RequestAutomaticStart(ctx, session, request.CorrelationID, append([]string(nil), request.Roles...)); err != nil {
 		return fmt.Errorf("automatically request session start: %w", err)
 	}
 	return nil
@@ -362,7 +354,13 @@ func (service *Service) stagePresetRevision(ctx context.Context, session domain.
 		if getErr != nil {
 			return getErr
 		}
+		if err := service.autoStart(ctx, persisted, request); err != nil {
+			return err
+		}
 		return service.notify(ctx, persisted, request, nil)
+	}
+	if err := service.autoStart(ctx, session, request); err != nil {
+		return err
 	}
 	return service.notify(ctx, session, request, nil)
 }
@@ -395,7 +393,13 @@ func (service *Service) stageServerPresetRevision(ctx context.Context, session d
 		if getErr != nil {
 			return getErr
 		}
+		if err := service.autoStart(ctx, persisted, request); err != nil {
+			return err
+		}
 		return service.notify(ctx, persisted, request, nil)
+	}
+	if err := service.autoStart(ctx, session, request); err != nil {
+		return err
 	}
 	return service.notify(ctx, session, request, nil)
 }

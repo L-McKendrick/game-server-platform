@@ -204,7 +204,7 @@ func TestBootstrapActivityAndInactivityDeadlinesRenderFromAuthoritativeState(t *
 	}
 	card := Project(installing, Options{Now: now})
 	if card.Stage != "Downloading and installing game files" || card.Progress.Activity != "Arma 3 server files" ||
-		!strings.Contains(RenderPublicEmbed(card).Fields[1].Value, "**Current download:** Arma 3 server files") {
+		!strings.Contains(RenderPublicEmbed(card).Fields[0].Value, "**Current download:** Arma 3 server files") {
 		t.Fatalf("installing projection = %#v embed = %#v", card, RenderPublicEmbed(card))
 	}
 
@@ -212,7 +212,7 @@ func TestBootstrapActivityAndInactivityDeadlinesRenderFromAuthoritativeState(t *
 	installing.Progress.Activity = "Workshop item 450814997 (3/7)"
 	workshopCard := Project(installing, Options{Now: now})
 	line := `**Current download:** [450814997](https://steamcommunity.com/sharedfiles/filedetails/?id=450814997)`
-	if !strings.Contains(RenderPublicEmbed(workshopCard).Fields[1].Value, line) || !strings.Contains(RenderPublic(workshopCard), line) {
+	if !strings.Contains(RenderPublicEmbed(workshopCard).Fields[0].Value, line) || !strings.Contains(RenderPublic(workshopCard), line) {
 		t.Fatalf("Workshop download must render as one ID/position line: %#v", workshopCard)
 	}
 
@@ -361,8 +361,8 @@ func TestProjectRepresentsGenericFailureAndOfflineEndpointsSafely(t *testing.T) 
 	if !archived.Endpoints.Game.Offline {
 		t.Fatalf("archived endpoint = %#v; want explicitly offline", archived.Endpoints.Game)
 	}
-	if !strings.Contains(RenderPublic(archived), "**Arma IP:** `203.0.113.20:2302` — Offline (retained address)") {
-		t.Fatalf("archived card = %q", RenderPublic(archived))
+	if strings.Contains(RenderPublic(archived), "Arma IP:") || !strings.Contains(RenderPublic(archived), "**Modlist:** Unavailable") {
+		t.Fatalf("archived public card was not compacted = %q", RenderPublic(archived))
 	}
 }
 

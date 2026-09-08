@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
-	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
 
@@ -61,8 +60,10 @@ func (queue *testNotifications) Enqueue(_ context.Context, request domain.Notifi
 }
 
 type testAutoStarter struct {
-	commands []appsession.StartCommand
-	err      error
+	sessions     []domain.Session
+	correlations []string
+	roles        [][]string
+	err          error
 }
 
 type testLiveMissionCopier struct {
@@ -77,8 +78,10 @@ func (copier *testLiveMissionCopier) Copy(_ context.Context, session domain.Sess
 	return copier.err
 }
 
-func (starter *testAutoStarter) RequestStart(_ context.Context, command appsession.StartCommand) error {
-	starter.commands = append(starter.commands, command)
+func (starter *testAutoStarter) RequestAutomaticStart(_ context.Context, session domain.Session, correlationID string, roles []string) error {
+	starter.sessions = append(starter.sessions, session)
+	starter.correlations = append(starter.correlations, correlationID)
+	starter.roles = append(starter.roles, append([]string(nil), roles...))
 	return starter.err
 }
 
@@ -112,15 +115,15 @@ func TestProcessAutomaticallyStartsReadyOptInSessionAndReplaysSafely(t *testing.
 	if err := service.Process(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
-	if len(starter.commands) != 2 || starter.commands[0].CommandID != starter.commands[1].CommandID || starter.commands[0].IdempotencyKey != starter.commands[1].IdempotencyKey {
-		t.Fatalf("automatic start commands = %#v; want deterministic replay", starter.commands)
+	if len(starter.sessions) != 2 || starter.sessions[0].ID != starter.sessions[1].ID || starter.correlations[0] != starter.correlations[1] {
+		t.Fatalf("automatic start calls = sessions %#v correlations %#v; want deterministic replay", starter.sessions, starter.correlations)
 	}
-	if starter.commands[0].Actor.ID != session.OwnerDiscordUserID || starter.commands[0].GuildID != session.GuildID {
-		t.Fatalf("automatic start authority = %#v", starter.commands[0])
+	if starter.sessions[0].OwnerDiscordUserID != session.OwnerDiscordUserID || starter.sessions[0].GuildID != session.GuildID {
+		t.Fatalf("automatic start authority = %#v", starter.sessions[0])
 	}
-	if len(starter.commands[0].Roles) != 1 || starter.commands[0].Roles[0] != "role-allowed" ||
-		len(starter.commands[1].Roles) != 1 || starter.commands[1].Roles[0] != "role-allowed" {
-		t.Fatalf("automatic start roles = %#v; want signed interaction roles on every replay", starter.commands)
+	if len(starter.roles[0]) != 1 || starter.roles[0][0] != "role-allowed" ||
+		len(starter.roles[1]) != 1 || starter.roles[1][0] != "role-allowed" {
+		t.Fatalf("automatic start roles = %#v; want signed interaction roles on every replay", starter.roles)
 	}
 }
 

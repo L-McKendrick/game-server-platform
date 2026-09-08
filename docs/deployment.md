@@ -164,10 +164,8 @@ or remote state.
 
 Get the Terraform-managed secret name:
 
-```powershell
-$DiscordSecretName = terraform -chdir=infra/terraform/environments/dev output -raw discord_secret_name
-$DiscordSecretName
-```
+The development bot token secret is
+`/game-server-platform/dev/discord-bot-token` in `us-west-2`.
 
 Open AWS Secrets Manager in `us-west-2`, select that secret, and choose
 **Retrieve secret value > Edit**. Store the bot token as plain text or as:

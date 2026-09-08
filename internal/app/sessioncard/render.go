@@ -84,7 +84,11 @@ func RenderSetup(session domain.Session, now time.Time) string {
 }
 
 func render(card Projection, detailed bool) string {
+	if !detailed && card.Lifecycle == "Archived" && !card.Failure.Present {
+		return renderArchivedPublic(card)
+	}
 	var builder strings.Builder
+	progressVisible := card.Progress.Visible && (detailed || !card.Progress.HideWhenPublic)
 	fmt.Fprintf(&builder, "## %s: %s", safe(card.Lifecycle), safe(card.Name))
 	if detailed {
 		fmt.Fprintf(&builder, "\nSlug: `%s`", safeCode(card.Slug))
@@ -110,7 +114,7 @@ func render(card Projection, detailed bool) string {
 			safe(card.Game), safe(card.Mode), enabled(card.TeamSpeak), safe(card.Lifecycle), safe(card.Health),
 		)
 	}
-	if card.Progress.Visible {
+	if progressVisible {
 		if detailed {
 			builder.WriteString("\n\n### Progress")
 		}
@@ -124,13 +128,13 @@ func render(card Projection, detailed bool) string {
 		if card.Progress.Activity != "" {
 			fmt.Fprintf(&builder, "\n**Current download:** %s", downloadActivity(card.Progress.Activity))
 		}
-	} else if !detailed {
+	} else if !detailed && !card.Progress.HideWhenPublic {
 		fmt.Fprintf(&builder, "\n**Current stage:** %s", safe(downloadStage(card)))
 	}
 	if card.CurrentOperation != "" {
 		fmt.Fprintf(&builder, "\n**Current operation:** %s", safe(card.CurrentOperation))
 	}
-	if card.Progress.Visible || card.Elapsed > 0 {
+	if progressVisible || (card.Elapsed > 0 && (detailed || !card.Progress.HideWhenPublic)) {
 		if detailed || card.OperationStartedAt.IsZero() {
 			fmt.Fprintf(&builder, "\n**Elapsed:** %s", formatDuration(card.Elapsed))
 		} else {
@@ -232,6 +236,19 @@ func render(card Projection, detailed bool) string {
 	return bound(builder.String())
 }
 
+func renderArchivedPublic(card Projection) string {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "## %s | %s", strings.ToUpper(safe(card.Game)), safe(card.Name))
+	if strings.TrimSpace(card.Description) != "" {
+		fmt.Fprintf(&builder, "\n%s", safe(card.Description))
+	}
+	fmt.Fprintf(&builder, "\n\n**Modlist:** %s", archivedModlistValue(card))
+	if !card.StatusSince.IsZero() {
+		fmt.Fprintf(&builder, "\n**Archived:** %s", timestamp(card.StatusSince))
+	}
+	return bound(builder.String())
+}
+
 func creatorDLCLabels(values []string) []string {
 	labels := map[string]string{
 		domain.CreatorDLCGlobalMobilization: "Global Mobilization", domain.CreatorDLCSOGPrairieFire: "S.O.G. Prairie Fire",
@@ -288,7 +305,7 @@ func RenderModlistMessage(session domain.Session, filename string, workshopCount
 
 // WithModlistLink enriches an already-rendered canonical card at the delivery
 // boundary, where the stable Discord message ID is finally known.
-func WithModlistLink(content, messageURL string) string {
+func WithModlistLink(content, modlistName, messageURL string) string {
 	messageURL = normalizeModlistURL(messageURL)
 	if messageURL == "" {
 		return bound(content)
@@ -297,6 +314,17 @@ func WithModlistLink(content, messageURL string) string {
 	filtered := make([]string, 0, len(lines)+1)
 	insertAt := -1
 	for _, line := range lines {
+		if strings.HasPrefix(line, "**Modlist:**") {
+			label := strings.TrimSpace(strings.TrimPrefix(line, "**Modlist:**"))
+			if label == "Unavailable" {
+				label = safe(modlistName)
+			}
+			if label != "" && label != "Unavailable" && label != "None" {
+				line = "**Modlist:** [" + safe(strings.Trim(label, "`")) + "](" + messageURL + ")"
+			}
+			filtered = append(filtered, line)
+			continue
+		}
 		if strings.HasPrefix(line, "**Active modlist:**") {
 			continue
 		}

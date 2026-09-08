@@ -123,8 +123,9 @@ func NewService(
 }
 
 // StartCommand contains the signed Discord context used to request
-// infrastructure provisioning.
+// provisioning, bootstrap retry, or waking a sleeping session.
 type StartCommand struct {
+	CanManageGuild bool
 	Actor          domain.Actor
 	Roles          []string
 	SessionID      string
@@ -248,7 +249,7 @@ func (service *Service) PrepareCreationArtifacts(ctx context.Context, command Pr
 	}
 	if replayed, found, err := service.replaySession(ctx, key, hash, command.Actor); err != nil || found {
 		if err == nil {
-			err = service.requestAutomaticStart(ctx, replayed, command.CorrelationID, command.Roles)
+			err = service.RequestAutomaticStart(ctx, replayed, command.CorrelationID, command.Roles)
 		}
 		return replayed, err
 	}
@@ -286,13 +287,13 @@ func (service *Service) PrepareCreationArtifacts(ctx context.Context, command Pr
 	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, record); err != nil {
 		if replayed, found, replayErr := service.replaySession(ctx, key, hash, command.Actor); replayErr != nil || found {
 			if replayErr == nil {
-				replayErr = service.requestAutomaticStart(ctx, replayed, command.CorrelationID, command.Roles)
+				replayErr = service.RequestAutomaticStart(ctx, replayed, command.CorrelationID, command.Roles)
 			}
 			return replayed, replayErr
 		}
 		return domain.Session{}, fmt.Errorf("persist artifact preparation: %w", err)
 	}
-	if err := service.requestAutomaticStart(ctx, session, correlationID, command.Roles); err != nil {
+	if err := service.RequestAutomaticStart(ctx, session, correlationID, command.Roles); err != nil {
 		return session, err
 	}
 	return session, nil
@@ -329,8 +330,9 @@ func (service *Service) RequestSessionCard(ctx context.Context, command SessionC
 		SchemaVersion: 1, NotificationID: strings.TrimSpace(command.NotificationID),
 		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
 		Content: command.Content, Embed: command.Embed, Kind: domain.NotificationSessionCard, CardRevision: command.CardRevision,
-		SuppressCardControls: session.LifecycleState == domain.StateDeleted,
-		CorrelationID:        strings.TrimSpace(command.CorrelationID), RequestedAt: service.clock.Now().UTC(),
+		SuppressCardControls:  !sessioncard.CardControlsVisible(session.LifecycleState),
+		SuppressPlayerControl: !sessioncard.PlayerControlVisible(session.LifecycleState),
+		CorrelationID:         strings.TrimSpace(command.CorrelationID), RequestedAt: service.clock.Now().UTC(),
 	})
 }
 
@@ -493,7 +495,7 @@ func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleC
 	if err != nil {
 		return err
 	}
-	canManageLifecycle := command.CanManageGuild && (command.CommandType == domain.CommandSleepSession || command.CommandType == domain.CommandWakeSession)
+	canManageLifecycle := command.CanManageGuild && (command.CommandType == domain.CommandSleepSession || command.CommandType == domain.CommandWakeSession || command.CommandType == domain.CommandRestartSession)
 	if err := authorizeLifecycleActor(command.Actor, session, canManageLifecycle); err != nil {
 		return err
 	}
@@ -515,7 +517,10 @@ func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleC
 	if command.CommandType == domain.CommandRestoreSession && !session.CanRestore() {
 		return fmt.Errorf("session cannot restore now: %w", domain.ErrInvalidTransition)
 	}
-	if command.CommandType != domain.CommandSleepSession && command.CommandType != domain.CommandWakeSession && command.CommandType != domain.CommandRestoreSession {
+	if command.CommandType == domain.CommandRestartSession && !session.CanRestart() {
+		return fmt.Errorf("session cannot restart now: %w", domain.ErrInvalidTransition)
+	}
+	if command.CommandType != domain.CommandRestartSession && command.CommandType != domain.CommandSleepSession && command.CommandType != domain.CommandWakeSession && command.CommandType != domain.CommandRestoreSession {
 		return fmt.Errorf("unsupported lifecycle command")
 	}
 	if command.CommandType == domain.CommandWakeSession {
@@ -523,7 +528,14 @@ func (service *Service) RequestLifecycle(ctx context.Context, command LifecycleC
 			return err
 		}
 	}
-	return service.commandQueue.Enqueue(ctx, domain.CommandEnvelope{SchemaVersion: 1, CommandID: strings.TrimSpace(command.CommandID), CommandType: command.CommandType, RequestedAt: service.clock.Now().UTC(), Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID), Roles: append([]string(nil), command.Roles...), CanManageGuild: command.CanManageGuild}, SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: map[string]string{}})
+	parameters := map[string]string{}
+	if command.CommandType == domain.CommandRestartSession {
+		parameters, err = service.serverConfigParameters(ctx, session)
+		if err != nil {
+			return err
+		}
+	}
+	return service.commandQueue.Enqueue(ctx, domain.CommandEnvelope{SchemaVersion: 1, CommandID: strings.TrimSpace(command.CommandID), CommandType: command.CommandType, RequestedAt: service.clock.Now().UTC(), Actor: domain.CommandActor{DiscordUserID: command.Actor.ID, GuildID: strings.TrimSpace(command.GuildID), ChannelID: strings.TrimSpace(command.ChannelID), Roles: append([]string(nil), command.Roles...), CanManageGuild: command.CanManageGuild}, SessionID: session.ID, IdempotencyKey: strings.TrimSpace(command.IdempotencyKey), CorrelationID: strings.TrimSpace(command.CorrelationID), Parameters: parameters})
 }
 
 // RequestStart validates the synchronous boundary and queues a normalized
@@ -539,6 +551,14 @@ func (service *Service) RequestStart(ctx context.Context, command StartCommand) 
 	session, err := service.repository.Get(ctx, strings.TrimSpace(command.SessionID))
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
+	}
+	if session.LifecycleState == domain.StateSleeping || session.ActiveWorkflowType == domain.WakeWorkflowType {
+		return service.RequestLifecycle(ctx, LifecycleCommand{
+			Actor: command.Actor, Roles: command.Roles, SessionID: command.SessionID,
+			GuildID: command.GuildID, ChannelID: command.ChannelID, CommandID: command.CommandID,
+			CorrelationID: command.CorrelationID, IdempotencyKey: command.IdempotencyKey,
+			CommandType: domain.CommandWakeSession, CanManageGuild: command.CanManageGuild,
+		})
 	}
 	if err := authorizeOwner(command.Actor, session); err != nil {
 		return err
@@ -560,20 +580,9 @@ func (service *Service) RequestStart(ctx context.Context, command StartCommand) 
 	if err := service.repository.CheckCapacity(ctx, session.ID, activeSessionCapacity); err != nil {
 		return err
 	}
-	parameters := map[string]string{}
-	if service.serverConfigs != nil {
-		config, configErr := service.serverConfigs.GetGuildServerConfig(ctx, session.GuildID)
-		switch {
-		case errors.Is(configErr, domain.ErrNotFound), configErr == nil && !config.Active():
-			parameters[domain.ServerConfigModeParameter] = domain.ServerConfigModeGenerated
-		case configErr != nil:
-			return fmt.Errorf("read guild server configuration: %w", configErr)
-		default:
-			parameters[domain.ServerConfigModeParameter] = domain.ServerConfigModeCustom
-			parameters[domain.ServerConfigRevisionParameter] = strconv.FormatInt(config.Revision, 10)
-			parameters[domain.ServerConfigObjectParameter] = config.ObjectKey
-			parameters[domain.ServerConfigSHAParameter] = config.SHA256
-		}
+	parameters, err := service.serverConfigParameters(ctx, session)
+	if err != nil {
+		return err
 	}
 	envelope := domain.CommandEnvelope{
 		SchemaVersion: 1,
@@ -604,18 +613,20 @@ func activeOperation(session domain.Session, now time.Time) *domain.OperationInP
 
 // ConfigureCommand replaces the editable configuration of a draft session.
 type ConfigureCommand struct {
-	Actor               domain.Actor
-	SessionID           string
-	GuildID             string
-	CorrelationID       string
-	IdempotencyKey      string
-	GameProfileID       string
-	SleepAfterSeconds   int64
-	ArchiveAfterSeconds int64
-	TeamSpeakEnabled    bool
-	Vanilla             bool
-	CreatorDLCs         []string
-	StartWhenReady      bool
+	Actor                      domain.Actor
+	SessionID                  string
+	GuildID                    string
+	CorrelationID              string
+	IdempotencyKey             string
+	GameProfileID              string
+	SleepAfterSeconds          int64
+	ArchiveAfterSeconds        int64
+	TeamSpeakEnabled           bool
+	Vanilla                    bool
+	CreatorDLCs                []string
+	StartWhenReady             bool
+	NotifyWhenReady            bool
+	ReadyNotificationChannelID string
 }
 
 type UpdateDraftSetupCommand struct {
@@ -745,7 +756,7 @@ func (service *Service) UpdateModOptions(ctx context.Context, command UpdateModO
 	}
 	if replayed, found, err := service.replaySession(ctx, key, hash, command.Actor); err != nil || found {
 		if err == nil {
-			err = service.requestAutomaticStart(ctx, replayed, command.CorrelationID, command.Roles)
+			err = service.RequestAutomaticStart(ctx, replayed, command.CorrelationID, command.Roles)
 		}
 		return replayed, err
 	}
@@ -779,19 +790,21 @@ func (service *Service) UpdateModOptions(ctx context.Context, command UpdateModO
 	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, record); err != nil {
 		if replayed, found, replayErr := service.replaySession(ctx, key, hash, command.Actor); replayErr != nil || found {
 			if replayErr == nil {
-				replayErr = service.requestAutomaticStart(ctx, replayed, command.CorrelationID, command.Roles)
+				replayErr = service.RequestAutomaticStart(ctx, replayed, command.CorrelationID, command.Roles)
 			}
 			return replayed, replayErr
 		}
 		return domain.Session{}, fmt.Errorf("persist mod options: %w", err)
 	}
-	if err := service.requestAutomaticStart(ctx, session, correlationID, command.Roles); err != nil {
+	if err := service.RequestAutomaticStart(ctx, session, correlationID, command.Roles); err != nil {
 		return session, err
 	}
 	return session, nil
 }
 
-func (service *Service) requestAutomaticStart(ctx context.Context, session domain.Session, correlationID string, roles []string) error {
+// RequestAutomaticStart queues the ordinary start command once a creation
+// flow has reached the same readiness boundary as an explicit /rb start.
+func (service *Service) RequestAutomaticStart(ctx context.Context, session domain.Session, correlationID string, roles []string) error {
 	if !session.StartWhenReady || !session.CanStartInfrastructureProvisioning() {
 		return nil
 	}
@@ -854,8 +867,10 @@ func (service *Service) UpdateDraftSetup(ctx context.Context, command UpdateDraf
 	if err := session.ConfigureDraftSetup(command.DisplayName, command.Description, domain.SessionConfiguration{
 		GameProfileID: command.GameProfileID, SleepAfterSeconds: command.SleepAfterSeconds,
 		ArchiveAfterSeconds: command.ArchiveAfterSeconds, TeamSpeakEnabled: command.TeamSpeakEnabled, Vanilla: command.Vanilla,
-		CreatorDLCs:    command.CreatorDLCs,
-		StartWhenReady: command.StartWhenReady,
+		CreatorDLCs:                command.CreatorDLCs,
+		StartWhenReady:             command.StartWhenReady,
+		NotifyWhenReady:            session.NotifyWhenReady,
+		ReadyNotificationChannelID: session.ReadyNotificationChannelID,
 	}, command.ReplaceMission, command.ReplacePreset, now); err != nil {
 		return domain.Session{}, err
 	}
@@ -976,13 +991,15 @@ func (service *Service) Configure(ctx context.Context, command ConfigureCommand)
 	now := service.clock.Now().UTC()
 	expectedVersion := session.Version
 	if err := session.Configure(domain.SessionConfiguration{
-		GameProfileID:       command.GameProfileID,
-		SleepAfterSeconds:   command.SleepAfterSeconds,
-		ArchiveAfterSeconds: command.ArchiveAfterSeconds,
-		TeamSpeakEnabled:    command.TeamSpeakEnabled,
-		Vanilla:             command.Vanilla,
-		CreatorDLCs:         command.CreatorDLCs,
-		StartWhenReady:      command.StartWhenReady,
+		GameProfileID:              command.GameProfileID,
+		SleepAfterSeconds:          command.SleepAfterSeconds,
+		ArchiveAfterSeconds:        command.ArchiveAfterSeconds,
+		TeamSpeakEnabled:           command.TeamSpeakEnabled,
+		Vanilla:                    command.Vanilla,
+		CreatorDLCs:                command.CreatorDLCs,
+		StartWhenReady:             command.StartWhenReady,
+		NotifyWhenReady:            command.NotifyWhenReady,
+		ReadyNotificationChannelID: command.ReadyNotificationChannelID,
 	}, now); err != nil {
 		return domain.Session{}, fmt.Errorf("configure session: %w", err)
 	}
@@ -1615,29 +1632,33 @@ func configureRequestIdentity(command ConfigureCommand) (string, string, error) 
 		return "", "", err
 	}
 	hash, err := hashRequest(struct {
-		CommandType         string   `json:"command_type"`
-		ActorID             string   `json:"actor_id"`
-		SessionID           string   `json:"session_id"`
-		GuildID             string   `json:"guild_id"`
-		GameProfileID       string   `json:"game_profile_id"`
-		SleepAfterSeconds   int64    `json:"sleep_after_seconds"`
-		ArchiveAfterSeconds int64    `json:"archive_after_seconds"`
-		TeamSpeakEnabled    bool     `json:"teamspeak_enabled"`
-		Vanilla             bool     `json:"vanilla,omitempty"`
-		CreatorDLCs         []string `json:"creator_dlcs,omitempty"`
-		StartWhenReady      bool     `json:"start_when_ready,omitempty"`
+		CommandType                string   `json:"command_type"`
+		ActorID                    string   `json:"actor_id"`
+		SessionID                  string   `json:"session_id"`
+		GuildID                    string   `json:"guild_id"`
+		GameProfileID              string   `json:"game_profile_id"`
+		SleepAfterSeconds          int64    `json:"sleep_after_seconds"`
+		ArchiveAfterSeconds        int64    `json:"archive_after_seconds"`
+		TeamSpeakEnabled           bool     `json:"teamspeak_enabled"`
+		Vanilla                    bool     `json:"vanilla,omitempty"`
+		CreatorDLCs                []string `json:"creator_dlcs,omitempty"`
+		StartWhenReady             bool     `json:"start_when_ready,omitempty"`
+		NotifyWhenReady            bool     `json:"notify_when_ready,omitempty"`
+		ReadyNotificationChannelID string   `json:"ready_notification_channel_id,omitempty"`
 	}{
-		CommandType:         "ConfigureSession",
-		ActorID:             strings.TrimSpace(command.Actor.ID),
-		SessionID:           strings.TrimSpace(command.SessionID),
-		GuildID:             strings.TrimSpace(command.GuildID),
-		GameProfileID:       strings.ToLower(strings.TrimSpace(command.GameProfileID)),
-		SleepAfterSeconds:   command.SleepAfterSeconds,
-		ArchiveAfterSeconds: command.ArchiveAfterSeconds,
-		TeamSpeakEnabled:    command.TeamSpeakEnabled,
-		Vanilla:             command.Vanilla,
-		CreatorDLCs:         creatorDLCs,
-		StartWhenReady:      command.StartWhenReady,
+		CommandType:                "ConfigureSession",
+		ActorID:                    strings.TrimSpace(command.Actor.ID),
+		SessionID:                  strings.TrimSpace(command.SessionID),
+		GuildID:                    strings.TrimSpace(command.GuildID),
+		GameProfileID:              strings.ToLower(strings.TrimSpace(command.GameProfileID)),
+		SleepAfterSeconds:          command.SleepAfterSeconds,
+		ArchiveAfterSeconds:        command.ArchiveAfterSeconds,
+		TeamSpeakEnabled:           command.TeamSpeakEnabled,
+		Vanilla:                    command.Vanilla,
+		CreatorDLCs:                creatorDLCs,
+		StartWhenReady:             command.StartWhenReady,
+		NotifyWhenReady:            command.NotifyWhenReady,
+		ReadyNotificationChannelID: strings.TrimSpace(command.ReadyNotificationChannelID),
 	})
 	if err != nil {
 		return "", "", fmt.Errorf("hash configure-session request: %w", err)
@@ -1761,4 +1782,23 @@ func (service *Service) newID(
 	}
 
 	return id, nil
+}
+
+func (service *Service) serverConfigParameters(ctx context.Context, session domain.Session) (map[string]string, error) {
+	parameters := map[string]string{}
+	if service.serverConfigs != nil {
+		config, configErr := service.serverConfigs.GetGuildServerConfig(ctx, session.GuildID)
+		switch {
+		case errors.Is(configErr, domain.ErrNotFound), configErr == nil && !config.Active():
+			parameters[domain.ServerConfigModeParameter] = domain.ServerConfigModeGenerated
+		case configErr != nil:
+			return nil, fmt.Errorf("read guild server configuration: %w", configErr)
+		default:
+			parameters[domain.ServerConfigModeParameter] = domain.ServerConfigModeCustom
+			parameters[domain.ServerConfigRevisionParameter] = strconv.FormatInt(config.Revision, 10)
+			parameters[domain.ServerConfigObjectParameter] = config.ObjectKey
+			parameters[domain.ServerConfigSHAParameter] = config.SHA256
+		}
+	}
+	return parameters, nil
 }

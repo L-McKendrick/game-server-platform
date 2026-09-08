@@ -185,6 +185,12 @@ var entries = map[string]entry{
 		"The platform stopped the restore and preserved the verified archive record.",
 		"Check `/rb status` and give the support reference to an operator before requesting restore again.",
 	},
+	"ERR_RESTART_FAILED": {
+		"The game server restart did not pass verification.",
+		"Content, settings, service restart, or game health verification failed.",
+		"The platform stopped the operation without declaring the server playable. No rollback was attempted; runtime configuration may have changed.",
+		"Check `/rb status` and give the support reference to an operator to recover the game service. EC2 and EBS remain billable.",
+	},
 	"ERR_WAKE_HEALTH": {
 		"The server started but did not become healthy.",
 		"The game service or an enabled voice service did not pass the post-wake health check.",

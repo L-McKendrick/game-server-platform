@@ -784,6 +784,7 @@ deploy_content() {
   while IFS=$'\t' read -r mission_checksum mission_file mission_key; do
     [ -n "$mission_key" ] || continue
     [[ "$mission_checksum" =~ ^[0-9a-f]{64}$ && "$mission_file" =~ ^[A-Za-z0-9_.+-]+\.[pP][bB][oO]$ ]] || { log "accepted mission manifest is invalid"; return 1; }
+    if [ "$GSP_OPERATION_MODE" = restart ] && [ -f "$ROOT/arma3/mpmissions/$mission_file" ] && [ ! -L "$ROOT/arma3/mpmissions/$mission_file" ] && printf '%s  %s\n' "$mission_checksum" "$ROOT/arma3/mpmissions/$mission_file" | sha256sum --check --status; then continue; fi
     pending="$(mktemp "$ROOT/arma3/mpmissions/.gsp-mission.XXXXXX")"
     aws s3 cp "s3://$ASSETS_BUCKET/$mission_key" "$pending" --region "$AWS_REGION" --only-show-errors || { rm -f "$pending"; return 1; }
     printf '%s  %s\n' "$mission_checksum" "$pending" | sha256sum --check --status || { rm -f "$pending"; log "mission checksum mismatch"; return 1; }
@@ -923,11 +924,13 @@ launch_and_verify() {
   fi
   scrub_persistent_steam_auth
   systemctl restart arma3-server.service
-  $TEAMSPEAK_ENABLED && systemctl restart teamspeak3-server.service
+  if [ "$GSP_OPERATION_MODE" != restart ]; then
+    $TEAMSPEAK_ENABLED && systemctl restart teamspeak3-server.service
+  fi
   checkpoint HEALTH_VERIFICATION
   for _ in $(seq 1 60); do
     if systemctl is-active --quiet arma3-server.service && ss -H -lun | awk '{print $4}' | grep -Eq '(^|:)2302$'; then
-      if ! $TEAMSPEAK_ENABLED || { systemctl is-active --quiet teamspeak3-server.service && ss -H -lun | awk '{print $4}' | grep -Eq '(^|:)9987$'; }; then
+      if [ "$GSP_OPERATION_MODE" = restart ] || ! $TEAMSPEAK_ENABLED || { systemctl is-active --quiet teamspeak3-server.service && ss -H -lun | awk '{print $4}' | grep -Eq '(^|:)9987$'; }; then
         return 0
       fi
     fi
@@ -942,6 +945,25 @@ launch_and_verify() {
 exec 8>/run/gsp-bootstrap-host.lock
 flock -w 30 8
 : > "$PROGRESS_FILE"
+if [ "$GSP_OPERATION_MODE" = restart ]; then
+  [ -d "$ROOT" ] && [ -x "$ROOT/arma3/arma3server_x64" ] || { log "restart requires a prepared game server"; exit 1; }
+  # A completed operation may be delivered again after SSM dispatch persistence fails.
+  [[ "$WORKFLOW_ID" =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { log "restart workflow identity is invalid"; exit 1; }
+  restart_marker="$STATE_DIR/restart-$WORKFLOW_ID.complete"
+  [ ! -f "$restart_marker" ] || exit 0
+  mkdir -p "$STATE_DIR" "$LOG_DIR"
+  if [ "${RESTART_DOWNLOADS:-false}" = true ]; then begin_steam_auth; fi
+  systemctl stop arma3-server.service
+  # Deploy accepted files first so pending Workshop replacements win by filename.
+  deploy_content
+  sync_workshop_content
+  if $STEAM_AUTH_ACTIVE; then persist_steam_auth; cleanup_steam_auth; fi
+  checkpoint SERVICE_STARTED
+  launch_and_verify
+  touch "$restart_marker"
+  log "Game server restart complete"
+  exit 0
+fi
 if [ "$GSP_OPERATION_MODE" = workshop_sync ]; then
   [ -d "$ROOT" ] && [ -x "$ROOT/steamcmd/steamcmd.sh" ] || { log "Workshop sync requires a prepared managed host"; exit 1; }
   mkdir -p "$STATE_DIR" "$LOG_DIR" "$ROOT/workshop" "$ROOT/workshop-staging"

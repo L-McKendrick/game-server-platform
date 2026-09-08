@@ -16,6 +16,7 @@ const (
 	StateStopping      LifecycleState = "STOPPING"
 	StateSleeping      LifecycleState = "SLEEPING"
 	StateWaking        LifecycleState = "WAKING"
+	StateRestarting    LifecycleState = "RESTARTING"
 	StateWarning1      LifecycleState = "WARNING_1"
 	StateWarning2      LifecycleState = "WARNING_2"
 	StateArchiving     LifecycleState = "ARCHIVING"
@@ -59,16 +60,18 @@ var allowedTransitions = map[LifecycleState]map[LifecycleState]struct{}{
 		StateFailed:    {},
 	},
 	StateRunning: {
-		StateIdle:      {},
-		StateStopping:  {},
-		StateArchiving: {},
-		StateFailed:    {},
+		StateRestarting: {},
+		StateIdle:       {},
+		StateStopping:   {},
+		StateArchiving:  {},
+		StateFailed:     {},
 	},
 	StateIdle: {
-		StateRunning:   {},
-		StateStopping:  {},
-		StateArchiving: {},
-		StateFailed:    {},
+		StateRestarting: {},
+		StateRunning:    {},
+		StateStopping:   {},
+		StateArchiving:  {},
+		StateFailed:     {},
 	},
 	StateStopping: {
 		StateSleeping: {},
@@ -81,6 +84,7 @@ var allowedTransitions = map[LifecycleState]map[LifecycleState]struct{}{
 		StateDeleting:  {},
 		StateFailed:    {},
 	},
+	StateRestarting: {StateRunning: {}, StateFailed: {}},
 	StateWaking: {
 		StateRunning: {},
 		StateFailed:  {},

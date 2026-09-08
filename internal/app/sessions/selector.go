@@ -9,6 +9,7 @@ import (
 
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
+	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
 const maximumSessionSelections = 25
@@ -57,6 +58,9 @@ func (service *Service) ResolveCardControl(ctx context.Context, query CardContro
 	guildID, token := strings.TrimSpace(query.GuildID), strings.TrimSpace(query.Token)
 	if guildID == "" || !sessioncard.ValidControlToken(token) {
 		return domain.Session{}, domain.ErrNotFound
+	}
+	if repository, ok := service.repository.(ports.SessionCardControlRepository); ok {
+		return repository.ResolveCardControl(ctx, guildID, token)
 	}
 	sessions, err := service.selectableSessions(ctx, query.Actor, guildID, true)
 	if err != nil {

@@ -52,14 +52,15 @@ type Projection struct {
 }
 
 type ProgressProjection struct {
-	Visible   bool
-	Bar       string
-	Step      int
-	Total     int
-	Completed int
-	Condition string
-	Guidance  string
-	Activity  string
+	Visible        bool
+	HideWhenPublic bool
+	Bar            string
+	Step           int
+	Total          int
+	Completed      int
+	Condition      string
+	Guidance       string
+	Activity       string
 }
 
 type LifecycleTimingProjection struct {
@@ -100,6 +101,7 @@ type ModsProjection struct {
 	PendingStatus           string
 	PendingSince            time.Time
 	DownloadURL             string
+	DownloadName            string
 	CreatorDLCs             []string
 	ActiveWorkshopSourceID  uint64
 	PendingWorkshopSourceID uint64
@@ -206,6 +208,10 @@ func Project(session domain.Session, options Options) Projection {
 		if session.Progress.State == domain.ProgressCompletedState && !session.Progress.LastProgressAt.IsZero() {
 			projection.StatusSince = session.Progress.LastProgressAt.UTC()
 		}
+	}
+	if session.LifecycleState == domain.StateArchived && session.Progress.WorkflowType == domain.ArchiveWorkflowType &&
+		session.Progress.State == domain.ProgressCompletedState && !session.Progress.LastProgressAt.IsZero() {
+		projection.StatusSince = session.Progress.LastProgressAt.UTC()
 	}
 
 	if projection.Progress.Visible && !session.Progress.StartedAt.IsZero() {
@@ -415,6 +421,18 @@ func ProgressStageLabel(milestone domain.ProgressMilestone) string {
 	return progressLabel(milestone)
 }
 
+// PlayerControlVisible keeps the public A2S control aligned with the lifecycle
+// states in which a live game server can actually answer player queries.
+func PlayerControlVisible(state domain.LifecycleState) bool {
+	return state == domain.StateRunning || state == domain.StateIdle
+}
+
+// CardControlsVisible removes controls once a session reaches a stable state
+// where the public card no longer has live data to query or refresh.
+func CardControlsVisible(state domain.LifecycleState) bool {
+	return state != domain.StateSleeping && state != domain.StateArchived && state != domain.StateDeleted
+}
+
 func ProgressStep(workflowType string, milestone domain.ProgressMilestone) (int, int, bool) {
 	milestones, ok := domain.MilestonesForWorkflow(workflowType)
 	if !ok {
@@ -448,7 +466,8 @@ func progressProjection(session domain.Session, workflow *domain.Workflow, now t
 	}
 	condition := progressCondition(session, workflow, now)
 	return ProgressProjection{
-		Visible: true, Bar: bar.String(), Step: current + 1,
+		Visible: true, HideWhenPublic: session.LifecycleState == domain.StateSleeping && progress.WorkflowType == domain.SleepWorkflowType && progress.State == domain.ProgressCompletedState && progress.Milestone == domain.ProgressCompleted,
+		Bar: bar.String(), Step: current + 1,
 		Total: len(milestones), Completed: len(progress.CompletedMilestones),
 		Condition: condition, Guidance: progressGuidance(progress.Milestone, condition), Activity: progressActivity(progress),
 	}
@@ -548,6 +567,8 @@ func LifecycleLabel(state domain.LifecycleState) string {
 		return "Setting up"
 	case domain.StateReady:
 		return "Ready"
+	case domain.StateRestarting:
+		return "Restarting"
 	case domain.StateWaking, domain.StateRestoring:
 		return "Starting"
 	case domain.StateRunning, domain.StateIdle:
@@ -597,7 +618,7 @@ func stageLabel(session domain.Session) string {
 		return "Infrastructure"
 	case domain.StateBootstrapping, domain.StateInstalling:
 		return "Game and content setup"
-	case domain.StateReady, domain.StateWaking, domain.StateRestoring:
+	case domain.StateReady, domain.StateWaking, domain.StateRestoring, domain.StateRestarting:
 		return "Health verification"
 	case domain.StateRunning, domain.StateIdle:
 		return "Playable"
@@ -616,6 +637,8 @@ func operationLabel(value string) string {
 		return "Setting up game and content"
 	case domain.SleepWorkflowType:
 		return "Putting server to sleep"
+	case domain.RestartWorkflowType:
+		return "Restarting game server"
 	case domain.WakeWorkflowType:
 		return "Waking server"
 	case domain.ArchiveWorkflowType:
@@ -781,6 +804,7 @@ func modProjection(session domain.Session, modlistURL string) ModsProjection {
 	active := session.EffectiveActivePresetRevision()
 	if !active.Empty() {
 		projection.ActiveRevision = active.Number
+		projection.DownloadName = active.Modlist.Filename
 		projection.ActiveSince = active.ActivatedAt.UTC()
 		projection.ActiveWorkshopSourceID = active.WorkshopSourceID
 	}

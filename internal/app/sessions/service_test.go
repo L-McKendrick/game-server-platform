@@ -1708,3 +1708,116 @@ func seedRunningSession(t *testing.T, repository *memory.SessionRepository, now 
 		t.Fatal(err)
 	}
 }
+
+func TestUnifiedStartPreservesWakeCapacity(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	queue := &recordingCommandQueue{}
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour, WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := domain.NewSession(domain.NewSessionInput{
+		ID: "sleeping-session", Slug: "sleeping-session", DisplayName: "Sleeping Session", GameType: "arma3",
+		OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1",
+	}, now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateSleeping, domain.StateSleeping, domain.StateSleeping, domain.HealthStopped
+	session.SleepingSince = now.Add(-time.Minute)
+	session.Infrastructure = domain.Infrastructure{
+		CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"},
+		InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c7i.large", InstanceID: "i-sleeping", DataVolumeID: "vol-sleeping", LastObservedAt: now,
+	}
+	event := domain.NewSessionCreatedEvent("sleeping-created", "sleeping-created", testActor("owner-1"), session, now)
+	idempotency, _ := domain.NewCompletedIdempotencyRecord("sleeping-create", "sleeping-hash", session.ID, now, time.Hour)
+	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AcquireCapacitySlot(context.Background(), "other-session", "other-workflow", activeSessionCapacity, now); err != nil {
+		t.Fatal(err)
+	}
+	command := StartCommand{
+		Actor: testActor("owner-1"), SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
+		CommandID: "wake-capacity", CorrelationID: "wake-capacity", IdempotencyKey: "discord:wake-capacity",
+	}
+	if err := service.RequestStart(context.Background(), command); !errors.Is(err, domain.ErrQuotaExceeded) || len(queue.commands) != 0 {
+		t.Fatalf("occupied wake error=%v commands=%#v", err, queue.commands)
+	}
+	if err := repository.ReleaseCapacitySlot(context.Background(), "slot-0", "other-session"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.AcquireCapacitySlot(context.Background(), session.ID, "wake-workflow", activeSessionCapacity, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RequestStart(context.Background(), command); err != nil || len(queue.commands) != 1 {
+		t.Fatalf("owned-slot wake error=%v commands=%#v", err, queue.commands)
+	}
+}
+
+func TestUnifiedStartLifecycleAndAuthorization(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		state  domain.LifecycleState
+		actor  string
+		admin  bool
+		guild  string
+		active bool
+		want   error
+	}{
+		{"owner wake", domain.StateSleeping, "owner-1", false, "guild-1", false, nil},
+		{"admin wake", domain.StateSleeping, "admin-1", true, "guild-1", false, nil},
+		{"unauthorized wake", domain.StateSleeping, "other-1", false, "guild-1", false, domain.ErrForbidden},
+		{"cross guild", domain.StateSleeping, "admin-1", true, "guild-2", false, domain.ErrForbidden},
+		{"admin cannot provision", domain.StateNew, "admin-1", true, "guild-1", false, domain.ErrForbidden},
+		{"archived stays separate", domain.StateArchived, "owner-1", false, "guild-1", false, domain.ErrInvalidTransition},
+		{"running", domain.StateRunning, "owner-1", false, "guild-1", false, domain.ErrInvalidTransition},
+		{"idle", domain.StateIdle, "owner-1", false, "guild-1", false, domain.ErrInvalidTransition},
+		{"deleted", domain.StateDeleted, "owner-1", false, "guild-1", false, domain.ErrInvalidTransition},
+		{"duplicate admin wake", domain.StateWaking, "admin-1", true, "guild-1", true, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
+			repository := memory.NewSessionRepository()
+			queue := &recordingCommandQueue{}
+			service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: now}, time.Hour, WithCommandQueue(queue))
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.LifecycleState, session.DesiredState, session.ObservedState = tc.state, tc.state, tc.state
+			session.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c7i.large", InstanceID: "i-1", DataVolumeID: "vol-1", LastObservedAt: now}
+			if tc.active {
+				session.ActiveWorkflowID = "wake-1"
+				session.ActiveWorkflowStartedAt = now
+				session.ActiveWorkflowType = domain.WakeWorkflowType
+				session.ActiveWorkflowLeaseExpiresAt = now.Add(time.Hour)
+			}
+			event := domain.NewSessionCreatedEvent("event-1", "correlation-1", testActor("owner-1"), session, now)
+			record, _ := domain.NewCompletedIdempotencyRecord("create-1", "hash-1", session.ID, now, time.Hour)
+			if err := repository.Create(context.Background(), session, event, record); err != nil {
+				t.Fatal(err)
+			}
+			err = service.RequestStart(context.Background(), StartCommand{Actor: testActor(tc.actor), CanManageGuild: tc.admin, SessionID: session.ID, GuildID: tc.guild, ChannelID: session.ChannelID, CommandID: "start-1", IdempotencyKey: "discord:start-1", CorrelationID: "correlation-1"})
+			if tc.active {
+				var active domain.OperationInProgressError
+				if !errors.As(err, &active) || active.WorkflowType != domain.WakeWorkflowType || len(queue.commands) != 0 {
+					t.Fatalf("duplicate: err=%v queue=%#v", err, queue.commands)
+				}
+			} else if !errors.Is(err, tc.want) {
+				t.Fatalf("error=%v want=%v", err, tc.want)
+			} else if tc.want != nil {
+				if len(queue.commands) != 0 {
+					t.Fatal("rejected request queued")
+				}
+			} else if len(queue.commands) != 1 || queue.commands[0].CommandType != domain.CommandWakeSession || queue.commands[0].Actor.CanManageGuild != tc.admin || queue.commands[0].IdempotencyKey != "discord:start-1" {
+				t.Fatalf("wake envelope=%#v", queue.commands)
+			}
+		})
+	}
+}

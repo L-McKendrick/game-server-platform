@@ -40,9 +40,48 @@ func TestEnqueueProgressUsesMilestoneIdempotencyAndCardRevision(t *testing.T) {
 	if request.NotificationID != "card-progress-workflow-1-infrastructure-ready" || request.Kind != domain.NotificationSessionCard || request.CardRevision != session.Version {
 		t.Fatalf("request = %#v", request)
 	}
+	if !request.SuppressPlayerControl {
+		t.Fatal("setup progress exposed the live player control")
+	}
 	if request.Embed == nil || !strings.Contains(request.Embed.Title, "SETTING UP") ||
 		!strings.HasPrefix(request.Embed.Description, "**ARMA 3 | Saturday Arma**") || request.Embed.Color != embedColorSetup {
 		t.Fatalf("progress embed = %#v", request.Embed)
+	}
+}
+
+func TestPlayerControlVisibleOnlyForActiveGameServer(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		state domain.LifecycleState
+		want  bool
+	}{
+		{domain.StateInstalling, false},
+		{domain.StateRunning, true},
+		{domain.StateIdle, true},
+		{domain.StateArchived, false},
+		{domain.StateDeleted, false},
+	} {
+		if got := PlayerControlVisible(test.state); got != test.want {
+			t.Errorf("PlayerControlVisible(%s) = %t; want %t", test.state, got, test.want)
+		}
+	}
+}
+
+func TestCardControlsVisibleUntilStableOfflineState(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		state domain.LifecycleState
+		want  bool
+	}{
+		{domain.StateProvisioning, true},
+		{domain.StateSleeping, false},
+		{domain.StateArchived, false},
+		{domain.StateDeleted, false},
+		{domain.StateFailed, true},
+	} {
+		if got := CardControlsVisible(test.state); got != test.want {
+			t.Errorf("CardControlsVisible(%s) = %t; want %t", test.state, got, test.want)
+		}
 	}
 }
 
@@ -66,7 +105,7 @@ func TestEnqueueTerminatedProgressSuppressesPublicCardControls(t *testing.T) {
 		t.Fatal(err)
 	}
 	requests := queue.Requests()
-	if len(requests) != 1 || !requests[0].SuppressCardControls || requests[0].CardRevision != session.Version {
+	if len(requests) != 1 || !requests[0].SuppressCardControls || !requests[0].SuppressPlayerControl || requests[0].CardRevision != session.Version {
 		t.Fatalf("terminated card request = %#v", requests)
 	}
 }

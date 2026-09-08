@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
+	"github.com/aws/aws-lambda-go/events"
 )
 
 type cardSender struct {
@@ -24,9 +26,14 @@ type cardSender struct {
 	modlistCalls    int
 	modlistExisting []string
 	modlistMessage  string
+	sendErr         error
+	sendRequests    []domain.NotificationRequest
 }
 
-func (*cardSender) Send(context.Context, domain.NotificationRequest) error { return nil }
+func (sender *cardSender) Send(_ context.Context, request domain.NotificationRequest) error {
+	sender.sendRequests = append(sender.sendRequests, request)
+	return sender.sendErr
+}
 func (sender *cardSender) SendModlist(_ context.Context, _ domain.NotificationRequest, _ []byte, existing string) (string, error) {
 	sender.modlistCalls++
 	sender.modlistExisting = append(sender.modlistExisting, existing)
@@ -132,6 +139,37 @@ func TestDeliverModlistRejectsObjectMetadataMismatch(t *testing.T) {
 	}
 }
 
+func TestReadyNotificationValidatesClaimAndDoesNotRetryDeliveryFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-ready", Slug: "ready", DisplayName: "Ready", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "card-channel"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(domain.SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 86400, Vanilla: true, NotifyWhenReady: true, ReadyNotificationChannelID: "creation-channel"}, now); err != nil {
+		t.Fatal(err)
+	}
+	session.ClaimInitialReadyNotification(now.Add(time.Minute))
+	event := domain.NewSessionCreatedEvent("event-ready", "correlation-ready", domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}, session, now)
+	record, _ := domain.NewCompletedIdempotencyRecord("create-ready", "hash-ready", session.ID, now, time.Hour)
+	if err := repository.Create(context.Background(), session, event, record); err != nil {
+		t.Fatal(err)
+	}
+	sender := &cardSender{sendErr: errors.New("Discord unavailable")}
+	handler := &handler{sender: sender, cards: repository, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	request := domain.NotificationRequest{SchemaVersion: 1, NotificationID: "session-ready-session-ready", SessionID: session.ID, GuildID: session.GuildID, ChannelID: "creation-channel", Content: "<@owner-1> Ready is ready to join.", Kind: domain.NotificationSessionReady, AllowedUserIDs: []string{"owner-1"}, CorrelationID: "correlation-ready", RequestedAt: now.Add(time.Minute)}
+	body, _ := json.Marshal(request)
+	response, err := handler.Handle(context.Background(), events.SQSEvent{Records: []events.SQSMessage{{MessageId: "message-ready", Body: string(body)}}})
+	if err != nil || len(response.BatchItemFailures) != 0 || len(sender.sendRequests) != 1 {
+		t.Fatalf("response=%#v sends=%d err=%v", response, len(sender.sendRequests), err)
+	}
+	request.AllowedUserIDs = []string{"other-user"}
+	if err := handler.deliverReady(context.Background(), request); err == nil {
+		t.Fatal("mismatched ready owner mention was accepted")
+	}
+}
+
 func TestDeliverCardCreatesOnceSkipsReplayAndEditsNewRevision(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC)
@@ -160,6 +198,9 @@ func TestDeliverCardCreatesOnceSkipsReplayAndEditsNewRevision(t *testing.T) {
 	}
 	if err := handler.deliverCard(context.Background(), request); err != nil {
 		t.Fatal(err)
+	}
+	if len(sender.cardRequests) != 1 || !sender.cardRequests[0].SuppressPlayerControl {
+		t.Fatalf("setup card requests = %#v; want player control suppressed", sender.cardRequests)
 	}
 	stored, err := repository.GetCardReference(context.Background(), session.ID)
 	if err != nil {

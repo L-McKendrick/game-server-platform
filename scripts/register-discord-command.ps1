@@ -1,9 +1,11 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
+    [ValidatePattern('^[1-9][0-9]{0,19}$')]
     [string]$ApplicationId,
 
     [Parameter(Mandatory)]
+    [ValidatePattern('^[1-9][0-9]{0,19}$')]
     [string]$GuildId,
 
     [string]$CommandFile = "deploy/discord/rb-command.json"

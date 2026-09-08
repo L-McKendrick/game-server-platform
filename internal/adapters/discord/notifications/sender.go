@@ -80,9 +80,12 @@ func (sender *Sender) Send(ctx context.Context, request domain.NotificationReque
 	if err != nil {
 		return err
 	}
+	allowedMentions := map[string]any{"parse": []string{}}
+	if request.Kind == domain.NotificationSessionReady {
+		allowedMentions["users"] = append([]string(nil), request.AllowedUserIDs...)
+	}
 	body, err := json.Marshal(map[string]any{
-		"content":          request.Content,
-		"allowed_mentions": map[string]any{"parse": []string{}},
+		"content": request.Content, "allowed_mentions": allowedMentions,
 	})
 	if err != nil {
 		return err
@@ -250,6 +253,9 @@ func sessionCardControls(request domain.NotificationRequest) ([]map[string]any, 
 	}
 	buttons := make([]map[string]any, 0, len(controls))
 	for _, control := range controls {
+		if request.SuppressPlayerControl && control.action == componentid.ActionShowPlayers {
+			continue
+		}
 		customID, customIDErr := componentid.New(control.action, revision, token)
 		if customIDErr != nil {
 			return nil, fmt.Errorf("build session card control: %w", customIDErr)

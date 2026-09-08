@@ -17,7 +17,7 @@ func TestSessionNextActionIsStateAwareAndNeverImpliesRetry(t *testing.T) {
 		{domain.StateNew, "/rb start"},
 		{domain.StateProvisioning, "No second operation"},
 		{domain.StateRunning, "/rb sleep"},
-		{domain.StateSleeping, "/rb wake"},
+		{domain.StateSleeping, "/rb start"},
 		{domain.StateArchived, "/rb restore"},
 		{domain.StateFailed, "No automatic retry is scheduled"},
 		{domain.StateDeleting, "no scheduled retry"},

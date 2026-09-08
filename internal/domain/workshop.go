@@ -85,6 +85,7 @@ type WorkshopSourceRequest struct {
 	ActorID                      string         `json:"actor_id"`
 	GuildID                      string         `json:"guild_id"`
 	ChannelID                    string         `json:"channel_id"`
+	Roles                        []string       `json:"roles,omitempty"`
 	CorrelationID                string         `json:"correlation_id"`
 	IdempotencyKey               string         `json:"idempotency_key"`
 	RequestedAt                  time.Time      `json:"requested_at"`
@@ -161,12 +162,20 @@ func (request WorkshopSourceRequest) Validate() error {
 		return fmt.Errorf("Workshop target must be mission or mods")
 	case strings.TrimSpace(request.ActorID) == "" || strings.TrimSpace(request.GuildID) == "" || strings.TrimSpace(request.ChannelID) == "":
 		return fmt.Errorf("Workshop requester context is required")
+	case len(request.Roles) > 250:
+		return fmt.Errorf("Workshop requester roles exceed the supported limit")
 	case strings.TrimSpace(request.CorrelationID) == "" || strings.TrimSpace(request.IdempotencyKey) == "":
 		return fmt.Errorf("Workshop request identity is required")
 	case request.RequestedAt.IsZero():
 		return fmt.Errorf("Workshop request time is required")
 	case request.ExpectedActivePresetRevision < 0:
 		return fmt.Errorf("expected active preset revision cannot be negative")
+	}
+	for _, role := range request.Roles {
+		normalizedRole := strings.TrimSpace(role)
+		if normalizedRole == "" || len(normalizedRole) > 64 {
+			return fmt.Errorf("Workshop requester role is invalid")
+		}
 	}
 	_, err := ParseWorkshopURL(request.SourceURL)
 	return err

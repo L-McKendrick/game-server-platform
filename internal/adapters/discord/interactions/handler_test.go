@@ -334,9 +334,12 @@ func TestHandlerNormalizesWorkshopModQueryParametersBeforeMutation(t *testing.T)
 	if err != nil || invalid.Data == nil || !strings.Contains(invalid.Data.Content, "valid `id`") || afterInvalid.Version != before.Version || len(queue.WorkshopRequests()) != 0 {
 		t.Fatalf("invalid response=%#v before=%d after=%#v requests=%#v err=%v", invalid.Data, before.Version, afterInvalid, queue.WorkshopRequests(), err)
 	}
-	request := createWorkshopRequest(interactionPayload{GuildID: "guild-1", ChannelID: "channel-1"}, domain.Actor{ID: "owner-1"}, "correlation-1", "session-1", domain.WorkshopTargetMods, "https://steamcommunity.com/sharedfiles/filedetails/?id=12345&l=english&utm_source=copy", "key-1", testNow)
+	request := createWorkshopRequest(interactionPayload{GuildID: "guild-1", ChannelID: "channel-1", Member: &interactionMember{Roles: []string{"role-allowed"}}}, domain.Actor{ID: "owner-1"}, "correlation-1", "session-1", domain.WorkshopTargetMods, "https://steamcommunity.com/sharedfiles/filedetails/?id=12345&l=english&utm_source=copy", "key-1", testNow)
 	if request.SourceURL != "https://steamcommunity.com/sharedfiles/filedetails/?id=12345" {
 		t.Fatalf("canonical Workshop request URL = %q", request.SourceURL)
+	}
+	if len(request.Roles) != 1 || request.Roles[0] != "role-allowed" {
+		t.Fatalf("Workshop request roles = %#v", request.Roles)
 	}
 }
 
@@ -380,7 +383,7 @@ func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testi
 		[]string{"session-modal", "event-created", "event-configured", "event-artifacts"},
 	)
 	body := createModalSubmissionBody(
-		"interaction-modal", "Saturday Arma", []string{createFeatureModded, createFeatureTeamSpeak, createFeatureAutoStart}, true, "mission.pbo",
+		"interaction-modal", "Saturday Arma", []string{createFeatureModded, createFeatureTeamSpeak, createFeatureAutoStart, createFeatureNotifyReady}, true, "mission.pbo",
 	)
 
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -405,7 +408,7 @@ func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testi
 	}
 	session := sessions[0]
 	if session.ID != "session-modal" || session.Description != "Weekly co-op" ||
-		session.ConfigurationRevision != 1 || session.Vanilla || !session.TeamSpeakEnabled || !session.StartWhenReady ||
+		session.ConfigurationRevision != 1 || session.Vanilla || !session.TeamSpeakEnabled || !session.StartWhenReady || !session.NotifyWhenReady || session.ReadyNotificationChannelID != "channel-1" ||
 		session.SleepAfterSeconds != defaultSleepMinutes*60 || session.ArchiveAfterSeconds != defaultArchiveDays*86400 {
 		t.Fatalf("configured draft = %#v", session)
 	}
@@ -926,10 +929,11 @@ func TestHandlerOpensCreateModalWithoutPersistingSession(t *testing.T) {
 	}
 	features := components[2].Component
 	if features.CustomID != createFeaturesCustomID || features.MinValues == nil || *features.MinValues != 0 ||
-		features.MaxValues == nil || *features.MaxValues != 3 || len(features.Options) != 3 ||
+		features.MaxValues == nil || *features.MaxValues != 4 || len(features.Options) != 4 ||
 		features.Options[0].Value != createFeatureModded || !features.Options[0].Default ||
 		features.Options[1].Value != createFeatureTeamSpeak || features.Options[1].Default ||
-		features.Options[2].Value != createFeatureAutoStart || features.Options[2].Default {
+		features.Options[2].Value != createFeatureAutoStart || features.Options[2].Default ||
+		features.Options[3].Value != createFeatureNotifyReady || features.Options[3].Default {
 		t.Fatalf("feature defaults = %#v; want modded on and TeamSpeak off", features.Options)
 	}
 	mission := components[3].Component
@@ -2465,3 +2469,47 @@ func marshalPayload(value any) []byte {
 }
 
 var _ SessionService = (*appsession.Service)(nil)
+
+func TestHandlerUnifiedStartSleepingAndArchived(t *testing.T) {
+	for _, tc := range []struct {
+		name                              string
+		state                             domain.LifecycleState
+		actor, permissions, command, want string
+	}{
+		{"owner restart", domain.StateRunning, "owner-1", "0", "restart", "Restart request accepted"},
+		{"admin restart", domain.StateIdle, "admin-1", "32", "restart", "Restart request accepted"},
+		{"sleeping restart", domain.StateSleeping, "owner-1", "0", "restart", "Restart requires"},
+		{"unauthorized restart", domain.StateRunning, "other-1", "0", "restart", "Session not found"},
+		{"owner wake", domain.StateSleeping, "owner-1", "0", "start", "Start request accepted"},
+		{"admin wake", domain.StateSleeping, "admin-1", "32", "start", "Start request accepted"},
+		{"nonowner denied", domain.StateSleeping, "other-1", "0", "start", "Session not found"},
+		{"archive guidance", domain.StateArchived, "owner-1", "0", "start", "Use `/rb restore`"},
+		{"unsupported running", domain.StateRunning, "owner-1", "0", "start", "cannot start in its current state"},
+		{"removed command", domain.StateSleeping, "owner-1", "0", "wake", "not supported yet"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, repository, key := newTestHandler(t, []string{"correlation-1"}, nil)
+			session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, testNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			session.LifecycleState, session.DesiredState, session.ObservedState = tc.state, tc.state, tc.state
+			session.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c7i.large", InstanceID: "i-1", DataVolumeID: "vol-1", LastObservedAt: testNow}
+			actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}
+			event := domain.NewSessionCreatedEvent("event-1", "correlation-1", actor, session, testNow)
+			record, _ := domain.NewCompletedIdempotencyRecord("create-1", "hash-1", session.ID, testNow, time.Hour)
+			if err := repository.Create(context.Background(), session, event, record); err != nil {
+				t.Fatal(err)
+			}
+			body := []byte(fmt.Sprintf(`{"id":"interaction-1","application_id":"app-1","type":2,"guild_id":"guild-1","channel_id":"channel-1","member":{"user":{"id":%q},"roles":["role-1"],"permissions":%q},"data":{"name":"rb","options":[{"type":1,"name":%q,"options":[{"type":3,"name":"session","value":"session-1"}]}]}}`, tc.actor, tc.permissions, tc.command))
+			response := executeSignedRequest(t, handler, key, body, testNow)
+			var payload interactionResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Data == nil || !strings.Contains(payload.Data.Content, tc.want) {
+				t.Fatalf("response=%s want=%s", response.Body.String(), tc.want)
+			}
+		})
+	}
+}

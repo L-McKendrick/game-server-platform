@@ -2,70 +2,75 @@
 
 ## State and Objective
 
-Branch review for `codex/setup-polling-progress` is complete against `main`.
-The branch reduces setup polling transitions and improves download/status
-presentation. No PR has been opened, and this review performs no deployment.
-See `docs/setup-polling-review.md` for findings, validation, and proposed PR text.
+Phase 18 (Discord lifecycle UX and restart) is ready for PR review on
+`codex/discord-lifecycle-ux`. The final review correction is committed locally;
+per user instruction, do not push or create a PR. Next: user reviews the proposed
+PR title/description and chooses when to publish the branch.
 
-## Review Findings and Changes
+## Current Handoff
 
-- Fixed sampler shutdown during an in-flight S3 upload. Both upload and sleep
-  are interruptible; telemetry children release inherited host/bootstrap locks.
-- Added slow-upload and Steam reauthorization failure regression coverage while
-  preserving success/transient-failure exit codes and private-output redaction.
-- Reviewed provisioning counters/replay, readiness precedence, bootstrap deadline
-  and terminal precedence, snapshot bounds/fallback, cached/retried Workshop
-  positions, safe links, activity clearing, and card revision/rate limits.
-- Workshop percentage is not implemented: no reliable per-item percentage signal
-  was verified in the current command output. Arma percentages use latest-only
-  local sampling; normal visibility lag can reach roughly 150 seconds plus
-  delivery overhead, and unavailable snapshots can remain stale longer.
+- Reviewed the branch against merge base `53373c028ce20904f5f79eabc1fe2ba0b5e1bf27`.
+  Corrected one confirmed defect: restart synchronized a new Workshop scenario
+  and then overwrote it with an older accepted file sharing its filename.
+  Accepted mission files/settings now deploy before pending Workshop content.
+- Added a shell regression using the actual restart block and mission deployment
+  code. Both manifest and legacy single-mission cases failed before the fix and
+  passed afterward; restart replay and TeamSpeak-preservation checks passed.
+- Go 1.26.5 validation passed: `go test -cover ./...`, `go vet ./...`,
+  `go build ./cmd/...`, and Lambda packaging. Terraform 1.15.8 recursive formatting
+  and development validation passed. No local C compiler was available; the
+  required GitHub CI race check remains the release gate.
+- Release behavior: `/rb start` handles ready drafts and sleeping sessions;
+  `/rb restart` applies content/settings while leaving EC2 and TeamSpeak running;
+  creation supports optional automatic setup and a best-effort initial ready ping.
+  Public cards hide inapplicable mission/player/progress/control information.
+  Direct card-token claims remove the normal guild-scan lookup dependency.
+- Updated the restart runbook and roadmap. Nothing was deployed, registered,
+  restarted, pushed, or opened as a PR during this review.
 
-## Validation and Remaining Attention
+## Important Operator Attention
 
-Go 1.26.5 coverage tests, vet, all command builds, Bash behavior/syntax,
-Terraform 1.15.8 formatting/validation, and Lambda packaging all pass.
-No local C compiler is available; race testing remains the required CI gate.
-
-The pre-existing test-44 restore failure is still unresolved: replacement-host
-AWS CLI prerequisites and restore failure finalization need Phase 16.7. Test-44
-was reconciled to FAILED with its workflow lock cleared. Default: do not attempt
-another live restore as part of this branch review. This branch does not claim
-restore release readiness.
-
-Branch deployment scope: provisioning/bootstrap state-machine definitions,
-bootstrap script object/key, and all shared-renderer Lambda consumers in the
-standard packaging script. No new AWS resources, IAM grants, migrations, or
-Discord command definitions. Review unrelated Terraform differences separately.
+- Prior live evidence showed `test-47` needs manual `/rb start` after its content
+  acceptance is confirmed. Default: do not redrive its old role-less message.
+- Verify both controls on the existing `test-50` card after deployment to exercise
+  legacy token backfill, then repeat a click to check the direct lookup path.
+- Live restart acceptance interrupts players. Default: do not run it without
+  explicit approval for a disposable session.
 
 ## Commands to Apply Current Changes
 
-Run from the repository root. The earlier setup-polling plan is not reused.
+Run from the repository root. Lambda archives were already packaged with Go
+1.26.5 during this review; no further packaging is needed for this checkout.
+The restart script has a new content-addressed S3 key and Terraform updates the
+workers' script references. Review the full release plan, preserving existing
+plan files and provisioning/budget settings.
 
 ```powershell
-$ErrorActionPreference = "Stop"
 $env:AWS_PROFILE = "game-server-dev"
-$env:AWS_REGION = "us-west-2"
-$env:AWS_EC2_METADATA_DISABLED = "true"
-$env:GOTOOLCHAIN = "go1.26.5"
-$env:GOCACHE = Join-Path (Get-Location) ".cache/go-build"
-./scripts/package-discord-lambda.ps1
-if ($LASTEXITCODE -ne 0) { throw "Lambda packaging failed" }
-if (Test-Path -LiteralPath "infra/terraform/environments/dev/setup-polling-review-20260906.tfplan") {
-    throw "Plan already exists; choose a new descriptive filename in all commands below."
-}
-terraform -chdir=infra/terraform/environments/dev plan -out setup-polling-review-20260906.tfplan
-if ($LASTEXITCODE -ne 0) { throw "Terraform plan failed" }
-terraform -chdir=infra/terraform/environments/dev show setup-polling-review-20260906.tfplan
-if ($LASTEXITCODE -ne 0) { throw "Terraform plan review failed" }
-# Review the displayed plan before running the following apply command.
-terraform -chdir=infra/terraform/environments/dev apply setup-polling-review-20260906.tfplan
-if ($LASTEXITCODE -ne 0) { throw "Terraform apply failed" }
-./scripts/verify-bootstrap-worker-deployment.ps1
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$phase18Plan = "phase18-restart-mission-review-$timestamp.tfplan"
+terraform -chdir=infra/terraform/environments/dev plan "-out=$phase18Plan"
+terraform -chdir=infra/terraform/environments/dev show $phase18Plan
 ```
 
-Verify a fresh setup shows Arma percentages, then the Workshop count in the stage
-and linked ID on the download line; verify a blank line before Started and no
-Active condition. Existing in-flight bootstrap commands keep their already
-loaded script. Check `/rb status` source links and Refresh feedback. Discord
-registration is not required.
+After approving that exact plan, in the same PowerShell session:
+
+```powershell
+terraform -chdir=infra/terraform/environments/dev apply $phase18Plan
+aws lambda list-functions --profile game-server-dev --region us-west-2 --query "Functions[?starts_with(FunctionName, 'game-server-platform-dev-')].[FunctionName,LastUpdateStatus,CodeSha256]" --output table
+$discordSecretJson = aws secretsmanager get-secret-value --secret-id /game-server-platform/dev/discord-bot-token --profile game-server-dev --region us-west-2 --query SecretString --output text
+$discordSecret = $discordSecretJson | ConvertFrom-Json
+$env:DISCORD_BOT_TOKEN = $discordSecret.token
+./scripts/register-discord-command.ps1 -ApplicationId "1533676701354299402" -GuildId "1192304488351019008"
+Remove-Item Env:DISCORD_BOT_TOKEN
+$discordSecret = $null
+$discordSecretJson = $null
+```
+
+Registration remains required for the Phase 18 release, which removes `/rb wake`
+and adds `/rb restart`; this review correction introduces no further command
+changes. Verify optional automatic setup/ready ping, sleep followed by start,
+lifecycle-specific cards and controls, and legacy card-token backfill. With live
+restart approval, verify no-change and pending-content restarts and an updated
+Workshop scenario retaining its new checksum when it shares the old filename.
+Confirm unchanged EC2/TeamSpeak and promotion only after health verification.

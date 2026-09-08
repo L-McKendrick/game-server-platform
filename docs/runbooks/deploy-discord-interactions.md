@@ -122,15 +122,19 @@ signed `PING` must receive `PONG`. Confirm Lambda/API alarms remain clear.
 ## 7. Bulk-register the guild command
 
 ```powershell
-./scripts/register-discord-command.ps1 `
-  -ApplicationId "<application-id>" `
-  -GuildId "<development-guild-id>"
+$DiscordSecretJson = aws secretsmanager get-secret-value --secret-id /game-server-platform/dev/discord-bot-token --profile game-server-dev --region us-west-2 --query SecretString --output text
+$DiscordSecret = $DiscordSecretJson | ConvertFrom-Json
+$env:DISCORD_BOT_TOKEN = $DiscordSecret.token
+./scripts/register-discord-command.ps1 -ApplicationId "1533676701354299402" -GuildId "1192304488351019008"
+Remove-Item Env:DISCORD_BOT_TOKEN
+$DiscordSecret = $null
+$DiscordSecretJson = $null
 ```
 
-The script prompts securely when `DISCORD_BOT_TOKEN` is absent and bulk
-overwrites the development guild's command set with only `/rb`. This removes
-the retired standalone `/admin` command. Clear the environment token after any
-non-interactive use.
+The development secret is stored as `{ "token": "..." }`. The script bulk
+overwrites the development guild's command set with only `/rb`, removing the
+retired standalone `/admin` command. The commands clear the environment token
+and local secret variables immediately after registration.
 
 Guild registration is inherently unavailable in DMs. Discord cannot attach
 default permissions to only the `/rb admin` subcommand, so do not restrict the
@@ -151,14 +155,20 @@ Run the non-billable checks first:
 1. `/rb help` shows first-run or existing-user guidance privately.
 2. `/rb create` opens one private five-field modal. Submit a disposable Arma 3
    name, optional description, mode/features, valid mission, and optional
-   preset. Confirm the response says validation is pending and no game-server
-   infrastructure was allocated.
+   preset. Confirm `Notify when ready?` defaults off. When testing it on, verify
+   initial healthy bootstrap posts one owner-only mention in the command
+   channel, linking the title only when the public card exists. Confirm the
+   response says validation is pending and no game-server infrastructure was
+   allocated before required input is accepted.
 3. `/rb list`, `/rb status session:<choice>`, `/rb setup session:<choice>`, and
    `/rb help session:<choice>` use readable labels/slugs, never visible
    immutable IDs, and return private mobile-safe output.
-4. The public card is created once, retains `Show players` and `Refresh` only,
-   and uses text/icon labels in addition to color. A stale card or modal returns
-   refresh/reopen guidance without state leakage.
+4. The public card is created once and uses text/icon labels in addition to
+   color. Running/idle cards show `Current mission`, `Show players`, and
+   `Refresh`; setup and sleeping cards omit `Current mission`; completed
+   archives use the compact bluish-gray card with only `Refresh`; terminated
+   cards have no controls. A stale card or modal returns refresh/reopen guidance
+   without state leakage.
 5. A normal member is denied `/rb admin`; a manager can open `/rb admin`,
    replace allowed Discord roles, confirm removal of all normal-role access,
    and repair a card. Verify the manager recovery path after removing roles.
@@ -175,7 +185,9 @@ session:
 2. After files are accepted, run `/rb start session:<choice>` and use
    `/rb status` to follow the durable milestones. Repeating start during an
    active operation must show progress and queue nothing new.
-3. Verify playable health and connection details, then test sleep/wake.
+3. Verify playable health and connection details, test `/rb sleep` followed by
+   `/rb start`, and verify `/rb restart` leaves the EC2 instance and TeamSpeak
+   process unchanged while rechecking Arma health.
 4. Exercise archive/restore only when replacement-resource cost is approved.
    Exercise terminate only when permanent deletion of the disposable session
    is approved. `/rb confirm` and `/rb cancel-confirmation` take no options;

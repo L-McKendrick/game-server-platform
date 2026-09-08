@@ -82,6 +82,8 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 			deliveryErr = handler.deliverCard(ctx, request)
 		} else if request.Kind == domain.NotificationSessionModlist {
 			deliveryErr = handler.deliverModlist(ctx, request)
+		} else if request.Kind == domain.NotificationSessionReady {
+			deliveryErr = handler.deliverReady(ctx, request)
 		} else {
 			deliveryErr = handler.sender.Send(ctx, request)
 		}
@@ -93,12 +95,30 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 				slog.String("correlation_id", request.CorrelationID),
 				slog.Any("error", deliveryErr),
 			)
-			response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+			if request.Kind != domain.NotificationSessionReady {
+				response.BatchItemFailures = append(response.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: message.MessageId})
+			}
 			continue
 		}
 		handler.logger.Info("Discord notification delivered", slog.String("notification_id", request.NotificationID), slog.String("correlation_id", request.CorrelationID))
 	}
 	return response, nil
+}
+
+func (handler *handler) deliverReady(ctx context.Context, request domain.NotificationRequest) error {
+	if err := request.Validate(); err != nil {
+		return fmt.Errorf("validate session ready notification: %w", err)
+	}
+	session, err := handler.cards.Get(ctx, request.SessionID)
+	if err != nil {
+		return fmt.Errorf("get session for ready notification: %w", err)
+	}
+	if !session.NotifyWhenReady || session.ReadyNotificationAttemptedAt.IsZero() ||
+		session.GuildID != request.GuildID || session.ReadyNotificationChannelID != request.ChannelID ||
+		len(request.AllowedUserIDs) != 1 || request.AllowedUserIDs[0] != session.OwnerDiscordUserID {
+		return fmt.Errorf("session ready notification does not match claimed session metadata")
+	}
+	return handler.sender.Send(ctx, request)
 }
 
 func (handler *handler) deliverCard(ctx context.Context, request domain.NotificationRequest) error {
@@ -112,6 +132,8 @@ func (handler *handler) deliverCard(ctx context.Context, request domain.Notifica
 	if session.GuildID != request.GuildID || session.ChannelID != request.ChannelID {
 		return fmt.Errorf("session card destination does not match session metadata")
 	}
+	request.SuppressCardControls = !sessioncard.CardControlsVisible(session.LifecycleState)
+	request.SuppressPlayerControl = !sessioncard.PlayerControlVisible(session.LifecycleState)
 	reference, err := handler.cards.GetCardReference(ctx, session.ID)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return fmt.Errorf("get persisted session card: %w", err)
@@ -125,8 +147,8 @@ func (handler *handler) deliverCard(ctx context.Context, request domain.Notifica
 	if modlist, modlistErr := handler.cards.GetModlistReference(ctx, session.ID); modlistErr == nil {
 		if sessioncard.IsActiveModlistReference(session, modlist) {
 			messageURL := sessioncard.DiscordMessageURL(session.GuildID, modlist.ChannelID, modlist.MessageID)
-			request.Content = sessioncard.WithModlistLink(request.Content, messageURL)
-			request.Embed = sessioncard.WithModlistLinkEmbed(request.Embed, session.DisplayName, messageURL)
+			request.Content = sessioncard.WithModlistLink(request.Content, modlist.Filename, messageURL)
+			request.Embed = sessioncard.WithModlistLinkEmbed(request.Embed, modlist.Filename, messageURL)
 			if err := request.Validate(); err != nil {
 				return fmt.Errorf("validate enriched session card notification: %w", err)
 			}
@@ -232,7 +254,9 @@ func (handler *handler) deliverModlist(ctx context.Context, request domain.Notif
 		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
 		Content: sessioncard.RenderPublic(projection), Embed: sessioncard.RenderPublicEmbed(projection),
 		Kind: domain.NotificationSessionCard, CardRevision: session.Version,
-		CorrelationID: request.CorrelationID, RequestedAt: request.RequestedAt,
+		SuppressCardControls:  !sessioncard.CardControlsVisible(session.LifecycleState),
+		SuppressPlayerControl: !sessioncard.PlayerControlVisible(session.LifecycleState),
+		CorrelationID:         request.CorrelationID, RequestedAt: request.RequestedAt,
 	}
 	return handler.deliverCard(ctx, card)
 }

@@ -273,7 +273,7 @@ resource "aws_lambda_event_source_mapping" "artifact_worker" {
 data "aws_iam_policy_document" "notification_worker" {
   statement {
     sid       = "SessionCardMetadata"
-    actions   = ["dynamodb:GetItem", "dynamodb:PutItem"]
+    actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:TransactWriteItems"]
     resources = [aws_dynamodb_table.metadata.arn]
   }
 

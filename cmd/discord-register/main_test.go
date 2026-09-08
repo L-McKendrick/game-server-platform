@@ -10,6 +10,26 @@ import (
 	"testing"
 )
 
+func TestValidSnowflakeRejectsPlaceholdersAndMalformedIDs(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		value string
+		want  bool
+	}{
+		{"1533676701354299402", true},
+		{"1192304488351019008", true},
+		{"<development-application-id>", false},
+		{"", false},
+		{"0123", false},
+		{"123abc", false},
+		{"18446744073709551616", false},
+	} {
+		if got := validSnowflake(test.value); got != test.want {
+			t.Errorf("validSnowflake(%q) = %t; want %t", test.value, got, test.want)
+		}
+	}
+}
+
 func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAdminMenu(t *testing.T) {
 	t.Parallel()
 
@@ -67,9 +87,12 @@ func TestRegisterCommandsBulkOverwritesGuildCommandsWithRBAdminMenu(t *testing.T
 	}
 	targeting := map[string]bool{
 		"status": true, "setup": true, "edit": true,
-		"start": true, "sleep": true, "wake": true, "archive": true, "restore": true, "terminate": true,
+		"start": true, "sleep": true, "restart": true, "archive": true, "restore": true, "terminate": true,
 	}
 	for _, subcommand := range received[0].Options {
+		if subcommand.Name == "wake" {
+			t.Fatal("wake must not be registered; use start")
+		}
 		if subcommand.Name == "create" && (len(subcommand.Options) != 1 || subcommand.Options[0].Name != "game" ||
 			subcommand.Options[0].Type != 3 || !subcommand.Options[0].Required || len(subcommand.Options[0].Choices) != 1 ||
 			subcommand.Options[0].Choices[0].Name != "Arma 3" || subcommand.Options[0].Choices[0].Value != "arma-3") {

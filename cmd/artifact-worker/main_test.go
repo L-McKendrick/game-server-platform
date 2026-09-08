@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,35 @@ import (
 
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
+
+type recordingAutomaticStarter struct {
+	sessions     []domain.Session
+	correlations []string
+	roles        [][]string
+}
+
+func (starter *recordingAutomaticStarter) RequestAutomaticStart(_ context.Context, session domain.Session, correlationID string, roles []string) error {
+	starter.sessions = append(starter.sessions, session)
+	starter.correlations = append(starter.correlations, correlationID)
+	starter.roles = append(starter.roles, append([]string(nil), roles...))
+	return nil
+}
+
+func TestResolvedWorkshopCollectionQueuesNormalAutomaticStart(t *testing.T) {
+	starter := &recordingAutomaticStarter{}
+	handler := &handler{startService: starter}
+	session := domain.Session{ID: "session-collection", StartWhenReady: true, LifecycleState: domain.StateNew}
+	request := domain.WorkshopSourceRequest{CorrelationID: "collection-correlation", Roles: []string{"role-allowed"}}
+	if err := handler.requestAutomaticStart(context.Background(), session, request); err != nil {
+		t.Fatal(err)
+	}
+	if len(starter.sessions) != 1 || starter.sessions[0].ID != session.ID || starter.correlations[0] != request.CorrelationID {
+		t.Fatalf("automatic start = sessions %#v correlations %#v", starter.sessions, starter.correlations)
+	}
+	if len(starter.roles) != 1 || len(starter.roles[0]) != 1 || starter.roles[0][0] != "role-allowed" {
+		t.Fatalf("automatic start roles = %#v", starter.roles)
+	}
+}
 
 func TestDecodeWorkshopRequestAcceptsLegacyUnixTime(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{"message_type": "workshop_resolution", "schema_version": 1, "session_id": "session-1", "target": "mods", "source_url": "https://steamcommunity.com/sharedfiles/filedetails/?id=42", "actor_id": "owner", "guild_id": "guild", "channel_id": "channel", "correlation_id": "correlation", "idempotency_key": "key", "requested_at": int64(1788415147)})

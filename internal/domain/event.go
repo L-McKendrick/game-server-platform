@@ -33,6 +33,7 @@ const (
 	EventSessionSleeping           EventType = "GameServerSleeping"
 	EventWakeStarted               EventType = "GameServerWakeStarted"
 	EventSessionWoken              EventType = "GameServerWoken"
+	EventSessionRestarted                    = "SessionRestarted"
 	EventSleepWakeFailed           EventType = "GameServerSleepWakeFailed"
 	EventArchiveStarted            EventType = "SessionArchiveStarted"
 	EventArchiveVerified           EventType = "SessionArchiveVerified"

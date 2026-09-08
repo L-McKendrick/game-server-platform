@@ -9,10 +9,11 @@ Arma 3 servers through `/rb` commands. It deploys each server to AWS, installs
 the selected mission and mods, publishes connection details, and reports live
 status in Discord.
 
-Members can start, sleep, wake, archive, restore, or permanently terminate a
-server without using the AWS console. Server owners can revise mods and mission
-files between runs. Discord administrators control access, upload a shared
-`server.cfg`, repair session cards, and reset runtime data.
+Members can start, sleep, restart, archive, restore, or permanently terminate a
+server without using the AWS console; `/rb start` also wakes sleeping servers.
+Server owners can revise mods and mission files between runs. Discord
+administrators control access, upload a shared `server.cfg`, repair session
+cards, and reset runtime data.
 
 Running servers automatically sleep after 30 continuous minutes of verified
 zero-player activity. A server that remains sleeping for 72 continuous hours
@@ -28,6 +29,14 @@ Arma missions and client mods may come from validated uploads or public Steam
 Workshop items and direct-child collections. Eligible Workshop scenarios added
 to a stable running server become mission choices without changing the current
 mission; Workshop mod revisions remain pending until a controlled restart.
+Creation can queue the normal start automatically after required mod input is
+accepted, and owners may opt into one creation-channel ping after initial
+health verification succeeds.
+
+The public card shows live mission/player information only while the game
+server is active. A completed archived card is reduced to its description,
+last active modlist link, and archive time; it retains only the `Refresh`
+control. Actionable archive/restore failures continue to show diagnostics.
 
 ## Deploy to your Discord server
 
@@ -120,3 +129,16 @@ Never place the bot token in a `.tfvars` file, command definition, log, or Terra
   scenarios managed through `/rb edit`; sessions use `MP_ZGM_m12.Stratis` by
   default
 - Deployment archive: a long-term backup of a deployment
+
+Use `/rb start` to provision a configured session or wake a sleeping server.
+Archived sessions still require `/rb restore`. Administrators and Manage Server
+members retain permission to wake sleeping sessions; initial provisioning remains
+owner-only. `/rb wake` is no longer registered.
+
+Use `/rb restart session:<slug>` to immediately restart a running or idle game
+server, including when players are connected. It applies pending client/server
+mods and game-server settings, then verifies Arma health. It leaves EC2 and
+TeamSpeak running. Owners and Administrator/Manage Server members may restart;
+other active workflows block the operation. Restart failures require checking
+`/rb status`; there is no automatic rollback. See
+[restart operations](docs/runbooks/restart-game-server.md).

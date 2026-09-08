@@ -34,6 +34,9 @@ type Session struct {
 	Vanilla                       bool
 	CreatorDLCs                   []string
 	StartWhenReady                bool
+	NotifyWhenReady               bool
+	ReadyNotificationChannelID    string
+	ReadyNotificationAttemptedAt  time.Time
 	ConfigurationRevision         int64
 	ServerConfigRevision          int64
 	ServerConfigObjectKey         string
@@ -330,13 +333,15 @@ func (session *Session) RecordMutation(now time.Time) error {
 
 // SessionConfiguration contains the owner-controlled runtime policy for a session.
 type SessionConfiguration struct {
-	GameProfileID       string
-	SleepAfterSeconds   int64
-	ArchiveAfterSeconds int64
-	TeamSpeakEnabled    bool
-	Vanilla             bool
-	CreatorDLCs         []string
-	StartWhenReady      bool
+	GameProfileID              string
+	SleepAfterSeconds          int64
+	ArchiveAfterSeconds        int64
+	TeamSpeakEnabled           bool
+	Vanilla                    bool
+	CreatorDLCs                []string
+	StartWhenReady             bool
+	NotifyWhenReady            bool
+	ReadyNotificationChannelID string
 }
 
 // NewSessionInput contains the required information for a new draft session.
@@ -542,6 +547,12 @@ func (session Session) Validate() error {
 		return fmt.Errorf("archive policy must be at least 86400 seconds")
 	case session.ConfigurationRevision < 0:
 		return fmt.Errorf("configuration revision cannot be negative")
+	case session.NotifyWhenReady && strings.TrimSpace(session.ReadyNotificationChannelID) == "":
+		return fmt.Errorf("ready notification channel is required when notification is enabled")
+	case !session.NotifyWhenReady && (strings.TrimSpace(session.ReadyNotificationChannelID) != "" || !session.ReadyNotificationAttemptedAt.IsZero()):
+		return fmt.Errorf("ready notification metadata requires notification to be enabled")
+	case !session.ReadyNotificationAttemptedAt.IsZero() && session.ReadyNotificationAttemptedAt.Before(session.CreatedAt):
+		return fmt.Errorf("ready notification attempt cannot precede session creation")
 	case session.Vanilla && len(session.CreatorDLCs) != 0:
 		return fmt.Errorf("vanilla session cannot load Creator DLC")
 	case session.ServerConfigRevision < 0 || (session.ServerConfigObjectKey == "" && session.ServerConfigSHA256 != "") || (session.ServerConfigObjectKey != "" && (session.ServerConfigRevision < 1 || len(session.ServerConfigSHA256) != 64)):
@@ -726,7 +737,7 @@ func (session *Session) UpdateModOptions(values []string, preparePreset, prepare
 		return fmt.Errorf("%w: wait for the active lifecycle operation before changing mods", ErrWorkflowLocked)
 	}
 	switch session.LifecycleState {
-	case StateDeleting, StateDeleted, StateArchiving, StateDestroying, StateRestoring, StateWaking, StateStopping:
+	case StateDeleting, StateDeleted, StateArchiving, StateDestroying, StateRestoring, StateWaking, StateRestarting, StateStopping:
 		return fmt.Errorf("%w: mods cannot be changed in lifecycle state %s", ErrInvalidTransition, session.LifecycleState)
 	}
 	normalized, err := NormalizeCreatorDLCs(values)
@@ -872,8 +883,21 @@ func (session *Session) applyConfiguration(configuration SessionConfiguration) e
 	session.Vanilla = configuration.Vanilla
 	session.CreatorDLCs = creatorDLCs
 	session.StartWhenReady = configuration.StartWhenReady
+	session.NotifyWhenReady = configuration.NotifyWhenReady
+	session.ReadyNotificationChannelID = strings.TrimSpace(configuration.ReadyNotificationChannelID)
 	session.ConfigurationRevision++
 	return nil
+}
+
+// ClaimInitialReadyNotification records the sole delivery attempt as part of
+// the initial bootstrap completion mutation. A claimed notification is never
+// retried by a later workflow replay.
+func (session *Session) ClaimInitialReadyNotification(now time.Time) bool {
+	if !session.NotifyWhenReady || strings.TrimSpace(session.ReadyNotificationChannelID) == "" || !session.ReadyNotificationAttemptedAt.IsZero() {
+		return false
+	}
+	session.ReadyNotificationAttemptedAt = now.UTC()
+	return true
 }
 
 func (session *Session) markReadyWhenComplete() {

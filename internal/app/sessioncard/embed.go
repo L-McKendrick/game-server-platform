@@ -12,6 +12,7 @@ const (
 	embedColorSetup    = 0xF0B232
 	embedColorError    = 0xDA373C
 	embedColorInactive = 0x80848E
+	embedColorArchived = 0xAFC3D6
 )
 
 // RenderPublicEmbed renders the approved concise public card. RenderPublic is
@@ -31,6 +32,22 @@ func RenderPublicEmbed(card Projection) *domain.NotificationEmbed {
 			Description: description, Color: embedColorInactive,
 		}
 	}
+	if card.Lifecycle == "Archived" && !card.Failure.Present {
+		description := safe(card.Description)
+		if !card.StatusSince.IsZero() {
+			if description != "" {
+				description += "\n\n"
+			}
+			description += "Archived: " + timestamp(card.StatusSince)
+		}
+		embed := &domain.NotificationEmbed{
+			Title: strings.ToUpper(safe(card.Game)) + " | " + safe(card.Name), Description: description, Color: embedColorArchived,
+		}
+		if value := archivedModlistValue(card); value != "" {
+			embed.Fields = []domain.NotificationEmbedField{{Name: "MODLIST", Value: value}}
+		}
+		return embed
+	}
 	status, color := publicEmbedStatus(card)
 	description := "**" + strings.ToUpper(safe(card.Game)) + " | " + safe(card.Name) + "**"
 	if strings.TrimSpace(card.Description) != "" {
@@ -40,9 +57,9 @@ func RenderPublicEmbed(card Projection) *domain.NotificationEmbed {
 		Title:       status,
 		Description: description,
 		Color:       color,
-		Fields: []domain.NotificationEmbedField{{
-			Name: "\u200b\nCURRENT MISSION", Value: publicMissionValue(card),
-		}},
+	}
+	if card.Lifecycle == "Running" {
+		embed.Fields = append(embed.Fields, domain.NotificationEmbedField{Name: "\u200b\nCURRENT MISSION", Value: publicMissionValue(card)})
 	}
 	if value := publicProgressValue(card); value != "" && card.Lifecycle != "Running" {
 		embed.Fields = append(embed.Fields, domain.NotificationEmbedField{Name: "\u200b\nPROGRESS", Value: value})
@@ -74,7 +91,7 @@ func publicEmbedStatus(card Projection) (string, int) {
 		}
 		return "🔴 ONLINE · " + strings.ToUpper(safe(card.Health)), embedColorError
 	case "Archived":
-		return "⚪ ARCHIVED · OFFLINE", embedColorInactive
+		return "⚪ ARCHIVED · OFFLINE", embedColorArchived
 	case "Terminated":
 		return "⚪ TERMINATED", embedColorInactive
 	case "Sleeping":
@@ -82,6 +99,20 @@ func publicEmbedStatus(card Projection) (string, int) {
 	default:
 		return "🟠 " + strings.ToUpper(safe(card.Lifecycle)) + " · " + strings.ToUpper(safe(downloadStage(card))), embedColorSetup
 	}
+}
+
+func archivedModlistValue(card Projection) string {
+	if !card.Mods.Required {
+		return "None"
+	}
+	name := safe(card.Mods.DownloadName)
+	if name == "" {
+		return "Unavailable"
+	}
+	if card.Mods.DownloadURL != "" {
+		return "[" + name + "](" + card.Mods.DownloadURL + ")"
+	}
+	return name
 }
 
 func publicMissionValue(card Projection) string {
@@ -110,7 +141,7 @@ func publicMissionValue(card Projection) string {
 }
 
 func publicProgressValue(card Projection) string {
-	if !card.Progress.Visible {
+	if !card.Progress.Visible || card.Progress.HideWhenPublic {
 		return ""
 	}
 	value := fmt.Sprintf("`%s` — Step %d/%d\n**Current stage:** %s", safeCode(card.Progress.Bar), card.Progress.Step, card.Progress.Total, safe(downloadStage(card)))
@@ -167,18 +198,22 @@ func connectionAddress(connection ConnectionProjection) string {
 
 // WithModlistLinkEmbed enriches the queued rich card at the delivery boundary,
 // where the stable Discord attachment-message URL is known.
-func WithModlistLinkEmbed(embed *domain.NotificationEmbed, sessionName, messageURL string) *domain.NotificationEmbed {
+func WithModlistLinkEmbed(embed *domain.NotificationEmbed, modlistName, messageURL string) *domain.NotificationEmbed {
 	if embed == nil || normalizeModlistURL(messageURL) == "" {
 		return embed
 	}
 	copyEmbed := *embed
 	copyEmbed.Fields = append([]domain.NotificationEmbedField(nil), embed.Fields...)
 	for index := range copyEmbed.Fields {
+		if strings.TrimSpace(strings.TrimPrefix(copyEmbed.Fields[index].Name, "\u200b")) == "MODLIST" {
+			copyEmbed.Fields[index].Value = "[" + safe(modlistName) + "](" + normalizeModlistURL(messageURL) + ")"
+			break
+		}
 		if strings.TrimSpace(strings.TrimPrefix(copyEmbed.Fields[index].Name, "\u200b")) != "Game server" {
 			continue
 		}
 		base := strings.Split(copyEmbed.Fields[index].Value, "\n\n**Modlist:**")[0]
-		copyEmbed.Fields[index].Value = base + "\n\n**Modlist:** [" + safe(sessionName) + "](" + normalizeModlistURL(messageURL) + ")"
+		copyEmbed.Fields[index].Value = base + "\n\n**Modlist:** [" + safe(modlistName) + "](" + normalizeModlistURL(messageURL) + ")"
 		break
 	}
 	return &copyEmbed

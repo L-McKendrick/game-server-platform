@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"regexp"
@@ -8,6 +10,25 @@ import (
 	"time"
 	"unicode/utf8"
 )
+
+const sessionCardControlTokenDigestBytes = 18
+
+var sessionCardControlTokenPattern = regexp.MustCompile(`^S_[A-Za-z0-9_-]{24}$`)
+
+// SessionCardControlToken derives the stable opaque key used to resolve a
+// public Discord card without exposing the immutable session ID.
+func SessionCardControlToken(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte("session-card:" + sessionID))
+	return "S_" + base64.RawURLEncoding.EncodeToString(digest[:sessionCardControlTokenDigestBytes])
+}
+
+func ValidSessionCardControlToken(token string) bool {
+	return sessionCardControlTokenPattern.MatchString(strings.TrimSpace(token))
+}
 
 type NotificationKind string
 
@@ -79,6 +100,7 @@ const (
 	NotificationMessage        NotificationKind = ""
 	NotificationSessionCard    NotificationKind = "SESSION_CARD"
 	NotificationSessionModlist NotificationKind = "SESSION_MODLIST"
+	NotificationSessionReady   NotificationKind = "SESSION_READY"
 )
 
 type NotificationAttachment struct {
@@ -155,19 +177,21 @@ func (attachment NotificationAttachment) Validate() error {
 }
 
 type NotificationRequest struct {
-	SchemaVersion        int                     `json:"schema_version"`
-	NotificationID       string                  `json:"notification_id"`
-	SessionID            string                  `json:"session_id"`
-	GuildID              string                  `json:"guild_id"`
-	ChannelID            string                  `json:"channel_id"`
-	Content              string                  `json:"content"`
-	Kind                 NotificationKind        `json:"kind,omitempty"`
-	CardRevision         int64                   `json:"card_revision,omitempty"`
-	SuppressCardControls bool                    `json:"suppress_card_controls,omitempty"`
-	Embed                *NotificationEmbed      `json:"embed,omitempty"`
-	Attachment           *NotificationAttachment `json:"attachment,omitempty"`
-	CorrelationID        string                  `json:"correlation_id"`
-	RequestedAt          time.Time               `json:"requested_at"`
+	SchemaVersion         int                     `json:"schema_version"`
+	NotificationID        string                  `json:"notification_id"`
+	SessionID             string                  `json:"session_id"`
+	GuildID               string                  `json:"guild_id"`
+	ChannelID             string                  `json:"channel_id"`
+	Content               string                  `json:"content"`
+	Kind                  NotificationKind        `json:"kind,omitempty"`
+	CardRevision          int64                   `json:"card_revision,omitempty"`
+	SuppressCardControls  bool                    `json:"suppress_card_controls,omitempty"`
+	SuppressPlayerControl bool                    `json:"suppress_player_control,omitempty"`
+	Embed                 *NotificationEmbed      `json:"embed,omitempty"`
+	Attachment            *NotificationAttachment `json:"attachment,omitempty"`
+	AllowedUserIDs        []string                `json:"allowed_user_ids,omitempty"`
+	CorrelationID         string                  `json:"correlation_id"`
+	RequestedAt           time.Time               `json:"requested_at"`
 }
 
 func (request NotificationRequest) Validate() error {
@@ -184,14 +208,20 @@ func (request NotificationRequest) Validate() error {
 		return fmt.Errorf("notification channel ID is required")
 	case strings.TrimSpace(request.Content) == "" || len(request.Content) > 1900:
 		return fmt.Errorf("notification content must contain 1 to 1900 characters")
-	case request.Kind != NotificationMessage && request.Kind != NotificationSessionCard && request.Kind != NotificationSessionModlist:
+	case request.Kind != NotificationMessage && request.Kind != NotificationSessionCard && request.Kind != NotificationSessionModlist && request.Kind != NotificationSessionReady:
 		return fmt.Errorf("unsupported notification kind %q", request.Kind)
+	case request.Kind == NotificationSessionReady && (len(request.AllowedUserIDs) != 1 || strings.TrimSpace(request.AllowedUserIDs[0]) == ""):
+		return fmt.Errorf("session-ready notification must allow exactly one user mention")
+	case request.Kind != NotificationSessionReady && len(request.AllowedUserIDs) != 0:
+		return fmt.Errorf("allowed user mentions are only valid for session-ready notifications")
 	case request.CardRevision < 0:
 		return fmt.Errorf("card revision cannot be negative")
 	case request.Kind != NotificationSessionCard && request.CardRevision != 0:
 		return fmt.Errorf("card revision is only valid for session-card notifications")
 	case request.Kind != NotificationSessionCard && request.SuppressCardControls:
 		return fmt.Errorf("card-control suppression is only valid for session-card notifications")
+	case request.Kind != NotificationSessionCard && request.SuppressPlayerControl:
+		return fmt.Errorf("player-control suppression is only valid for session-card notifications")
 	case request.Kind != NotificationSessionCard && request.Embed != nil:
 		return fmt.Errorf("notification embed is only valid for session-card notifications")
 	case request.Kind == NotificationSessionModlist && request.Attachment == nil:

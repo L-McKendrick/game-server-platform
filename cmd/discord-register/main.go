@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -32,8 +33,12 @@ func run(ctx context.Context) error {
 	switch {
 	case applicationID == "":
 		return fmt.Errorf("DISCORD_APPLICATION_ID is required")
+	case !validSnowflake(applicationID):
+		return fmt.Errorf("DISCORD_APPLICATION_ID must be a numeric Discord snowflake; replace any placeholder value")
 	case guildID == "":
 		return fmt.Errorf("DISCORD_GUILD_ID is required")
+	case !validSnowflake(guildID):
+		return fmt.Errorf("DISCORD_GUILD_ID must be a numeric Discord snowflake; replace any placeholder value")
 	case botToken == "":
 		return fmt.Errorf("DISCORD_BOT_TOKEN is required")
 	}
@@ -53,6 +58,15 @@ func run(ctx context.Context) error {
 
 	fmt.Printf("Registered development /rb commands for guild %s.\n", guildID)
 	return nil
+}
+
+func validSnowflake(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 20 || value[0] == '0' {
+		return false
+	}
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	return err == nil && parsed > 0
 }
 
 func registerCommands(
