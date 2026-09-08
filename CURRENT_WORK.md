@@ -49,6 +49,11 @@ the Phase 18 pull request, then start Phase 19 on a new branch.
 - Development command registration now rejects malformed snowflakes locally;
   the handoff discovers the deployed non-secret application/guild IDs and uses
   the secure prompting script instead of copyable placeholder values.
+- Live `test-50` button failures were caused by resolving opaque card tokens
+  through a guild-session scan that stopped after 1,000 of 2,012 metadata
+  items. Card delivery now atomically writes a direct token claim. Existing
+  cards use a one-time scan of up to 10,000 items and backfill the claim, so
+  `test-50` is repaired on its first button click after deployment.
 - Nothing was deployed, registered, restarted, or otherwise mutated in AWS or
   Discord during this review.
 
@@ -89,7 +94,9 @@ pending-change restart health, download-percentage updates across at least two
 bootstrap observations, lifecycle-specific cards/controls (including no `Show
 players` before `RUNNING` or while sleeping), no completed progress block after
 sleep, no `Refresh` after fully sleeping or archived, and manual `/rb start`
-recovery for `test-47`.
+recovery for `test-47`. Click both `Show players` and `Refresh` on the existing
+`test-50` card to confirm legacy claim backfill, then repeat a click to confirm
+the direct lookup path.
 
 ## Important Operator Attention
 

@@ -426,6 +426,10 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **18.10** [x] Simplify the development deployment handoff.
       - **18.10.1** [x] Replace nested discovery, validation, and component loops with linear commands using the confirmed development IDs and Discord bot-token secret name.
       - **18.10.2** [x] Keep the bot token out of command history and clear its environment and local variables immediately after registration.
+    - **18.11** [x] Make public-card controls resolve directly at scale.
+      - **18.11.1** [x] Persist a collision-safe card-control token claim alongside each durable card reference and expose direct repository lookup.
+      - **18.11.2** [x] Resolve button interactions through the direct claim while retaining a bounded legacy fallback that backfills claims for existing cards.
+      - **18.11.3** [x] Add focused memory, DynamoDB, service, collision, legacy, and over-1,000-item regression coverage; refresh the handoff and commit without deploying.
 
 19. **Maximum Session Duration Guardrails — Pending**
     - **19.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.

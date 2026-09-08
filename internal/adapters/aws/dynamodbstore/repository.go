@@ -22,13 +22,15 @@ import (
 )
 
 const (
-	sessionSortKey        = "METADATA"
-	sessionCardSortKey    = "DISCORD_CARD"
-	sessionModlistSortKey = "DISCORD_MODLIST"
-	idempotencySortKey    = "RESULT"
-	ownerIndexName        = "gsi1"
-	schemaVersion         = 3
-	maximumGuildScanItems = int32(1000)
+	sessionSortKey             = "METADATA"
+	sessionCardSortKey         = "DISCORD_CARD"
+	cardControlSortKey         = "CLAIM"
+	sessionModlistSortKey      = "DISCORD_MODLIST"
+	idempotencySortKey         = "RESULT"
+	ownerIndexName             = "gsi1"
+	schemaVersion              = 3
+	maximumGuildScanItems      = int32(1000)
+	maximumLegacyCardScanItems = int32(10000)
 )
 
 func marshalSessionJSON(value any) string {
@@ -252,6 +254,16 @@ type sessionCardItem struct {
 	DeliveredRevision       int64  `dynamodbav:"delivered_revision,omitempty"`
 	DeliveredNotificationID string `dynamodbav:"delivered_notification_id,omitempty"`
 	ContentSHA256           string `dynamodbav:"content_sha256,omitempty"`
+}
+
+type cardControlItem struct {
+	PK            string `dynamodbav:"pk"`
+	SK            string `dynamodbav:"sk"`
+	EntityType    string `dynamodbav:"entity_type"`
+	SchemaVersion int    `dynamodbav:"schema_version"`
+	Token         string `dynamodbav:"token"`
+	SessionID     string `dynamodbav:"session_id"`
+	GuildID       string `dynamodbav:"guild_id"`
 }
 
 type sessionModlistItem struct {
@@ -608,15 +620,123 @@ func (repository *Repository) SaveCardReference(ctx context.Context, reference d
 	if err != nil {
 		return fmt.Errorf("marshal Discord card reference: %w", err)
 	}
-	_, err = repository.client.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: aws.String(repository.tableName), Item: attributes,
-		ConditionExpression: aws.String("attribute_not_exists(pk) OR channel_id = :channel"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":channel": &types.AttributeValueMemberS{Value: reference.ChannelID},
+	token := domain.SessionCardControlToken(reference.SessionID)
+	claim, err := attributevalue.MarshalMap(cardControlItem{
+		PK: cardControlPartitionKey(token), SK: cardControlSortKey,
+		EntityType: "SessionCardControl", SchemaVersion: schemaVersion,
+		Token: token, SessionID: reference.SessionID,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal Discord card control claim: %w", err)
+	}
+	_, err = repository.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []types.TransactWriteItem{
+			{Put: &types.Put{TableName: aws.String(repository.tableName), Item: attributes,
+				ConditionExpression:       aws.String("attribute_not_exists(pk) OR channel_id = :channel"),
+				ExpressionAttributeValues: map[string]types.AttributeValue{":channel": &types.AttributeValueMemberS{Value: reference.ChannelID}}}},
+			{Put: &types.Put{TableName: aws.String(repository.tableName), Item: claim,
+				ConditionExpression:       aws.String("attribute_not_exists(pk) OR session_id = :session"),
+				ExpressionAttributeValues: map[string]types.AttributeValue{":session": &types.AttributeValueMemberS{Value: reference.SessionID}}}},
 		},
 	})
 	if err != nil {
 		return fmt.Errorf("save Discord card reference: %w", err)
+	}
+	return nil
+}
+
+func (repository *Repository) ResolveCardControl(ctx context.Context, guildID string, token string) (domain.Session, error) {
+	if err := repository.validate(); err != nil {
+		return domain.Session{}, err
+	}
+	guildID, token = strings.TrimSpace(guildID), strings.TrimSpace(token)
+	if guildID == "" || !domain.ValidSessionCardControlToken(token) {
+		return domain.Session{}, domain.ErrNotFound
+	}
+	output, err := repository.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(repository.tableName), Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: cardControlPartitionKey(token)},
+			"sk": &types.AttributeValueMemberS{Value: cardControlSortKey},
+		}, ConsistentRead: aws.Bool(true),
+	})
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("get Discord card control claim: %w", err)
+	}
+	if len(output.Item) != 0 {
+		var claim cardControlItem
+		if err := attributevalue.UnmarshalMap(output.Item, &claim); err != nil {
+			return domain.Session{}, fmt.Errorf("decode Discord card control claim: %w", err)
+		}
+		session, err := repository.Get(ctx, claim.SessionID)
+		if err != nil {
+			return domain.Session{}, err
+		}
+		if session.GuildID != guildID || domain.SessionCardControlToken(session.ID) != token {
+			return domain.Session{}, domain.ErrNotFound
+		}
+		return session, nil
+	}
+	return repository.resolveLegacyCardControl(ctx, guildID, token)
+}
+
+func (repository *Repository) resolveLegacyCardControl(ctx context.Context, guildID string, token string) (domain.Session, error) {
+	var startKey map[string]types.AttributeValue
+	var scanned int32
+	for scanned < maximumLegacyCardScanItems {
+		remaining := maximumLegacyCardScanItems - scanned
+		if remaining > 100 {
+			remaining = 100
+		}
+		output, err := repository.client.Scan(ctx, &dynamodb.ScanInput{
+			TableName: aws.String(repository.tableName), Limit: aws.Int32(remaining), ExclusiveStartKey: startKey,
+			FilterExpression: aws.String("entity_type = :type AND guild_id = :guild"),
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":type": &types.AttributeValueMemberS{Value: "Session"}, ":guild": &types.AttributeValueMemberS{Value: guildID},
+			},
+		})
+		if err != nil {
+			return domain.Session{}, fmt.Errorf("scan legacy Discord card controls: %w", err)
+		}
+		scanned += output.ScannedCount
+		for _, attributes := range output.Items {
+			var item sessionItem
+			if err := attributevalue.UnmarshalMap(attributes, &item); err != nil {
+				return domain.Session{}, fmt.Errorf("decode legacy Discord card session: %w", err)
+			}
+			if domain.SessionCardControlToken(item.SessionID) == token {
+				session, err := fromSessionItem(item)
+				if err != nil {
+					return domain.Session{}, err
+				}
+				if err := repository.saveCardControlClaim(ctx, session.ID, token); err != nil {
+					return domain.Session{}, err
+				}
+				return session, nil
+			}
+		}
+		startKey = output.LastEvaluatedKey
+		if len(startKey) == 0 {
+			break
+		}
+	}
+	return domain.Session{}, domain.ErrNotFound
+}
+
+func (repository *Repository) saveCardControlClaim(ctx context.Context, sessionID string, token string) error {
+	attributes, err := attributevalue.MarshalMap(cardControlItem{
+		PK: cardControlPartitionKey(token), SK: cardControlSortKey, EntityType: "SessionCardControl",
+		SchemaVersion: schemaVersion, Token: token, SessionID: sessionID,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal Discord card control claim: %w", err)
+	}
+	_, err = repository.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: aws.String(repository.tableName), Item: attributes,
+		ConditionExpression:       aws.String("attribute_not_exists(pk) OR session_id = :session"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{":session": &types.AttributeValueMemberS{Value: sessionID}},
+	})
+	if err != nil {
+		return fmt.Errorf("backfill Discord card control claim: %w", err)
 	}
 	return nil
 }
@@ -1713,6 +1833,10 @@ func idempotencyPartitionKey(key string) string {
 
 func sessionPartitionKey(sessionID string) string {
 	return "SESSION#" + sessionID
+}
+
+func cardControlPartitionKey(token string) string {
+	return "CARD_CONTROL#" + strings.TrimSpace(token)
 }
 
 func ownerPartitionKey(ownerDiscordUserID string) string {

@@ -3,6 +3,7 @@ package dynamodbstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -24,6 +25,8 @@ type fakeAPI struct {
 	queryOutput        *dynamodb.QueryOutput
 	queryErr           error
 	scanOutput         *dynamodb.ScanOutput
+	scanOutputs        []*dynamodb.ScanOutput
+	scanIndex          int
 	scanErr            error
 	scanInput          *dynamodb.ScanInput
 	transactWriteInput *dynamodb.TransactWriteItemsInput
@@ -54,11 +57,17 @@ func TestSaveCardReferenceUsesIndependentChannelBoundItem(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveCardReference() returned error: %v", err)
 	}
-	if client.putItemInput == nil || client.putItemInput.ConditionExpression == nil ||
-		*client.putItemInput.ConditionExpression != "attribute_not_exists(pk) OR channel_id = :channel" {
-		t.Fatalf("put input = %#v", client.putItemInput)
+	if client.transactWriteInput == nil || len(client.transactWriteInput.TransactItems) != 2 {
+		t.Fatalf("transaction = %#v", client.transactWriteInput)
 	}
-	client.getItemOutput = &dynamodb.GetItemOutput{Item: client.putItemInput.Item}
+	cardPut := client.transactWriteInput.TransactItems[0].Put
+	claimPut := client.transactWriteInput.TransactItems[1].Put
+	if cardPut == nil || claimPut == nil || cardPut.ConditionExpression == nil ||
+		*cardPut.ConditionExpression != "attribute_not_exists(pk) OR channel_id = :channel" ||
+		claimPut.ConditionExpression == nil || *claimPut.ConditionExpression != "attribute_not_exists(pk) OR session_id = :session" {
+		t.Fatalf("transaction = %#v", client.transactWriteInput)
+	}
+	client.getItemOutput = &dynamodb.GetItemOutput{Item: cardPut.Item}
 	reference, err := repository.GetCardReference(context.Background(), "session-1")
 	if err != nil || reference.MessageID != "message-1" || reference.ChannelID != "channel-1" ||
 		reference.DeliveredRevision != 4 || reference.DeliveredNotificationID != "card-4" || reference.ContentSHA256 != "digest-4" {
@@ -115,10 +124,61 @@ func TestSaveModlistReferenceUsesIndependentChannelBoundItem(t *testing.T) {
 
 func (fake *fakeAPI) Scan(_ context.Context, input *dynamodb.ScanInput, _ ...func(*dynamodb.Options)) (*dynamodb.ScanOutput, error) {
 	fake.scanInput = input
+	if fake.scanIndex < len(fake.scanOutputs) {
+		output := fake.scanOutputs[fake.scanIndex]
+		fake.scanIndex++
+		return output, fake.scanErr
+	}
 	if fake.scanOutput == nil {
 		return &dynamodb.ScanOutput{}, fake.scanErr
 	}
 	return fake.scanOutput, fake.scanErr
+}
+
+func TestResolveCardControlUsesDirectClaim(t *testing.T) {
+	t.Parallel()
+	session := testSession(t, time.Date(2026, 9, 8, 6, 0, 0, 0, time.UTC))
+	token := domain.SessionCardControlToken(session.ID)
+	claim, err := attributevalue.MarshalMap(cardControlItem{PK: cardControlPartitionKey(token), SK: cardControlSortKey, EntityType: "SessionCardControl", SchemaVersion: schemaVersion, Token: token, SessionID: session.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := attributevalue.MarshalMap(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeAPI{getItemOutputs: []*dynamodb.GetItemOutput{{Item: claim}, {Item: metadata}}}
+	resolved, err := New(client, "metadata-table").ResolveCardControl(context.Background(), session.GuildID, token)
+	if err != nil || resolved.ID != session.ID || client.scanInput != nil {
+		t.Fatalf("ResolveCardControl() = %#v, %v; scan=%#v", resolved, err, client.scanInput)
+	}
+}
+
+func TestResolveCardControlFindsAndBackfillsLegacySessionBeyondFirstThousandItems(t *testing.T) {
+	t.Parallel()
+	session := testSession(t, time.Date(2026, 9, 8, 6, 0, 0, 0, time.UTC))
+	metadata, err := attributevalue.MarshalMap(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pages := make([]*dynamodb.ScanOutput, 0, 11)
+	for page := 1; page <= 10; page++ {
+		pages = append(pages, &dynamodb.ScanOutput{
+			ScannedCount: 100,
+			LastEvaluatedKey: map[string]types.AttributeValue{
+				"pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("PAGE#%d", page)},
+			},
+		})
+	}
+	pages = append(pages, &dynamodb.ScanOutput{ScannedCount: 1, Items: []map[string]types.AttributeValue{metadata}})
+	client := &fakeAPI{
+		getItemOutput: &dynamodb.GetItemOutput{},
+		scanOutputs:   pages,
+	}
+	resolved, err := New(client, "metadata-table").ResolveCardControl(context.Background(), session.GuildID, domain.SessionCardControlToken(session.ID))
+	if err != nil || resolved.ID != session.ID || client.scanIndex != 11 || client.putItemInput == nil {
+		t.Fatalf("ResolveCardControl() = %#v, %v; pages=%d backfill=%#v", resolved, err, client.scanIndex, client.putItemInput)
+	}
 }
 
 func TestListByGuildReadsLegacySessionMetadataWithBoundedScan(t *testing.T) {

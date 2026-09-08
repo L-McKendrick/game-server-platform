@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"regexp"
@@ -8,6 +10,25 @@ import (
 	"time"
 	"unicode/utf8"
 )
+
+const sessionCardControlTokenDigestBytes = 18
+
+var sessionCardControlTokenPattern = regexp.MustCompile(`^S_[A-Za-z0-9_-]{24}$`)
+
+// SessionCardControlToken derives the stable opaque key used to resolve a
+// public Discord card without exposing the immutable session ID.
+func SessionCardControlToken(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte("session-card:" + sessionID))
+	return "S_" + base64.RawURLEncoding.EncodeToString(digest[:sessionCardControlTokenDigestBytes])
+}
+
+func ValidSessionCardControlToken(token string) bool {
+	return sessionCardControlTokenPattern.MatchString(strings.TrimSpace(token))
+}
 
 type NotificationKind string
 

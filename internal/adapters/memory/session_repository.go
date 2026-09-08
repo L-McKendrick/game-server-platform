@@ -19,6 +19,7 @@ type SessionRepository struct {
 	workflows          map[string]domain.Workflow
 	capacity           map[string]string
 	cards              map[string]domain.SessionCardReference
+	cardControls       map[string]string
 	modlists           map[string]domain.SessionModlistReference
 	confirmations      map[string]domain.Confirmation
 	reconciliation     map[string][]domain.ReconciliationFinding
@@ -33,6 +34,7 @@ type SessionRepository struct {
 
 var _ ports.SessionRepository = (*SessionRepository)(nil)
 var _ ports.SessionCardRepository = (*SessionRepository)(nil)
+var _ ports.SessionCardControlRepository = (*SessionRepository)(nil)
 
 // NewSessionRepository creates an empty repository.
 func NewSessionRepository() *SessionRepository {
@@ -43,6 +45,7 @@ func NewSessionRepository() *SessionRepository {
 		workflows:          make(map[string]domain.Workflow),
 		capacity:           make(map[string]string),
 		cards:              make(map[string]domain.SessionCardReference),
+		cardControls:       make(map[string]string),
 		modlists:           make(map[string]domain.SessionModlistReference),
 		confirmations:      make(map[string]domain.Confirmation),
 		reconciliation:     make(map[string][]domain.ReconciliationFinding),
@@ -167,8 +170,38 @@ func (repository *SessionRepository) SaveCardReference(ctx context.Context, refe
 	if session.ChannelID != reference.ChannelID {
 		return fmt.Errorf("card channel does not match session channel: %w", domain.ErrForbidden)
 	}
+	token := domain.SessionCardControlToken(reference.SessionID)
+	if claimedSessionID, exists := repository.cardControls[token]; exists && claimedSessionID != reference.SessionID {
+		return fmt.Errorf("card control token is already claimed: %w", domain.ErrConflict)
+	}
 	repository.cards[reference.SessionID] = reference
+	repository.cardControls[token] = reference.SessionID
 	return nil
+}
+
+func (repository *SessionRepository) ResolveCardControl(ctx context.Context, guildID string, token string) (domain.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.Session{}, err
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	sessionID, found := repository.cardControls[token]
+	if !found {
+		// Preserve compatibility with card references saved before the direct
+		// token claim was introduced.
+		for candidateID := range repository.sessions {
+			if domain.SessionCardControlToken(candidateID) == token {
+				sessionID, found = candidateID, true
+				repository.cardControls[token] = candidateID
+				break
+			}
+		}
+	}
+	session, exists := repository.sessions[sessionID]
+	if !found || !exists || session.GuildID != guildID {
+		return domain.Session{}, domain.ErrNotFound
+	}
+	return session, nil
 }
 
 func (repository *SessionRepository) GetModlistReference(ctx context.Context, sessionID string) (domain.SessionModlistReference, error) {

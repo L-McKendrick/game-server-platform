@@ -67,6 +67,12 @@ type SessionCardRepository interface {
 	SaveModlistReference(ctx context.Context, reference domain.SessionModlistReference) error
 }
 
+// SessionCardControlRepository resolves an opaque public-card token without a
+// bounded guild-session listing.
+type SessionCardControlRepository interface {
+	ResolveCardControl(ctx context.Context, guildID string, token string) (domain.Session, error)
+}
+
 type ObjectStore interface {
 	Put(ctx context.Context, key string, contentType string, body []byte, sha256Base64 string) error
 }

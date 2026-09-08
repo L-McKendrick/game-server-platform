@@ -170,7 +170,9 @@ and text labels in addition to color or icons. Use the shared vocabulary:
 Running and idle cards expose `Show players` and `Refresh`; `Show players`
 returns the bounded live roster ephemerally. Setup, transitional, sleeping,
 failed, and archived cards omit `Show players`. Once archive completes, the
-card keeps only `Refresh` for repair and drops progress/player controls.
+card drops all controls and progress/player information. Fully sleeping cards
+also expose no controls; setup, transitional, and failed cards retain
+`Refresh` for recovery and diagnostics.
 Successfully completed sleep cards also omit the finished progress block;
 in-flight and failed sleep progress remains visible, and the private detailed
 status retains completed workflow history.
@@ -178,6 +180,12 @@ Terminated cards expose no controls. The modlist link is part of the card, and
 help remains available through `/rb help`. Reauthorize and revalidate
 session/card revision on every click. Lifecycle and destructive controls remain
 slash commands in this phase.
+
+Each durable card reference atomically stores a collision-protected opaque
+control-token claim. Button interactions resolve that claim directly and then
+revalidate the session guild, channel, and revision. Cards created before the
+claim existed use a bounded one-time compatibility scan that backfills the
+claim; routine button handling never depends on a bounded guild-session list.
 
 ### Status, list, and help
 
