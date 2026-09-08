@@ -56,8 +56,8 @@ type TaskResult struct {
 	CommandID    string `json:"command_id,omitempty"`
 	Ready        bool   `json:"ready,omitempty"`
 	Managed      bool   `json:"managed,omitempty"`
-	Done         bool   `json:"done,omitempty"`
-	Succeeded    bool   `json:"succeeded,omitempty"`
+	Done         bool   `json:"done"`
+	Succeeded    bool   `json:"succeeded"`
 	ErrorCode    string `json:"error_code,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
 	Warning      string `json:"warning,omitempty"`
@@ -359,7 +359,7 @@ func (service *Service) observeCommand(ctx context.Context, session domain.Sessi
 		}
 	}
 	if response.Done && !response.Succeeded {
-		response.ErrorCode = "ERR_RESTORE_COMMAND"
+		response.ErrorCode = bounded(status.ErrorCode, "ERR_RESTORE_COMMAND")
 		response.ErrorMessage = bounded(status.ErrorMessage, "restore command failed")
 	}
 	return response, nil

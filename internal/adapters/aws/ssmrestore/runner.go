@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/hostprereq"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -76,7 +77,11 @@ func (runner *Runner) Observe(ctx context.Context, instanceID string, commandID 
 	if len(message) > 500 {
 		message = message[len(message)-500:]
 	}
-	return ports.BootstrapCommandStatus{Status: string(output.Status), ErrorMessage: message}, nil
+	errorCode := ""
+	if strings.Contains(message, "ERR_AWS_CLI_PREREQUISITE:") {
+		errorCode = "ERR_AWS_CLI_PREREQUISITE"
+	}
+	return ports.BootstrapCommandStatus{Status: string(output.Status), ErrorCode: errorCode, ErrorMessage: message}, nil
 }
 
 func (runner *Runner) command(session domain.Session) string {
@@ -91,8 +96,11 @@ func (runner *Runner) command(session domain.Session) string {
 		"object_key=$(printf '%s' '" + encode(session.Archive.ObjectKey) + "' | base64 -d)\n" +
 		"expected_sha=$(printf '%s' '" + encode(session.Archive.SHA256) + "' | base64 -d)\n" +
 		fmt.Sprintf("expected_size=%d\n", session.Archive.SizeBytes) +
-		"archive_file=$(mktemp /var/tmp/gsp-restore.XXXXXX.tar.gz)\ntrap 'rm -f -- \"$archive_file\"' EXIT\n" +
+		"aws_cli_tmp=''\n" +
+		"archive_file=$(mktemp /var/tmp/gsp-restore.XXXXXX.tar.gz)\n" +
+		"trap 'rm -f -- \"$archive_file\"; [ -z \"$aws_cli_tmp\" ] || rm -rf -- \"$aws_cli_tmp\"' EXIT\n" +
 		"exec 9>/run/gsp-restore.lock\nflock --wait 13000 9\n" +
+		hostprereq.AWSCLIV2Shell() +
 		"aws s3 cp \"s3://$bucket/$object_key\" \"$archive_file\" --region \"$region\" --only-show-errors\n" +
 		"actual_size=$(stat -c '%s' \"$archive_file\")\n[ \"$actual_size\" = \"$expected_size\" ]\n" +
 		"actual_sha=$(openssl dgst -sha256 -binary \"$archive_file\" | openssl base64 -A)\n[ \"$actual_sha\" = \"$expected_sha\" ]\n" +

@@ -156,6 +156,34 @@ resource "aws_s3_bucket_public_access_block" "session_assets" {
   restrict_public_buckets = true
 }
 
+data "aws_iam_policy_document" "session_assets_transport" {
+  statement {
+    sid    = "DenyInsecureTransport"
+    effect = "Deny"
+    actions = [
+      "s3:*",
+    ]
+    resources = [
+      aws_s3_bucket.session_assets.arn,
+      "${aws_s3_bucket.session_assets.arn}/*",
+    ]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "session_assets" {
+  bucket = aws_s3_bucket.session_assets.id
+  policy = data.aws_iam_policy_document.session_assets_transport.json
+}
+
 resource "aws_dynamodb_table" "metadata" {
   name         = "${local.name_prefix}-metadata"
   billing_mode = "PAY_PER_REQUEST"

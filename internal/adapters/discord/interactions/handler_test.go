@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -2483,7 +2484,7 @@ func TestHandlerUnifiedStartSleepingAndArchived(t *testing.T) {
 		{"owner wake", domain.StateSleeping, "owner-1", "0", "start", "Start request accepted"},
 		{"admin wake", domain.StateSleeping, "admin-1", "32", "start", "Start request accepted"},
 		{"nonowner denied", domain.StateSleeping, "other-1", "0", "start", "Session not found"},
-		{"archive guidance", domain.StateArchived, "owner-1", "0", "start", "Use `/rb restore`"},
+		{"owner restore through start", domain.StateArchived, "owner-1", "0", "start", "Start request accepted"},
 		{"unsupported running", domain.StateRunning, "owner-1", "0", "start", "cannot start in its current state"},
 		{"removed command", domain.StateSleeping, "owner-1", "0", "wake", "not supported yet"},
 	} {
@@ -2494,7 +2495,11 @@ func TestHandlerUnifiedStartSleepingAndArchived(t *testing.T) {
 				t.Fatal(err)
 			}
 			session.LifecycleState, session.DesiredState, session.ObservedState = tc.state, tc.state, tc.state
-			session.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c7i.large", InstanceID: "i-1", DataVolumeID: "vol-1", LastObservedAt: testNow}
+			if tc.state == domain.StateArchived {
+				session.Archive = domain.ArchiveMetadata{ID: "archive-1", ObjectKey: "sessions/session-1/archives/archive-1/session.tar.gz", ManifestObjectKey: "sessions/session-1/archives/archive-1/manifest.v1.json", SHA256: base64.StdEncoding.EncodeToString(make([]byte, 32)), ManifestSHA256: base64.StdEncoding.EncodeToString(make([]byte, 32)), SizeBytes: 42, ManifestSizeBytes: 42, Format: "tar+gzip", VerifiedAt: testNow}
+			} else {
+				session.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c7i.large", InstanceID: "i-1", DataVolumeID: "vol-1", LastObservedAt: testNow}
+			}
 			actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}
 			event := domain.NewSessionCreatedEvent("event-1", "correlation-1", actor, session, testNow)
 			record, _ := domain.NewCompletedIdempotencyRecord("create-1", "hash-1", session.ID, testNow, time.Hour)

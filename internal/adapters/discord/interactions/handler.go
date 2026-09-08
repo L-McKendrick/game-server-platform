@@ -749,7 +749,11 @@ func (handler *Handler) startSession(
 		return "", newUserError("This session is still a draft and is not ready to start. Review `/rb status` and provide any missing or rejected mission and mod configuration through `/rb edit`.")
 	}
 	if session.LifecycleState == domain.StateArchived && session.ActiveWorkflowID == "" {
-		return "", newUserError("This session is archived. Use `/rb restore` to recreate its server from the archive.")
+		message, restoreErr := handler.requestLifecycle(ctx, payload, options, actor, correlationID, "restore")
+		if restoreErr != nil {
+			return "", restoreErr
+		}
+		return strings.Replace(message, "**Restore request accepted**", "**Start request accepted**", 1), nil
 	}
 	roles := []string{}
 	if payload.Member != nil {
@@ -762,7 +766,7 @@ func (handler *Handler) startSession(
 		IdempotencyKey: "discord:" + strings.TrimSpace(payload.ID),
 	}); err != nil {
 		if errors.Is(err, domain.ErrInvalidTransition) {
-			return "", newUserError("This session cannot start in its current state. Use `/rb status` for its current state and next action; use `/rb restore` for archived sessions.")
+			return "", newUserError("This session cannot start in its current state. Use `/rb status` for its current state and next action.")
 		}
 		return "", fmt.Errorf("request session start: %w", err)
 	}

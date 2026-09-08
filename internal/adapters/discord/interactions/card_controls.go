@@ -179,7 +179,7 @@ func sessionNextAction(session domain.Session) string {
 	case domain.StateArchiving, domain.StateDestroying:
 		next = "use `/rb status` while the verified archive workflow completes. No retry is scheduled by this help action."
 	case domain.StateArchived:
-		next = "use `/rb restore` to create billable replacement infrastructure from the verified archive."
+		next = "use `/rb start` to create billable replacement infrastructure from the verified archive; `/rb restore` remains available explicitly."
 	case domain.StateFailed:
 		next = "use `/rb status` for the latest safe failure details before choosing a recovery action. No automatic retry is scheduled."
 	case domain.StateDeleting:

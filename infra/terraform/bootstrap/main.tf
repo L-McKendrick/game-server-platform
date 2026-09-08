@@ -74,3 +74,31 @@ output "terraform_state_bucket_name" {
   description = "S3 bucket containing Terraform state."
   value       = aws_s3_bucket.terraform_state.id
 }
+
+data "aws_iam_policy_document" "terraform_state_transport" {
+  statement {
+    sid    = "DenyInsecureTransport"
+    effect = "Deny"
+    actions = [
+      "s3:*",
+    ]
+    resources = [
+      aws_s3_bucket.terraform_state.arn,
+      "${aws_s3_bucket.terraform_state.arn}/*",
+    ]
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    condition {
+      test     = "Bool"
+      variable = "aws:SecureTransport"
+      values   = ["false"]
+    }
+  }
+}
+
+resource "aws_s3_bucket_policy" "terraform_state" {
+  bucket = aws_s3_bucket.terraform_state.id
+  policy = data.aws_iam_policy_document.terraform_state_transport.json
+}

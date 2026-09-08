@@ -179,6 +179,24 @@ var entries = map[string]entry{
 		"The platform stopped the restore and retained authoritative archive metadata.",
 		"Give the support reference to an operator before requesting restore again.",
 	},
+	"ERR_AWS_CLI_PREREQUISITE": {
+		"The replacement server could not access the archived data.",
+		"A verified AWS CLI v2 was unavailable before archive restoration began.",
+		"The platform stopped before extracting the archive and retained authoritative archive metadata.",
+		"Give the support reference to an operator so the replacement-host prerequisite can be repaired.",
+	},
+	"ERR_RESTORE_RESULT_INVALID": {
+		"The replacement server returned an invalid restore result.",
+		"The managed command response was incomplete or internally inconsistent.",
+		"The platform stopped the workflow and retained authoritative archive and replacement-resource metadata.",
+		"Give the support reference to an operator before requesting restore again.",
+	},
+	"ERR_BOOTSTRAP_RESULT_INVALID": {
+		"The replacement server returned an invalid setup result during restore.",
+		"The managed setup response was incomplete or internally inconsistent.",
+		"The platform attempted applicable rollback and retained authoritative archive and replacement-resource metadata.",
+		"Give the support reference to an operator before requesting restore again.",
+	},
 	"ERR_RESTORE_FAILED": {
 		"The restore operation did not complete.",
 		"Archive verification, replacement infrastructure, data restoration, or health verification failed.",

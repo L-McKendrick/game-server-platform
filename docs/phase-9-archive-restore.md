@@ -48,13 +48,16 @@ extends the same workflow through guarded destruction and adds restore.
 - Metadata becomes `ARCHIVED` and clears disposable resource identifiers only
   after both deletion observations succeed. Partial failures retain identifiers
   in `FAILED` for Phase 10 reconciliation.
-- `/session restore` is owner-only. It revalidates manifest schema, session and
+- `/rb start` routes an archived session through the same restore workflow as
+  the retained explicit `/rb restore` command. It revalidates authorization,
+  manifest schema, session and
   archive identity, configuration revision, artifact keys, S3 sizes, and both
   checksums before reserving capacity or launching resources.
 - Restore creates a new encrypted root and data volume and a new tagged EC2
   instance with a restore-specific idempotency token. It waits for EC2 and SSM,
-  runs the normal software/bootstrap process, then downloads the recorded
-  archive on the host.
+  verifies or installs AWS CLI v2 on the replacement host, downloads and
+  validates the recorded archive, and then runs the normal software/bootstrap
+  process against the restored portable data.
 - Before extraction, the host verifies compressed size and SHA-256, rejects
   absolute paths, traversal, links, devices, unexpected roots, more than
   200,000 entries, or more than 20 GiB expanded content. It restores only the
@@ -63,6 +66,11 @@ extends the same workflow through guarded destruction and adds restore.
 - Only after bootstrap and restore health pass are the new resource identifiers
   and endpoint retained as `RUNNING`/`HEALTHY`; the durable archive remains
   available for future recovery.
+- Missing AWS CLI prerequisites and incomplete or contradictory managed-command
+  results fail with stable bounded codes through the restore failure finalizer.
+  The session returns to `ARCHIVED` with the verified archive retained, the
+  workflow lock released, and any replacement-resource identifiers preserved
+  for explicit recovery and cost inspection.
 
 ## Phase 9.3 irreversible termination
 

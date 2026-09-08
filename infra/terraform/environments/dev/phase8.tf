@@ -78,8 +78,24 @@ data "aws_iam_policy_document" "sleepwake_worker" {
     resources = [aws_dynamodb_table.metadata.arn]
   }
   statement {
-    actions   = ["ec2:DescribeInstances", "ec2:StartInstances", "ec2:StopInstances"]
+    sid       = "DescribeInstances"
+    actions   = ["ec2:DescribeInstances"]
     resources = ["*"]
+  }
+  statement {
+    sid       = "StartStopOwnedInstances"
+    actions   = ["ec2:StartInstances", "ec2:StopInstances"]
+    resources = ["arn:aws:ec2:${var.aws_region}:${data.aws_caller_identity.current.account_id}:instance/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:ResourceTag/Project"
+      values   = [var.project_name]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "ec2:ResourceTag/Environment"
+      values   = [var.environment]
+    }
   }
   statement {
     actions   = ["ssm:DescribeInstanceInformation"]

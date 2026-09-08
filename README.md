@@ -131,7 +131,8 @@ Never place the bot token in a `.tfvars` file, command definition, log, or Terra
 - Deployment archive: a long-term backup of a deployment
 
 Use `/rb start` to provision a configured session or wake a sleeping server.
-Archived sessions still require `/rb restore`. Administrators and Manage Server
+Archived sessions can use `/rb start` to enter the restore workflow; the
+explicit `/rb restore` command remains available. Administrators and Manage Server
 members retain permission to wake sleeping sessions; initial provisioning remains
 owner-only. `/rb wake` is no longer registered.
 

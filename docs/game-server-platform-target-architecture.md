@@ -525,7 +525,8 @@ Current command set:
 | `/rb list` | List accessible sessions |
 | `/rb sleep` | Stop EC2 while retaining active EBS volumes |
 | `/rb archive` | Request guarded archive and infrastructure removal |
-| `/rb restore` | Restore an archived session |
+| `/rb start` | Start a draft, wake a sleeping session, or restore an archived session according to authoritative lifecycle state |
+| `/rb restore` | Explicitly restore an archived session; retained alongside state-aware `/rb start` |
 | `/rb terminate` | Request permanent runtime/artifact deletion with a retained tombstone |
 | `/rb confirm`, `/rb cancel-confirmation` | Resolve the caller's pending destructive confirmation |
 | `/rb cancel` | Request cancellation at a supported safe workflow boundary |

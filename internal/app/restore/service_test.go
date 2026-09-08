@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +12,18 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
+
+func TestTaskResultAlwaysSerializesTerminalBooleans(t *testing.T) {
+	t.Parallel()
+	body, err := json.Marshal(TaskResult{SessionID: "session-1", WorkflowID: "restore-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := string(body)
+	if !strings.Contains(encoded, `"done":false`) || !strings.Contains(encoded, `"succeeded":false`) {
+		t.Fatalf("task result omitted terminal shape: %s", encoded)
+	}
+}
 
 type fakeCompute struct{ observation domain.ComputeObservation }
 

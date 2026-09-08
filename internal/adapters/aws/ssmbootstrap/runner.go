@@ -18,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/hostprereq"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -524,14 +525,7 @@ func (runner *Runner) commandMode(session domain.Session, rollback, pendingWorks
 	command.WriteString("bootstrap_script=\"$(mktemp /run/gsp-bootstrap.XXXXXX)\"\n")
 	command.WriteString("aws_cli_tmp=''\n")
 	command.WriteString("trap 'rm -f \"$bootstrap_script\"; [ -z \"$aws_cli_tmp\" ] || rm -rf -- \"$aws_cli_tmp\"' EXIT\n")
-	command.WriteString("if ! command -v aws >/dev/null 2>&1; then\n")
-	command.WriteString("  command -v apt-get >/dev/null 2>&1 || { echo 'AWS CLI bootstrap requires apt-get' >&2; exit 1; }\n")
-	command.WriteString("  apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl unzip\n")
-	command.WriteString("  aws_cli_tmp=\"$(mktemp -d /run/gsp-awscli.XXXXXX)\"\n")
-	command.WriteString("  curl --fail --location --silent --show-error 'https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip' -o \"$aws_cli_tmp/awscliv2.zip\"\n")
-	command.WriteString("  unzip -q \"$aws_cli_tmp/awscliv2.zip\" -d \"$aws_cli_tmp\"\n")
-	command.WriteString("  \"$aws_cli_tmp/aws/install\" --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli\n")
-	command.WriteString("fi\n")
+	command.WriteString(hostprereq.AWSCLIV2Shell())
 	command.WriteString("download_bucket=\"$(printf '%s' '" + base64.StdEncoding.EncodeToString([]byte(runner.config.AssetsBucket)) + "' | base64 -d)\"\n")
 	command.WriteString("download_key=\"$(printf '%s' '" + base64.StdEncoding.EncodeToString([]byte(runner.config.BootstrapScriptKey)) + "' | base64 -d)\"\n")
 	command.WriteString("download_region=\"$(printf '%s' '" + base64.StdEncoding.EncodeToString([]byte(runner.config.Region)) + "' | base64 -d)\"\n")
