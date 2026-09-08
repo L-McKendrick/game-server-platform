@@ -67,6 +67,24 @@ func TestPlayerControlVisibleOnlyForActiveGameServer(t *testing.T) {
 	}
 }
 
+func TestCardControlsVisibleUntilStableOfflineState(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		state domain.LifecycleState
+		want  bool
+	}{
+		{domain.StateProvisioning, true},
+		{domain.StateSleeping, false},
+		{domain.StateArchived, false},
+		{domain.StateDeleted, false},
+		{domain.StateFailed, true},
+	} {
+		if got := CardControlsVisible(test.state); got != test.want {
+			t.Errorf("CardControlsVisible(%s) = %t; want %t", test.state, got, test.want)
+		}
+	}
+}
+
 func TestEnqueueTerminatedProgressSuppressesPublicCardControls(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 25, 9, 0, 0, 0, time.UTC)

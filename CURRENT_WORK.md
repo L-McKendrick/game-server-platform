@@ -19,12 +19,13 @@ the Phase 18 pull request, then start Phase 19 on a new branch.
   deployed restarts would always have failed before their health probe.
 - Public cards show mission/player data only while active. Completed archives
   use the compact bluish-gray title/description/active-modlist/time view, retain
-  only `Refresh`, preserve legacy fallbacks, and keep actionable restore errors.
+  no controls, preserve legacy fallbacks, and keep actionable restore errors.
   `Show players` is now emitted only for `RUNNING` and `IDLE`; all setup,
   transition, sleeping, archived, failed, and terminated cards omit it.
   Successfully completed sleep cards omit the finished progress block while
   `/rb status` retains its diagnostic history; in-flight and failed sleep
-  progress remains visible. Terminated cards retain no controls.
+  progress remains visible. Fully sleeping, archived, and terminated cards
+  retain no controls; transition and failure cards retain `Refresh`.
 - The review found no remaining authorization, lifecycle-lock, replay,
   idempotency, failure-resolution, backward-compatibility, or deployment-scope
   blocker. Automatic-start delivery remains bounded by normal queue retry/DLQ
@@ -87,7 +88,8 @@ opted-in ready ping, `/rb sleep` followed by `/rb start`, no-change and
 pending-change restart health, download-percentage updates across at least two
 bootstrap observations, lifecycle-specific cards/controls (including no `Show
 players` before `RUNNING` or while sleeping), no completed progress block after
-sleep, and manual `/rb start` recovery for `test-47`.
+sleep, no `Refresh` after fully sleeping or archived, and manual `/rb start`
+recovery for `test-47`.
 
 ## Important Operator Attention
 

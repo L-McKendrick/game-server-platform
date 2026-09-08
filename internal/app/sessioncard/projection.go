@@ -427,6 +427,12 @@ func PlayerControlVisible(state domain.LifecycleState) bool {
 	return state == domain.StateRunning || state == domain.StateIdle
 }
 
+// CardControlsVisible removes controls once a session reaches a stable state
+// where the public card no longer has live data to query or refresh.
+func CardControlsVisible(state domain.LifecycleState) bool {
+	return state != domain.StateSleeping && state != domain.StateArchived && state != domain.StateDeleted
+}
+
 func ProgressStep(workflowType string, milestone domain.ProgressMilestone) (int, int, bool) {
 	milestones, ok := domain.MilestonesForWorkflow(workflowType)
 	if !ok {

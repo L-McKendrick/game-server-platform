@@ -132,7 +132,7 @@ func (handler *handler) deliverCard(ctx context.Context, request domain.Notifica
 	if session.GuildID != request.GuildID || session.ChannelID != request.ChannelID {
 		return fmt.Errorf("session card destination does not match session metadata")
 	}
-	request.SuppressCardControls = session.LifecycleState == domain.StateDeleted
+	request.SuppressCardControls = !sessioncard.CardControlsVisible(session.LifecycleState)
 	request.SuppressPlayerControl = !sessioncard.PlayerControlVisible(session.LifecycleState)
 	reference, err := handler.cards.GetCardReference(ctx, session.ID)
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
@@ -254,6 +254,7 @@ func (handler *handler) deliverModlist(ctx context.Context, request domain.Notif
 		SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID,
 		Content: sessioncard.RenderPublic(projection), Embed: sessioncard.RenderPublicEmbed(projection),
 		Kind: domain.NotificationSessionCard, CardRevision: session.Version,
+		SuppressCardControls:  !sessioncard.CardControlsVisible(session.LifecycleState),
 		SuppressPlayerControl: !sessioncard.PlayerControlVisible(session.LifecycleState),
 		CorrelationID:         request.CorrelationID, RequestedAt: request.RequestedAt,
 	}
