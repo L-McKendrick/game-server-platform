@@ -122,27 +122,19 @@ signed `PING` must receive `PONG`. Confirm Lambda/API alarms remain clear.
 ## 7. Bulk-register the guild command
 
 ```powershell
-$DiscordConfig = aws lambda get-function-configuration `
-  --function-name game-server-platform-dev-discord-interactions `
-  --profile game-server-dev `
-  --region us-west-2 `
-  --query 'Environment.Variables.{ApplicationId:DISCORD_APPLICATION_ID,GuildIds:DISCORD_ALLOWED_GUILD_IDS}' `
-  --output json | ConvertFrom-Json
-$GuildIds = @($DiscordConfig.GuildIds -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-if ($DiscordConfig.ApplicationId -notmatch '^[1-9][0-9]{0,19}$' -or $GuildIds.Count -ne 1 -or $GuildIds[0] -notmatch '^[1-9][0-9]{0,19}$') {
-  throw "Expected one deployed development Discord application and guild."
-}
-./scripts/register-discord-command.ps1 `
-  -ApplicationId $DiscordConfig.ApplicationId `
-  -GuildId $GuildIds[0]
-$DiscordConfig = $null
-$GuildIds = $null
+$DiscordSecretJson = aws secretsmanager get-secret-value --secret-id /game-server-platform/dev/discord-bot-token --profile game-server-dev --region us-west-2 --query SecretString --output text
+$DiscordSecret = $DiscordSecretJson | ConvertFrom-Json
+$env:DISCORD_BOT_TOKEN = $DiscordSecret.token
+./scripts/register-discord-command.ps1 -ApplicationId "1533676701354299402" -GuildId "1192304488351019008"
+Remove-Item Env:DISCORD_BOT_TOKEN
+$DiscordSecret = $null
+$DiscordSecretJson = $null
 ```
 
-The script prompts securely when `DISCORD_BOT_TOKEN` is absent and bulk
-overwrites the development guild's command set with only `/rb`. This removes
-the retired standalone `/admin` command. Clear the environment token after any
-non-interactive use.
+The development secret is stored as `{ "token": "..." }`. The script bulk
+overwrites the development guild's command set with only `/rb`, removing the
+retired standalone `/admin` command. The commands clear the environment token
+and local secret variables immediately after registration.
 
 Guild registration is inherently unavailable in DMs. Discord cannot attach
 default permissions to only the `/rb admin` subcommand, so do not restrict the

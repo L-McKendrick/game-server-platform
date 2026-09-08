@@ -423,6 +423,9 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **18.9.1** [x] Suppress all public-card controls after a session fully reaches sleeping or archived while retaining refresh during transitions and actionable failures.
       - **18.9.2** [x] Enforce lifecycle control visibility at notification creation and delivery boundaries so stale queued requests cannot restore hidden controls.
       - **18.9.3** [x] Add focused control-policy coverage, refresh the deployment handoff, and commit without deploying.
+    - **18.10** [x] Simplify the development deployment handoff.
+      - **18.10.1** [x] Replace nested discovery, validation, and component loops with linear commands using the confirmed development IDs and Discord bot-token secret name.
+      - **18.10.2** [x] Keep the bot token out of command history and clear its environment and local variables immediately after registration.
 
 19. **Maximum Session Duration Guardrails — Pending**
     - **19.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.

@@ -62,7 +62,8 @@ not change provisioning or budget settings.
 $env:GOTOOLCHAIN = "go1.26.5"
 $env:AWS_PROFILE = "game-server-dev"
 ./scripts/package-discord-lambda.ps1
-$phase18Plan = "phase18-release-review-$(Get-Date -Format 'yyyyMMdd-HHmmss').tfplan"
+$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$phase18Plan = "phase18-release-review-$timestamp.tfplan"
 terraform -chdir=infra/terraform/environments/dev plan "-out=$phase18Plan"
 terraform -chdir=infra/terraform/environments/dev show $phase18Plan
 ```
@@ -71,15 +72,14 @@ After approving that exact plan, in the same PowerShell session:
 
 ```powershell
 terraform -chdir=infra/terraform/environments/dev apply $phase18Plan
-foreach ($component in @("discord-interactions", "artifact-worker", "notification-worker", "command-worker", "bootstrap-worker", "monitor-worker", "sleepwake-worker")) {
-  aws lambda get-function-configuration --function-name "game-server-platform-dev-$component" --profile game-server-dev --region us-west-2 --query '{Status:LastUpdateStatus,CodeSHA256:CodeSha256}'
-}
-$discordConfig = aws lambda get-function-configuration --function-name game-server-platform-dev-discord-interactions --profile game-server-dev --region us-west-2 --query 'Environment.Variables.{ApplicationId:DISCORD_APPLICATION_ID,GuildIds:DISCORD_ALLOWED_GUILD_IDS}' --output json | ConvertFrom-Json
-$guildIds = @($discordConfig.GuildIds -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-if ($discordConfig.ApplicationId -notmatch '^[1-9][0-9]{0,19}$' -or $guildIds.Count -ne 1 -or $guildIds[0] -notmatch '^[1-9][0-9]{0,19}$') { throw "Expected one deployed development Discord application and guild." }
-./scripts/register-discord-command.ps1 -ApplicationId $discordConfig.ApplicationId -GuildId $guildIds[0]
-$discordConfig = $null
-$guildIds = $null
+aws lambda list-functions --profile game-server-dev --region us-west-2 --query "Functions[?starts_with(FunctionName, 'game-server-platform-dev-')].[FunctionName,LastUpdateStatus,CodeSha256]" --output table
+$discordSecretJson = aws secretsmanager get-secret-value --secret-id /game-server-platform/dev/discord-bot-token --profile game-server-dev --region us-west-2 --query SecretString --output text
+$discordSecret = $discordSecretJson | ConvertFrom-Json
+$env:DISCORD_BOT_TOKEN = $discordSecret.token
+./scripts/register-discord-command.ps1 -ApplicationId "1533676701354299402" -GuildId "1192304488351019008"
+Remove-Item Env:DISCORD_BOT_TOKEN
+$discordSecret = $null
+$discordSecretJson = $null
 ```
 
 Registration is required because Phase 18 removes `/rb wake` and adds `/rb
