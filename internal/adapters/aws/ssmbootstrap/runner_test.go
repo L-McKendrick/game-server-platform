@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -182,6 +183,34 @@ func TestStartBuildsSecretSafeResumableCommand(t *testing.T) {
 	}
 	if strings.Contains(script, "get-secret-value") {
 		t.Fatal("bootstrap implementation should be delivered through the private S3 artifact")
+	}
+}
+
+func TestStartAllowsOnlyOwnedRestoreLifecycleWithoutPendingPreset(t *testing.T) {
+	t.Parallel()
+	client := &fakeSSM{}
+	runner, err := New(client, testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := domain.Session{
+		ID: "session-1", DisplayName: "Test", Vanilla: true,
+		ConfiguredMission: domain.DefaultMissionSelection(), CurrentMission: domain.DefaultMissionSelection(),
+		LifecycleState: domain.StateRestoring, ActiveWorkflowID: "restore-1", ActiveWorkflowType: domain.RestoreWorkflowType,
+		Infrastructure: domain.Infrastructure{CapacitySlotID: "slot-0", InstanceID: "i-1", DataVolumeID: "vol-1"},
+	}
+	if _, err := runner.Start(context.Background(), session); err != nil {
+		t.Fatalf("active restore bootstrap was rejected: %v", err)
+	}
+
+	session.ActiveWorkflowType = domain.WakeWorkflowType
+	if _, err := runner.Start(context.Background(), session); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("mismatched restore workflow error = %v", err)
+	}
+	session.ActiveWorkflowType = domain.RestoreWorkflowType
+	session.ActiveWorkflowID = ""
+	if _, err := runner.Start(context.Background(), session); !errors.Is(err, domain.ErrInvalidTransition) {
+		t.Fatalf("missing restore workflow error = %v", err)
 	}
 }
 

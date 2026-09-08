@@ -104,7 +104,8 @@ func (runner *Runner) WithProgressStore(client progressAPI) *Runner {
 
 func (runner *Runner) Start(ctx context.Context, session domain.Session) (string, error) {
 	applyingLifecycleRevision := session.HasApplyingPresetRevision(session.ActiveWorkflowID) && (session.LifecycleState == domain.StateWaking || session.LifecycleState == domain.StateRestoring)
-	if !session.CanStartBootstrap() && session.LifecycleState != domain.StateInstalling && !applyingLifecycleRevision {
+	activeRestore := session.LifecycleState == domain.StateRestoring && session.ActiveWorkflowType == domain.RestoreWorkflowType && session.ActiveWorkflowID != ""
+	if !session.CanStartBootstrap() && session.LifecycleState != domain.StateInstalling && !applyingLifecycleRevision && !activeRestore {
 		return "", fmt.Errorf("%w: session is not bootstrap-ready", domain.ErrInvalidTransition)
 	}
 	return runner.start(ctx, session, false)
