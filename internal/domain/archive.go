@@ -182,13 +182,23 @@ func (session *Session) FailArchive(workflowID string, now time.Time) error {
 }
 
 func (session Session) CanRestore() bool {
-	return session.ActiveWorkflowID == "" && session.LifecycleState == StateArchived &&
-		session.Infrastructure.Empty() && session.Archive.Validate() == nil
+	if session.ActiveWorkflowID != "" || session.Archive.Validate() != nil {
+		return false
+	}
+	if session.LifecycleState == StateArchived {
+		return session.Infrastructure.Empty()
+	}
+	return session.LifecycleState == StateFailed &&
+		session.Infrastructure.CapacitySlotID != "" &&
+		session.Infrastructure.InstanceID != "" &&
+		session.Infrastructure.DataVolumeID != "" &&
+		session.Progress.WorkflowType == RestoreWorkflowType &&
+		session.Progress.State == ProgressActionRequired
 }
 
 func (session *Session) BeginRestore(workflowID string, lease time.Duration, now time.Time) error {
 	if !session.CanRestore() {
-		return fmt.Errorf("%w: restore requires an archived resource-free session", ErrInvalidTransition)
+		return fmt.Errorf("%w: restore requires an archived resource-free session or a failed restore with retained resources", ErrInvalidTransition)
 	}
 	if err := session.AcquireWorkflowLock(strings.TrimSpace(workflowID), RestoreWorkflowType, lease, now); err != nil {
 		return err
@@ -594,7 +604,20 @@ func (manifest ArchiveManifest) PresetRevisionIntentMatches(session Session) boo
 		pendingRevision.ApplyStartedAt = time.Time{}
 	}
 	pending := ArchivePresetRevisionSnapshot(pendingRevision)
-	return manifest.PresetRevisionSequence == session.EffectivePresetRevisionSequence() && archivePresetRevisionEqual(manifest.ActivePresetRevision, active) && archivePresetRevisionEqual(manifest.PendingPresetRevision, pending)
+	baseMatches := manifest.PresetRevisionSequence == session.EffectivePresetRevisionSequence() && archivePresetRevisionEqual(manifest.ActivePresetRevision, active)
+	if baseMatches && archivePresetRevisionEqual(manifest.PendingPresetRevision, pending) {
+		return true
+	}
+	if baseMatches && pendingRevision.Status == PresetRevisionFailed && session.ActiveWorkflowType == RestoreWorkflowType {
+		pendingRevision.Status = PresetRevisionPending
+		pendingRevision.FailedAt = time.Time{}
+		pendingRevision.FailureDetail = ""
+		pendingRevision.RollbackDisposition = ""
+		pendingRevision.RollbackAt = time.Time{}
+		pendingRevision.RollbackDetail = ""
+		return archivePresetRevisionEqual(manifest.PendingPresetRevision, ArchivePresetRevisionSnapshot(pendingRevision))
+	}
+	return false
 }
 
 func (manifest ArchiveManifest) ServerPresetRevisionIntentMatches(session Session) bool {
@@ -606,7 +629,20 @@ func (manifest ArchiveManifest) ServerPresetRevisionIntentMatches(session Sessio
 	if pendingRevision.Status == PresetRevisionApplying && session.ActiveWorkflowType == RestoreWorkflowType && pendingRevision.ApplyWorkflowID == session.ActiveWorkflowID {
 		pendingRevision.Status, pendingRevision.ApplyWorkflowID, pendingRevision.ApplyStartedAt = PresetRevisionPending, "", time.Time{}
 	}
-	return manifest.ServerPresetRevisionSequence == session.EffectiveServerPresetRevisionSequence() && archivePresetRevisionEqual(manifest.ActiveServerPresetRevision, active) && archivePresetRevisionEqual(manifest.PendingServerPresetRevision, ArchivePresetRevisionSnapshot(pendingRevision))
+	baseMatches := manifest.ServerPresetRevisionSequence == session.EffectiveServerPresetRevisionSequence() && archivePresetRevisionEqual(manifest.ActiveServerPresetRevision, active)
+	if baseMatches && archivePresetRevisionEqual(manifest.PendingServerPresetRevision, ArchivePresetRevisionSnapshot(pendingRevision)) {
+		return true
+	}
+	if baseMatches && pendingRevision.Status == PresetRevisionFailed && session.ActiveWorkflowType == RestoreWorkflowType {
+		pendingRevision.Status = PresetRevisionPending
+		pendingRevision.FailedAt = time.Time{}
+		pendingRevision.FailureDetail = ""
+		pendingRevision.RollbackDisposition = ""
+		pendingRevision.RollbackAt = time.Time{}
+		pendingRevision.RollbackDetail = ""
+		return archivePresetRevisionEqual(manifest.PendingServerPresetRevision, ArchivePresetRevisionSnapshot(pendingRevision))
+	}
+	return false
 }
 
 func archivePresetRevisionEqual(left, right *ArchivePresetRevision) bool {

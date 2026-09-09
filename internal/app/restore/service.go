@@ -56,8 +56,8 @@ type TaskResult struct {
 	CommandID    string `json:"command_id,omitempty"`
 	Ready        bool   `json:"ready,omitempty"`
 	Managed      bool   `json:"managed,omitempty"`
-	Done         bool   `json:"done,omitempty"`
-	Succeeded    bool   `json:"succeeded,omitempty"`
+	Done         bool   `json:"done"`
+	Succeeded    bool   `json:"succeeded"`
 	ErrorCode    string `json:"error_code,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
 	Warning      string `json:"warning,omitempty"`
@@ -359,7 +359,11 @@ func (service *Service) observeCommand(ctx context.Context, session domain.Sessi
 		}
 	}
 	if response.Done && !response.Succeeded {
-		response.ErrorCode = "ERR_RESTORE_COMMAND"
+		fallbackCode := "ERR_RESTORE_COMMAND"
+		if bootstrapCommand {
+			fallbackCode = "ERR_RESTORE_BOOTSTRAP_COMMAND"
+		}
+		response.ErrorCode = bounded(status.ErrorCode, fallbackCode)
 		response.ErrorMessage = bounded(status.ErrorMessage, "restore command failed")
 	}
 	return response, nil
@@ -421,7 +425,8 @@ func (service *Service) fail(ctx context.Context, session domain.Session, workfl
 			return TaskResult{}, err
 		}
 	}
-	if err := failurestate.Record(&session, workflow, request.ErrorCode, "ERR_RESTORE_FAILED", workflow.CurrentStage,
+	stage := restoreFailureStage(session, workflow)
+	if err := failurestate.Record(&session, workflow, request.ErrorCode, "ERR_RESTORE_FAILED", stage,
 		"Restore processing stopped before the replacement server was verified healthy.", failurestate.Impact(session, false), now); err != nil {
 		return TaskResult{}, err
 	}
@@ -533,6 +538,12 @@ func (service *Service) infrastructure(session domain.Session, observation domai
 
 func result(session domain.Session, workflow domain.Workflow) TaskResult {
 	return TaskResult{SessionID: session.ID, WorkflowID: workflow.ID, State: string(session.LifecycleState)}
+}
+func restoreFailureStage(session domain.Session, workflow domain.Workflow) string {
+	if session.Progress.WorkflowID == workflow.ID && session.Progress.Milestone != "" {
+		return string(session.Progress.Milestone)
+	}
+	return workflow.CurrentStage
 }
 func terminal(status string) bool {
 	return status == "Success" || status == "Failed" || status == "TimedOut" || status == "Cancelled"

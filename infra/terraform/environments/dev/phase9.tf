@@ -218,12 +218,26 @@ locals {
         Parameters     = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "observe_bootstrap", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id", "command_id.$" = "$.bootstrap.result.command_id" } }
         ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.bootstrap", Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "DispatchRollback" }], Next = "BootstrapResult"
       }
-      BootstrapResult            = { Type = "Choice", Choices = [{ Variable = "$.bootstrap.result.succeeded", BooleanEquals = true, Next = "Complete" }, { Variable = "$.bootstrap.result.done", BooleanEquals = true, Next = "BootstrapFailed" }], Default = "IncrementBootstrapAttempts" }
+      BootstrapResult = {
+        Type = "Choice"
+        Choices = [
+          { And = [{ Variable = "$.bootstrap.result.done", IsPresent = true }, { Variable = "$.bootstrap.result.succeeded", IsPresent = true }, { Variable = "$.bootstrap.result.done", BooleanEquals = true }, { Variable = "$.bootstrap.result.succeeded", BooleanEquals = true }], Next = "Complete" },
+          { And = [{ Variable = "$.bootstrap.result.done", IsPresent = true }, { Variable = "$.bootstrap.result.succeeded", IsPresent = true }, { Variable = "$.bootstrap.result.done", BooleanEquals = true }, { Variable = "$.bootstrap.result.succeeded", BooleanEquals = false }], Next = "ValidateBootstrapFailure" },
+          { And = [{ Variable = "$.bootstrap.result.done", IsPresent = true }, { Variable = "$.bootstrap.result.succeeded", IsPresent = true }, { Variable = "$.bootstrap.result.done", BooleanEquals = false }, { Variable = "$.bootstrap.result.succeeded", BooleanEquals = false }], Next = "IncrementBootstrapAttempts" }
+        ]
+        Default = "MalformedBootstrapResult"
+      }
       IncrementBootstrapAttempts = { Type = "Pass", Parameters = { "value.$" = "States.MathAdd($.attempt, 1)" }, ResultPath = "$.counter", Next = "CopyBootstrapAttempts" }
       CopyBootstrapAttempts      = { Type = "Pass", InputPath = "$.counter.value", ResultPath = "$.attempt", Next = "BootstrapAttemptsAvailable" }
       BootstrapAttemptsAvailable = { Type = "Choice", Choices = [{ Variable = "$.attempt", NumericGreaterThanEquals = 1440, Next = "BootstrapTimeout" }], Default = "WaitForBootstrap" }
-      BootstrapFailed            = { Type = "Pass", Parameters = { "Error.$" = "$.bootstrap.result.error_code", "Cause.$" = "$.bootstrap.result.error_message" }, ResultPath = "$.failure", Next = "DispatchRollback" }
-      BootstrapTimeout           = { Type = "Pass", Result = { Error = "ERR_BOOTSTRAP_TIMEOUT", Cause = "Bootstrap did not complete within the bounded wait." }, ResultPath = "$.failure", Next = "DispatchRollback" }
+      ValidateBootstrapFailure = {
+        Type    = "Choice"
+        Choices = [{ And = [{ Variable = "$.bootstrap.result.error_code", IsPresent = true }, { Variable = "$.bootstrap.result.error_message", IsPresent = true }], Next = "BootstrapFailed" }]
+        Default = "MalformedBootstrapResult"
+      }
+      BootstrapFailed          = { Type = "Pass", Parameters = { "Error.$" = "$.bootstrap.result.error_code", "Cause.$" = "$.bootstrap.result.error_message" }, ResultPath = "$.failure", Next = "DispatchRollback" }
+      MalformedBootstrapResult = { Type = "Pass", Result = { Error = "ERR_BOOTSTRAP_RESULT_INVALID", Cause = "The managed bootstrap command returned an incomplete or contradictory result during restore." }, ResultPath = "$.failure", Next = "DispatchRollback" }
+      BootstrapTimeout         = { Type = "Pass", Result = { Error = "ERR_BOOTSTRAP_TIMEOUT", Cause = "Bootstrap did not complete within the bounded wait." }, ResultPath = "$.failure", Next = "DispatchRollback" }
       DispatchRestore = {
         Type           = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters     = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "dispatch_restore", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
@@ -236,12 +250,26 @@ locals {
         Parameters     = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "observe_restore", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id", "command_id.$" = "$.restore.result.command_id" } }
         ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.restore", Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.failure", Next = "Fail" }], Next = "RestoreResult"
       }
-      RestoreResult            = { Type = "Choice", Choices = [{ Variable = "$.restore.result.succeeded", BooleanEquals = true, Next = "DispatchBootstrap" }, { Variable = "$.restore.result.done", BooleanEquals = true, Next = "RestoreFailed" }], Default = "IncrementRestoreAttempts" }
+      RestoreResult = {
+        Type = "Choice"
+        Choices = [
+          { And = [{ Variable = "$.restore.result.done", IsPresent = true }, { Variable = "$.restore.result.succeeded", IsPresent = true }, { Variable = "$.restore.result.done", BooleanEquals = true }, { Variable = "$.restore.result.succeeded", BooleanEquals = true }], Next = "DispatchBootstrap" },
+          { And = [{ Variable = "$.restore.result.done", IsPresent = true }, { Variable = "$.restore.result.succeeded", IsPresent = true }, { Variable = "$.restore.result.done", BooleanEquals = true }, { Variable = "$.restore.result.succeeded", BooleanEquals = false }], Next = "ValidateRestoreFailure" },
+          { And = [{ Variable = "$.restore.result.done", IsPresent = true }, { Variable = "$.restore.result.succeeded", IsPresent = true }, { Variable = "$.restore.result.done", BooleanEquals = false }, { Variable = "$.restore.result.succeeded", BooleanEquals = false }], Next = "IncrementRestoreAttempts" }
+        ]
+        Default = "MalformedRestoreResult"
+      }
       IncrementRestoreAttempts = { Type = "Pass", Parameters = { "value.$" = "States.MathAdd($.attempt, 1)" }, ResultPath = "$.counter", Next = "CopyRestoreAttempts" }
       CopyRestoreAttempts      = { Type = "Pass", InputPath = "$.counter.value", ResultPath = "$.attempt", Next = "RestoreAttemptsAvailable" }
       RestoreAttemptsAvailable = { Type = "Choice", Choices = [{ Variable = "$.attempt", NumericGreaterThanEquals = 480, Next = "RestoreTimeout" }], Default = "WaitForRestore" }
-      RestoreFailed            = { Type = "Pass", Parameters = { "Error.$" = "$.restore.result.error_code", "Cause.$" = "$.restore.result.error_message" }, ResultPath = "$.failure", Next = "Fail" }
-      RestoreTimeout           = { Type = "Pass", Result = { Error = "ERR_RESTORE_TIMEOUT", Cause = "Archive restore did not complete within the bounded wait." }, ResultPath = "$.failure", Next = "Fail" }
+      ValidateRestoreFailure = {
+        Type    = "Choice"
+        Choices = [{ And = [{ Variable = "$.restore.result.error_code", IsPresent = true }, { Variable = "$.restore.result.error_message", IsPresent = true }], Next = "RestoreFailed" }]
+        Default = "MalformedRestoreResult"
+      }
+      RestoreFailed          = { Type = "Pass", Parameters = { "Error.$" = "$.restore.result.error_code", "Cause.$" = "$.restore.result.error_message" }, ResultPath = "$.failure", Next = "Fail" }
+      MalformedRestoreResult = { Type = "Pass", Result = { Error = "ERR_RESTORE_RESULT_INVALID", Cause = "The managed restore command returned an incomplete or contradictory result." }, ResultPath = "$.failure", Next = "Fail" }
+      RestoreTimeout         = { Type = "Pass", Result = { Error = "ERR_RESTORE_TIMEOUT", Cause = "Archive restore did not complete within the bounded wait." }, ResultPath = "$.failure", Next = "Fail" }
       Complete = {
         Type       = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "complete", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
@@ -252,7 +280,14 @@ locals {
         Parameters     = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "dispatch_rollback", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
         ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.rollback", Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.rollback_failure", Next = "Fail" }], Next = "RollbackDispatched"
       }
-      RollbackDispatched         = { Type = "Choice", Choices = [{ Variable = "$.rollback.result.succeeded", BooleanEquals = true, Next = "Fail" }], Default = "InitializeRollbackAttempts" }
+      RollbackDispatched = {
+        Type = "Choice"
+        Choices = [
+          { And = [{ Variable = "$.rollback.result.done", IsPresent = true }, { Variable = "$.rollback.result.succeeded", IsPresent = true }, { Variable = "$.rollback.result.done", BooleanEquals = true }, { Variable = "$.rollback.result.succeeded", BooleanEquals = true }], Next = "Fail" },
+          { And = [{ Variable = "$.rollback.result.done", IsPresent = true }, { Variable = "$.rollback.result.succeeded", IsPresent = true }, { Variable = "$.rollback.result.command_id", IsPresent = true }, { Variable = "$.rollback.result.done", BooleanEquals = false }, { Variable = "$.rollback.result.succeeded", BooleanEquals = false }], Next = "InitializeRollbackAttempts" }
+        ]
+        Default = "Fail"
+      }
       InitializeRollbackAttempts = { Type = "Pass", Result = 0, ResultPath = "$.rollback_attempt", Next = "WaitForRollback" }
       WaitForRollback            = { Type = "Wait", Seconds = 30, Next = "ObserveRollback" }
       ObserveRollback = {
@@ -260,13 +295,21 @@ locals {
         Parameters     = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "observe_rollback", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id", "command_id.$" = "$.rollback.result.command_id" } }
         ResultSelector = { "result.$" = "$.Payload" }, ResultPath = "$.rollback", Catch = [{ ErrorEquals = ["States.ALL"], ResultPath = "$.rollback_failure", Next = "Fail" }], Next = "RollbackComplete"
       }
-      RollbackComplete          = { Type = "Choice", Choices = [{ Variable = "$.rollback.result.done", BooleanEquals = true, Next = "Fail" }], Default = "IncrementRollbackAttempts" }
+      RollbackComplete = {
+        Type = "Choice"
+        Choices = [
+          { And = [{ Variable = "$.rollback.result.done", IsPresent = true }, { Variable = "$.rollback.result.done", BooleanEquals = true }], Next = "Fail" },
+          { And = [{ Variable = "$.rollback.result.done", IsPresent = true }, { Variable = "$.rollback.result.done", BooleanEquals = false }], Next = "IncrementRollbackAttempts" }
+        ]
+        Default = "Fail"
+      }
       IncrementRollbackAttempts = { Type = "Pass", Parameters = { "value.$" = "States.MathAdd($.rollback_attempt, 1)" }, ResultPath = "$.rollback_counter", Next = "CopyRollbackAttempts" }
       CopyRollbackAttempts      = { Type = "Pass", InputPath = "$.rollback_counter.value", ResultPath = "$.rollback_attempt", Next = "RollbackAttemptsAvailable" }
       RollbackAttemptsAvailable = { Type = "Choice", Choices = [{ Variable = "$.rollback_attempt", NumericGreaterThanEquals = local.bootstrap_poll_limit, Next = "Fail" }], Default = "WaitForRollback" }
       Fail = {
         Type       = "Task", Resource = "arn:aws:states:::lambda:invoke"
         Parameters = { FunctionName = aws_lambda_function.restore_worker.function_name, Payload = { action = "fail", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id", "error_code.$" = "$.failure.Error", "error_message.$" = "$.failure.Cause" } }
+        Retry      = [local.lambda_transient_retry]
         Next       = "RestoreWorkflowFailed"
       }
       RestoreWorkflowFailed = { Type = "Fail", Error = "RestoreWorkflowFailed", Cause = "Archive verification, infrastructure recreation, bootstrap, or restore failed." }

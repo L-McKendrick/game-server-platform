@@ -179,6 +179,36 @@ var entries = map[string]entry{
 		"The platform stopped the restore and retained authoritative archive metadata.",
 		"Give the support reference to an operator before requesting restore again.",
 	},
+	"ERR_RESTORE_DATA_VOLUME": {
+		"The replacement server could not prepare its persistent storage.",
+		"The recorded data volume was missing, mounted incorrectly, or used an unsupported filesystem.",
+		"The platform stopped before extracting the archive and retained authoritative archive and replacement-resource metadata.",
+		"Give the support reference to an operator before requesting restore again.",
+	},
+	"ERR_RESTORE_BOOTSTRAP_COMMAND": {
+		"Archived data was restored, but replacement-server setup did not complete.",
+		"The normal game-server bootstrap command stopped before services passed health verification.",
+		"The platform retained the verified archive and replacement resources without declaring the server playable.",
+		"Give the support reference to an operator, then request restore again after the setup issue is corrected.",
+	},
+	"ERR_AWS_CLI_PREREQUISITE": {
+		"The replacement server could not access the archived data.",
+		"A verified AWS CLI v2 was unavailable before archive restoration began.",
+		"The platform stopped before extracting the archive and retained authoritative archive metadata.",
+		"Give the support reference to an operator so the replacement-host prerequisite can be repaired.",
+	},
+	"ERR_RESTORE_RESULT_INVALID": {
+		"The replacement server returned an invalid restore result.",
+		"The managed command response was incomplete or internally inconsistent.",
+		"The platform stopped the workflow and retained authoritative archive and replacement-resource metadata.",
+		"Give the support reference to an operator before requesting restore again.",
+	},
+	"ERR_BOOTSTRAP_RESULT_INVALID": {
+		"The replacement server returned an invalid setup result during restore.",
+		"The managed setup response was incomplete or internally inconsistent.",
+		"The platform attempted applicable rollback and retained authoritative archive and replacement-resource metadata.",
+		"Give the support reference to an operator before requesting restore again.",
+	},
 	"ERR_RESTORE_FAILED": {
 		"The restore operation did not complete.",
 		"Archive verification, replacement infrastructure, data restoration, or health verification failed.",

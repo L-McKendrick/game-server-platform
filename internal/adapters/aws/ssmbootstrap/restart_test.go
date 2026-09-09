@@ -92,6 +92,67 @@ ss(){ printf 'UNCONN 0 0 0.0.0.0:2302\n'; }
 	}
 }
 
+func TestServiceStartedCheckpointRequiresEveryRequestedServiceToStart(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "deploy", "bootstrap", "arma3-bootstrap.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := strings.ReplaceAll(string(source), "\r\n", "\n")
+	start := strings.Index(s, "launch_and_verify() {")
+	end := strings.Index(s[start:], "\n}\n") + start + 3
+	if start < 0 || end < start {
+		t.Fatal("launch shell boundary missing")
+	}
+	bash, err := bashExecutable()
+	if err != nil {
+		t.Skip("bash unavailable")
+	}
+	for _, test := range []struct {
+		name       string
+		voice      bool
+		failedUnit string
+		want       string
+	}{
+		{name: "arma failure", voice: false, failedUnit: "arma3-server.service"},
+		{name: "voice failure", voice: true, failedUnit: "teamspeak3-server.service"},
+		{name: "all services started", voice: true, want: "SERVICE_STARTED\nHEALTH_VERIFICATION\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			harness := `set -u
+work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+VANILLA_MODE=true; STEAM_AUTH_ACTIVE=false; STEAM_AUTH_LOCK_OWNER=""; GSP_OPERATION_MODE=bootstrap
+TEAMSPEAK_ENABLED=VOICE; FAIL_TARGET="__FAIL_TARGET__"
+scrub_persistent_steam_auth(){ :; }
+checkpoint(){ printf '%s\n' "$1" >> "$work/checkpoints"; }
+systemctl(){ if [ "$1" = restart ] && [ "$2" = "$FAIL_TARGET" ]; then return 5; fi; return 0; }
+ss(){ printf 'UNCONN 0 0 0.0:2302\nUNCONN 0 0 0.0:9987\n'; }
+` + s[start:end] + `
+if [ -n "$FAIL_TARGET" ]; then
+  if launch_and_verify; then exit 1; fi
+else
+  launch_and_verify
+fi
+cat "$work/checkpoints" 2>/dev/null || true
+`
+			harness = strings.ReplaceAll(harness, "VOICE", map[bool]string{false: "false", true: "true"}[test.voice])
+			harness = strings.ReplaceAll(harness, "__FAIL_TARGET__", test.failedUnit)
+			path := filepath.Join(t.TempDir(), "service-checkpoint.sh")
+			if err := os.WriteFile(path, []byte(harness), 0600); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			out, err := exec.CommandContext(ctx, bash, path).CombinedOutput()
+			if err != nil {
+				t.Fatalf("service checkpoint shell: %v: %s", err, out)
+			}
+			if string(out) != test.want {
+				t.Fatalf("checkpoints = %q; want %q", out, test.want)
+			}
+		})
+	}
+}
+
 func TestRestartReusesPreviouslyDispatchedCommand(t *testing.T) {
 	client := &fakeSSM{commands: &ssm.ListCommandsOutput{Commands: []types.Command{{Comment: aws.String("gsp:restart:session-1:restart-1"), InstanceIds: []string{"i-1"}, CommandId: aws.String("existing-1")}}}}
 	runner, err := New(client, testConfig())

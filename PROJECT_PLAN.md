@@ -56,7 +56,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
 9. **Archive, Restore, and Termination — Done**
    - **9.1** [x] Add owner-confirmed interruption warnings, portable bounded archives, versioned manifests, archive and manifest checksums, S3 verification, and non-destructive metadata completion.
    - **9.2** [x] Destroy tagged disposable infrastructure only after durable archive verification, then recreate infrastructure, safely restore validated data, and pass service health acceptance. Permit the approved AMI-backed gp3 root volume in provisioning and restore IAM while retaining encrypted-only authorization for blank data volumes.
-   - **9.3** [x] Add an owner-confirmed `/session terminate` command that immediately stops and permanently deletes all tagged runtime infrastructure and session-owned stored artifacts for the selected session without creating an archive. Preserve only an auditable terminal metadata record, require an explicit irreversible-action confirmation, and fail closed on ownership or tag mismatches.
+   - **9.3** [x] Add an owner-confirmed `/rb terminate` command that immediately stops and permanently deletes all tagged runtime infrastructure and session-owned stored artifacts for the selected session without creating an archive. Preserve only an auditable terminal metadata record, require an explicit irreversible-action confirmation, and fail closed on ownership or tag mismatches.
    - **9.4** [x] Support explicitly configured vanilla Arma sessions without a mod preset or Steam account.
      - **9.4.1** [x] Add a persisted, backward-compatible vanilla-session configuration flag and expose it through Discord configuration/status output.
      - **9.4.2** [x] Make a configured mission sufficient for vanilla-session readiness while retaining the preset requirement for modded sessions.
@@ -277,9 +277,9 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **19.1.2** [x] Use the configured channel when creating a public card and its linked public modlist message; continue storing the created message references so existing update and repair paths work unchanged.
       - **19.1.3** [x] Add focused admin-authorization, setting persistence, selected-channel delivery, and Discord failure coverage; update the relevant admin documentation and run proportional validation.
 
-20. **Mission Wake Synchronization Repair — Done (approved out of order)**
-    - **20.1** [x] Make wake/bootstrap content deployment replay when its exact mission or server-configuration inputs change instead of trusting the stale host-wide completion marker.
-      - **20.1.1** [x] Bind the resumable content marker to a deterministic digest of the accepted mission manifest, selected mission, server configuration, display identity, and bootstrap revision; add regression coverage for unchanged replay and changed sleeping-session content.
+**Completed Maintenance — Mission Wake Synchronization Repair**
+    - **M.1** [x] Make wake/bootstrap content deployment replay when its exact mission or server-configuration inputs change instead of trusting the stale host-wide completion marker.
+      - **M.1.1** [x] Bind the resumable content marker to a deterministic digest of the accepted mission manifest, selected mission, server configuration, display identity, and bootstrap revision; add regression coverage for unchanged replay and changed sleeping-session content.
 
 16. **Completed Production Hardening and Optimization Work**
     - **16.5** [x] Reduce AWS orchestration overhead without weakening bounded lifecycle behavior, progress visibility, or recovery safeguards.
@@ -384,7 +384,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
 
 18. **Discord Lifecycle UX and Restart — Done**
     - **18.1** [x] Unify start and wake behind `/rb start` with state-aware behavior.
-      - **18.1.1** [x] Make `/rb start` provision a ready draft and wake a sleeping session through the existing lifecycle workflows, while returning current progress for duplicate requests and rejecting unsupported states with actionable feedback. Keep `/rb restore` separate; archived-session routing is deferred to 20.7.4.
+      - **18.1.1** [x] Make `/rb start` provision a ready draft and wake a sleeping session through the existing lifecycle workflows, while returning current progress for duplicate requests and rejecting unsupported states with actionable feedback. Keep `/rb restore` separate; archived-session routing is deferred to 20.1.6.
       - **18.1.2** [x] Remove `/rb wake` from command registration, help, and user documentation without weakening authorization, capacity, pending-content application, restore, replay, or idempotency safeguards.
       - **18.1.3** [x] Add focused command-routing, lifecycle-state, authorization, capacity, pending-change, duplicate-request, registration, and backward-compatibility coverage.
     - **18.2** [x] Add a simple, robust `/rb restart` operation for active game servers.
@@ -438,15 +438,36 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **19.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
 
 20. **Production Hardening and Optimization — Pending**
-    - **20.1** [ ] Complete least-privilege and threat-model reviews across Discord, AWS, artifacts, workflows, and destructive lifecycle boundaries.
-    - **20.2** [ ] Add OIDC deployment, staging, dashboards, alert validation, and tested production and disaster-recovery runbooks.
-    - **20.3** [ ] Verify costs, quotas, failure recovery, backup restoration, and operational readiness against explicit release gates.
-    - **20.4** [ ] Benchmark bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements, then optimize only demonstrated bottlenecks within cost and reliability guardrails.
-    - **20.7** [ ] Repair restore prerequisites and terminal-failure handling exposed by the test-44 restore failure.
-      - **20.7.1** [ ] Ensure every replacement host has a verified supported AWS CLI before archive restoration begins, and fail with an actionable bounded error if the prerequisite is unavailable.
-      - **20.7.2** [ ] Make the restore Step Functions result branch handle unsuccessful terminal command results without referencing absent fields, and route all runtime/task failures through the restore failure handler so lifecycle state, failure detail, and workflow locks are finalized.
-      - **20.7.3** [ ] Add focused missing-CLI, failed-command-result, malformed-result, failure-handler, replay, lock-release, and retained-resource regression coverage; run proportional Go, packaging, Terraform, and live restore validation before completing the step.
-      - **20.7.4** [ ] After restore prerequisites and terminal-failure handling are repaired and validated, route `/rb start` for archived sessions through the existing restore workflow, preserving authorization, capacity, pending-content, idempotency, and failure safeguards; update help and add focused routing coverage. Keep `/rb restore` available unless separately changed.
+    - Proceeded before Phase 19 by explicit user approval. Deliver on
+      `codex/phase-20-production-hardening`; stop after step 20.2 until further
+      direction.
+    - **20.1** [x] Repair restore correctness and archived-session start routing before using archive/restore as a production release gate.
+      - **20.1.1** [x] Add a shared replacement-host prerequisite that installs AWS CLI v2 when absent and verifies a supported executable before archive access.
+      - **20.1.2** [x] Make restore result contracts structurally complete and harden Step Functions choices against absent, malformed, or contradictory terminal command results.
+      - **20.1.3** [x] Route dispatch, observation, timeout, malformed-result, rollback, and task-runtime failures through the idempotent restore failure finalizer while preserving lock, capacity, and retained-resource truth.
+      - **20.1.4** [x] Add focused missing-CLI, failed-command-result, malformed-result, failure-handler, replay, lock-release, capacity, and retained-resource regression coverage.
+      - **20.1.5** [x] Run proportional Go, packaging, and Terraform validation and record the deployment boundary.
+      - **20.1.6** [x] Route `/rb start` for archived sessions through the existing restore workflow after offline restore validation, preserving authorization, capacity, pending-content, idempotency, and failure safeguards; retain `/rb restore` and update help and focused routing coverage.
+      - **20.1.7** [x] Deploy through fresh reviewed Terraform plans and perform a separately approved live archive/restore exercise before claiming live acceptance or completing the step.
+      - **20.1.8** [x] Create the existing bootstrap service accounts idempotently before restore applies extracted-file ownership, and add focused fresh-host regression coverage for Steam and optional TeamSpeak restores.
+      - **20.1.9** [x] Permit the existing bootstrap runner during an active restore workflow without requiring a pending preset revision, while rejecting missing or mismatched restore locks.
+      - **20.1.10** [x] Mount and verify the exact replacement data volume before archive download or extraction, keep temporary restore data off the root filesystem, and make required-directory creation replay-safe.
+      - **20.1.11** [x] Resize the approved Ubuntu AMI's actual root device without creating a second unused root volume, with focused launch-contract coverage.
+      - **20.1.12** [x] Allow bounded retry of a failed restore on its retained replacement resources, distinguish restore bootstrap failures, preserve actionable sanitized diagnostic tails and stages, and reconcile recovery documentation and tests.
+      - **20.1.13** [x] Invalidate current revision-qualified host-reconstruction markers during restore, report service startup only after required units start, and cover vanilla, modded, and TeamSpeak replacement-host regressions.
+    - **20.2** [x] Complete the least-privilege and threat-model review across Discord, AWS, artifacts, workflows, and destructive lifecycle boundaries.
+      - **20.2.1** [x] Inventory trust boundaries, protected data, external inputs, runtime and operator identities, and destructive operations.
+      - **20.2.2** [x] Create a detailed threat model with abuse cases, existing mitigations, residual risks, owners, and concrete verification evidence.
+      - **20.2.3** [x] Produce an IAM capability matrix for every Lambda, Step Functions, EC2, deployment, operator, Terraform-state, and secret boundary.
+      - **20.2.4** [x] Tighten demonstrated IAM overreach in small reviewed changes and add Terraform-policy and negative authorization coverage.
+      - **20.2.5** [x] Review Discord signatures and authorization, remote artifact intake, archive extraction, shell generation, logs, dependencies, and denial-of-service or cost-amplification boundaries.
+      - **20.2.6** [x] Record intentionally retained privileges and deferred risks as explicit release exceptions, validate the affected repository, and refresh the security and deployment handoff.
+      - **20.2.7** [x] Review the complete Phase 20 branch for altered lifecycle, retry, replacement-host, IAM, artifact, deployment, and backward-compatibility edge cases; correct concrete findings, reconcile live acceptance and release documentation, validate, and prepare the pull-request handoff.
+    - **20.3** [ ] Add protected GitHub OIDC plan and deployment workflows with immutable build and plan artifacts and no stored AWS access keys.
+    - **20.4** [ ] Add an isolated production-like staging environment and exercise the complete lifecycle through its promotion process.
+    - **20.5** [ ] Add operational dashboards, missing actionable alarms, validated notification delivery, and tested production and disaster-recovery runbooks.
+    - **20.6** [ ] Verify costs, quotas, failure recovery, backup restoration, and operational readiness against explicit owned release gates.
+    - **20.7** [ ] Benchmark bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements, then optimize only demonstrated bottlenecks within cost and reliability guardrails.
 
 21. **Potential Enhancements — Pending**
     - **21.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.

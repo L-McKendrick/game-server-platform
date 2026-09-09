@@ -4,7 +4,8 @@
 idle session. It requires the session owner or a signed Administrator/Manage
 Server member. No player-count check or confirmation delays the restart.
 TeamSpeak and EC2 stay running; this command does not sleep or reprovision a host.
-Use `/rb start` for sleeping sessions and `/rb restore` for archived sessions.
+Use `/rb start` for sleeping or archived sessions. Archived sessions enter the
+restore workflow; `/rb restore` remains available as an explicit equivalent.
 
 The command captures the current guild server.cfg revision and acquires the
 existing exclusive session workflow lock. Pending client and server-mod

@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/hostprereq"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -40,8 +41,8 @@ func New(client API, bucket string, region string, timeout int32) (*Runner, erro
 }
 
 func (runner *Runner) Start(ctx context.Context, session domain.Session) (string, error) {
-	if session.LifecycleState != domain.StateRestoring || session.ActiveWorkflowType != domain.RestoreWorkflowType || session.Infrastructure.InstanceID == "" || session.Archive.Validate() != nil {
-		return "", fmt.Errorf("%w: active restore workflow, instance, and verified archive are required", domain.ErrInvalidTransition)
+	if session.LifecycleState != domain.StateRestoring || session.ActiveWorkflowType != domain.RestoreWorkflowType || session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || session.Archive.Validate() != nil {
+		return "", fmt.Errorf("%w: active restore workflow, instance, data volume, and verified archive are required", domain.ErrInvalidTransition)
 	}
 	output, err := runner.client.SendCommand(ctx, &ssm.SendCommandInput{
 		DocumentName: aws.String("AWS-RunShellScript"), InstanceIds: []string{session.Infrastructure.InstanceID},
@@ -72,11 +73,17 @@ func (runner *Runner) Observe(ctx context.Context, instanceID string, commandID 
 		}
 		return ports.BootstrapCommandStatus{}, fmt.Errorf("observe restore command: %w", err)
 	}
-	message := strings.TrimSpace(aws.ToString(output.StandardErrorContent))
-	if len(message) > 500 {
-		message = message[len(message)-500:]
+	stderr := aws.ToString(output.StandardErrorContent)
+	message := domain.SanitizeDiagnosticTail(stderr)
+	errorCode := ""
+	if strings.Contains(stderr, "ERR_AWS_CLI_PREREQUISITE:") {
+		errorCode = "ERR_AWS_CLI_PREREQUISITE"
+		message = "A verified AWS CLI v2 was unavailable on the replacement server."
+	} else if strings.Contains(stderr, "ERR_RESTORE_DATA_VOLUME:") {
+		errorCode = "ERR_RESTORE_DATA_VOLUME"
+		message = "The replacement data volume could not be prepared safely for archive restoration."
 	}
-	return ports.BootstrapCommandStatus{Status: string(output.Status), ErrorMessage: message}, nil
+	return ports.BootstrapCommandStatus{Status: string(output.Status), ErrorCode: errorCode, ErrorMessage: message}, nil
 }
 
 func (runner *Runner) command(session domain.Session) string {
@@ -88,23 +95,44 @@ func (runner *Runner) command(session domain.Session) string {
 	return "#!/usr/bin/env bash\nset -Eeuo pipefail\numask 077\n" +
 		"bucket=$(printf '%s' '" + encode(runner.bucket) + "' | base64 -d)\n" +
 		"region=$(printf '%s' '" + encode(runner.region) + "' | base64 -d)\n" +
+		"data_volume_id=$(printf '%s' '" + encode(session.Infrastructure.DataVolumeID) + "' | base64 -d)\n" +
 		"object_key=$(printf '%s' '" + encode(session.Archive.ObjectKey) + "' | base64 -d)\n" +
 		"expected_sha=$(printf '%s' '" + encode(session.Archive.SHA256) + "' | base64 -d)\n" +
 		fmt.Sprintf("expected_size=%d\n", session.Archive.SizeBytes) +
-		"archive_file=$(mktemp /var/tmp/gsp-restore.XXXXXX.tar.gz)\ntrap 'rm -f -- \"$archive_file\"' EXIT\n" +
+		"root=/srv/game-server\n" +
+		"aws_cli_tmp=''\narchive_file=''\n" +
+		"trap '[ -z \"$archive_file\" ] || rm -f -- \"$archive_file\"; [ -z \"$aws_cli_tmp\" ] || rm -rf -- \"$aws_cli_tmp\"' EXIT\n" +
 		"exec 9>/run/gsp-restore.lock\nflock --wait 13000 9\n" +
+		hostprereq.AWSCLIV2Shell() +
+		"command -v mkfs.xfs >/dev/null 2>&1 || { apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y xfsprogs; }\n" +
+		"serial=${data_volume_id//-/}\ndevice=''\n" +
+		"for _ in $(seq 1 30); do device=$(lsblk -ndo PATH,SERIAL | awk -v serial=\"$serial\" '$2 == serial {print $1; exit}'); [ -n \"$device\" ] && break; sleep 2; done\n" +
+		"[ -b \"$device\" ] || { echo 'ERR_RESTORE_DATA_VOLUME: recorded data volume was not found' >&2; exit 1; }\n" +
+		"if ! blkid \"$device\" >/dev/null 2>&1; then mkfs.xfs -f \"$device\"; fi\n" +
+		"[ \"$(blkid -s TYPE -o value \"$device\")\" = xfs ] || { echo 'ERR_RESTORE_DATA_VOLUME: unsupported data volume filesystem' >&2; exit 1; }\n" +
+		"mkdir -p \"$root\"\n" +
+		"uuid=$(blkid -s UUID -o value \"$device\")\n" +
+		"grep -q \"UUID=$uuid \" /etc/fstab || printf 'UUID=%s %s xfs defaults,nofail 0 2\\n' \"$uuid\" \"$root\" >> /etc/fstab\n" +
+		"if ! mountpoint -q \"$root\"; then mount \"$device\" \"$root\"; fi\n" +
+		"mounted_source=$(findmnt -n -o SOURCE --target \"$root\")\n" +
+		"[ \"$(readlink -f \"$mounted_source\")\" = \"$(readlink -f \"$device\")\" ] || { echo 'ERR_RESTORE_DATA_VOLUME: restore root is mounted from another device' >&2; exit 1; }\n" +
+		"archive_file=$(mktemp \"$root/.gsp-restore.XXXXXX.tar.gz\")\n" +
 		"aws s3 cp \"s3://$bucket/$object_key\" \"$archive_file\" --region \"$region\" --only-show-errors\n" +
 		"actual_size=$(stat -c '%s' \"$archive_file\")\n[ \"$actual_size\" = \"$expected_size\" ]\n" +
 		"actual_sha=$(openssl dgst -sha256 -binary \"$archive_file\" | openssl base64 -A)\n[ \"$actual_sha\" = \"$expected_sha\" ]\n" +
 		"export GSP_ARCHIVE_FILE=\"$archive_file\" GSP_TEAMSPEAK_ENABLED=" + voice + "\n" +
 		"python3 - <<'PY'\nimport os, pathlib, tarfile\narchive=os.environ['GSP_ARCHIVE_FILE']\nvoice=os.environ['GSP_TEAMSPEAK_ENABLED']=='true'\nallowed=[('config',),('state',),('logs',),('arma3','mpmissions'),('home','.local','share')]\nif voice: allowed.append(('teamspeak',))\ntotal=count=0\nwith tarfile.open(archive, 'r:gz') as bundle:\n    for member in bundle.getmembers():\n        path=pathlib.PurePosixPath(member.name)\n        parts=path.parts\n        if path.is_absolute() or not parts or '..' in parts or member.issym() or member.islnk() or member.isdev() or member.isfifo(): raise SystemExit('unsafe archive member')\n        if not any(parts[:len(root)] == root for root in allowed): raise SystemExit('unexpected archive root')\n        total += member.size; count += 1\n        if total > 21474836480 or count > 200000: raise SystemExit('archive expansion limit exceeded')\nPY\n" +
+		"id steam >/dev/null 2>&1 || useradd --home-dir /srv/game-server/home --no-create-home --shell /bin/bash steam\n" +
+		"if " + voice + "; then id teamspeak >/dev/null 2>&1 || useradd --home-dir /srv/game-server/teamspeak --no-create-home --shell /sbin/nologin teamspeak; fi\n" +
 		"systemctl stop arma3-server.service 2>/dev/null || true\nif " + voice + "; then systemctl stop teamspeak3-server.service 2>/dev/null || true; fi\n" +
 		"rm -rf -- /srv/game-server/config /srv/game-server/state /srv/game-server/logs /srv/game-server/arma3/mpmissions /srv/game-server/home/.local/share\n" +
 		"if " + voice + "; then rm -rf -- /srv/game-server/teamspeak; fi\n" +
 		"tar --no-same-owner --no-same-permissions --xattrs --acls -xzf \"$archive_file\" -C /srv/game-server\n" +
+		"mkdir -p /srv/game-server/config /srv/game-server/state /srv/game-server/logs /srv/game-server/arma3/mpmissions /srv/game-server/home /srv/game-server/steamcmd\n" +
+		"if " + voice + "; then mkdir -p /srv/game-server/teamspeak; fi\n" +
 		"rm -rf -- /srv/game-server/home/.local/share/Steam/config /srv/game-server/home/.local/share/Steam/logs /srv/game-server/home/Steam/config /srv/game-server/home/Steam/logs /srv/game-server/steamcmd/config /srv/game-server/steamcmd/logs\n" +
 		"find /srv/game-server/home /srv/game-server/steamcmd -type f \\( -name 'ssfn*' -o -name 'loginusers.vdf' \\) -delete 2>/dev/null || true\n" +
-		"rm -f -- /srv/game-server/state/install_steamcmd.complete /srv/game-server/state/install_arma.complete /srv/game-server/state/install_workshop*.complete /srv/game-server/state/deploy_content.complete /srv/game-server/state/install_teamspeak.complete\n" +
+		"rm -f -- /srv/game-server/state/install_steamcmd.complete /srv/game-server/state/install_arma.complete /srv/game-server/state/install_workshop*.complete /srv/game-server/state/sync_workshop_content.complete /srv/game-server/state/sync_workshop_content.*.complete /srv/game-server/state/deploy_content.complete /srv/game-server/state/deploy_content.revision-*.complete /srv/game-server/state/install_teamspeak.complete\n" +
 		"chown -R steam:steam /srv/game-server/config /srv/game-server/state /srv/game-server/logs /srv/game-server/arma3/mpmissions /srv/game-server/home\n" +
 		"if " + voice + "; then chown -R teamspeak:teamspeak /srv/game-server/teamspeak; fi\n"
 }

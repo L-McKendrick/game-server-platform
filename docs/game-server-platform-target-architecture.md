@@ -519,13 +519,13 @@ Current command set:
 | `/rb create` | Create and optionally auto-start a draft through one setup modal |
 | `/rb setup` | Repair missing or rejected draft setup |
 | `/rb edit` | Change mission, client/server mods, and supported runtime options |
-| `/rb start` | Provision a configured draft, retry eligible bootstrap, or wake a sleeping session |
+| `/rb start` | Provision a configured draft, retry eligible bootstrap/restore, wake a sleeping session, or restore an archived session according to authoritative lifecycle state |
 | `/rb restart` | Restart only Arma and apply pending content/settings on a running host |
 | `/rb status` | Show private lifecycle, workflow, endpoint, health, and diagnostics |
 | `/rb list` | List accessible sessions |
 | `/rb sleep` | Stop EC2 while retaining active EBS volumes |
 | `/rb archive` | Request guarded archive and infrastructure removal |
-| `/rb restore` | Restore an archived session |
+| `/rb restore` | Explicitly restore an archived session; retained alongside state-aware `/rb start` |
 | `/rb terminate` | Request permanent runtime/artifact deletion with a retained tombstone |
 | `/rb confirm`, `/rb cancel-confirmation` | Resolve the caller's pending destructive confirmation |
 | `/rb cancel` | Request cancellation at a supported safe workflow boundary |

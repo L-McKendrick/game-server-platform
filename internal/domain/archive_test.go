@@ -191,6 +191,42 @@ func TestSessionRestoreLifecycle_ReplacesDisposableInfrastructure(t *testing.T) 
 	}
 }
 
+func TestSessionRestoreLifecycle_RetriesFailedRestoreWithRetainedResources(t *testing.T) {
+	now := time.Date(2026, 9, 9, 1, 0, 0, 0, time.UTC)
+	session := archiveTestSession(t, now)
+	session.Archive = ArchiveMetadata{ID: "archive-1", ObjectKey: "sessions/session-1/archives/archive-1/session.tar.gz", ManifestObjectKey: "sessions/session-1/archives/archive-1/manifest.v1.json", ManifestSHA256: base64.StdEncoding.EncodeToString(make([]byte, 32)), ManifestSizeBytes: 123, SHA256: base64.StdEncoding.EncodeToString(make([]byte, 32)), SizeBytes: 42, Format: "tar+gzip", VerifiedAt: now}
+	session.PendingPresetRevision = PresetRevision{Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/pending.html", Status: PresetRevisionFailed, StagedAt: now.Add(-time.Hour), FailedAt: now, FailureDetail: "host setup failed", RollbackDisposition: PresetRollbackSucceeded, RollbackAt: now, RollbackDetail: "Known-good revision restored."}
+	session.PresetRevisionSequence = 2
+	session.ActivePresetRevision = PresetRevision{Number: 1, PresetObjectKey: "sessions/session-1/input/active.html", Status: PresetRevisionActive, StagedAt: now.Add(-2 * time.Hour), ActivatedAt: now.Add(-2 * time.Hour)}
+	session.PresetObjectKey = session.ActivePresetRevision.PresetObjectKey
+	archivedPending := session.PendingPresetRevision
+	archivedPending.Status, archivedPending.FailedAt, archivedPending.FailureDetail = PresetRevisionPending, time.Time{}, ""
+	archivedPending.RollbackDisposition, archivedPending.RollbackAt, archivedPending.RollbackDetail = "", time.Time{}, ""
+	retryManifest := ArchiveManifest{PresetRevisionSequence: 2, ActivePresetRevision: ArchivePresetRevisionSnapshot(session.ActivePresetRevision), PendingPresetRevision: ArchivePresetRevisionSnapshot(archivedPending)}
+	session.Progress = SessionProgress{WorkflowID: "restore-failed", WorkflowType: RestoreWorkflowType, Milestone: ProgressDataRestored, State: ProgressActionRequired, StartedAt: now, LastProgressAt: now}
+	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = StateRunning, StateFailed, StateFailed, HealthUnhealthy
+	if !session.CanRestore() {
+		t.Fatal("failed restore with retained resources was not retryable")
+	}
+	if err := session.BeginRestore("restore-retry", time.Hour, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if session.LifecycleState != StateRestoring || session.ActiveWorkflowID != "restore-retry" || session.Infrastructure.InstanceID != "i-1" || session.Progress.WorkflowID != "restore-retry" || session.Progress.Milestone != ProgressArchiveVerified || session.PendingPresetRevision.Status != PresetRevisionFailed {
+		t.Fatalf("retry state = %#v", session)
+	}
+	if !retryManifest.PresetRevisionIntentMatches(session) {
+		t.Fatal("retry did not accept the archive's pre-failure pending revision intent")
+	}
+
+	session.ActiveWorkflowID, session.ActiveWorkflowType = "", ""
+	session.ActiveWorkflowStartedAt, session.ActiveWorkflowLeaseExpiresAt = time.Time{}, time.Time{}
+	session.LifecycleState = StateFailed
+	session.Progress.WorkflowType = BootstrapWorkflowType
+	if session.CanRestore() {
+		t.Fatal("non-restore failure was accepted as a restore retry")
+	}
+}
+
 func TestArchiveManifestReadableIdentityIsAdditiveAndValidated(t *testing.T) {
 	t.Parallel()
 	manifest := ArchiveManifest{
