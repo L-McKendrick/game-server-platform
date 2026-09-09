@@ -2485,6 +2485,7 @@ func TestHandlerUnifiedStartSleepingAndArchived(t *testing.T) {
 		{"admin wake", domain.StateSleeping, "admin-1", "32", "start", "Start request accepted"},
 		{"nonowner denied", domain.StateSleeping, "other-1", "0", "start", "Session not found"},
 		{"owner restore through start", domain.StateArchived, "owner-1", "0", "start", "Start request accepted"},
+		{"owner retry restore through start", domain.StateFailed, "owner-1", "0", "start", "Start request accepted"},
 		{"unsupported running", domain.StateRunning, "owner-1", "0", "start", "cannot start in its current state"},
 		{"removed command", domain.StateSleeping, "owner-1", "0", "wake", "not supported yet"},
 	} {
@@ -2495,10 +2496,15 @@ func TestHandlerUnifiedStartSleepingAndArchived(t *testing.T) {
 				t.Fatal(err)
 			}
 			session.LifecycleState, session.DesiredState, session.ObservedState = tc.state, tc.state, tc.state
-			if tc.state == domain.StateArchived {
+			if tc.state == domain.StateArchived || tc.state == domain.StateFailed {
 				session.Archive = domain.ArchiveMetadata{ID: "archive-1", ObjectKey: "sessions/session-1/archives/archive-1/session.tar.gz", ManifestObjectKey: "sessions/session-1/archives/archive-1/manifest.v1.json", SHA256: base64.StdEncoding.EncodeToString(make([]byte, 32)), ManifestSHA256: base64.StdEncoding.EncodeToString(make([]byte, 32)), SizeBytes: 42, ManifestSizeBytes: 42, Format: "tar+gzip", VerifiedAt: testNow}
-			} else {
+			}
+			if tc.state != domain.StateArchived {
 				session.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c7i.large", InstanceID: "i-1", DataVolumeID: "vol-1", LastObservedAt: testNow}
+			}
+			if tc.state == domain.StateFailed {
+				session.DesiredState, session.ObservedState, session.HealthStatus = domain.StateRunning, domain.StateFailed, domain.HealthUnhealthy
+				session.Progress = domain.SessionProgress{WorkflowID: "restore-failed", WorkflowType: domain.RestoreWorkflowType, Milestone: domain.ProgressDataRestored, State: domain.ProgressActionRequired, StartedAt: testNow, LastProgressAt: testNow}
 			}
 			actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}
 			event := domain.NewSessionCreatedEvent("event-1", "correlation-1", actor, session, testNow)

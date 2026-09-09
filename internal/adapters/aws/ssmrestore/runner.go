@@ -41,8 +41,8 @@ func New(client API, bucket string, region string, timeout int32) (*Runner, erro
 }
 
 func (runner *Runner) Start(ctx context.Context, session domain.Session) (string, error) {
-	if session.LifecycleState != domain.StateRestoring || session.ActiveWorkflowType != domain.RestoreWorkflowType || session.Infrastructure.InstanceID == "" || session.Archive.Validate() != nil {
-		return "", fmt.Errorf("%w: active restore workflow, instance, and verified archive are required", domain.ErrInvalidTransition)
+	if session.LifecycleState != domain.StateRestoring || session.ActiveWorkflowType != domain.RestoreWorkflowType || session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || session.Archive.Validate() != nil {
+		return "", fmt.Errorf("%w: active restore workflow, instance, data volume, and verified archive are required", domain.ErrInvalidTransition)
 	}
 	output, err := runner.client.SendCommand(ctx, &ssm.SendCommandInput{
 		DocumentName: aws.String("AWS-RunShellScript"), InstanceIds: []string{session.Infrastructure.InstanceID},
@@ -73,13 +73,15 @@ func (runner *Runner) Observe(ctx context.Context, instanceID string, commandID 
 		}
 		return ports.BootstrapCommandStatus{}, fmt.Errorf("observe restore command: %w", err)
 	}
-	message := strings.TrimSpace(aws.ToString(output.StandardErrorContent))
-	if len(message) > 500 {
-		message = message[len(message)-500:]
-	}
+	stderr := aws.ToString(output.StandardErrorContent)
+	message := domain.SanitizeDiagnosticTail(stderr)
 	errorCode := ""
-	if strings.Contains(message, "ERR_AWS_CLI_PREREQUISITE:") {
+	if strings.Contains(stderr, "ERR_AWS_CLI_PREREQUISITE:") {
 		errorCode = "ERR_AWS_CLI_PREREQUISITE"
+		message = "A verified AWS CLI v2 was unavailable on the replacement server."
+	} else if strings.Contains(stderr, "ERR_RESTORE_DATA_VOLUME:") {
+		errorCode = "ERR_RESTORE_DATA_VOLUME"
+		message = "The replacement data volume could not be prepared safely for archive restoration."
 	}
 	return ports.BootstrapCommandStatus{Status: string(output.Status), ErrorCode: errorCode, ErrorMessage: message}, nil
 }
@@ -93,14 +95,26 @@ func (runner *Runner) command(session domain.Session) string {
 	return "#!/usr/bin/env bash\nset -Eeuo pipefail\numask 077\n" +
 		"bucket=$(printf '%s' '" + encode(runner.bucket) + "' | base64 -d)\n" +
 		"region=$(printf '%s' '" + encode(runner.region) + "' | base64 -d)\n" +
+		"data_volume_id=$(printf '%s' '" + encode(session.Infrastructure.DataVolumeID) + "' | base64 -d)\n" +
 		"object_key=$(printf '%s' '" + encode(session.Archive.ObjectKey) + "' | base64 -d)\n" +
 		"expected_sha=$(printf '%s' '" + encode(session.Archive.SHA256) + "' | base64 -d)\n" +
 		fmt.Sprintf("expected_size=%d\n", session.Archive.SizeBytes) +
-		"aws_cli_tmp=''\n" +
-		"archive_file=$(mktemp /var/tmp/gsp-restore.XXXXXX.tar.gz)\n" +
-		"trap 'rm -f -- \"$archive_file\"; [ -z \"$aws_cli_tmp\" ] || rm -rf -- \"$aws_cli_tmp\"' EXIT\n" +
+		"root=/srv/game-server\n" +
+		"aws_cli_tmp=''\narchive_file=''\n" +
+		"trap '[ -z \"$archive_file\" ] || rm -f -- \"$archive_file\"; [ -z \"$aws_cli_tmp\" ] || rm -rf -- \"$aws_cli_tmp\"' EXIT\n" +
 		"exec 9>/run/gsp-restore.lock\nflock --wait 13000 9\n" +
 		hostprereq.AWSCLIV2Shell() +
+		"command -v mkfs.xfs >/dev/null 2>&1 || { apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y xfsprogs; }\n" +
+		"serial=${data_volume_id//-/}\ndevice=''\n" +
+		"for _ in $(seq 1 30); do device=$(lsblk -ndo PATH,SERIAL | awk -v serial=\"$serial\" '$2 == serial {print $1; exit}'); [ -n \"$device\" ] && break; sleep 2; done\n" +
+		"[ -b \"$device\" ] || { echo 'ERR_RESTORE_DATA_VOLUME: recorded data volume was not found' >&2; exit 1; }\n" +
+		"if ! blkid \"$device\" >/dev/null 2>&1; then mkfs.xfs -f \"$device\"; fi\n" +
+		"[ \"$(blkid -s TYPE -o value \"$device\")\" = xfs ] || { echo 'ERR_RESTORE_DATA_VOLUME: unsupported data volume filesystem' >&2; exit 1; }\n" +
+		"mkdir -p \"$root\"\n" +
+		"uuid=$(blkid -s UUID -o value \"$device\")\n" +
+		"grep -q \"UUID=$uuid \" /etc/fstab || printf 'UUID=%s %s xfs defaults,nofail 0 2\\n' \"$uuid\" \"$root\" >> /etc/fstab\n" +
+		"if mountpoint -q \"$root\"; then mounted_source=$(findmnt -n -o SOURCE --target \"$root\"); [ \"$(readlink -f \"$mounted_source\")\" = \"$(readlink -f \"$device\")\" ] || { echo 'ERR_RESTORE_DATA_VOLUME: restore root is mounted from another device' >&2; exit 1; }; else mount \"$root\"; fi\n" +
+		"archive_file=$(mktemp \"$root/.gsp-restore.XXXXXX.tar.gz\")\n" +
 		"aws s3 cp \"s3://$bucket/$object_key\" \"$archive_file\" --region \"$region\" --only-show-errors\n" +
 		"actual_size=$(stat -c '%s' \"$archive_file\")\n[ \"$actual_size\" = \"$expected_size\" ]\n" +
 		"actual_sha=$(openssl dgst -sha256 -binary \"$archive_file\" | openssl base64 -A)\n[ \"$actual_sha\" = \"$expected_sha\" ]\n" +
@@ -112,6 +126,8 @@ func (runner *Runner) command(session domain.Session) string {
 		"rm -rf -- /srv/game-server/config /srv/game-server/state /srv/game-server/logs /srv/game-server/arma3/mpmissions /srv/game-server/home/.local/share\n" +
 		"if " + voice + "; then rm -rf -- /srv/game-server/teamspeak; fi\n" +
 		"tar --no-same-owner --no-same-permissions --xattrs --acls -xzf \"$archive_file\" -C /srv/game-server\n" +
+		"mkdir -p /srv/game-server/config /srv/game-server/state /srv/game-server/logs /srv/game-server/arma3/mpmissions /srv/game-server/home /srv/game-server/steamcmd\n" +
+		"if " + voice + "; then mkdir -p /srv/game-server/teamspeak; fi\n" +
 		"rm -rf -- /srv/game-server/home/.local/share/Steam/config /srv/game-server/home/.local/share/Steam/logs /srv/game-server/home/Steam/config /srv/game-server/home/Steam/logs /srv/game-server/steamcmd/config /srv/game-server/steamcmd/logs\n" +
 		"find /srv/game-server/home /srv/game-server/steamcmd -type f \\( -name 'ssfn*' -o -name 'loginusers.vdf' \\) -delete 2>/dev/null || true\n" +
 		"rm -f -- /srv/game-server/state/install_steamcmd.complete /srv/game-server/state/install_arma.complete /srv/game-server/state/install_workshop*.complete /srv/game-server/state/deploy_content.complete /srv/game-server/state/install_teamspeak.complete\n" +

@@ -748,7 +748,7 @@ func (handler *Handler) startSession(
 	if session.LifecycleState == domain.StateDraft {
 		return "", newUserError("This session is still a draft and is not ready to start. Review `/rb status` and provide any missing or rejected mission and mod configuration through `/rb edit`.")
 	}
-	if session.LifecycleState == domain.StateArchived && session.ActiveWorkflowID == "" {
+	if session.CanRestore() {
 		message, restoreErr := handler.requestLifecycle(ctx, payload, options, actor, correlationID, "restore")
 		if restoreErr != nil {
 			return "", restoreErr

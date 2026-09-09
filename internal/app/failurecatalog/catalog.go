@@ -179,6 +179,18 @@ var entries = map[string]entry{
 		"The platform stopped the restore and retained authoritative archive metadata.",
 		"Give the support reference to an operator before requesting restore again.",
 	},
+	"ERR_RESTORE_DATA_VOLUME": {
+		"The replacement server could not prepare its persistent storage.",
+		"The recorded data volume was missing, mounted incorrectly, or used an unsupported filesystem.",
+		"The platform stopped before extracting the archive and retained authoritative archive and replacement-resource metadata.",
+		"Give the support reference to an operator before requesting restore again.",
+	},
+	"ERR_RESTORE_BOOTSTRAP_COMMAND": {
+		"Archived data was restored, but replacement-server setup did not complete.",
+		"The normal game-server bootstrap command stopped before services passed health verification.",
+		"The platform retained the verified archive and replacement resources without declaring the server playable.",
+		"Give the support reference to an operator, then request restore again after the setup issue is corrected.",
+	},
 	"ERR_AWS_CLI_PREREQUISITE": {
 		"The replacement server could not access the archived data.",
 		"A verified AWS CLI v2 was unavailable before archive restoration began.",

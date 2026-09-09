@@ -46,6 +46,13 @@ func (fakeRunner) Start(context.Context, domain.Session) (string, error) { retur
 func (fakeRunner) StartRollback(context.Context, domain.Session) (string, error) {
 	return "rollback-1", nil
 }
+
+type failedRunner struct{ message string }
+
+func (failedRunner) Start(context.Context, domain.Session) (string, error) { return "command-1", nil }
+func (runner failedRunner) Observe(context.Context, string, string) (ports.BootstrapCommandStatus, error) {
+	return ports.BootstrapCommandStatus{Status: "Failed", ErrorMessage: runner.message}, nil
+}
 func (fakeRunner) Observe(context.Context, string, string) (ports.BootstrapCommandStatus, error) {
 	return ports.BootstrapCommandStatus{Status: "Success"}, nil
 }
@@ -78,6 +85,23 @@ func TestLaunchRequestIncludesReadableSessionIdentity(t *testing.T) {
 	)
 	if request.SessionID != "session-1" || request.SessionName != "Saturday Arma" || request.SessionSlug != "saturday-arma" {
 		t.Fatalf("restore launch identity = %#v", request)
+	}
+}
+
+func TestRestoreBootstrapFailureUsesDistinctCodeAndCurrentMilestone(t *testing.T) {
+	t.Parallel()
+	service := Service{}
+	session := domain.Session{Progress: domain.SessionProgress{WorkflowID: "restore-1", WorkflowType: domain.RestoreWorkflowType, Milestone: domain.ProgressDataRestored}}
+	workflow := domain.Workflow{ID: "restore-1", CurrentStage: "Started"}
+	result, err := service.observeCommand(context.Background(), session, workflow, "command-1", failedRunner{message: "chown failed"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ErrorCode != "ERR_RESTORE_BOOTSTRAP_COMMAND" || result.ErrorMessage != "chown failed" {
+		t.Fatalf("result = %#v", result)
+	}
+	if stage := restoreFailureStage(session, workflow); stage != string(domain.ProgressDataRestored) {
+		t.Fatalf("failure stage = %q", stage)
 	}
 }
 

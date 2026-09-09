@@ -16,7 +16,10 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
-const dataDeviceName = "/dev/sdf"
+const (
+	rootDeviceName = "/dev/sda1"
+	dataDeviceName = "/dev/sdf"
+)
 
 type EC2API interface {
 	DescribeInstances(context.Context, *ec2.DescribeInstancesInput, ...func(*ec2.Options)) (*ec2.DescribeInstancesOutput, error)
@@ -128,7 +131,7 @@ func (provisioner *Provisioner) EnsureInstance(ctx context.Context, request doma
 			SubnetId: aws.String(request.SubnetID), Groups: append([]string(nil), request.SecurityGroupIDs...),
 		}},
 		BlockDeviceMappings: []ec2types.BlockDeviceMapping{
-			{DeviceName: aws.String("/dev/xvda"), Ebs: &ec2types.EbsBlockDevice{
+			{DeviceName: aws.String(rootDeviceName), Ebs: &ec2types.EbsBlockDevice{
 				DeleteOnTermination: aws.Bool(true), Encrypted: aws.Bool(true),
 				VolumeSize: aws.Int32(request.RootVolumeGiB), VolumeType: ec2types.VolumeTypeGp3,
 			}},

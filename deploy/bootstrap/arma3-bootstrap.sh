@@ -88,7 +88,7 @@ prepare_host() {
   uuid="$(blkid -s UUID -o value "$device")"
   grep -q "UUID=$uuid " /etc/fstab || printf 'UUID=%s %s xfs defaults,nofail 0 2\n' "$uuid" "$ROOT" >> /etc/fstab
   mountpoint -q "$ROOT" || mount "$ROOT"
-  mkdir -p "$STATE_DIR" "$LOG_DIR" "$ROOT/config" "$ROOT/arma3" "$ROOT/steamcmd" "$ROOT/workshop"
+  mkdir -p "$STATE_DIR" "$LOG_DIR" "$ROOT/config" "$ROOT/home" "$ROOT/arma3" "$ROOT/steamcmd" "$ROOT/workshop"
   id steam >/dev/null 2>&1 || useradd --home-dir "$ROOT/home" --create-home --shell /bin/bash steam
   chown -R steam:steam "$ROOT/home" "$ROOT/arma3" "$ROOT/steamcmd" "$ROOT/workshop" "$LOG_DIR"
   if [ ! -f "$ROOT/swapfile" ]; then

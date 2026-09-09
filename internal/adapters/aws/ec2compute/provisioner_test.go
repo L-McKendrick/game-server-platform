@@ -84,11 +84,17 @@ func TestEnsureInstanceRequiresIMDSv2AndPreservesDataVolume(t *testing.T) {
 	if client.runInput == nil || client.runInput.MetadataOptions == nil || client.runInput.MetadataOptions.HttpTokens != ec2types.HttpTokensStateRequired {
 		t.Fatalf("metadata options = %#v", client.runInput)
 	}
-	var data *ec2types.EbsBlockDevice
+	var root, data *ec2types.EbsBlockDevice
 	for _, mapping := range client.runInput.BlockDeviceMappings {
-		if aws.ToString(mapping.DeviceName) == dataDeviceName {
+		switch aws.ToString(mapping.DeviceName) {
+		case rootDeviceName:
+			root = mapping.Ebs
+		case dataDeviceName:
 			data = mapping.Ebs
 		}
+	}
+	if len(client.runInput.BlockDeviceMappings) != 2 || root == nil || aws.ToInt32(root.VolumeSize) != 30 || !aws.ToBool(root.DeleteOnTermination) || !aws.ToBool(root.Encrypted) {
+		t.Fatalf("root volume mappings = %#v", client.runInput.BlockDeviceMappings)
 	}
 	if data == nil || aws.ToBool(data.DeleteOnTermination) || !aws.ToBool(data.Encrypted) {
 		t.Fatalf("data volume mapping = %#v", data)

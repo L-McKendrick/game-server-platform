@@ -44,3 +44,12 @@ func TestFailureRecordRejectsPartialOrInvalidProjection(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeDiagnosticTailRetainsTerminalFailureAfterRedaction(t *testing.T) {
+	t.Parallel()
+	preamble := strings.Repeat("package manager status line ", 30)
+	got := SanitizeDiagnosticTail(preamble + "token=super-secret-value\nchown: cannot access /srv/game-server/home")
+	if !strings.Contains(got, "chown: cannot access") || strings.Contains(got, "super-secret-value") || len([]rune(got)) > MaximumFailureDetailRunes {
+		t.Fatalf("sanitized tail = %q", got)
+	}
+}

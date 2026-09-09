@@ -69,11 +69,19 @@ extends the same workflow through guarded destruction and adds restore.
 - Only after bootstrap and restore health pass are the new resource identifiers
   and endpoint retained as `RUNNING`/`HEALTHY`; the durable archive remains
   available for future recovery.
+- A replacement-host restore mounts and verifies the exact recorded data volume
+  before downloading or extracting the archive. Temporary archive bytes and
+  restored data stay on that persistent volume rather than the root filesystem;
+  replays reuse the mounted XFS volume and fail closed on a missing, mismatched,
+  or unsupported device.
 - Missing AWS CLI prerequisites and incomplete or contradictory managed-command
   results fail with stable bounded codes through the restore failure finalizer.
-  The session returns to `ARCHIVED` with the verified archive retained, the
-  workflow lock released, and any replacement-resource identifiers preserved
-  for explicit recovery and cost inspection.
+  Failures before any replacement resource exists return to `ARCHIVED`.
+  Failures after replacement resources exist enter `FAILED` with the verified
+  archive, resource identifiers, capacity slot, and released workflow lock
+  retained for truthful cost inspection. The owner can request restore again;
+  this bounded retry reuses those recorded resources and reruns the idempotent
+  mount, extraction, bootstrap, and health path.
 
 ## Phase 9.3 irreversible termination
 

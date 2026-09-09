@@ -127,17 +127,32 @@ func (record FailureRecord) Validate() error {
 }
 
 func sanitizeFailureDetail(value string) string {
+	return normalizeFailureText(sanitizeDiagnosticValue(value), MaximumFailureDetailRunes)
+}
+
+func sanitizeDiagnosticValue(value string) string {
 	value = cloudIdentifierPattern.ReplaceAllString(value, "[redacted]")
 	value = sensitiveAssignmentPattern.ReplaceAllString(value, "[redacted]")
 	value = awsAccessKeyPattern.ReplaceAllString(value, "[redacted]")
 	value = addressOrURLPattern.ReplaceAllString(value, "[redacted]")
-	return normalizeFailureText(value, MaximumFailureDetailRunes)
+	return value
 }
 
 // SanitizeDiagnostic removes identifiers, credentials, addresses, control
 // characters, and excess length before a diagnostic enters audit metadata.
 func SanitizeDiagnostic(value string) string {
 	return sanitizeFailureDetail(value)
+}
+
+// SanitizeDiagnosticTail retains the terminal portion of a provider diagnostic
+// after redaction so generic preambles cannot displace the actionable failure.
+func SanitizeDiagnosticTail(value string) string {
+	normalized := normalizeFailureText(sanitizeDiagnosticValue(value), 0)
+	runes := []rune(normalized)
+	if len(runes) > MaximumFailureDetailRunes {
+		runes = runes[len(runes)-MaximumFailureDetailRunes:]
+	}
+	return string(runes)
 }
 
 func normalizeFailureText(value string, limit int) string {
@@ -160,7 +175,7 @@ func normalizeFailureText(value string, limit int) string {
 		}
 	}
 	normalized := builder.String()
-	if utf8.RuneCountInString(normalized) > limit {
+	if limit > 0 && utf8.RuneCountInString(normalized) > limit {
 		normalized = string([]rune(normalized)[:limit])
 	}
 	return normalized

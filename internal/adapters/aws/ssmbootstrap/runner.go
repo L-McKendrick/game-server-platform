@@ -399,7 +399,7 @@ func bootstrapFailure(stderr string) (string, string) {
 	if strings.Contains(stderr, "ERR_WORKSHOP_RESULT_PUBLISH") {
 		return "ERR_WORKSHOP_RESULT_PUBLISH", "The platform could not publish the Workshop synchronization result."
 	}
-	return "", domain.SanitizeDiagnostic(stderr)
+	return "", domain.SanitizeDiagnosticTail(stderr)
 }
 
 func parseCheckpoints(output string) []domain.ProgressMilestone {
