@@ -440,13 +440,13 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       an accepted development-stage risk, but close it before production or
       multi-tenant use. Do not rotate the Steam authorization cache without
       evidence of exposure.
-    - **19.1** [ ] Remove standing managed-host access to the shared Steam authorization cache through a workflow-scoped brokered exchange.
+    - **19.1** [x] Remove standing managed-host access to the shared Steam authorization cache through a workflow-scoped brokered exchange.
       - **19.1.1** [x] Define the broker contract, trust boundaries, one-time exchange lifecycle, replay/concurrency rules, cleanup guarantees, and backward-compatible rollout plan without placing Steam authorization material in SSM command history.
-      - **19.1.2** [ ] Implement the trusted control-plane broker and short-lived encrypted exchange storage with exact workflow, session, instance, purpose, and expiry binding.
-      - **19.1.3** [ ] Update bootstrap, wake, restart, restore, and Workshop synchronization to consume and return brokered authorization only during an authenticated Steam operation, with cleanup on every exit path.
-      - **19.1.4** [ ] Validate returned cache updates before serialized promotion, preserve reauthorization and rollback behavior, and reject stale, replayed, mismatched, oversized, or malformed exchanges.
-      - **19.1.5** [ ] Remove Secrets Manager and Steam-lease DynamoDB permissions from the managed-game instance profile and add negative IAM/security contract coverage.
-      - **19.1.6** [ ] Add focused broker, expiry, replay, concurrency, cleanup, redaction, lifecycle, vanilla, replacement-host, and failure-recovery coverage and document deployment and rollback.
+      - **19.1.2** [x] Implement the trusted control-plane broker and short-lived encrypted exchange storage with exact workflow, session, instance, purpose, and expiry binding.
+      - **19.1.3** [x] Update bootstrap, wake, restart, restore, and Workshop synchronization to consume and return brokered authorization only during an authenticated Steam operation, with cleanup on every exit path.
+      - **19.1.4** [x] Validate returned cache updates before serialized promotion, preserve reauthorization and rollback behavior, and reject stale, replayed, mismatched, oversized, or malformed exchanges.
+      - **19.1.5** [x] Remove Secrets Manager and Steam-lease DynamoDB permissions from the managed-game instance profile and add negative IAM/security contract coverage.
+      - **19.1.6** [x] Add focused broker, expiry, replay, concurrency, cleanup, redaction, lifecycle, vanilla, replacement-host, and failure-recovery coverage and document deployment and rollback.
     - **19.2** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
       - **19.2.1** [ ] Define persisted maximum-duration policy, safe defaults and bounds, extension audit records, deadline semantics, and backward-compatible behavior for existing sessions.
       - **19.2.2** [ ] Add protected admin configuration and extension operations with owner-visible, mention-safe responses and strict authorization, validation, idempotency, and replay handling.

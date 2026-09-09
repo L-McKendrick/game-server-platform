@@ -27,8 +27,9 @@ SERVER_PRESET_REVISION="$(decode "$SERVER_PRESET_REVISION_B64")"
 CREATOR_DLC_MODS="$(decode "$CREATOR_DLC_MODS_B64")"
 MOD_CONFIG_REVISION="$(decode "$MOD_CONFIG_REVISION_B64")"
 ASSETS_BUCKET="$(decode "$ASSETS_BUCKET_B64")"
-METADATA_TABLE="$(decode "$METADATA_TABLE_B64")"
-STEAM_AUTH_SECRET_ID="$(decode "$STEAM_AUTH_SECRET_B64")"
+STEAM_EXCHANGE_REFERENCE="$(decode "$STEAM_EXCHANGE_REFERENCE_B64")"
+STEAM_EXCHANGE_GET_URL="$(decode "$STEAM_EXCHANGE_GET_URL_B64")"
+STEAM_EXCHANGE_PUT_URL="$(decode "$STEAM_EXCHANGE_PUT_URL_B64")"
 AWS_REGION="$(decode "$AWS_REGION_B64")"
 TEAMSPEAK_VERSION="$(decode "$TEAMSPEAK_VERSION_B64")"
 : "${VANILLA_MODE:=false}"
@@ -39,7 +40,6 @@ ROOT=/srv/game-server
 STATE_DIR="$ROOT/state"
 LOG_DIR="$ROOT/logs"
 STEAM_AUTH_ROOT=""
-STEAM_AUTH_LOCK_OWNER=""
 STEAM_AUTH_USERNAME=""
 STEAM_AUTH_SOURCE_VERSION=""
 STEAM_AUTH_ENROLLED_AT=""
@@ -48,13 +48,18 @@ STEAM_AUTH_ACTIVE=false
 STEAM_AUTH_VALID=false
 STEAM_AUTH_FINALIZED=false
 STEAM_AUTH_PERSIST_ATTEMPTED=false
-STEAM_AUTH_LOCK_HEARTBEAT_PID=""
-STEAM_AUTH_LOCK_LEASE_SECONDS=900
-STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=300
 PROGRESS_FILE=/run/gsp-bootstrap-progress
 PROGRESS_KEY="sessions/$SESSION_ID/runtime/bootstrap-progress-$WORKFLOW_ID.txt"
 WORKSHOP_STAGING_ROOT=""
 WORKSHOP_SYNC_RESULTS=""
+
+if [ -n "$STEAM_EXCHANGE_REFERENCE" ]; then
+  [[ "$STEAM_EXCHANGE_REFERENCE" =~ ^[A-Za-z0-9_-]{1,128}:[A-Za-z0-9_-]{1,128}:[A-Za-z0-9_-]{1,128}$ ]] && [ -n "$STEAM_EXCHANGE_GET_URL" ] && [ -n "$STEAM_EXCHANGE_PUT_URL" ] || { printf 'ERR_STEAM_REAUTH_REQUIRED: Steam authorization exchange is invalid.\n' >&2; exit 42; }
+  printf 'GSP_STEAM_EXCHANGE:%s\n' "$STEAM_EXCHANGE_REFERENCE"
+elif [ -n "$STEAM_EXCHANGE_GET_URL" ] || [ -n "$STEAM_EXCHANGE_PUT_URL" ]; then
+  printf 'ERR_STEAM_REAUTH_REQUIRED: Steam authorization exchange is inconsistent.\n' >&2
+  exit 42
+fi
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 publish_progress() { aws s3 cp "$PROGRESS_FILE" "s3://$ASSETS_BUCKET/$PROGRESS_KEY" --region "$AWS_REGION" --only-show-errors >/dev/null 2>&1 || true; }
@@ -117,120 +122,8 @@ scrub_persistent_steam_auth() {
   rm -rf -- "$ROOT/steamcmd/logs" "$ROOT/home/Steam/logs" "$ROOT/home/.local/share/Steam/logs"
 }
 
-steam_auth_key() { printf '{"pk":{"S":"STEAM_AUTH#CACHE"},"sk":{"S":"STATE"}}'; }
-
-stop_steam_auth_lock_heartbeat() {
-  local heartbeat_pid job_pid
-  [ -n "$STEAM_AUTH_LOCK_HEARTBEAT_PID" ] || return 0
-  heartbeat_pid="$STEAM_AUTH_LOCK_HEARTBEAT_PID"
-  for job_pid in $(jobs -pr); do
-    if [ "$job_pid" = "$heartbeat_pid" ]; then
-      kill "$heartbeat_pid" >/dev/null 2>&1 || true
-      break
-    fi
-  done
-  wait "$heartbeat_pid" 2>/dev/null || true
-  STEAM_AUTH_LOCK_HEARTBEAT_PID=""
-}
-
-release_steam_auth_lock() {
-  stop_steam_auth_lock_heartbeat
-  [ -n "$STEAM_AUTH_LOCK_OWNER" ] || return 0
-  local values
-  values="$(jq -cn --arg owner "$STEAM_AUTH_LOCK_OWNER" '{":owner":{"S":$owner}}')"
-  aws dynamodb update-item --region "$AWS_REGION" --table-name "$METADATA_TABLE" --key "$(steam_auth_key)" \
-    --update-expression 'REMOVE lease_owner, lease_expires_at' \
-    --condition-expression 'lease_owner = :owner' --expression-attribute-values "$values" >/dev/null 2>&1 || true
-  STEAM_AUTH_LOCK_OWNER=""
-}
-
 mark_steam_reauthorization_required() {
-  local values now
-  stop_steam_auth_lock_heartbeat
-  [ -n "$STEAM_AUTH_LOCK_OWNER" ] || return 0
-  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  values="$(jq -cn --arg owner "$STEAM_AUTH_LOCK_OWNER" --arg now "$now" '{":owner":{"S":$owner},":status":{"S":"REAUTH_REQUIRED"},":code":{"S":"ERR_STEAM_REAUTH_REQUIRED"},":now":{"S":$now}}')"
-  aws dynamodb update-item --region "$AWS_REGION" --table-name "$METADATA_TABLE" --key "$(steam_auth_key)" \
-    --update-expression 'SET #status = :status, last_error_code = :code, updated_at = :now REMOVE lease_owner, lease_expires_at' \
-    --condition-expression 'lease_owner = :owner' --expression-attribute-names '{"#status":"status"}' \
-    --expression-attribute-values "$values" >/dev/null 2>&1 || true
-  STEAM_AUTH_LOCK_OWNER=""
-}
-
-refresh_steam_auth_lock() {
-  local expires_epoch values
-  [ -n "$STEAM_AUTH_LOCK_OWNER" ] || return 1
-  expires_epoch="$(($(date -u +%s) + STEAM_AUTH_LOCK_LEASE_SECONDS))"
-  values="$(jq -cn --arg owner "$STEAM_AUTH_LOCK_OWNER" --argjson expires "$expires_epoch" '{":owner":{"S":$owner},":expires":{"N":($expires|tostring)}}')"
-  aws dynamodb update-item --region "$AWS_REGION" --table-name "$METADATA_TABLE" --key "$(steam_auth_key)" \
-    --update-expression 'SET lease_expires_at = :expires' \
-    --condition-expression 'lease_owner = :owner' --expression-attribute-values "$values" >/dev/null 2>&1
-}
-
-start_steam_auth_lock_heartbeat() {
-  local bootstrap_pid="$$" job_pid
-  if [ -n "$STEAM_AUTH_LOCK_HEARTBEAT_PID" ]; then
-    for job_pid in $(jobs -pr); do
-      [ "$job_pid" = "$STEAM_AUTH_LOCK_HEARTBEAT_PID" ] && return 0
-    done
-    wait "$STEAM_AUTH_LOCK_HEARTBEAT_PID" 2>/dev/null || true
-    STEAM_AUTH_LOCK_HEARTBEAT_PID=""
-  fi
-  (
-    local heartbeat_sleep_pid=""
-    stop_heartbeat_worker() {
-      local child_pid
-      trap - INT TERM
-      for child_pid in ${heartbeat_sleep_pid:-} $(jobs -pr); do
-        [[ "$child_pid" =~ ^[1-9][0-9]*$ ]] || continue
-        kill "$child_pid" >/dev/null 2>&1 || true
-      done
-      [ -z "$heartbeat_sleep_pid" ] || wait "$heartbeat_sleep_pid" 2>/dev/null || true
-      exit 0
-    }
-    wait_for_heartbeat_interval() {
-      sleep "$1" &
-      heartbeat_sleep_pid="$!"
-      wait "$heartbeat_sleep_pid"
-      heartbeat_sleep_pid=""
-    }
-    trap stop_heartbeat_worker INT TERM
-    while wait_for_heartbeat_interval "$STEAM_AUTH_LOCK_HEARTBEAT_SECONDS"; do
-      if ! refresh_steam_auth_lock; then
-        wait_for_heartbeat_interval 5 || exit 0
-        if ! refresh_steam_auth_lock; then
-          log "Steam authorization lease renewal failed; stopping bootstrap"
-          kill -TERM "$bootstrap_pid" >/dev/null 2>&1 || true
-          exit 1
-        fi
-      fi
-    done
-  ) &
-  STEAM_AUTH_LOCK_HEARTBEAT_PID="$!"
-}
-
-acquire_steam_auth_lock() {
-  local now_epoch expires_epoch values state_file status
-  STEAM_AUTH_LOCK_OWNER="$SESSION_ID:$$:$(cat /proc/sys/kernel/random/uuid)"
-  now_epoch="$(date -u +%s)"
-  expires_epoch="$((now_epoch + STEAM_AUTH_LOCK_LEASE_SECONDS))"
-  values="$(jq -cn --arg owner "$STEAM_AUTH_LOCK_OWNER" --argjson now "$now_epoch" --argjson expires "$expires_epoch" '{":owner":{"S":$owner},":now":{"N":($now|tostring)},":expires":{"N":($expires|tostring)}}')"
-  state_file="$STEAM_AUTH_ROOT/lock.json"
-  if ! aws dynamodb update-item --region "$AWS_REGION" --table-name "$METADATA_TABLE" --key "$(steam_auth_key)" \
-    --update-expression 'SET lease_owner = :owner, lease_expires_at = :expires' \
-    --condition-expression 'attribute_not_exists(lease_owner) OR lease_expires_at < :now OR lease_owner = :owner' \
-    --expression-attribute-values "$values" --return-values ALL_NEW >"$state_file" 2>/dev/null; then
-    STEAM_AUTH_LOCK_OWNER=""
-    log "Steam authorization cache is busy; retry after the active download finishes"
-    return 1
-  fi
-  status="$(jq -r '.Attributes.status.S // ""' "$state_file")"
-  if [ "$status" = REAUTH_REQUIRED ]; then
-    release_steam_auth_lock
-    printf 'ERR_STEAM_REAUTH_REQUIRED: Steam authorization requires operator re-enrollment.\n' >&2
-    return 42
-  fi
-  start_steam_auth_lock_heartbeat
+  STEAM_AUTH_VALID=false
 }
 
 link_ephemeral_steam_path() {
@@ -241,25 +134,17 @@ link_ephemeral_steam_path() {
 }
 
 begin_steam_auth() {
-  local response payload config_b64 expected_sha actual_sha config_size
-  [ -n "$METADATA_TABLE" ] && [ -n "$STEAM_AUTH_SECRET_ID" ] || { printf 'ERR_STEAM_REAUTH_REQUIRED: Steam authorization cache is not configured.\n' >&2; return 42; }
+  local payload config_b64 expected_sha actual_sha config_size
+  [ -n "$STEAM_EXCHANGE_GET_URL" ] && [ -n "$STEAM_EXCHANGE_PUT_URL" ] || { printf 'ERR_STEAM_REAUTH_REQUIRED: Steam authorization exchange is not configured.\n' >&2; return 42; }
   STEAM_AUTH_ROOT="$(mktemp -d /run/gsp-steam-auth.XXXXXX)"
   chmod 700 "$STEAM_AUTH_ROOT"
   STEAM_AUTH_ACTIVE=true
-  acquire_steam_auth_lock
-  response="$STEAM_AUTH_ROOT/secret-response.json"
   payload="$STEAM_AUTH_ROOT/cache.json"
-  if ! aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$STEAM_AUTH_SECRET_ID" --version-stage AWSCURRENT >"$response" 2>/dev/null; then
-    if aws secretsmanager describe-secret --region "$AWS_REGION" --secret-id "$STEAM_AUTH_SECRET_ID" --query 'VersionIdsToStages' --output json 2>/dev/null | jq -e 'any(.[]; index("AWSCURRENT"))' >/dev/null 2>&1; then
-      release_steam_auth_lock
-      log "Steam authorization cache could not be read"
-      return 1
-    fi
-    mark_steam_reauthorization_required
-    printf 'ERR_STEAM_REAUTH_REQUIRED: Steam authorization requires operator enrollment.\n' >&2
-    return 42
+  if ! curl --fail --silent --show-error --location --proto '=https' --max-filesize 1048576 --output "$payload" "$STEAM_EXCHANGE_GET_URL"; then
+    log "Steam authorization exchange could not be read"
+    return 1
   fi
-  jq -er '.SecretString | fromjson | select(.schema_version == 1 and .cache_format == "steamcmd-config-vdf" and .status == "ACTIVE")' "$response" >"$payload" || {
+  jq -e 'select(.schema_version == 1 and .cache_format == "steamcmd-config-vdf" and .status == "ACTIVE")' "$payload" >/dev/null || {
     mark_steam_reauthorization_required
     printf 'ERR_STEAM_REAUTH_REQUIRED: Steam authorization cache is invalid.\n' >&2
     return 42
@@ -272,7 +157,7 @@ begin_steam_auth() {
   if ! config_b64="$(jq -er '.config_vdf_base64 | select(type == "string" and length > 0 and length <= 1048576)' "$payload")" ||
      ! expected_sha="$(jq -er '.config_sha256 | select(type == "string" and test("^[0-9a-f]{64}$"))' "$payload")" ||
      ! STEAM_AUTH_ENROLLED_AT="$(jq -er '.enrolled_at | select(type == "string" and length > 0 and length <= 64)' "$payload")" ||
-     ! STEAM_AUTH_SOURCE_VERSION="$(jq -er '.VersionId | select(type == "string" and length > 0 and length <= 128)' "$response")"; then
+     ! STEAM_AUTH_SOURCE_VERSION="$(jq -er '.source_version_id | select(type == "string" and length > 0 and length <= 128)' "$payload")"; then
     mark_steam_reauthorization_required
     printf 'ERR_STEAM_REAUTH_REQUIRED: Steam authorization cache fields are invalid.\n' >&2
     return 42
@@ -304,7 +189,7 @@ begin_steam_auth() {
 }
 
 persist_steam_auth() {
-  local config_file config_size config_sha config_b64 payload result version now token values
+  local config_file config_size config_sha config_b64 payload now
   $STEAM_AUTH_ACTIVE || return 0
   $STEAM_AUTH_VALID || return 0
   STEAM_AUTH_PERSIST_ATTEMPTED=true
@@ -319,25 +204,12 @@ persist_steam_auth() {
   jq -cn --arg username "$STEAM_AUTH_USERNAME" --arg config "$config_b64" --arg sha "$config_sha" --arg enrolled "$STEAM_AUTH_ENROLLED_AT" --arg updated "$now" --arg source "$STEAM_AUTH_SOURCE_VERSION" \
     '{schema_version:1,cache_format:"steamcmd-config-vdf",status:"ACTIVE",username:$username,config_vdf_base64:$config,config_sha256:$sha,enrolled_at:$enrolled,updated_at:$updated,source_version_id:$source}' >"$payload"
   unset config_b64
-  if [ "$config_sha" = "$STEAM_AUTH_INITIAL_SHA" ]; then
-    version="$STEAM_AUTH_SOURCE_VERSION"
-  else
-    result="$STEAM_AUTH_ROOT/put-result.json"
-    token="$(cat /proc/sys/kernel/random/uuid)"
-    aws secretsmanager put-secret-value --region "$AWS_REGION" --secret-id "$STEAM_AUTH_SECRET_ID" --client-request-token "$token" --secret-string "file://$payload" >"$result" 2>/dev/null || { log "Steam authorization cache update failed"; return 1; }
-    version="$(jq -er '.VersionId' "$result")"
-  fi
-  values="$(jq -cn --arg owner "$STEAM_AUTH_LOCK_OWNER" --arg status ACTIVE --arg version "$version" --arg sha "$config_sha" --arg now "$now" '{":owner":{"S":$owner},":status":{"S":$status},":version":{"S":$version},":sha":{"S":$sha},":now":{"S":$now}}')"
-  aws dynamodb update-item --region "$AWS_REGION" --table-name "$METADATA_TABLE" --key "$(steam_auth_key)" \
-    --update-expression 'SET #status = :status, current_version_id = :version, config_sha256 = :sha, updated_at = :now REMOVE last_error_code' \
-    --condition-expression 'lease_owner = :owner' --expression-attribute-names '{"#status":"status"}' \
-    --expression-attribute-values "$values" >/dev/null 2>&1 || { log "Steam authorization state update failed"; return 1; }
+  curl --fail --silent --show-error --request PUT --header 'Content-Type: application/json' --upload-file "$payload" "$STEAM_EXCHANGE_PUT_URL" >/dev/null || { log "Steam authorization cache update failed"; return 1; }
   STEAM_AUTH_FINALIZED=true
 }
 
 cleanup_steam_auth() {
   scrub_persistent_steam_auth
-  release_steam_auth_lock
   [ -z "$STEAM_AUTH_ROOT" ] || rm -rf -- "$STEAM_AUTH_ROOT"
   STEAM_AUTH_ROOT=""
   STEAM_AUTH_ACTIVE=false
@@ -918,7 +790,7 @@ EOF
 }
 
 launch_and_verify() {
-  if [ "$VANILLA_MODE" = false ] && { $STEAM_AUTH_ACTIVE || [ -n "$STEAM_AUTH_LOCK_OWNER" ]; }; then
+  if [ "$VANILLA_MODE" = false ] && $STEAM_AUTH_ACTIVE; then
     log "refusing game launch while Steam authorization material is active"
     return 1
   fi

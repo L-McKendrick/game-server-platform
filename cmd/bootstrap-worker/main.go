@@ -20,6 +20,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3objects"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmbootstrap"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/steamexchange"
 	"github.com/L-McKendrick/game-server-platform/internal/app/bootstrap"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
@@ -73,6 +74,11 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	steamBroker, err := steamexchange.NewAWS(awsConfig, appsession.SystemClock{}, baseConfig.MetadataTable, runnerConfig.AssetsBucket, runnerConfig.SteamAuthSecretID)
+	if err != nil {
+		return nil, err
+	}
+	runner.WithSteamAuthorizationBroker(steamBroker)
 	runner.WithProgressStore(s3.NewFromConfig(awsConfig))
 	service, err := bootstrap.NewService(
 		repository, repository, repository, runner,

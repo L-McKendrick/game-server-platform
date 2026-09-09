@@ -45,8 +45,8 @@ record binds:
 Objects live under a non-session namespace:
 
 ```text
-platform/steam-exchanges/<exchange-id>/input.vdf
-platform/steam-exchanges/<exchange-id>/output.vdf
+platform/steam-exchanges/<exchange-id>/input.json
+platform/steam-exchanges/<exchange-id>/output.json
 ```
 
 The bucket lifecycle provides a one-day backstop, while the broker deletes
@@ -105,14 +105,15 @@ never promotes partial output.
 Rollout is fail-closed and ordered:
 
 1. Deploy exchange storage, broker persistence, permissions, and cleanup.
-2. Deploy workers and host scripts that prefer the brokered contract while the
-   old host permissions remain available only as an explicit temporary rollout
-   flag.
+2. Deploy the workers, host script, broker policy, and removal of the old host
+   permissions atomically through one reviewed Terraform plan. The runtime
+   configuration-version guard prevents a mixed old-script/new-worker rollout.
 3. Exercise vanilla, modded, restart, wake, restore, Workshop, replay, timeout,
    and reauthorization paths.
 4. Disable the legacy path, remove host Secrets Manager and Steam-lease
    DynamoDB permissions, and prove denial through policy tests and a live host.
-5. Remove the temporary flag after the rollback window.
+5. Retain the prior reviewed Terraform revision as the development rollback;
+   there is no runtime flag that can silently restore standing host access.
 
 Rollback may restore the prior worker and narrowly scoped host policy only in
 the supervised development environment. It must never copy exchange objects

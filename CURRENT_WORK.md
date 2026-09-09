@@ -2,101 +2,87 @@
 
 ## State and Objective
 
-Phase 19 planning has started on `codex/phase-19-production-guardrails`, based
-on the Phase 20 hardening branch. By explicit user direction, the next
-development step is 19.1: remove standing managed-host access to the shared
-Steam authorization cache through a workflow-scoped broker. Cross-session S3
-isolation and maximum-duration enforcement are also folded into Phase 19.
+Phase 19.1 development is complete on `codex/phase-19-production-guardrails`.
+Managed game hosts no longer need standing Secrets Manager or Steam-lease
+DynamoDB access. Phase 19.2 maximum-duration guardrails are next; Phase 19.3
+will close the separately accepted development-stage cross-session S3 risk.
 
 ## Current Handoff
 
-- Restore and bootstrap share the fail-closed AWS CLI v2 prerequisite. Restore
-  results carry terminal booleans, and the state machine rejects malformed or
-  contradictory results through the idempotent failure finalizer.
-- Test-52 led restore to create the existing Steam and optional TeamSpeak
-  service accounts before extracted-file ownership is applied.
-- Test-54 led bootstrap to accept an active matching `RestoreSession` lock
-  without requiring a pending preset revision. Per user direction, do not
-  recover Test-54.
-- Test-55 proved both earlier corrections live, then showed restore extracting
-  onto the root filesystem before bootstrap mounted the blank data volume.
-  Restore now locates the exact recorded EBS device, prepares or reuses its XFS
-  filesystem, rejects mismatched mounts, and mounts it before archive download
-  or extraction. Temporary archive bytes remain on the data volume, and restore
-  plus bootstrap recreate optional empty directories safely.
-- EC2 launch now resizes the approved Ubuntu AMI root device `/dev/sda1` rather
-  than creating an unused `/dev/xvda` volume. New instances retain the intended
-  encrypted root and persistent data mappings.
-- A failed restore with its verified archive, capacity slot, instance, and data
-  volume retained can be retried through `/rb start` or `/rb restore`. The retry
-  reuses those resources and the existing idempotent workflow; unrelated failed
-  sessions remain ineligible. Failed pending revisions remain failed so retry
-  uses the known-good active revision while manifest verification accepts the
-  recorded pre-failure transition.
-- Restore data-volume and bootstrap failures now have distinct codes, use the
-  current progress milestone as their stage, and preserve the redacted terminal
-  diagnostic instead of package-manager preamble.
-- Test-56 proved the storage and root-device corrections live, then exposed an
-  archived revision-qualified `deploy_content` marker suppressing creation of
-  the replacement host's systemd unit. Restore now invalidates the current
-  configuration-deployment and Workshop-synchronization markers as well as
-  legacy install markers, so intentionally omitted host-local services and
-  Workshop data are reconstructed through the existing bootstrap stages.
-  `SERVICE_STARTED` is emitted only after Arma and optional TeamSpeak start.
-- Reclassified SEC-20-01 from Critical to High. Standing Steam-cache access is
-  the immediate credential risk. Cross-session S3 access is explicitly accepted
-  for supervised development but remains a production and multi-tenant release
-  blocker.
-- Decomposed Phase 19 into brokered Steam authorization (19.1), maximum session
-  duration (19.2), and exact-session host S3 access (19.3). Task 19.1.1 is
-  complete in `docs/phase-19-steam-authorization-broker.md`; task 19.1.2 is next.
-- Per user direction, do not rotate the Steam authorization cache without
-  evidence of exposure; all work so far has remained internal.
-- Full Go coverage tests, vet, all command builds, Lambda packaging, Terraform
-  recursive formatting, and bootstrap/development validation passed. The local
-  race build remains unavailable without a working C compiler and is a CI gate.
-  Nothing was deployed, registered, or otherwise mutated in AWS or Discord.
+- Added a trusted Steam authorization exchange broker used by bootstrap, wake,
+  restart, restore, Workshop synchronization, and reliability recovery paths.
+- Each exchange is bound to the exact session, workflow, workflow type,
+  instance, purpose, source secret version, random 256-bit ID, and expiry.
+  Duplicate work reuses the same active exchange; competing workflows fail the
+  global owner-checked lease.
+- The broker writes cache material only to encrypted non-session S3 exchange
+  objects and passes exact expiring GET/PUT capabilities to the target through
+  SSM. The secret identifier and metadata-table name are no longer present in
+  host command text.
+- The host validates and stages the cache under `/run`, uses username-only
+  SteamCMD login, uploads a bounded update, and scrubs authentication material
+  on every exit path. It no longer calls Secrets Manager or DynamoDB.
+- The broker rejects wrong references, stale source versions, malformed or
+  oversized updates, missing output, and terminal replay conflicts. It
+  preserves `ERR_STEAM_REAUTH_REQUIRED`, serialized promotion, and cleanup.
+- Removed Secrets Manager and DynamoDB authorization from the managed-game
+  bootstrap policy. Exact broker permissions are attached only to the five
+  trusted lifecycle workers. S3 and DynamoDB TTLs backstop abandoned exchange
+  cleanup.
+- Advanced the bootstrap runtime contract to `steam-auth-broker-v1`, so an
+  inconsistent worker/script Terraform rollout fails closed.
+- Focused broker, bootstrap/script, IAM security-contract, affected command,
+  and Terraform validation passed. Per user direction, the full repository
+  test/coverage, vet, build, packaging verification, and recursive Terraform
+  checks are deferred for streamlined development.
+- Nothing was deployed, registered, or mutated in AWS, Discord, or Steam. No
+  cache rotation is required without evidence of exposure.
 
 ## Important Operator Attention
 
-- **SEC-20-01:** supervised development may continue. Default: remove standing
-  Steam-cache access first, and do not approve production or multi-tenant use
-  until Phase 19 also closes cross-session S3 access.
-- The broker must not place Steam authorization material in SSM command text,
-  logs, workflow payloads, Lambda configuration, or durable session artifacts.
-- The combined restore correction is not live-accepted. Earlier replacement
-  resources may remain billable; do not recover Test-54. Test-56 retains its
-  verified archive, running instance, encrypted 100 GiB data volume, and
-  capacity slot, and is eligible for explicit restore retry only after this
-  correction is deployed. Its support reference is `ref_a48b8c088e0b`.
+- Deploy the broker, worker packages, bootstrap artifact, lifecycle rule, and
+  IAM removal together through one fresh reviewed Terraform plan. Do not apply
+  only the restrictive host IAM change ahead of the compatible workers and
+  script.
+- Existing EC2 instance-role credentials may retain the old permissions until
+  AWS expires them. Verify explicit denial after deployment and credential
+  refresh or instance replacement before treating standing access as closed
+  live.
+- Cross-session session-assets access remains intentionally accepted for
+  supervised development only and is tracked by Phase 19.3. Production and
+  multi-tenant use remain blocked until it is closed.
+- The inherited Phase 20 restore correction and Test-56 live acceptance remain
+  pending. Do not recover Test-54.
 
 ## Commands to Apply Current Changes
 
-The Phase 19 design-only change adds no deployment or Discord registration.
-The inherited Phase 20 restore correction is still undeployed. Run from the
-repository root, package its affected Lambda sources, and create a fresh saved
-plan while preserving every existing user-owned plan file:
+Run from the repository root. Package the affected workers and create a new
+saved plan; preserve every existing user-owned plan file.
 
 ```powershell
 $env:AWS_PROFILE = "game-server-dev"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$restoreReplayPlan = "restore-marker-replay-$timestamp.tfplan"
+$steamBrokerPlan = "phase19-steam-broker-$timestamp.tfplan"
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan "-out=$restoreReplayPlan"
-terraform -chdir=infra/terraform/environments/dev show $restoreReplayPlan
+terraform -chdir=infra/terraform/environments/dev plan "-out=$steamBrokerPlan"
+terraform -chdir=infra/terraform/environments/dev show $steamBrokerPlan
 ```
 
-After approving that exact plan, in the same PowerShell session:
+Confirm the plan updates the bootstrap artifact and the artifact, bootstrap,
+sleep/wake, restore, and reliability workers; adds the broker policies and
+exchange lifecycle rule; and removes Steam secret/lease permissions only from
+the managed-game instance policy. After approving that exact plan, in the same
+PowerShell session:
 
 ```powershell
-terraform -chdir=infra/terraform/environments/dev apply $restoreReplayPlan
-aws lambda get-function-configuration --function-name game-server-platform-dev-bootstrap-worker --region us-west-2 --query "{State:State,LastUpdateStatus:LastUpdateStatus,RevisionId:RevisionId,BootstrapScript:Environment.Variables.BOOTSTRAP_SCRIPT_KEY}" --output table
-aws lambda get-function-configuration --function-name game-server-platform-dev-restore-worker --region us-west-2 --query "{State:State,LastUpdateStatus:LastUpdateStatus,RevisionId:RevisionId,BootstrapScript:Environment.Variables.BOOTSTRAP_SCRIPT_KEY}" --output table
-$workflowArns = terraform -chdir=infra/terraform/environments/dev output -json workflow_state_machine_arns | ConvertFrom-Json
-aws stepfunctions describe-state-machine --state-machine-arn $workflowArns.RestoreSession --region us-west-2 --query "{Status:status,RevisionId:revisionId}" --output table
+terraform -chdir=infra/terraform/environments/dev apply $steamBrokerPlan
+aws iam get-role-policy --role-name game-server-platform-dev-game-instance --policy-name bootstrap-secrets --query PolicyDocument --output json
+aws s3api get-bucket-lifecycle-configuration --bucket game-server-platform-dev-assets-622211271532-us-west-2 --region us-west-2 --output json
+./scripts/verify-bootstrap-worker-deployment.ps1
 ```
 
-No Discord command registration is required. After the reviewed deployment,
-retry Test-56 through `/rb start` and complete the documented restore checks.
-Begin task 19.1.2 separately; do not alter live managed-host IAM permissions
-until the brokered path and rollback behavior are implemented and validated.
+No Discord command registration is required. After deployment, run one
+controlled vanilla or modded start and one replay-capable wake/restart path.
+Confirm successful Steam download, exchange-object cleanup, cache promotion or
+unchanged completion, lease release, redacted logs, and explicit host denial
+for Secrets Manager and the `STEAM_AUTH#CACHE` DynamoDB item.

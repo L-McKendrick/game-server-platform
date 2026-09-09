@@ -57,6 +57,32 @@ func TestRestoreWorkflowGuardsMalformedTerminalResults(t *testing.T) {
 	}
 }
 
+func TestManagedGameHostHasNoStandingSteamAuthorizationAccess(t *testing.T) {
+	t.Parallel()
+	body := readTerraform(t, filepath.Join("..", "..", "..", "infra", "terraform", "environments", "dev", "phase6.tf"))
+	hostStart := strings.Index(body, `data "aws_iam_policy_document" "game_instance_bootstrap"`)
+	hostEnd := strings.Index(body, `resource "aws_iam_role_policy" "game_instance_bootstrap"`)
+	if hostStart < 0 || hostEnd <= hostStart {
+		t.Fatal("managed game host bootstrap policy was not found")
+	}
+	hostPolicy := body[hostStart:hostEnd]
+	for _, forbidden := range []string{"secretsmanager:", "dynamodb:"} {
+		if strings.Contains(hostPolicy, forbidden) {
+			t.Fatalf("managed game host retains standing Steam authorization capability %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		`data "aws_iam_policy_document" "steam_authorization_broker"`,
+		`"secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"`,
+		`"${aws_s3_bucket.session_assets.arn}/platform/steam-exchanges/*"`,
+		`resource "aws_s3_bucket_lifecycle_configuration" "steam_authorization_exchanges"`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Errorf("broker policy does not contain %q", required)
+		}
+	}
+}
+
 func readTerraform(t *testing.T, path string) string {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Clean(path))

@@ -9,6 +9,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmbootstrap"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmmonitor"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/steamexchange"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sleepwake"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
@@ -66,6 +67,11 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	steamBroker, err := steamexchange.NewAWS(awsCfg, appsession.SystemClock{}, cfg.MetadataTable, cfg.SessionAssetsBucket, strings.TrimSpace(os.Getenv("STEAM_AUTH_SECRET_ID")))
+	if err != nil {
+		return nil, err
+	}
+	presetRunner.WithSteamAuthorizationBroker(steamBroker)
 	service, err := sleepwake.NewService(repo, repo, repo, ec2compute.New(ec2.NewFromConfig(awsCfg), ssm.NewFromConfig(awsCfg)), monitor, sqsnotification.New(sqs.NewFromConfig(awsCfg), cfg.NotificationQueueURL), identity.Generator{}, appsession.SystemClock{}, sleepwake.WithPresetRevisionRunner(presetRunner), sleepwake.WithWorkshopMissionManifest(s3objects.New(s3.NewFromConfig(awsCfg), cfg.SessionAssetsBucket)))
 	if err != nil {
 		return nil, err

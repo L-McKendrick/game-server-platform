@@ -62,7 +62,7 @@ foreach ($name in $requiredEnvironment) {
         throw "$FunctionName is missing required environment variable $name"
     }
 }
-if ($environment.BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION -ne "steam-auth-cache-v1") {
+if ($environment.BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION -ne "steam-auth-broker-v1") {
     throw "$FunctionName has incompatible BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION=$($environment.BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION)"
 }
 if ($null -ne $environment.PSObject.Properties["STEAM_SECRET_ID"]) {

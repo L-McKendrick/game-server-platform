@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -25,7 +26,7 @@ import (
 
 const (
 	documentName                = "AWS-RunShellScript"
-	RuntimeConfigurationVersion = "steam-auth-cache-v1"
+	RuntimeConfigurationVersion = "steam-auth-broker-v1"
 	bashShebang                 = "#!/usr/bin/env bash\n"
 )
 
@@ -53,12 +54,24 @@ type Config struct {
 	SteamAuthSecretID  string
 	TeamSpeakVersion   string
 	TimeoutSeconds     int32
+	SteamBroker        SteamAuthorizationBroker
+}
+
+type SteamAuthorizationBroker interface {
+	Prepare(context.Context, domain.Session, string, time.Duration) (string, string, string, time.Time, error)
+	Complete(context.Context, string, string) error
 }
 
 type Runner struct {
-	client   API
-	progress progressAPI
-	config   Config
+	client      API
+	progress    progressAPI
+	steamBroker SteamAuthorizationBroker
+	config      Config
+}
+
+func (runner *Runner) WithSteamAuthorizationBroker(broker SteamAuthorizationBroker) *Runner {
+	runner.steamBroker = broker
+	return runner
 }
 
 var _ ports.BootstrapRunner = (*Runner)(nil)
@@ -92,7 +105,7 @@ func New(client API, config Config) (*Runner, error) {
 	if config.TimeoutSeconds < 900 || config.TimeoutSeconds > 172800 {
 		return nil, fmt.Errorf("bootstrap timeout must be between 900 and 172800 seconds")
 	}
-	return &Runner{client: client, config: config}, nil
+	return &Runner{client: client, config: config, steamBroker: config.SteamBroker}, nil
 }
 
 // WithProgressStore enables live progress snapshots from the existing session
@@ -137,7 +150,8 @@ func (runner *Runner) StartContent(ctx context.Context, session domain.Session, 
 			return "", err
 		}
 	}
-	script, err := runner.commandMode(session, false, true)
+	needsSteam := session.ActiveWorkflowType != domain.RestartWorkflowType || session.HasApplyingPresetRevision(session.ActiveWorkflowID) || len(session.PendingWorkshopMissionItemIDs()) > 0
+	script, exchangeReference, err := runner.commandMode(ctx, session, false, true, "workshop-sync", needsSteam)
 	if err != nil {
 		return "", err
 	}
@@ -156,9 +170,17 @@ func (runner *Runner) StartContent(ctx context.Context, session domain.Session, 
 	}
 	script = bashShebang + prefix + strings.TrimPrefix(script, bashShebang)
 	if session.ActiveWorkflowType == domain.RestartWorkflowType {
-		return runner.send(ctx, session, script, "gsp:restart:"+session.ID+":"+session.ActiveWorkflowID, "restart")
+		commandID, sendErr := runner.send(ctx, session, script, "gsp:restart:"+session.ID+":"+session.ActiveWorkflowID, "restart")
+		if sendErr != nil && exchangeReference != "" {
+			_ = runner.steamBroker.Complete(ctx, exchangeReference, "failed")
+		}
+		return commandID, sendErr
 	}
-	return runner.send(ctx, session, script, "gsp:workshop-sync:"+session.ID+":"+session.ActiveWorkflowID, "workshop-sync")
+	commandID, sendErr := runner.send(ctx, session, script, "gsp:workshop-sync:"+session.ID+":"+session.ActiveWorkflowID, "workshop-sync")
+	if sendErr != nil && exchangeReference != "" {
+		_ = runner.steamBroker.Complete(ctx, exchangeReference, "failed")
+	}
+	return commandID, sendErr
 }
 
 func (runner *Runner) ResolveContentCommand(ctx context.Context, commandID string) (string, string, string, error) {
@@ -230,11 +252,19 @@ func (runner *Runner) CancelContentCommand(ctx context.Context, commandID, insta
 }
 
 func (runner *Runner) start(ctx context.Context, session domain.Session, rollback bool) (string, error) {
-	script, err := runner.commandMode(session, rollback, false)
+	purpose := "bootstrap"
+	if session.ActiveWorkflowType != "" {
+		purpose = strings.ToLower(string(session.ActiveWorkflowType))
+	}
+	script, exchangeReference, err := runner.commandMode(ctx, session, rollback, false, purpose, true)
 	if err != nil {
 		return "", err
 	}
-	return runner.send(ctx, session, script, "game-server-platform bootstrap "+session.ID, "bootstrap")
+	commandID, sendErr := runner.send(ctx, session, script, "game-server-platform bootstrap "+session.ID, "bootstrap")
+	if sendErr != nil && exchangeReference != "" {
+		_ = runner.steamBroker.Complete(ctx, exchangeReference, "failed")
+	}
+	return commandID, sendErr
 }
 
 func (runner *Runner) send(ctx context.Context, session domain.Session, script, comment, logKind string) (string, error) {
@@ -276,6 +306,18 @@ func (runner *Runner) Observe(ctx context.Context, instanceID string, commandID 
 		return ports.BootstrapCommandStatus{}, err
 	}
 	code, message := bootstrapFailure(aws.ToString(output.StandardErrorContent))
+	if reference := steamExchangeReference(aws.ToString(output.StandardOutputContent)); reference != "" && runner.steamBroker != nil && terminalCommandStatus(output.Status) {
+		outcome := "failed"
+		if output.Status == types.CommandInvocationStatusSuccess {
+			outcome = "succeeded"
+		}
+		if code == "ERR_STEAM_REAUTH_REQUIRED" {
+			outcome = "reauth_required"
+		}
+		if completeErr := runner.steamBroker.Complete(ctx, reference, outcome); completeErr != nil {
+			return ports.BootstrapCommandStatus{}, fmt.Errorf("complete Steam authorization exchange: %w", completeErr)
+		}
+	}
 	return ports.BootstrapCommandStatus{
 		Status: string(output.Status), ErrorCode: code, ErrorMessage: message,
 		Activity:    parseActivity(aws.ToString(output.StandardOutputContent)),
@@ -431,13 +473,14 @@ func parseCheckpoints(output string) []domain.ProgressMilestone {
 }
 
 func (runner *Runner) command(session domain.Session) (string, error) {
-	return runner.commandMode(session, false, false)
+	script, _, err := runner.commandMode(context.Background(), session, false, false, "bootstrap", true)
+	return script, err
 }
 
-func (runner *Runner) commandMode(session domain.Session, rollback, pendingWorkshopMissionsOnly bool) (string, error) {
+func (runner *Runner) commandMode(ctx context.Context, session domain.Session, rollback, pendingWorkshopMissionsOnly bool, purpose string, needsSteam bool) (string, string, error) {
 	creatorDLCFolders, err := domain.CreatorDLCModFolders(session.CreatorDLCs)
 	if err != nil {
-		return "", fmt.Errorf("creator DLC selection: %w", err)
+		return "", "", fmt.Errorf("creator DLC selection: %w", err)
 	}
 	presetObjectKey := session.PresetObjectKeyForApplication()
 	presetRevision := session.PresetRevisionForApplication()
@@ -446,11 +489,11 @@ func (runner *Runner) commandMode(session domain.Session, rollback, pendingWorks
 	mission := session.MissionForApplication()
 	missionManifest, err := acceptedMissionManifest(session)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	workshopMissionManifest, workshopMissionRevision, err := resolvedWorkshopMissionManifest(session, pendingWorkshopMissionsOnly)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if rollback {
 		active := session.EffectiveActivePresetRevision()
@@ -477,7 +520,17 @@ func (runner *Runner) commandMode(session domain.Session, rollback, pendingWorks
 		}
 	}
 	if session.Infrastructure.InstanceID == "" || session.Infrastructure.DataVolumeID == "" || mission.Template == "" || (!session.Vanilla && presetObjectKey == "" && serverPresetObjectKey == "" && len(creatorDLCFolders) == 0) {
-		return "", fmt.Errorf("instance, data volume, mission selection, and modded content are required")
+		return "", "", fmt.Errorf("instance, data volume, mission selection, and modded content are required")
+	}
+	exchangeReference, exchangeGetURL, exchangePutURL := "", "", ""
+	if needsSteam {
+		if runner.steamBroker == nil {
+			return "", "", fmt.Errorf("Steam authorization broker is required")
+		}
+		exchangeReference, exchangeGetURL, exchangePutURL, _, err = runner.steamBroker.Prepare(ctx, session, purpose, time.Duration(runner.config.TimeoutSeconds)*time.Second)
+		if err != nil {
+			return "", "", fmt.Errorf("prepare Steam authorization exchange: %w", err)
+		}
 	}
 	values := map[string]string{
 		"SESSION_ID_B64":                session.ID,
@@ -503,14 +556,15 @@ func (runner *Runner) commandMode(session domain.Session, rollback, pendingWorks
 		"CREATOR_DLC_MODS_B64":          strings.Join(creatorDLCFolders, ";"),
 		"MOD_CONFIG_REVISION_B64":       fmt.Sprintf("%d", session.ConfigurationRevision),
 		"ASSETS_BUCKET_B64":             runner.config.AssetsBucket,
-		"METADATA_TABLE_B64":            runner.config.MetadataTableName,
-		"STEAM_AUTH_SECRET_B64":         runner.config.SteamAuthSecretID,
+		"STEAM_EXCHANGE_REFERENCE_B64":  exchangeReference,
+		"STEAM_EXCHANGE_GET_URL_B64":    exchangeGetURL,
+		"STEAM_EXCHANGE_PUT_URL_B64":    exchangePutURL,
 		"AWS_REGION_B64":                runner.config.Region,
 		"TEAMSPEAK_VERSION_B64":         runner.config.TeamSpeakVersion,
 	}
 	var command strings.Builder
 	command.WriteString(bashShebang + "set -Eeuo pipefail\numask 077\n")
-	for _, key := range []string{"SESSION_ID_B64", "WORKFLOW_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "MISSION_MANIFEST_B64", "CONTENT_REVISION_B64", "WORKSHOP_MISSION_MANIFEST_B64", "WORKSHOP_MISSION_REVISION_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "WORKSHOP_MOD_RESOLUTION_B64", "WORKSHOP_MOD_MANIFEST_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "METADATA_TABLE_B64", "STEAM_AUTH_SECRET_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
+	for _, key := range []string{"SESSION_ID_B64", "WORKFLOW_ID_B64", "DISPLAY_NAME_B64", "DATA_VOLUME_ID_B64", "MISSION_KEY_B64", "MISSION_TEMPLATE_B64", "MISSION_MANIFEST_B64", "CONTENT_REVISION_B64", "WORKSHOP_MISSION_MANIFEST_B64", "WORKSHOP_MISSION_REVISION_B64", "SERVER_CONFIG_KEY_B64", "SERVER_CONFIG_SHA_B64", "SERVER_CONFIG_REV_B64", "PRESET_KEY_B64", "PRESET_REVISION_B64", "WORKSHOP_MOD_RESOLUTION_B64", "WORKSHOP_MOD_MANIFEST_B64", "PRESET_ROLLBACK_B64", "SERVER_PRESET_KEY_B64", "SERVER_PRESET_REVISION_B64", "CREATOR_DLC_MODS_B64", "MOD_CONFIG_REVISION_B64", "ASSETS_BUCKET_B64", "STEAM_EXCHANGE_REFERENCE_B64", "STEAM_EXCHANGE_GET_URL_B64", "STEAM_EXCHANGE_PUT_URL_B64", "AWS_REGION_B64", "TEAMSPEAK_VERSION_B64"} {
 		command.WriteString("export " + key + "='" + base64.StdEncoding.EncodeToString([]byte(values[key])) + "'\n")
 	}
 	if session.TeamSpeakEnabled {
@@ -533,7 +587,27 @@ func (runner *Runner) commandMode(session domain.Session, rollback, pendingWorks
 	command.WriteString("aws s3 cp \"s3://$download_bucket/$download_key\" \"$bootstrap_script\" --region \"$download_region\" --only-show-errors\n")
 	command.WriteString("chmod 700 \"$bootstrap_script\"\n")
 	command.WriteString("\"$bootstrap_script\"\n")
-	return command.String(), nil
+	return command.String(), exchangeReference, nil
+}
+
+func steamExchangeReference(output string) string {
+	const prefix = "GSP_STEAM_EXCHANGE:"
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
+}
+
+func terminalCommandStatus(status types.CommandInvocationStatus) bool {
+	switch status {
+	case types.CommandInvocationStatusSuccess, types.CommandInvocationStatusCancelled, types.CommandInvocationStatusFailed, types.CommandInvocationStatusTimedOut:
+		return true
+	default:
+		return false
+	}
 }
 
 func contentDeploymentRevision(session domain.Session, missionManifest, bootstrapScriptKey string) string {

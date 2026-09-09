@@ -85,30 +85,71 @@ data "aws_iam_policy_document" "game_instance_bootstrap" {
     resources = ["${aws_s3_bucket.session_assets.arn}/sessions/*/workshop-sync/*.json"]
   }
 
-  statement {
-    sid       = "UseSteamAuthorizationCache"
-    actions   = ["secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
-    resources = [aws_secretsmanager_secret.steam_authorization_cache.arn]
-  }
-
-  statement {
-    sid       = "SerializeSteamAuthorizationCache"
-    actions   = ["dynamodb:UpdateItem"]
-    resources = [aws_dynamodb_table.metadata.arn]
-
-    condition {
-      test     = "ForAllValues:StringEquals"
-      variable = "dynamodb:LeadingKeys"
-      values   = ["STEAM_AUTH#CACHE"]
-    }
-  }
-
 }
 
 resource "aws_iam_role_policy" "game_instance_bootstrap" {
   name   = "bootstrap-secrets"
   role   = aws_iam_role.game_instance.id
   policy = data.aws_iam_policy_document.game_instance_bootstrap.json
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "steam_authorization_exchanges" {
+  bucket = aws_s3_bucket.session_assets.id
+
+  rule {
+    id     = "expire-steam-authorization-exchanges"
+    status = "Enabled"
+
+    filter {
+      prefix = "platform/steam-exchanges/"
+    }
+
+    expiration {
+      days = 1
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+  }
+}
+
+data "aws_iam_policy_document" "steam_authorization_broker" {
+  statement {
+    sid       = "ReadAndPromoteSteamAuthorizationCache"
+    actions   = ["secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
+    resources = [aws_secretsmanager_secret.steam_authorization_cache.arn]
+  }
+
+  statement {
+    sid       = "ManageSteamAuthorizationExchangeState"
+    actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"]
+    resources = [aws_dynamodb_table.metadata.arn]
+  }
+
+  statement {
+    sid       = "ManageSteamAuthorizationExchangeObjects"
+    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.session_assets.arn}/platform/steam-exchanges/*"]
+  }
+}
+
+locals {
+  steam_authorization_broker_roles = {
+    artifact    = aws_iam_role.artifact_worker.id
+    bootstrap   = aws_iam_role.bootstrap_worker.id
+    reliability = aws_iam_role.reliability_worker.id
+    restore     = aws_iam_role.restore_worker.id
+    sleepwake   = aws_iam_role.sleepwake_worker.id
+  }
+}
+
+resource "aws_iam_role_policy" "steam_authorization_broker" {
+  for_each = local.steam_authorization_broker_roles
+
+  name   = "steam-authorization-broker"
+  role   = each.value
+  policy = data.aws_iam_policy_document.steam_authorization_broker.json
 }
 
 data "aws_iam_policy_document" "bootstrap_worker" {
@@ -219,7 +260,7 @@ resource "aws_lambda_function" "bootstrap_worker" {
       STEAM_AUTH_SECRET_ID                    = aws_secretsmanager_secret.steam_authorization_cache.name
       TEAMSPEAK_VERSION                       = var.teamspeak_version
       BOOTSTRAP_COMMAND_TIMEOUT_SECONDS       = tostring(var.bootstrap_command_timeout_seconds)
-      BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION = "steam-auth-cache-v1"
+      BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION = "steam-auth-broker-v1"
     }
   }
 

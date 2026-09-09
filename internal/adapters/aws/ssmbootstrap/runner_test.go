@@ -39,6 +39,14 @@ type fakeProgress struct {
 	body  string
 }
 
+type fakeSteamBroker struct{}
+
+func (fakeSteamBroker) Prepare(context.Context, domain.Session, string, time.Duration) (string, string, string, time.Time, error) {
+	return "workflow-1:bootstrap:exchange-1", "https://example.com/input", "https://example.com/output", time.Now().Add(time.Hour), nil
+}
+
+func (fakeSteamBroker) Complete(context.Context, string, string) error { return nil }
+
 func (fake *fakeProgress) GetObject(_ context.Context, input *s3.GetObjectInput, _ ...func(*s3.Options)) (*s3.GetObjectOutput, error) {
 	fake.input = input
 	return &s3.GetObjectOutput{Body: io.NopCloser(bytes.NewBufferString(fake.body))}, nil
@@ -183,6 +191,16 @@ func TestStartBuildsSecretSafeResumableCommand(t *testing.T) {
 	}
 	if strings.Contains(script, "get-secret-value") {
 		t.Fatal("bootstrap implementation should be delivered through the private S3 artifact")
+	}
+	for _, forbidden := range []string{testConfig().SteamAuthSecretID, base64.StdEncoding.EncodeToString([]byte(testConfig().SteamAuthSecretID)), base64.StdEncoding.EncodeToString([]byte(testConfig().MetadataTableName))} {
+		if strings.Contains(script, forbidden) {
+			t.Fatal("SSM command contains standing Steam authorization configuration")
+		}
+	}
+	for _, required := range []string{base64.StdEncoding.EncodeToString([]byte("https://example.com/input")), base64.StdEncoding.EncodeToString([]byte("https://example.com/output"))} {
+		if !strings.Contains(script, required) {
+			t.Fatal("SSM command omitted a brokered Steam exchange capability")
+		}
 	}
 }
 
@@ -471,11 +489,8 @@ func TestVanillaCommandUsesSteamAuthorizationWithoutPreset(t *testing.T) {
 	if !strings.Contains(script, "export VANILLA_MODE=true") {
 		t.Fatal("vanilla command did not enable vanilla content mode")
 	}
-	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(testConfig().SteamAuthSecretID))) {
-		t.Fatal("vanilla command omitted the Steam authorization secret identifier")
-	}
-	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(testConfig().MetadataTableName))) {
-		t.Fatal("vanilla command omitted the Steam authorization-state table")
+	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte("https://example.com/input"))) {
+		t.Fatal("vanilla command omitted the brokered Steam authorization capability")
 	}
 	assertBashSyntax(t, []byte(script))
 }
@@ -486,12 +501,12 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"get-secret-value", "put-secret-value", "AWSCURRENT", "source_version_id", "config_sha256", "STEAM_AUTH#CACHE", "lease_expires_at < :now", "refresh_steam_auth_lock", "start_steam_auth_lock_heartbeat", "STEAM_AUTH_LOCK_LEASE_SECONDS=900", "STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=300", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "VANILLA_MODE", "PRESET_REVISION", "SERVER_PRESET_REVISION", "PRESET_ROLLBACK", "MOD_CONFIG_REVISION", "CONTENT_REVISION", "SERVER_CONFIG_KEY", "SERVER_CONFIG_SHA256", "server.cfg.pending", "sha256sum --check --status", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "$stage.missions-$WORKSHOP_MISSION_REVISION.client-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete", "$stage.revision-$CONTENT_REVISION.complete", "rm -f -- \"$STATE_DIR/deploy_content.complete\" \"$STATE_DIR\"/deploy_content.revision-*.complete", "mod-revisions/revision-", "server-mod-revisions/revision-", "-serverMod=$server_mods", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma sync_workshop_content", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "safe_mission_template=\"$(sqf_escape \"$mission_template\")\"", "template = \"$safe_mission_template\";", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
+	for _, required := range []string{"STEAM_EXCHANGE_GET_URL", "STEAM_EXCHANGE_PUT_URL", "GSP_STEAM_EXCHANGE:", "curl --fail", "source_version_id", "config_sha256", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "VANILLA_MODE", "PRESET_REVISION", "SERVER_PRESET_REVISION", "PRESET_ROLLBACK", "MOD_CONFIG_REVISION", "CONTENT_REVISION", "SERVER_CONFIG_KEY", "SERVER_CONFIG_SHA256", "server.cfg.pending", "sha256sum --check --status", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "$stage.missions-$WORKSHOP_MISSION_REVISION.client-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete", "$stage.revision-$CONTENT_REVISION.complete", "rm -f -- \"$STATE_DIR/deploy_content.complete\" \"$STATE_DIR\"/deploy_content.revision-*.complete", "mod-revisions/revision-", "server-mod-revisions/revision-", "-serverMod=$server_mods", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma sync_workshop_content", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "safe_mission_template=\"$(sqf_escape \"$mission_template\")\"", "template = \"$safe_mission_template\";", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
 		if !strings.Contains(string(script), required) {
 			t.Errorf("script missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{".password", "STEAM_SECRET_ID", "steam_guard_code", "login anonymous", "login \"%s\" \"%s\"", "now_epoch + 25200"} {
+	for _, forbidden := range []string{"aws secretsmanager", "aws dynamodb", ".password", "STEAM_SECRET_ID", "steam_guard_code", "login anonymous", "login \"%s\" \"%s\"", "now_epoch + 25200"} {
 		if strings.Contains(string(script), forbidden) {
 			t.Errorf("script contains legacy credential behavior %q", forbidden)
 		}
@@ -500,67 +515,6 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 		t.Error("script does not normalize legacy digest-prefixed mission filenames")
 	}
 	assertBashSyntax(t, script)
-}
-
-func TestSteamAuthHeartbeatStopsPromptlyAcrossWaitStates(t *testing.T) {
-	path := filepath.Clean(filepath.Join("..", "..", "..", "..", "deploy", "bootstrap", "arma3-bootstrap.sh"))
-	script, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	extract := func(startMarker, endMarker string) string {
-		t.Helper()
-		start := strings.Index(string(script), startMarker)
-		if start < 0 {
-			t.Fatalf("bootstrap script missing %q", startMarker)
-		}
-		endOffset := strings.Index(string(script)[start:], endMarker)
-		if endOffset < 0 {
-			t.Fatalf("bootstrap script missing %q after %q", endMarker, startMarker)
-		}
-		return string(script)[start : start+endOffset+2]
-	}
-	stopFunction := extract("stop_steam_auth_lock_heartbeat() {", "\n}\n\nrelease_steam_auth_lock()")
-	startFunction := extract("start_steam_auth_lock_heartbeat() {", "\n}\n\nacquire_steam_auth_lock()")
-	harness := `#!/usr/bin/env bash
-set -euo pipefail
-STEAM_AUTH_LOCK_HEARTBEAT_PID=""
-STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=30
-REFRESH_FAIL=false
-refresh_steam_auth_lock() { ! "$REFRESH_FAIL"; }
-log() { :; }
-` + stopFunction + "\n" + startFunction + `
-start_steam_auth_lock_heartbeat
-first_pid="$STEAM_AUTH_LOCK_HEARTBEAT_PID"
-start_steam_auth_lock_heartbeat
-[ "$STEAM_AUTH_LOCK_HEARTBEAT_PID" = "$first_pid" ]
-kill -0 "$first_pid"
-stop_steam_auth_lock_heartbeat
-stop_steam_auth_lock_heartbeat
-REFRESH_FAIL=true
-STEAM_AUTH_LOCK_HEARTBEAT_SECONDS=0.05
-start_steam_auth_lock_heartbeat
-sleep 0.2
-stop_steam_auth_lock_heartbeat
-printf 'stopped\n'
-`
-	bash, err := bashExecutable()
-	if err != nil {
-		t.Skip("bash is unavailable")
-	}
-	harnessPath := filepath.Join(t.TempDir(), "heartbeat-test.sh")
-	if err := os.WriteFile(harnessPath, []byte(harness), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	output, err := exec.CommandContext(ctx, bash, filepath.ToSlash(harnessPath)).CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatalf("heartbeat cleanup exceeded 3 seconds: %v\n%s", ctx.Err(), output)
-	}
-	if err != nil || string(output) != "stopped\n" {
-		t.Fatalf("heartbeat cleanup: %v\n%s", err, output)
-	}
 }
 
 func TestBootstrapArtifactCreatesWorkshopDirectoryForCreatorDLCOnlySessions(t *testing.T) {
@@ -725,5 +679,5 @@ func TestObserveClearsActivityAfterNewerCheckpoint(t *testing.T) {
 }
 
 func testConfig() Config {
-	return Config{Region: "us-west-2", AssetsBucket: "assets", BootstrapScriptKey: "platform/bootstrap/arma3.sh", MetadataTableName: "metadata", SteamAuthSecretID: "/steam-auth", TeamSpeakVersion: "3.13.8", TimeoutSeconds: 21600}
+	return Config{Region: "us-west-2", AssetsBucket: "assets", BootstrapScriptKey: "platform/bootstrap/arma3.sh", MetadataTableName: "metadata", SteamAuthSecretID: "/steam-auth", TeamSpeakVersion: "3.13.8", TimeoutSeconds: 21600, SteamBroker: fakeSteamBroker{}}
 }

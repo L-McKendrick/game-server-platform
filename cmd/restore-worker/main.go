@@ -22,6 +22,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmbootstrap"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmrestore"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/steamexchange"
 	"github.com/L-McKendrick/game-server-platform/internal/app/restore"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
@@ -65,6 +66,11 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	steamBroker, err := steamexchange.NewAWS(awsConfig, appsession.SystemClock{}, base.MetadataTable, base.SessionAssetsBucket, strings.TrimSpace(os.Getenv("STEAM_AUTH_SECRET_ID")))
+	if err != nil {
+		return nil, err
+	}
+	bootstrap.WithSteamAuthorizationBroker(steamBroker)
 	restoreRunner, err := ssmrestore.New(ssmClient, base.SessionAssetsBucket, base.AWSRegion, 14400)
 	if err != nil {
 		return nil, err
