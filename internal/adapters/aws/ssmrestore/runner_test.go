@@ -31,7 +31,7 @@ func TestRestoreExtractionPrecedesBootstrapAndInvalidatesArchivedInstallMarkers(
 	now := time.Date(2026, 8, 17, 23, 0, 0, 0, time.UTC)
 	session := domain.Session{ID: "session-1", TeamSpeakEnabled: true, Infrastructure: domain.Infrastructure{DataVolumeID: "vol-data"}, Archive: domain.ArchiveMetadata{ID: "archive-1", ObjectKey: "sessions/session-1/archives/archive-1/session.tar.gz", ManifestObjectKey: "sessions/session-1/archives/archive-1/manifest.v1.json", SHA256: base64.StdEncoding.EncodeToString(make([]byte, 32)), ManifestSHA256: base64.StdEncoding.EncodeToString(make([]byte, 32)), SizeBytes: 42, ManifestSizeBytes: 42, Format: "tar+gzip", VerifiedAt: now}}
 	script := runner.command(session)
-	for _, required := range []string{"tar --no-same-owner", "install_workshop*.complete", "systemctl stop arma3-server.service 2>/dev/null || true", "home/.local/share/Steam/config", "loginusers.vdf", "ssfn*", "aws-cli/2.*", "ERR_AWS_CLI_PREREQUISITE", "ERR_RESTORE_DATA_VOLUME", base64.StdEncoding.EncodeToString([]byte("vol-data")), "mkfs.xfs", "mountpoint -q", "findmnt", "mktemp \"$root/.gsp-restore.", "mkdir -p /srv/game-server/config", "id steam", "useradd --home-dir /srv/game-server/home --no-create-home --shell /bin/bash steam", "id teamspeak", "useradd --home-dir /srv/game-server/teamspeak --no-create-home --shell /sbin/nologin teamspeak"} {
+	for _, required := range []string{"tar --no-same-owner", "install_workshop*.complete", "sync_workshop_content.*.complete", "deploy_content.revision-*.complete", "install_teamspeak.complete", "systemctl stop arma3-server.service 2>/dev/null || true", "home/.local/share/Steam/config", "loginusers.vdf", "ssfn*", "aws-cli/2.*", "ERR_AWS_CLI_PREREQUISITE", "ERR_RESTORE_DATA_VOLUME", base64.StdEncoding.EncodeToString([]byte("vol-data")), "mkfs.xfs", "mountpoint -q", "findmnt", "mktemp \"$root/.gsp-restore.", "mkdir -p /srv/game-server/config", "id steam", "useradd --home-dir /srv/game-server/home --no-create-home --shell /bin/bash steam", "id teamspeak", "useradd --home-dir /srv/game-server/teamspeak --no-create-home --shell /sbin/nologin teamspeak"} {
 		if !strings.Contains(script, required) {
 			t.Errorf("restore script missing %q", required)
 		}
@@ -50,6 +50,48 @@ func TestRestoreExtractionPrecedesBootstrapAndInvalidatesArchivedInstallMarkers(
 	}
 	if strings.Index(script, "mkdir -p /srv/game-server/config") < strings.Index(script, "tar --no-same-owner") || strings.Index(script, "mkdir -p /srv/game-server/config") > strings.Index(script, "chown -R steam:steam") {
 		t.Fatal("restore did not recreate optional empty archive roots before ownership")
+	}
+}
+
+func TestRestoreInvalidatesCurrentReplacementHostMarkersWithAndWithoutVoice(t *testing.T) {
+	t.Parallel()
+	for _, variant := range []struct {
+		vanilla bool
+		voice   bool
+	}{
+		{vanilla: true},
+		{vanilla: true, voice: true},
+		{},
+		{voice: true},
+	} {
+		runner, err := New(testSSM{}, "assets", "us-west-2", 3600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		session := domain.Session{
+			ID:               "session-1",
+			Vanilla:          variant.vanilla,
+			TeamSpeakEnabled: variant.voice,
+			Infrastructure:   domain.Infrastructure{DataVolumeID: "vol-data"},
+			Archive: domain.ArchiveMetadata{
+				ID: "archive-1", ObjectKey: "sessions/session-1/archives/archive-1/session.tar.gz",
+				ManifestObjectKey: "sessions/session-1/archives/archive-1/manifest.v1.json",
+				SHA256:            base64.StdEncoding.EncodeToString(make([]byte, 32)), ManifestSHA256: base64.StdEncoding.EncodeToString(make([]byte, 32)),
+				SizeBytes: 42, ManifestSizeBytes: 42, Format: "tar+gzip", VerifiedAt: time.Now(),
+			},
+		}
+		script := runner.command(session)
+		for _, marker := range []string{
+			"sync_workshop_content.complete",
+			"sync_workshop_content.*.complete",
+			"deploy_content.complete",
+			"deploy_content.revision-*.complete",
+			"install_teamspeak.complete",
+		} {
+			if !strings.Contains(script, "/srv/game-server/state/"+marker) {
+				t.Errorf("vanilla=%t voice=%t: restore does not invalidate %s", variant.vanilla, variant.voice, marker)
+			}
+		}
 	}
 }
 

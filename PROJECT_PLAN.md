@@ -454,6 +454,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **20.1.10** [x] Mount and verify the exact replacement data volume before archive download or extraction, keep temporary restore data off the root filesystem, and make required-directory creation replay-safe.
       - **20.1.11** [x] Resize the approved Ubuntu AMI's actual root device without creating a second unused root volume, with focused launch-contract coverage.
       - **20.1.12** [x] Allow bounded retry of a failed restore on its retained replacement resources, distinguish restore bootstrap failures, preserve actionable sanitized diagnostic tails and stages, and reconcile recovery documentation and tests.
+      - **20.1.13** [x] Invalidate current revision-qualified host-reconstruction markers during restore, report service startup only after required units start, and cover vanilla, modded, and TeamSpeak replacement-host regressions.
     - **20.2** [x] Complete the least-privilege and threat-model review across Discord, AWS, artifacts, workflows, and destructive lifecycle boundaries.
       - **20.2.1** [x] Inventory trust boundaries, protected data, external inputs, runtime and operator identities, and destructive operations.
       - **20.2.2** [x] Create a detailed threat model with abuse cases, existing mitigations, residual risks, owners, and concrete verification evidence.

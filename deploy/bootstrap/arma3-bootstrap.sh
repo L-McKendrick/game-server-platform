@@ -923,10 +923,11 @@ launch_and_verify() {
     return 1
   fi
   scrub_persistent_steam_auth
-  systemctl restart arma3-server.service
+  systemctl restart arma3-server.service || return $?
   if [ "$GSP_OPERATION_MODE" != restart ]; then
-    $TEAMSPEAK_ENABLED && systemctl restart teamspeak3-server.service
+    if $TEAMSPEAK_ENABLED; then systemctl restart teamspeak3-server.service || return $?; fi
   fi
+  checkpoint SERVICE_STARTED
   checkpoint HEALTH_VERIFICATION
   for _ in $(seq 1 60); do
     if systemctl is-active --quiet arma3-server.service && ss -H -lun | awk '{print $4}' | grep -Eq '(^|:)2302$'; then
@@ -958,7 +959,6 @@ if [ "$GSP_OPERATION_MODE" = restart ]; then
   deploy_content
   sync_workshop_content
   if $STEAM_AUTH_ACTIVE; then persist_steam_auth; cleanup_steam_auth; fi
-  checkpoint SERVICE_STARTED
   launch_and_verify
   touch "$restart_marker"
   log "Game server restart complete"
@@ -972,7 +972,6 @@ if [ "$GSP_OPERATION_MODE" = workshop_sync ]; then
   persist_steam_auth
   cleanup_steam_auth
   if [ "$WORKSHOP_PROMOTE_MODS" = true ]; then
-    checkpoint SERVICE_STARTED
     launch_and_verify
   fi
   log "Workshop content sync complete"
@@ -1019,7 +1018,6 @@ for stage in install_steamcmd install_arma sync_workshop_content deploy_content 
 	if [ "$stage" = sync_workshop_content ] && $STEAM_AUTH_ACTIVE; then persist_steam_auth; cleanup_steam_auth; fi
 done
 progress_stage launch_and_verify
-checkpoint SERVICE_STARTED
 log "starting stage launch_and_verify"
 launch_and_verify
 log "completed stage launch_and_verify"

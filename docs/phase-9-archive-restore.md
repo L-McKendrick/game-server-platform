@@ -74,6 +74,12 @@ extends the same workflow through guarded destruction and adds restore.
   restored data stay on that persistent volume rather than the root filesystem;
   replays reuse the mounted XFS volume and fail closed on a missing, mismatched,
   or unsupported device.
+- Restore invalidates archived completion markers for host-local software,
+  current configuration deployment, and Workshop synchronization before
+  bootstrap. Bootstrap therefore recreates systemd units and rematerializes
+  intentionally omitted software and Workshop data on every replacement host,
+  while retaining the portable archive as the durable source. Service-started
+  progress is recorded only after every enabled service starts successfully.
 - Missing AWS CLI prerequisites and incomplete or contradictory managed-command
   results fail with stable bounded codes through the restore failure finalizer.
   Failures before any replacement resource exists return to `ARCHIVED`.

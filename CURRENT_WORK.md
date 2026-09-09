@@ -3,8 +3,8 @@
 ## State and Objective
 
 Phase 20 remains limited to restore acceptance and completed step 20.2 on
-`codex/phase-20-production-hardening`. Test-52, Test-54, and Test-55 exposed
-fresh-host restore defects; tasks 20.1.8-20.1.12 contain their focused,
+`codex/phase-20-production-hardening`. Test-52 through Test-56 exposed
+fresh-host restore defects; tasks 20.1.8-20.1.13 contain their focused,
 offline-validated corrections. Live acceptance task 20.1.7 remains pending.
 Do not begin 20.3 without new user direction.
 
@@ -36,6 +36,13 @@ Do not begin 20.3 without new user direction.
 - Restore data-volume and bootstrap failures now have distinct codes, use the
   current progress milestone as their stage, and preserve the redacted terminal
   diagnostic instead of package-manager preamble.
+- Test-56 proved the storage and root-device corrections live, then exposed an
+  archived revision-qualified `deploy_content` marker suppressing creation of
+  the replacement host's systemd unit. Restore now invalidates the current
+  configuration-deployment and Workshop-synchronization markers as well as
+  legacy install markers, so intentionally omitted host-local services and
+  Workshop data are reconstructed through the existing bootstrap stages.
+  `SERVICE_STARTED` is emitted only after Arma and optional TeamSpeak start.
 - TLS-only S3 policies, scoped sleep/wake mutations, the Phase 20 threat model,
   and IAM capability matrix remain complete. SEC-20-01 remains unresolved.
 - Full Go coverage tests, vet, all command builds, Lambda packaging, Terraform
@@ -52,9 +59,11 @@ Do not begin 20.3 without new user direction.
 - Phase 19 maximum-duration enforcement remains pending because Phase 20 was
   started out of order by explicit approval. Default: keep use non-production
   and manually supervised until Phase 19 is complete.
-- The combined restore correction is not live-accepted. Test-52, Test-54, and
-  Test-55 replacement resources may remain billable. Do not recover Test-54.
-  Test-55 becomes eligible for explicit restore retry only after deployment.
+- The combined restore correction is not live-accepted. Earlier replacement
+  resources may remain billable; do not recover Test-54. Test-56 retains its
+  verified archive, running instance, encrypted 100 GiB data volume, and
+  capacity slot, and is eligible for explicit restore retry only after this
+  correction is deployed. Its support reference is `ref_a48b8c088e0b`.
 
 ## Commands to Apply Current Changes
 
@@ -64,26 +73,26 @@ fresh saved plan; preserve every existing user-owned plan file.
 ```powershell
 $env:AWS_PROFILE = "game-server-dev"
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$restoreStoragePlan = "restore-storage-retry-$timestamp.tfplan"
+$restoreReplayPlan = "restore-marker-replay-$timestamp.tfplan"
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan "-out=$restoreStoragePlan"
-terraform -chdir=infra/terraform/environments/dev show $restoreStoragePlan
+terraform -chdir=infra/terraform/environments/dev plan "-out=$restoreReplayPlan"
+terraform -chdir=infra/terraform/environments/dev show $restoreReplayPlan
 ```
 
 After approving that exact plan, in the same PowerShell session:
 
 ```powershell
-terraform -chdir=infra/terraform/environments/dev apply $restoreStoragePlan
-aws lambda get-function-configuration --function-name game-server-platform-dev-discord-interactions --region us-west-2 --query "{State:State,LastUpdateStatus:LastUpdateStatus,RevisionId:RevisionId}" --output table
-aws lambda get-function-configuration --function-name game-server-platform-dev-provisioning-worker --region us-west-2 --query "{State:State,LastUpdateStatus:LastUpdateStatus,RevisionId:RevisionId}" --output table
-aws lambda get-function-configuration --function-name game-server-platform-dev-restore-worker --region us-west-2 --query "{State:State,LastUpdateStatus:LastUpdateStatus,RevisionId:RevisionId}" --output table
+terraform -chdir=infra/terraform/environments/dev apply $restoreReplayPlan
+aws lambda get-function-configuration --function-name game-server-platform-dev-bootstrap-worker --region us-west-2 --query "{State:State,LastUpdateStatus:LastUpdateStatus,RevisionId:RevisionId,BootstrapScript:Environment.Variables.BOOTSTRAP_SCRIPT_KEY}" --output table
+aws lambda get-function-configuration --function-name game-server-platform-dev-restore-worker --region us-west-2 --query "{State:State,LastUpdateStatus:LastUpdateStatus,RevisionId:RevisionId,BootstrapScript:Environment.Variables.BOOTSTRAP_SCRIPT_KEY}" --output table
 $workflowArns = terraform -chdir=infra/terraform/environments/dev output -json workflow_state_machine_arns | ConvertFrom-Json
 aws stepfunctions describe-state-machine --state-machine-arn $workflowArns.RestoreSession --region us-west-2 --query "{Status:status,RevisionId:revisionId}" --output table
 ```
 
 No Discord command registration is required. After the reviewed deployment,
-either retry Test-55 or use a future disposable archived session. Confirm that
-the replacement has only the resized root and persistent data volumes,
-`/srv/game-server` is mounted from the recorded data volume before extraction,
-bootstrap and health complete, and the workflow lock releases. Do not proceed
-to 20.3 without new direction.
+retry Test-56 through `/rb start`. Confirm that configuration deployment is not
+skipped from its archived revision marker, `arma3-server.service` is recreated,
+`SERVICE_STARTED` follows successful service startup, health completes, the
+session reaches `RUNNING`/`HEALTHY`, and the workflow lock releases. Use a
+future modded archive to live-accept Workshop reconstruction before completing
+20.1.7. Do not proceed to 20.3 without new direction.
