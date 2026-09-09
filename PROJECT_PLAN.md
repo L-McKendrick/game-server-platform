@@ -271,11 +271,11 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **18.10** [x] Remove inapplicable public-card controls after termination.
       - **18.10.1** [x] Clear `Show players` and `Refresh` from terminated public cards through an explicit terminal notification contract, including termination, refresh, repair, Discord PATCH, backward-compatibility, and focused regression coverage.
 
-19. **Discord Public Card Channel Configuration — Done**
-    - **19.1** [x] Let an authorized guild administrator choose the channel where new public session cards are posted, using the existing `/rb admin` infrastructure.
-      - **19.1.1** [x] Add one guild configuration field for the public-card channel ID and expose a channel-selection action through the existing `/rb admin` menu.
-      - **19.1.2** [x] Use the configured channel when creating a public card and its linked public modlist message; continue storing the created message references so existing update and repair paths work unchanged.
-      - **19.1.3** [x] Add focused admin-authorization, setting persistence, selected-channel delivery, and Discord failure coverage; update the relevant admin documentation and run proportional validation.
+**Completed Maintenance — Discord Public Card Channel Configuration**
+    - **M.2** [x] Let an authorized guild administrator choose the channel where new public session cards are posted, using the existing `/rb admin` infrastructure.
+      - **M.2.1** [x] Add one guild configuration field for the public-card channel ID and expose a channel-selection action through the existing `/rb admin` menu.
+      - **M.2.2** [x] Use the configured channel when creating a public card and its linked public modlist message; continue storing the created message references so existing update and repair paths work unchanged.
+      - **M.2.3** [x] Add focused admin-authorization, setting persistence, selected-channel delivery, and Discord failure coverage; update the relevant admin documentation and run proportional validation.
 
 **Completed Maintenance — Mission Wake Synchronization Repair**
     - **M.1** [x] Make wake/bootstrap content deployment replay when its exact mission or server-configuration inputs change instead of trusting the stale host-wide completion marker.
@@ -434,8 +434,31 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **18.12** [x] Correct the final restart mission review finding.
       - **18.12.1** [x] Deploy accepted mission files before Workshop synchronization so new scenarios survive restart; cover current and legacy records with a reproducing shell regression, refresh documentation, and prepare the local review-fix commit without pushing or opening a PR.
 
-19. **Maximum Session Duration Guardrails — Pending**
-    - **19.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
+19. **Production Guardrails and Managed-Host Isolation — In Progress**
+    - Started after Phase 20.2 by explicit user direction on
+      `codex/phase-19-production-guardrails`. Treat shared session S3 access as
+      an accepted development-stage risk, but close it before production or
+      multi-tenant use. Do not rotate the Steam authorization cache without
+      evidence of exposure.
+    - **19.1** [ ] Remove standing managed-host access to the shared Steam authorization cache through a workflow-scoped brokered exchange.
+      - **19.1.1** [x] Define the broker contract, trust boundaries, one-time exchange lifecycle, replay/concurrency rules, cleanup guarantees, and backward-compatible rollout plan without placing Steam authorization material in SSM command history.
+      - **19.1.2** [ ] Implement the trusted control-plane broker and short-lived encrypted exchange storage with exact workflow, session, instance, purpose, and expiry binding.
+      - **19.1.3** [ ] Update bootstrap, wake, restart, restore, and Workshop synchronization to consume and return brokered authorization only during an authenticated Steam operation, with cleanup on every exit path.
+      - **19.1.4** [ ] Validate returned cache updates before serialized promotion, preserve reauthorization and rollback behavior, and reject stale, replayed, mismatched, oversized, or malformed exchanges.
+      - **19.1.5** [ ] Remove Secrets Manager and Steam-lease DynamoDB permissions from the managed-game instance profile and add negative IAM/security contract coverage.
+      - **19.1.6** [ ] Add focused broker, expiry, replay, concurrency, cleanup, redaction, lifecycle, vanilla, replacement-host, and failure-recovery coverage and document deployment and rollback.
+    - **19.2** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
+      - **19.2.1** [ ] Define persisted maximum-duration policy, safe defaults and bounds, extension audit records, deadline semantics, and backward-compatible behavior for existing sessions.
+      - **19.2.2** [ ] Add protected admin configuration and extension operations with owner-visible, mention-safe responses and strict authorization, validation, idempotency, and replay handling.
+      - **19.2.3** [ ] Schedule bounded owner warnings and deadline enforcement without duplicating timers or racing active lifecycle workflows.
+      - **19.2.4** [ ] Compose deadline enforcement with running, idle, sleeping, restoring, archiving, terminating, and failed states while preserving capacity and retained-resource truth.
+      - **19.2.5** [ ] Add focused policy, authorization, warning, extension, state-race, retry, reconciliation, and cost-bound coverage plus operator documentation.
+    - **19.3** [ ] Enforce session-specific managed-host S3 access before production or multi-tenant use.
+      - **19.3.1** [ ] Inventory every host-originated S3 read and write and define exact-key, short-lived capability contracts for bootstrap artifacts, session inputs, progress, results, logs, and archives.
+      - **19.3.2** [ ] Implement workflow-issued presigned reads and constrained writes bound to the authoritative session, workflow, instance, object purpose, checksum or size where available, and short expiry.
+      - **19.3.3** [ ] Migrate provisioning, bootstrap, wake, restart, archive, restore, and Workshop paths away from wildcard host S3 credentials with bounded legacy rollout behavior.
+      - **19.3.4** [ ] Remove session-asset permissions from the managed-game instance profile and add negative cross-session, wrong-purpose, expiry, replay, overwrite, and malformed-capability coverage.
+      - **19.3.5** [ ] Live-verify single-session lifecycle behavior, then verify that a managed host cannot use AWS credentials to access another session before approving production or multi-tenant use.
 
 20. **Production Hardening and Optimization — Pending**
     - Proceeded before Phase 19 by explicit user approval. Deliver on

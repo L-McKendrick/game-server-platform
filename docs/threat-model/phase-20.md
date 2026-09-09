@@ -41,7 +41,7 @@ validation succeeds.
 | Archive traversal or expansion bomb | Archive checksum, member root/type/path validation, 20 GiB/200,000-member expansion limits | Acceptable for the documented archive contract |
 | S3 disclosure or downgrade | Account-owned bucket, encryption, public access block, narrowly scoped runtime actions | Insecure transport denial was missing and is corrected in Phase 20 |
 | Mutating unrelated EC2 instances | Most destructive roles require Project and Environment resource tags | Sleep/wake previously had wildcard mutation; corrected in Phase 20 |
-| Compromised game host accesses another session | Shared instance profile permits session-wide S3 patterns and Steam-cache access | **Release-blocking residual risk**; see exceptions |
+| Compromised game host accesses another session | Shared instance profile permits session-wide S3 patterns and Steam-cache access | Steam-cache access is a high-priority credential risk; cross-session S3 access is accepted for supervised development but must close before production or multi-tenant use |
 | Secret or raw diagnostic leakage | Secrets retrieved at runtime, auth files scrubbed, bounded allowlisted progress/errors, suppressed mentions | Acceptable with continued regression scanning; CloudWatch/S3 access remains privileged operator data |
 | Duplicate infrastructure and cost amplification | Idempotency, workflow locks, capacity slot, tagged discovery, budgets, inactivity policies | Phase 19 maximum-duration guardrail is still pending; production release remains blocked |
 | Queue or API denial of service | Payload limits, FIFO queues, visibility bounds, DLQs, Lambda concurrency controls where configured | Residual account-level throttling/cost risk to be verified in 20.5 and 20.6 |
@@ -64,7 +64,7 @@ validation succeeds.
 
 | ID | Severity | Residual risk | Required disposition | Owner / target |
 | --- | --- | --- | --- | --- |
-| SEC-20-01 | Critical | Every managed game host uses one shared instance profile. A compromised host can read inputs and archives for other sessions and can read/write the shared Steam authorization cache. | Before production, replace broad host credentials with session-scoped access (for example, workflow-issued presigned S3 operations plus a separately mediated Steam-auth operation), or implement a reviewed equivalent that cannot cross session boundaries. | Platform owner; production release blocker |
+| SEC-20-01 | High | Every managed game host has standing read/write access to the shared Steam authorization cache. The same shared profile can cross session S3 boundaries; that portion is an accepted risk only for the current supervised development stage. | First remove standing Steam-cache access through a brokered workflow-scoped exchange. In Phase 19, replace wildcard host S3 credentials with exact-session short-lived access before production or multi-tenant use. Cache rotation is not required without evidence of exposure. | Platform owner; development may continue under supervision, production release blocker |
 | SEC-20-02 | High | Phase 19 maximum-duration enforcement is not implemented, leaving a cost-amplification gap beyond budgets and inactivity controls. | Complete Phase 19 or approve a time-bounded non-production exception with manual shutdown monitoring. | Platform owner; before production |
 | SEC-20-03 | High | Deployment still depends on a human AWS profile and broad first-deployment permissions. | Implement scoped GitHub OIDC plan/deploy roles and protected environments in 20.3. | Platform owner; 20.3 |
 | SEC-20-04 | Medium | GitHub Actions use major-version tags and CI does not run dependency, secret, or IaC security scanning. | Select pinned action commits and approved scanners as part of the protected CI/CD design. | Platform owner; 20.3 |
@@ -74,4 +74,3 @@ validation succeeds.
 No exception authorizes production release by itself. Critical and high items
 must be closed or explicitly accepted by the accountable operator with scope,
 expiry, compensating controls, and rollback criteria.
-

@@ -22,7 +22,7 @@ identified otherwise.
 | Reliability worker | Reconcile metadata/workflows; observe SSM/EC2/S3; tag/quarantine or clean tagged orphan compute; inspect/redrive declared DLQs; notifications | No S3 deletion, security-group deletion, resource creation, or secrets |
 | Reset worker | Execute separately confirmed environment reset: metadata/session-prefix deletion, tagged compute cleanup, declared queue purge/workflow stop/log cleanup, Discord message cleanup | No resource creation, non-project compute, non-session S3 objects, Steam secret, or Terraform state |
 | Shared workflow role | Invoke declared lifecycle workers, send declared continuation messages, deliver Step Functions logs | No DynamoDB, EC2, S3, secrets, SSM, or arbitrary Lambda invocation |
-| Managed game instance | SSM core; session input/archive reads; session log/archive/progress/result writes; Steam-cache use and serialized cache lease | No EC2/IAM/queue/workflow APIs; **cross-session and shared-secret scope is SEC-20-01** |
+| Managed game instance | SSM core; session input/archive reads; session log/archive/progress/result writes; currently Steam-cache use and serialized cache lease | No EC2/IAM/queue/workflow APIs; **standing Steam-cache access is high-priority Phase 19 work, and cross-session S3 scope is accepted only for supervised development until Phase 19 closes it** |
 | Steam enrollment role | Short-lived trusted operator assumption; update only Steam authorization secret and its exact DynamoDB lease key | No secret read through IAM policy, game infrastructure, sessions, queues, or Terraform state |
 | Terraform bootstrap/deployer | Create and update declared infrastructure and protected remote state | Runtime roles must never read Terraform state; scoped OIDC deployment roles are deferred to 20.3 |
 
@@ -42,4 +42,3 @@ identified otherwise.
   isolated to the reliability worker and declared DLQs.
 - Wildcard resources require a documented AWS API limitation and should remain
   observation or service-delivery capabilities, not unconstrained mutation.
-

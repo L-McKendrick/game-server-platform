@@ -2,11 +2,11 @@
 
 ## State and Objective
 
-Phase 20 remains limited to restore acceptance and completed step 20.2 on
-`codex/phase-20-production-hardening`. Test-52 through Test-56 exposed
-fresh-host restore defects; tasks 20.1.8-20.1.13 contain their focused,
-offline-validated corrections. Live acceptance task 20.1.7 remains pending.
-Do not begin 20.3 without new user direction.
+Phase 19 planning has started on `codex/phase-19-production-guardrails`, based
+on the Phase 20 hardening branch. By explicit user direction, the next
+development step is 19.1: remove standing managed-host access to the shared
+Steam authorization cache through a workflow-scoped broker. Cross-session S3
+isolation and maximum-duration enforcement are also folded into Phase 19.
 
 ## Current Handoff
 
@@ -43,8 +43,15 @@ Do not begin 20.3 without new user direction.
   legacy install markers, so intentionally omitted host-local services and
   Workshop data are reconstructed through the existing bootstrap stages.
   `SERVICE_STARTED` is emitted only after Arma and optional TeamSpeak start.
-- TLS-only S3 policies, scoped sleep/wake mutations, the Phase 20 threat model,
-  and IAM capability matrix remain complete. SEC-20-01 remains unresolved.
+- Reclassified SEC-20-01 from Critical to High. Standing Steam-cache access is
+  the immediate credential risk. Cross-session S3 access is explicitly accepted
+  for supervised development but remains a production and multi-tenant release
+  blocker.
+- Decomposed Phase 19 into brokered Steam authorization (19.1), maximum session
+  duration (19.2), and exact-session host S3 access (19.3). Task 19.1.1 is
+  complete in `docs/phase-19-steam-authorization-broker.md`; task 19.1.2 is next.
+- Per user direction, do not rotate the Steam authorization cache without
+  evidence of exposure; all work so far has remained internal.
 - Full Go coverage tests, vet, all command builds, Lambda packaging, Terraform
   recursive formatting, and bootstrap/development validation passed. The local
   race build remains unavailable without a working C compiler and is a CI gate.
@@ -52,13 +59,11 @@ Do not begin 20.3 without new user direction.
 
 ## Important Operator Attention
 
-- **Production release blocker SEC-20-01:** the shared managed-game instance
-  profile can access other sessions' S3 inputs/archives and the shared Steam
-  authorization cache. Default: do not approve production use until a
-  session-scoped host-access design is implemented and verified.
-- Phase 19 maximum-duration enforcement remains pending because Phase 20 was
-  started out of order by explicit approval. Default: keep use non-production
-  and manually supervised until Phase 19 is complete.
+- **SEC-20-01:** supervised development may continue. Default: remove standing
+  Steam-cache access first, and do not approve production or multi-tenant use
+  until Phase 19 also closes cross-session S3 access.
+- The broker must not place Steam authorization material in SSM command text,
+  logs, workflow payloads, Lambda configuration, or durable session artifacts.
 - The combined restore correction is not live-accepted. Earlier replacement
   resources may remain billable; do not recover Test-54. Test-56 retains its
   verified archive, running instance, encrypted 100 GiB data volume, and
@@ -67,8 +72,10 @@ Do not begin 20.3 without new user direction.
 
 ## Commands to Apply Current Changes
 
-Run from the repository root. Package the affected Lambda sources and create a
-fresh saved plan; preserve every existing user-owned plan file.
+The Phase 19 design-only change adds no deployment or Discord registration.
+The inherited Phase 20 restore correction is still undeployed. Run from the
+repository root, package its affected Lambda sources, and create a fresh saved
+plan while preserving every existing user-owned plan file:
 
 ```powershell
 $env:AWS_PROFILE = "game-server-dev"
@@ -90,9 +97,6 @@ aws stepfunctions describe-state-machine --state-machine-arn $workflowArns.Resto
 ```
 
 No Discord command registration is required. After the reviewed deployment,
-retry Test-56 through `/rb start`. Confirm that configuration deployment is not
-skipped from its archived revision marker, `arma3-server.service` is recreated,
-`SERVICE_STARTED` follows successful service startup, health completes, the
-session reaches `RUNNING`/`HEALTHY`, and the workflow lock releases. Use a
-future modded archive to live-accept Workshop reconstruction before completing
-20.1.7. Do not proceed to 20.3 without new direction.
+retry Test-56 through `/rb start` and complete the documented restore checks.
+Begin task 19.1.2 separately; do not alter live managed-host IAM permissions
+until the brokered path and rollback behavior are implemented and validated.
