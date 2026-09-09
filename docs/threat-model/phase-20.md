@@ -2,7 +2,7 @@
 
 ## Scope and method
 
-This review covers the deployed development architecture as of 2026-09-07:
+This review covers the deployed development architecture as of 2026-09-09:
 Discord ingress and outbound messages, DynamoDB metadata, SQS commands and
 artifacts, Step Functions lifecycle workflows, S3 assets and archives, managed
 EC2 game hosts, Systems Manager commands, Steam authorization, destructive
@@ -45,7 +45,7 @@ validation succeeds.
 | Secret or raw diagnostic leakage | Secrets retrieved at runtime, auth files scrubbed, bounded allowlisted progress/errors, suppressed mentions | Acceptable with continued regression scanning; CloudWatch/S3 access remains privileged operator data |
 | Duplicate infrastructure and cost amplification | Idempotency, workflow locks, capacity slot, tagged discovery, budgets, inactivity policies | Phase 19 maximum-duration guardrail is still pending; production release remains blocked |
 | Queue or API denial of service | Payload limits, FIFO queues, visibility bounds, DLQs, Lambda concurrency controls where configured | Residual account-level throttling/cost risk to be verified in 20.5 and 20.6 |
-| Dependency or CI supply-chain compromise | Go modules and action versions are declared; CI is read-only | Actions are tag-pinned rather than commit-pinned and no dependency/security scan is enforced; deferred below |
+| Dependency or CI supply-chain compromise | Go modules and action versions are declared; CI is read-only; replacement hosts download AWS CLI v2 from the official TLS endpoint | Actions are tag-pinned rather than commit-pinned, no dependency/security scan is enforced, and the host prerequisite checks the CLI major version but does not pin or cryptographically verify the downloaded installer; deferred below |
 | Terraform state disclosure or unauthorized deployment | Private versioned encrypted state and manual reviewed plans | Human/deployment permission boundary is not yet codified; OIDC and protected deployment are 20.3 work |
 
 ## Corrections made by this review
@@ -70,6 +70,7 @@ validation succeeds.
 | SEC-20-04 | Medium | GitHub Actions use major-version tags and CI does not run dependency, secret, or IaC security scanning. | Select pinned action commits and approved scanners as part of the protected CI/CD design. | Platform owner; 20.3 |
 | SEC-20-05 | Medium | Public game/voice UDP and unrestricted host egress are intentional for Steam and players but enlarge the compromised-host boundary. | Validate egress/ingress requirements in staging and document any practical restriction or accepted exposure. | Platform owner; 20.4/20.6 |
 | SEC-20-06 | Medium | AWS-managed encryption keys do not provide environment-specific key-policy separation. | Decide whether production requires customer-managed keys during staging design; record the decision in an ADR. | Platform owner; 20.4 |
+| SEC-20-07 | Medium | Replacement hosts download the current AWS CLI v2 installer over TLS and verify its major version, but do not pin a release checksum or verify AWS's signing key. | Prefer a versioned, patched host image with the approved CLI already installed or add pinned signature/checksum verification before production staging approval. | Platform owner; 20.4 |
 
 No exception authorizes production release by itself. Critical and high items
 must be closed or explicitly accepted by the accountable operator with scope,

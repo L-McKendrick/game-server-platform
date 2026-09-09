@@ -5,9 +5,9 @@
 Phase 9.1 established the portable backup and manifest boundary. Phase 9.2
 extends the same workflow through guarded destruction and adds restore.
 
-- `/session archive` is owner-only and requires an explicit `confirm: true`
-  acknowledgement that services stop and the current EC2/EBS resources are
-  removed only after the consistent archive is verified.
+- `/rb archive` is owner-only and creates a durable, owner-bound confirmation.
+  `/rb confirm` acknowledges that services stop and the current EC2/EBS
+  resources are removed only after the consistent archive is verified.
 - Owner-requested archives may start from `RUNNING` or `IDLE` with a managed
   instance and data volume. One normal workflow lock covers command dispatch,
   upload, verification, manifest persistence, and metadata completion.
@@ -61,6 +61,9 @@ extends the same workflow through guarded destruction and adds restore.
   normal software/bootstrap process against the restored portable data. The
   bootstrap command accepts the active restore workflow lock whether or not a
   preset revision is pending, while rejecting missing or mismatched locks.
+- The configured Ubuntu AMI contract currently maps its root volume at
+  `/dev/sda1`; replacing that AMI requires verifying its advertised root-device
+  name before deployment so the platform does not create an unused extra disk.
 - Before extraction, the host verifies compressed size and SHA-256, rejects
   absolute paths, traversal, links, devices, unexpected roots, more than
   200,000 entries, or more than 20 GiB expanded content. It restores only the
@@ -73,7 +76,8 @@ extends the same workflow through guarded destruction and adds restore.
   before downloading or extracting the archive. Temporary archive bytes and
   restored data stay on that persistent volume rather than the root filesystem;
   replays reuse the mounted XFS volume and fail closed on a missing, mismatched,
-  or unsupported device.
+  or unsupported device. Both the existing-mount and first-mount paths enforce
+  an exact recorded-device postcondition before archive access.
 - Restore invalidates archived completion markers for host-local software,
   current configuration deployment, and Workshop synchronization before
   bootstrap. Bootstrap therefore recreates systemd units and rematerializes
@@ -89,10 +93,21 @@ extends the same workflow through guarded destruction and adds restore.
   this bounded retry reuses those recorded resources and reruns the idempotent
   mount, extraction, bootstrap, and health path.
 
+### Live development acceptance
+
+The Test-56 retry completed the deployed restore workflow successfully on
+2026-09-09 (`1547132738950406144`). It recreated the replacement host from the
+verified archive, rebuilt host-local stages, passed service health, and released
+the workflow normally. The disposable session was subsequently terminated and
+now has a `DELETED` tombstone. Modded and TeamSpeak-enabled restore variants
+retain offline coverage and should be exercised again in the Phase 20.4 staging
+lifecycle matrix; they are not implied by this vanilla live exercise.
+
 ## Phase 9.3 irreversible termination
 
-- `/session terminate` is owner-only and requires `confirm: true`. The warning
-  states that no backup is created and the operation cannot be undone.
+- `/rb terminate` is owner-only and creates a durable, owner-bound confirmation.
+  `/rb confirm` consumes it once; the warning states that no backup is created
+  and the operation cannot be undone.
 - Termination is available for any unlocked, non-deleted session, including a
   `FAILED` session requiring cleanup. A single workflow lock prevents races
   with provisioning, sleep/wake, archive, restore, or another termination.

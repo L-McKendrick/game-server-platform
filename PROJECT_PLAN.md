@@ -56,7 +56,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
 9. **Archive, Restore, and Termination — Done**
    - **9.1** [x] Add owner-confirmed interruption warnings, portable bounded archives, versioned manifests, archive and manifest checksums, S3 verification, and non-destructive metadata completion.
    - **9.2** [x] Destroy tagged disposable infrastructure only after durable archive verification, then recreate infrastructure, safely restore validated data, and pass service health acceptance. Permit the approved AMI-backed gp3 root volume in provisioning and restore IAM while retaining encrypted-only authorization for blank data volumes.
-   - **9.3** [x] Add an owner-confirmed `/session terminate` command that immediately stops and permanently deletes all tagged runtime infrastructure and session-owned stored artifacts for the selected session without creating an archive. Preserve only an auditable terminal metadata record, require an explicit irreversible-action confirmation, and fail closed on ownership or tag mismatches.
+   - **9.3** [x] Add an owner-confirmed `/rb terminate` command that immediately stops and permanently deletes all tagged runtime infrastructure and session-owned stored artifacts for the selected session without creating an archive. Preserve only an auditable terminal metadata record, require an explicit irreversible-action confirmation, and fail closed on ownership or tag mismatches.
    - **9.4** [x] Support explicitly configured vanilla Arma sessions without a mod preset or Steam account.
      - **9.4.1** [x] Add a persisted, backward-compatible vanilla-session configuration flag and expose it through Discord configuration/status output.
      - **9.4.2** [x] Make a configured mission sufficient for vanilla-session readiness while retaining the preset requirement for modded sessions.
@@ -441,14 +441,14 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - Proceeded before Phase 19 by explicit user approval. Deliver on
       `codex/phase-20-production-hardening`; stop after step 20.2 until further
       direction.
-    - **20.1** [ ] Repair restore correctness and archived-session start routing before using archive/restore as a production release gate.
+    - **20.1** [x] Repair restore correctness and archived-session start routing before using archive/restore as a production release gate.
       - **20.1.1** [x] Add a shared replacement-host prerequisite that installs AWS CLI v2 when absent and verifies a supported executable before archive access.
       - **20.1.2** [x] Make restore result contracts structurally complete and harden Step Functions choices against absent, malformed, or contradictory terminal command results.
       - **20.1.3** [x] Route dispatch, observation, timeout, malformed-result, rollback, and task-runtime failures through the idempotent restore failure finalizer while preserving lock, capacity, and retained-resource truth.
       - **20.1.4** [x] Add focused missing-CLI, failed-command-result, malformed-result, failure-handler, replay, lock-release, capacity, and retained-resource regression coverage.
       - **20.1.5** [x] Run proportional Go, packaging, and Terraform validation and record the deployment boundary.
       - **20.1.6** [x] Route `/rb start` for archived sessions through the existing restore workflow after offline restore validation, preserving authorization, capacity, pending-content, idempotency, and failure safeguards; retain `/rb restore` and update help and focused routing coverage.
-      - **20.1.7** [ ] Deploy through fresh reviewed Terraform plans and perform a separately approved live archive/restore exercise before claiming live acceptance or completing the step.
+      - **20.1.7** [x] Deploy through fresh reviewed Terraform plans and perform a separately approved live archive/restore exercise before claiming live acceptance or completing the step.
       - **20.1.8** [x] Create the existing bootstrap service accounts idempotently before restore applies extracted-file ownership, and add focused fresh-host regression coverage for Steam and optional TeamSpeak restores.
       - **20.1.9** [x] Permit the existing bootstrap runner during an active restore workflow without requiring a pending preset revision, while rejecting missing or mismatched restore locks.
       - **20.1.10** [x] Mount and verify the exact replacement data volume before archive download or extraction, keep temporary restore data off the root filesystem, and make required-directory creation replay-safe.
@@ -462,6 +462,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **20.2.4** [x] Tighten demonstrated IAM overreach in small reviewed changes and add Terraform-policy and negative authorization coverage.
       - **20.2.5** [x] Review Discord signatures and authorization, remote artifact intake, archive extraction, shell generation, logs, dependencies, and denial-of-service or cost-amplification boundaries.
       - **20.2.6** [x] Record intentionally retained privileges and deferred risks as explicit release exceptions, validate the affected repository, and refresh the security and deployment handoff.
+      - **20.2.7** [x] Review the complete Phase 20 branch for altered lifecycle, retry, replacement-host, IAM, artifact, deployment, and backward-compatibility edge cases; correct concrete findings, reconcile live acceptance and release documentation, validate, and prepare the pull-request handoff.
     - **20.3** [ ] Add protected GitHub OIDC plan and deployment workflows with immutable build and plan artifacts and no stored AWS access keys.
     - **20.4** [ ] Add an isolated production-like staging environment and exercise the complete lifecycle through its promotion process.
     - **20.5** [ ] Add operational dashboards, missing actionable alarms, validated notification delivery, and tested production and disaster-recovery runbooks.

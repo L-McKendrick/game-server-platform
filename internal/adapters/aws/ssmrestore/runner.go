@@ -113,7 +113,9 @@ func (runner *Runner) command(session domain.Session) string {
 		"mkdir -p \"$root\"\n" +
 		"uuid=$(blkid -s UUID -o value \"$device\")\n" +
 		"grep -q \"UUID=$uuid \" /etc/fstab || printf 'UUID=%s %s xfs defaults,nofail 0 2\\n' \"$uuid\" \"$root\" >> /etc/fstab\n" +
-		"if mountpoint -q \"$root\"; then mounted_source=$(findmnt -n -o SOURCE --target \"$root\"); [ \"$(readlink -f \"$mounted_source\")\" = \"$(readlink -f \"$device\")\" ] || { echo 'ERR_RESTORE_DATA_VOLUME: restore root is mounted from another device' >&2; exit 1; }; else mount \"$root\"; fi\n" +
+		"if ! mountpoint -q \"$root\"; then mount \"$device\" \"$root\"; fi\n" +
+		"mounted_source=$(findmnt -n -o SOURCE --target \"$root\")\n" +
+		"[ \"$(readlink -f \"$mounted_source\")\" = \"$(readlink -f \"$device\")\" ] || { echo 'ERR_RESTORE_DATA_VOLUME: restore root is mounted from another device' >&2; exit 1; }\n" +
 		"archive_file=$(mktemp \"$root/.gsp-restore.XXXXXX.tar.gz\")\n" +
 		"aws s3 cp \"s3://$bucket/$object_key\" \"$archive_file\" --region \"$region\" --only-show-errors\n" +
 		"actual_size=$(stat -c '%s' \"$archive_file\")\n[ \"$actual_size\" = \"$expected_size\" ]\n" +

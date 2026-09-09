@@ -132,9 +132,9 @@ Never place the bot token in a `.tfvars` file, command definition, log, or Terra
 
 Use `/rb start` to provision a configured session or wake a sleeping server.
 Archived sessions can use `/rb start` to enter the restore workflow; the
-explicit `/rb restore` command remains available. Administrators and Manage Server
-members retain permission to wake sleeping sessions; initial provisioning remains
-owner-only. `/rb wake` is no longer registered.
+explicit `/rb restore` command remains available. Administrators and Manage
+Server members retain permission to wake sleeping sessions; initial
+provisioning remains owner-only. `/rb wake` is no longer registered.
 
 Use `/rb restart session:<slug>` to immediately restart a running or idle game
 server, including when players are connected. It applies pending client/server
