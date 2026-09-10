@@ -447,6 +447,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **19.1.4** [x] Validate returned cache updates before serialized promotion, preserve reauthorization and rollback behavior, and reject stale, replayed, mismatched, oversized, or malformed exchanges.
       - **19.1.5** [x] Remove Secrets Manager and Steam-lease DynamoDB permissions from the managed-game instance profile and add negative IAM/security contract coverage.
       - **19.1.6** [x] Add focused broker, expiry, replay, concurrency, cleanup, redaction, lifecycle, vanilla, replacement-host, and failure-recovery coverage and document deployment and rollback.
+      - **19.1.7** [x] Correct the live presigned-GET checksum-header mismatch, add stable exchange-read diagnostics, and advance the atomic runtime contract.
     - **19.2** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
       - **19.2.1** [ ] Define persisted maximum-duration policy, safe defaults and bounds, extension audit records, deadline semantics, and backward-compatible behavior for existing sessions.
       - **19.2.2** [ ] Add protected admin configuration and extension operations with owner-visible, mention-safe responses and strict authorization, validation, idempotency, and replay handling.

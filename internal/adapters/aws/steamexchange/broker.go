@@ -110,6 +110,9 @@ func New(dynamoClient DynamoAPI, objectClient S3API, presignClient PresignAPI, s
 }
 
 func NewAWS(config aws.Config, clock Clock, table, bucket, secretID string) (*Broker, error) {
+	// Exchange capabilities are consumed by curl, not an AWS SDK. Do not let the
+	// SDK's optional response-checksum validation add a required signed header.
+	config.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 	objects := s3.NewFromConfig(config)
 	return New(dynamodb.NewFromConfig(config), objects, s3.NewPresignClient(objects), secretsmanager.NewFromConfig(config), clock, RandomGenerator{}, table, bucket, secretID)
 }

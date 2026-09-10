@@ -26,7 +26,7 @@ import (
 
 const (
 	documentName                = "AWS-RunShellScript"
-	RuntimeConfigurationVersion = "steam-auth-broker-v1"
+	RuntimeConfigurationVersion = "steam-auth-broker-v2"
 	bashShebang                 = "#!/usr/bin/env bash\n"
 )
 
@@ -411,6 +411,9 @@ func parseActivity(output string) string {
 }
 
 func bootstrapFailure(stderr string) (string, string) {
+	if strings.Contains(stderr, "ERR_STEAM_EXCHANGE_READ") {
+		return "ERR_STEAM_EXCHANGE_READ", "The workflow-scoped Steam authorization could not be downloaded."
+	}
 	if strings.Contains(stderr, "ERR_STEAM_REAUTH_REQUIRED") {
 		return "ERR_STEAM_REAUTH_REQUIRED", "Steam authorization requires operator re-enrollment."
 	}

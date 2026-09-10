@@ -260,7 +260,7 @@ resource "aws_lambda_function" "bootstrap_worker" {
       STEAM_AUTH_SECRET_ID                    = aws_secretsmanager_secret.steam_authorization_cache.name
       TEAMSPEAK_VERSION                       = var.teamspeak_version
       BOOTSTRAP_COMMAND_TIMEOUT_SECONDS       = tostring(var.bootstrap_command_timeout_seconds)
-      BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION = "steam-auth-broker-v1"
+      BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION = "steam-auth-broker-v2"
     }
   }
 

@@ -142,6 +142,7 @@ begin_steam_auth() {
   payload="$STEAM_AUTH_ROOT/cache.json"
   if ! curl --fail --silent --show-error --location --proto '=https' --max-filesize 1048576 --output "$payload" "$STEAM_EXCHANGE_GET_URL"; then
     log "Steam authorization exchange could not be read"
+	printf 'ERR_STEAM_EXCHANGE_READ: The workflow-scoped Steam authorization could not be downloaded.\n' >&2
     return 1
   fi
   jq -e 'select(.schema_version == 1 and .cache_format == "steamcmd-config-vdf" and .status == "ACTIVE")' "$payload" >/dev/null || {

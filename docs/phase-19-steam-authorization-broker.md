@@ -108,6 +108,8 @@ Rollout is fail-closed and ordered:
 2. Deploy the workers, host script, broker policy, and removal of the old host
    permissions atomically through one reviewed Terraform plan. The runtime
    configuration-version guard prevents a mixed old-script/new-worker rollout.
+   The broker requests S3 response checksums only when required, keeping its
+   presigned GET capability compatible with the host's bounded HTTPS client.
 3. Exercise vanilla, modded, restart, wake, restore, Workshop, replay, timeout,
    and reauthorization paths.
 4. Disable the legacy path, remove host Secrets Manager and Steam-lease

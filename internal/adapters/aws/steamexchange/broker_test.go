@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,12 @@ import (
 type fakeClock struct{ now time.Time }
 
 func (f *fakeClock) Now() time.Time { return f.now }
+
+type staticCredentials struct{}
+
+func (staticCredentials) Retrieve(context.Context) (aws.Credentials, error) {
+	return aws.Credentials{AccessKeyID: "AKID", SecretAccessKey: "SECRET", Source: "test"}, nil
+}
 
 type fakeIDs struct{ id string }
 
@@ -104,6 +111,29 @@ func (fakePresign) PresignGetObject(_ context.Context, in *s3.GetObjectInput, _ 
 }
 func (fakePresign) PresignPutObject(_ context.Context, in *s3.PutObjectInput, _ ...func(*s3.PresignOptions)) (*v4.PresignedHTTPRequest, error) {
 	return &v4.PresignedHTTPRequest{URL: "https://example.com/put/" + aws.ToString(in.Key)}, nil
+}
+
+func TestNewAWSPresignedGetRequiresNoClientHeaders(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 9, 8, 0, 0, 0, time.UTC)
+	broker, err := NewAWS(aws.Config{Region: "us-west-2", Credentials: aws.NewCredentialsCache(staticCredentials{})}, &fakeClock{now: now}, "table", "bucket", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, getURL, _, _, err := broker.urls(context.Background(), record{
+		WorkflowID: "workflow", Purpose: "bootstrap", ExchangeID: "exchange",
+		InputKey: "platform/steam-exchanges/exchange/input.json", OutputKey: "platform/steam-exchanges/exchange/output.json", ExpiresAt: now.Add(time.Hour).Unix(),
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(getURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parsed.Query().Get("X-Amz-SignedHeaders"); got != "host" {
+		t.Fatalf("GET signed headers = %q, want host only", got)
+	}
 }
 
 type fakeSecrets struct{ payload, version, promoted string }

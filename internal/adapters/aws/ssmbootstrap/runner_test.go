@@ -564,6 +564,19 @@ func TestObserveMapsSteamGuardChallengeToStableReauthorizationFailure(t *testing
 	}
 }
 
+func TestObserveMapsSteamExchangeReadFailureToStableCode(t *testing.T) {
+	t.Parallel()
+	client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{Status: types.CommandInvocationStatusFailed, StandardErrorContent: aws.String("curl noise\nERR_STEAM_EXCHANGE_READ: private URL detail")}}
+	runner, _ := New(client, testConfig())
+	status, err := runner.Observe(context.Background(), "i-1", "command-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.ErrorCode != "ERR_STEAM_EXCHANGE_READ" || status.ErrorMessage != "The workflow-scoped Steam authorization could not be downloaded." || strings.Contains(status.ErrorMessage, "private") {
+		t.Fatalf("exchange read status = %#v", status)
+	}
+}
+
 func TestObserveMapsWorkshopScenarioFailuresToActionableCodes(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
