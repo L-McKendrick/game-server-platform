@@ -19,7 +19,6 @@ type DurationCommand struct {
 	IsAdministrator                                           bool
 	Seconds                                                   int64
 	ExtensionSeconds                                          int64
-	NewDeadline                                               time.Time
 }
 
 func (service *Service) ConfigureMaximumDuration(ctx context.Context, command DurationCommand) (domain.Session, error) {
@@ -41,9 +40,8 @@ func (service *Service) changeMaximumDuration(ctx context.Context, command Durat
 		Actor, Guild, Session, Reason string
 		Seconds                       int64
 		ExtensionSeconds              int64
-		Deadline                      time.Time
 		Extension                     bool
-	}{command.Actor.ID, command.GuildID, command.SessionID, command.Reason, command.Seconds, command.ExtensionSeconds, command.NewDeadline.UTC(), extension})
+	}{command.Actor.ID, command.GuildID, command.SessionID, command.Reason, command.Seconds, command.ExtensionSeconds, extension})
 	if err != nil {
 		return domain.Session{}, err
 	}
@@ -72,13 +70,10 @@ func (service *Service) changeMaximumDuration(ctx context.Context, command Durat
 	previous := session.MaximumDuration.DeadlineAt
 	previousSeconds := session.MaximumDuration.EffectiveSeconds()
 	if extension {
-		newDeadline := command.NewDeadline
-		if command.ExtensionSeconds != 0 {
-			if command.ExtensionSeconds < domain.MinimumMaximumDurationSeconds || command.ExtensionSeconds > domain.MaximumMaximumDurationSeconds || !command.NewDeadline.IsZero() {
-				return domain.Session{}, fmt.Errorf("invalid extension hours")
-			}
-			newDeadline = session.MaximumDuration.DeadlineAt.Add(time.Duration(command.ExtensionSeconds) * time.Second)
+		if command.ExtensionSeconds < domain.MinimumMaximumDurationSeconds || command.ExtensionSeconds > domain.MaximumMaximumDurationSeconds || command.ExtensionSeconds%domain.MinimumMaximumDurationSeconds != 0 {
+			return domain.Session{}, fmt.Errorf("extension must contain 1 to 168 whole hours")
 		}
+		newDeadline := session.MaximumDuration.DeadlineAt.Add(time.Duration(command.ExtensionSeconds) * time.Second)
 		if err := session.MaximumDuration.Extend(newDeadline, now); err != nil {
 			return domain.Session{}, err
 		}
@@ -124,7 +119,7 @@ func (service *Service) changeMaximumDuration(ctx context.Context, command Durat
 		return domain.Session{}, err
 	}
 	if service.notificationQueue != nil {
-		content := fmt.Sprintf("<@%s> Maximum duration for `%s` was updated by an administrator.", session.OwnerDiscordUserID, session.Slug)
+		content := fmt.Sprintf("<@%s> Maximum duration for `%s` was set to %d hours by an administrator. The clock starts on first provisioning.", session.OwnerDiscordUserID, session.Slug, session.MaximumDuration.EffectiveSeconds()/3600)
 		if extension {
 			content = fmt.Sprintf("<@%s> Maximum duration for `%s` was extended. New deadline: <t:%d:F>.", session.OwnerDiscordUserID, session.Slug, session.MaximumDuration.DeadlineAt.Unix())
 		}

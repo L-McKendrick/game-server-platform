@@ -2,6 +2,7 @@ package monitoring
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
@@ -50,46 +51,43 @@ func (service *Service) Run(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	completed := 0
+	var sessionErrors []error
 	for _, session := range sessions {
-		if session.LifecycleState == domain.StateFailed {
-			if session.FailedInitialCreation() {
-				if warned, warningErr := service.warnIfDue(ctx, session); warningErr != nil {
-					return completed, warningErr
-				} else {
-					session = warned
-				}
-			}
-			var actionErr error
-			if action := session.MaximumDeadlineAction(service.clock.Now().UTC()); action == domain.CommandDestroySession {
-				actionErr = service.enforceDeadline(ctx, session, action)
-			} else {
-				actionErr = service.alertFailedDeadline(ctx, session)
-			}
-			if actionErr != nil {
-				return completed, actionErr
-			}
-			completed++
+		if err := service.runSession(ctx, session); err != nil {
+			sessionErrors = append(sessionErrors, fmt.Errorf("monitor session %s: %w", session.ID, err))
 			continue
-		}
-		if warned, warningErr := service.warnIfDue(ctx, session); warningErr != nil {
-			return completed, warningErr
-		} else {
-			session = warned
-		}
-		var runErr error
-		if action := session.MaximumDeadlineAction(service.clock.Now().UTC()); action != "" {
-			runErr = service.enforceDeadline(ctx, session, action)
-		} else if session.LifecycleState == domain.StateSleeping {
-			runErr = service.archiveIfDue(ctx, session)
-		} else {
-			runErr = service.monitor(ctx, session)
-		}
-		if runErr != nil {
-			return completed, runErr
 		}
 		completed++
 	}
-	return completed, nil
+	return completed, errors.Join(sessionErrors...)
+}
+
+func (service *Service) runSession(ctx context.Context, session domain.Session) error {
+	if session.LifecycleState == domain.StateFailed {
+		if session.FailedInitialCreation() {
+			warned, err := service.warnIfDue(ctx, session)
+			if err != nil {
+				return err
+			}
+			session = warned
+		}
+		if action := session.MaximumDeadlineAction(service.clock.Now().UTC()); action == domain.CommandDestroySession {
+			return service.enforceDeadline(ctx, session, action)
+		}
+		return service.alertFailedDeadline(ctx, session)
+	}
+	warned, err := service.warnIfDue(ctx, session)
+	if err != nil {
+		return err
+	}
+	session = warned
+	if action := session.MaximumDeadlineAction(service.clock.Now().UTC()); action != "" {
+		return service.enforceDeadline(ctx, session, action)
+	}
+	if session.LifecycleState == domain.StateSleeping {
+		return service.archiveIfDue(ctx, session)
+	}
+	return service.monitor(ctx, session)
 }
 
 func (service *Service) alertFailedDeadline(ctx context.Context, session domain.Session) error {

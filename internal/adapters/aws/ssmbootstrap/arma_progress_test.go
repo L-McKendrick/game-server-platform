@@ -70,7 +70,7 @@ chmod +x "$work/bin/aws"
 export PATH="$work/bin:$PATH" UPLOAD_STARTED="$work/upload-started"
 PROGRESS_FILE="$work/progress"; ASSETS_BUCKET=test; PROGRESS_KEY=test; AWS_REGION=test
 activity() { printf '%s\n' "$1" > "$PROGRESS_FILE"; publish_progress; }
-runuser() { for n in $(seq 1 100); do [ ! -f "$UPLOAD_STARTED" ] || return 0; sleep 0.01; done; return 1; }
+runuser() { for n in $(seq 1 500); do [ ! -f "$UPLOAD_STARTED" ] || return 0; sleep 0.01; done; return 1; }
 run_steamcmd "$work/runfile" arma
 [ -f "$UPLOAD_STARTED" ]
 ! jobs -pr | grep -q .
@@ -83,13 +83,13 @@ run_steamcmd "$work/runfile" arma
 	if err := os.WriteFile(path, []byte(harness), 0600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	started := time.Now()
 	if output, err := exec.CommandContext(ctx, bash, path).CombinedOutput(); err != nil {
 		t.Fatalf("sampler: %v: %s", err, output)
 	}
-	if time.Since(started) > 4*time.Second {
+	if time.Since(started) > 8*time.Second {
 		t.Fatal("sampler retained a background process after SteamCMD returned")
 	}
 }

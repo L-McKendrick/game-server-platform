@@ -24,7 +24,9 @@ restart; it may still sleep, archive, or be explicitly terminated.
 The Administrator-only `/rb admin` maximum-duration menu configures a draft
 session from 1 to 168 whole hours. A started session can only be extended,
 in whole-hour increments, to a later deadline no more than seven days after
-the immutable start. The admin supplies an audit reason (up to 200 characters).
+the immutable start. The persisted duration is updated to the resulting total
+so status, owner messages, and audit data agree with the deadline. The admin
+supplies an audit reason (up to 200 characters).
 The session event records actor, request/correlation ID, previous and new
 deadline, reason, and time. Versioned writes and idempotency records reject
 conflicting updates and replay. The owner is notified in the session channel;
@@ -56,8 +58,10 @@ is not automatically destroyed. An incomplete termination also retains
 resource references and requires operator inspection rather than an unsafe
 automatic retry.
 
-The monitor scans all candidate pages in bounded DynamoDB requests, so a
-later session cannot be starved by earlier rows. Warning intent and its audit
+The monitor scans all candidate pages in bounded DynamoDB requests and isolates
+per-session processing failures, so a broken earlier row or downstream request
+does not prevent later sessions from being checked. It returns the joined
+errors after processing the full candidate set. Warning intent and its audit
 event are saved together before queueing. If queueing fails, the next monitor
 pass retries the same deterministic notification ID and only marks it queued
 after a successful send. A crash after queue acceptance but before that final

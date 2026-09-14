@@ -112,6 +112,7 @@ func TestMaximumDurationRequiresPairedOrderedTimestamps(t *testing.T) {
 		{DeadlineAt: start.Add(time.Hour)},
 		{StartedAt: start, DeadlineAt: start},
 		{StartedAt: start, DeadlineAt: start.Add(-time.Second)},
+		{Seconds: 2 * 3600, StartedAt: start, DeadlineAt: start.Add(time.Hour)},
 		{StartedAt: start, DeadlineAt: start.Add(8 * 24 * time.Hour)},
 	} {
 		if err := policy.Validate(); err == nil {
@@ -140,6 +141,9 @@ func TestMaximumDurationClockAndExtension(t *testing.T) {
 	}
 	if err := policy.Extend(now.Add(3*time.Hour), now); err != nil {
 		t.Fatal(err)
+	}
+	if policy.Seconds != 3*3600 {
+		t.Fatalf("extended limit = %d seconds", policy.Seconds)
 	}
 	if err := policy.Extend(now.Add(8*24*time.Hour), now); err == nil {
 		t.Fatal("accepted extension past cap")

@@ -35,12 +35,12 @@ record binds:
 - exchange ID and schema version;
 - exact session ID, workflow ID, workflow type, and EC2 instance ID;
 - purpose (`bootstrap`, `wake`, `restart`, `restore`, or Workshop sync);
-- source Secrets Manager version ID and expected cache SHA-256;
-- creation and absolute expiry timestamps;
-- state (`PREPARED`, `DOWNLOADED`, `UPLOADED`, `PROMOTED`, `FAILED`, or
-  `EXPIRED`);
-- exact input and output object keys; and
-- single-use download, upload, and promotion markers.
+- source Secrets Manager version ID, cache SHA-256, username, and enrollment
+  timestamp;
+- creation, absolute expiry, and DynamoDB TTL timestamps;
+- state (`PREPARED`, `PROMOTED`, `REAUTH_REQUIRED`, `FAILED`, or `EXPIRED`);
+  and
+- exact input and output object keys.
 
 Objects live under a non-session namespace:
 
@@ -58,8 +58,8 @@ IAM has no permission for this namespace.
 1. The worker reloads the session and proves that the supplied workflow owns
    the current lock and targets the recorded managed instance.
 2. The broker conditionally acquires the existing serialized Steam-cache lease
-   for that workflow. A replay owned by the same workflow resumes the recorded
-   exchange; every other owner fails closed.
+   for that exact exchange ID. A replay owned by the same workflow and purpose
+   resumes the recorded exchange; every other active exchange fails closed.
 3. The broker reads the current Secrets Manager version, validates its existing
    schema and digest, writes it to the exact exchange input object, and creates
    exact-object presigned GET and PUT URLs. URLs use the shortest duration that
@@ -69,12 +69,13 @@ IAM has no permission for this namespace.
    runs the existing username-only SteamCMD flow, and scrubs persistent and
    temporary authentication data on every exit path.
 5. If SteamCMD produces a valid updated cache, the host uploads only to the
-   exact output URL. It reports a bounded digest and completion marker; it does
-   not print cache contents or URLs.
+   exact output URL. The SSM output identifies the exchange for trusted-worker
+   completion; it does not print cache contents or URLs.
 6. The worker observes completion, reloads the exchange and workflow, reads the
-   output object with its own role, applies existing size/schema/redaction
-   validation, and conditionally promotes it only if the source secret version,
-   workflow owner, instance, purpose, and exchange state still match.
+   output object with its own role, applies size/schema/digest validation,
+   preserves the enrolled username and timestamp, and conditionally promotes it
+   only if the source secret version, workflow owner, instance, purpose, and
+   exchange state still match.
 7. The broker deletes exchange objects, marks the exchange terminal, releases
    the owner-checked lease, and retains only bounded audit metadata and digests.
 
@@ -88,17 +89,21 @@ never promotes partial output.
   invocations return the same exchange until it becomes terminal.
 - Download and upload URLs name only their exact object and HTTP operation.
   Bucket listing, deletion, arbitrary keys, and Secrets Manager access are not
-  delegated.
-- Promotion is a conditional state transition and can occur once. It verifies
-  the source secret version so a stale exchange cannot overwrite a newer cache.
-- A different workflow, session, instance, or purpose cannot resume, upload,
-  promote, or clean up an exchange.
-- Expired URLs and records fail closed. Reconciliation marks them expired,
-  deletes any objects, releases only the matching lease, and reports a bounded
-  retryable failure when the lifecycle still owns the operation.
-- URL expiry must be derived from the bounded Steam operation timeout and the
-  actual signing-credential lifetime. The broker must refuse an exchange when
-  it cannot issue a capability long enough for that operation.
+  delegated. They are bearer capabilities and can be replayed against that one
+  operation until they expire; promotion remains independently state-bound.
+- Promotion is a conditional, replay-safe state transition. It recognizes an
+  already-created Secrets Manager version after an ambiguous response and
+  verifies its exact payload before completing metadata and cleanup.
+- A different workflow, session, instance, or purpose cannot ask the broker to
+  resume, promote, or clean up an exchange. Possession of a still-valid URL is
+  sufficient only for its exact GET or PUT operation.
+- Expired URLs and records fail closed. The next broker pass marks them expired,
+  deletes any objects, releases only the matching exchange lease, and reports a
+  bounded retryable failure when the lifecycle still owns the operation.
+- URL expiry is derived from the bounded Steam operation timeout and capped at
+  twelve hours. Temporary signing credentials can shorten effective validity,
+  so long-running operations must treat an expired upload as a retryable
+  exchange failure rather than assuming the URL outlives the command.
 
 ## Rollout and rollback
 
@@ -134,7 +139,7 @@ rollout or rollback and is required only when evidence indicates disclosure.
 - Logs, SSM output, workflow payloads, Lambda environment variables, archives,
   and durable session artifacts contain neither cache bytes nor Steam
   passwords/Guard codes.
-- Cleanup and reconciliation remove input and output objects on success,
-  failure, timeout, cancellation, and worker replay.
+- Cleanup and reconciliation inspect per-object deletion results and retry
+  terminal cleanup without releasing a different exchange's lease.
 - Existing enrollment, rollback, lease heartbeat, and
   `ERR_STEAM_REAUTH_REQUIRED` behavior remain intact.

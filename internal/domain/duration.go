@@ -39,6 +39,9 @@ func (policy MaximumDuration) Validate() error {
 	if !policy.StartedAt.IsZero() && !policy.DeadlineAt.After(policy.StartedAt) {
 		return fmt.Errorf("maximum session duration deadline must follow its start")
 	}
+	if !policy.StartedAt.IsZero() && !policy.DeadlineAt.Equal(policy.StartedAt.Add(time.Duration(seconds)*time.Second)) {
+		return fmt.Errorf("maximum session duration limit and deadline are inconsistent")
+	}
 	if !policy.StartedAt.IsZero() && policy.DeadlineAt.After(policy.StartedAt.Add(time.Duration(MaximumMaximumDurationSeconds)*time.Second)) {
 		return fmt.Errorf("maximum session duration deadline exceeds the 7-day cap")
 	}
@@ -65,10 +68,15 @@ func (policy *MaximumDuration) Extend(deadline, now time.Time) error {
 	if policy.StartedAt.IsZero() || !deadline.After(policy.DeadlineAt) || !deadline.After(now.UTC()) {
 		return fmt.Errorf("extension must move an active deadline into the future")
 	}
-	previous := policy.DeadlineAt
+	duration := deadline.Sub(policy.StartedAt)
+	if duration%time.Second != 0 {
+		return fmt.Errorf("extension deadline must use whole seconds")
+	}
+	previousDeadline, previousSeconds := policy.DeadlineAt, policy.Seconds
 	policy.DeadlineAt = deadline
+	policy.Seconds = int64(duration / time.Second)
 	if err := policy.Validate(); err != nil {
-		policy.DeadlineAt = previous
+		policy.DeadlineAt, policy.Seconds = previousDeadline, previousSeconds
 		return err
 	}
 	return nil

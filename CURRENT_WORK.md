@@ -2,26 +2,39 @@
 
 ## State and Objective
 
-Phase 19.2 is complete on `codex/phase-19-production-guardrails` but is not
-deployed. Phase 19.3 (managed-host S3 isolation) remains before production or
-multi-tenant use. Do not claim a guaranteed AWS spending cap.
+Phase 19.1 and 19.2, including their branch review corrections, are complete on
+`codex/phase-19-production-guardrails` but are not deployed. Phase 19.3
+(managed-host S3 isolation) remains before production or multi-tenant use. Do
+not claim a guaranteed AWS spending cap.
 
 ## Current Handoff
 
+- The trusted Steam authorization broker now uses exchange-specific lease
+  ownership and replay-safe prepare, promotion, reauthorization, and cleanup.
+  It reconstructs a missing exchange input from the authoritative secret,
+  recognizes an ambiguously successful secret promotion, rejects changed
+  authorization identity, validates object-deletion results, and permits safe
+  reacquisition of failed exchanges. Broker DynamoDB access is restricted to
+  the cache lease and exchange keyspaces.
 - Persisted 24-hour default, 1–168-hour configured bounds, immutable first
   provisioning clock, current deadline, and warning marker. Legacy rows remain
-  unstarted on read.
+  unstarted on read. Extensions accept whole hours and keep persisted duration
+  and deadline consistent.
 - Administrator-only `/rb admin` duration modals configure a draft/new session
   or extend a started deadline (up to seven days from its original start).
   Mutations require a reason, use versioned idempotent writes, create immutable
   audit events, and notify only the owner by mention.
-- The existing five-minute monitor pages through all candidates and warns at one hour and fifteen minutes;
-  expired running/idle sessions queue sleep, then sleeping sessions queue
-  archive. Warning intent is durably recorded before enqueue; failed enqueue
-  retries on the next pass using a deterministic notification ID. An ambiguous
-  enqueue success followed by failed acknowledgement can repeat a warning,
-  but cannot silently lose it. The command worker revalidates deadline, state, and lock so stale
-  queued actions fail closed. Expired sessions cannot start or wake.
+- The existing five-minute monitor pages through all candidates, continues
+  after per-session failures, and reports aggregated errors after processing.
+  It warns at one hour and fifteen minutes; expired running/idle sessions queue
+  sleep, then sleeping sessions queue archive. Warning intent is durably
+  recorded before enqueue; failed enqueue retries on the next pass using a
+  deterministic notification ID. The notification worker revalidates the
+  current guild, channel, and owner before mentioning anyone. An ambiguous
+  enqueue success followed by failed acknowledgement can repeat a warning, but
+  cannot silently lose it. The command worker revalidates deadline, state, and
+  lock so stale queued actions fail closed. Expired sessions cannot start or
+  wake.
 - A failed initial provisioning/bootstrap session warns its owner before the
   deadline and queues the existing termination workflow at expiry. It uses
   exact deadline/state binding; stale commands, later lifecycle failures, and
@@ -29,11 +42,14 @@ multi-tenant use. Do not claim a guaranteed AWS spending cap.
   resource cleanup, capacity release, and retained failure truth are reused.
   Later-lifecycle failures with retained resources receive operator attention
   rather than automatic data loss. See `docs/phase-19-maximum-duration.md`.
-- Focused policy, persistence, admin authorization, warning/retry, extension,
-  stale-command, workflow, and state-matrix tests pass. `go test -count=1 ./...`,
-  `go vet ./...`, and `go build ./cmd/...` completed successfully on this host.
+- Focused broker, policy, persistence, admin authorization, warning/retry,
+  extension, stale-command, workflow, and state-matrix tests pass. The bootstrap
+  progress sampler now interrupts an in-flight S3 uploader promptly during
+  workflow shutdown, with a load-tolerant regression. `go test -count=1 ./...`,
+  `go vet ./...`, `go build ./cmd/...`, Lambda packaging, Terraform
+  formatting, and Terraform validation completed successfully on this host.
   No AWS mutation, deployment, command registration, or live-session test was
-  performed. See `docs/phase-19-maximum-duration.md` for operator checks.
+  performed. See the Phase 19 operator documents for deployment checks.
 
 ## Important Operator Attention
 
@@ -42,6 +58,9 @@ multi-tenant use. Do not claim a guaranteed AWS spending cap.
   is manual operator inspection and AWS billing alarms.
 - Monitor scans now cover all pages, so very large metadata tables may increase
   scan work per pass. Default action is to review monitor runtime after deployment.
+- Deploy only when no Steam-authenticated lifecycle operation or broker exchange
+  is active; the review tightened the exchange record and lease-owner contracts.
+  Default action is to wait for active operations to finish before deployment.
 - Test-58's retained instance and volume may remain billable. Do not retry it
   until the Phase 19.1 Steam exchange correction is confirmed deployed.
 - Cross-session managed-host S3 access is an accepted supervised-development
@@ -61,18 +80,23 @@ $env:AWS_PROFILE = "game-server-dev"
 $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
-terraform -chdir=infra/terraform/environments/dev init -backend-config=backend.hcl -input=false
-terraform -chdir=infra/terraform/environments/dev plan -out=phase-19-2-maximum-duration.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-19-2-maximum-duration.tfplan
+terraform -chdir=infra/terraform/environments/dev init -backend-config backend.hcl -input=false
+$phase19Plan = "phase-19-review-$(Get-Date -Format 'yyyyMMdd-HHmmss').tfplan"
+terraform -chdir=infra/terraform/environments/dev plan -out $phase19Plan
+terraform -chdir=infra/terraform/environments/dev show $phase19Plan
 ```
 
 Review the fresh plan for intended Lambda/package changes, especially
-Discord interactions, monitor, command, and notification workers; stop for
-unexpected replacement, deletion, budget/provisioning drift, or sensitive
-output. Apply **only that exact reviewed plan** after approval:
+Discord interactions, bootstrap, restore, sleep/wake, reliability, artifact,
+monitor, command, and notification workers plus the broker IAM restriction;
+stop for unexpected replacement, deletion, budget/provisioning drift, or
+sensitive output. Ensure no Steam-authenticated lifecycle operation or broker
+exchange is active. Apply **only that exact reviewed plan** after approval:
 
 ```powershell
-terraform -chdir=infra/terraform/environments/dev apply phase-19-2-maximum-duration.tfplan
+terraform -chdir=infra/terraform/environments/dev apply $phase19Plan
 ```
 
-Then perform the operator checks in `docs/phase-19-maximum-duration.md`.
+Then perform the operator checks in
+`docs/phase-19-steam-authorization-broker.md` and
+`docs/phase-19-maximum-duration.md`.

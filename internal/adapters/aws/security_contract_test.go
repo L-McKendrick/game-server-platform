@@ -76,6 +76,8 @@ func TestManagedGameHostHasNoStandingSteamAuthorizationAccess(t *testing.T) {
 		`"secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"`,
 		`"${aws_s3_bucket.session_assets.arn}/platform/steam-exchanges/*"`,
 		`resource "aws_s3_bucket_lifecycle_configuration" "steam_authorization_exchanges"`,
+		`variable = "dynamodb:LeadingKeys"`,
+		`values   = ["STEAM_AUTH#CACHE", "STEAM_EXCHANGE#*"]`,
 	} {
 		if !strings.Contains(body, required) {
 			t.Errorf("broker policy does not contain %q", required)

@@ -271,7 +271,15 @@ sample_arma_download() {
   # Keep telemetry best-effort and bounded even when S3 is unavailable.
   publish_progress() {
     AWS_MAX_ATTEMPTS=1 aws s3 cp "$PROGRESS_FILE" "s3://$ASSETS_BUCKET/$PROGRESS_KEY" --region "$AWS_REGION" --cli-connect-timeout 3 --cli-read-timeout 3 --only-show-errors >/dev/null 2>&1 & uploader=$!
-    wait "$uploader" || true
+    # Bash defers signal traps while blocked in `wait`, which could otherwise
+    # leave workflow shutdown waiting for the AWS CLI timeout. Poll through an
+    # interruptible child so TERM promptly reaches both children.
+    while jobs -pr | grep -qx "$uploader"; do
+      sleep 0.1 & sleeper=$!
+      wait "$sleeper" || true
+      sleeper=""
+    done
+    wait "$uploader" 2>/dev/null || true
     uploader=""
   }
   while kill -0 "$owner" 2>/dev/null; do

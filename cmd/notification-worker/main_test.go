@@ -170,6 +170,37 @@ func TestReadyNotificationValidatesClaimAndDoesNotRetryDeliveryFailure(t *testin
 	}
 }
 
+func TestDurationNotificationRevalidatesDestinationAndOwner(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 13, 10, 0, 0, 0, time.UTC)
+	repository := seedCardSession(t, now, "session-duration")
+	sender := &cardSender{}
+	handler := &handler{sender: sender, cards: repository, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	request := domain.NotificationRequest{SchemaVersion: 1, NotificationID: "duration-1", SessionID: "session-duration", GuildID: "guild-1", ChannelID: "channel-1", Content: "<@owner-1> deadline updated", Kind: domain.NotificationSessionDuration, AllowedUserIDs: []string{"owner-1"}, CorrelationID: "duration-1", RequestedAt: now}
+	if err := handler.deliverDuration(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.sendRequests) != 1 {
+		t.Fatalf("duration sends = %d", len(sender.sendRequests))
+	}
+	for name, mutate := range map[string]func(*domain.NotificationRequest){
+		"guild":   func(request *domain.NotificationRequest) { request.GuildID = "other-guild" },
+		"channel": func(request *domain.NotificationRequest) { request.ChannelID = "other-channel" },
+		"owner":   func(request *domain.NotificationRequest) { request.AllowedUserIDs = []string{"other-owner"} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := request
+			mutate(&changed)
+			if err := handler.deliverDuration(context.Background(), changed); err == nil {
+				t.Fatal("mismatched duration claim was accepted")
+			}
+		})
+	}
+	if len(sender.sendRequests) != 1 {
+		t.Fatalf("mismatched duration claim reached Discord: sends=%d", len(sender.sendRequests))
+	}
+}
+
 func TestDeliverCardCreatesOnceSkipsReplayAndEditsNewRevision(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 14, 0, 0, 0, 0, time.UTC)

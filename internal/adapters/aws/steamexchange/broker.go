@@ -72,6 +72,7 @@ type Broker struct {
 }
 
 type record struct {
+	SchemaVersion      int    `dynamodbav:"schema_version"`
 	PK                 string `dynamodbav:"pk"`
 	SK                 string `dynamodbav:"sk"`
 	ExchangeID         string `dynamodbav:"exchange_id"`
@@ -83,9 +84,12 @@ type record struct {
 	SourceVersionID    string `dynamodbav:"source_version_id"`
 	SourceSHA256       string `dynamodbav:"source_sha256"`
 	SourceConfigSHA256 string `dynamodbav:"source_config_sha256"`
+	SourceUsername     string `dynamodbav:"source_username"`
+	SourceEnrolledAt   string `dynamodbav:"source_enrolled_at"`
 	InputKey           string `dynamodbav:"input_key"`
 	OutputKey          string `dynamodbav:"output_key"`
 	State              string `dynamodbav:"state"`
+	CreatedAt          int64  `dynamodbav:"created_at"`
 	ExpiresAt          int64  `dynamodbav:"expires_at"`
 	ExpiresAtEpoch     int64  `dynamodbav:"expires_at_epoch"`
 }
@@ -135,45 +139,38 @@ func (b *Broker) Prepare(ctx context.Context, session domain.Session, purpose st
 	if existing, found, err := b.load(ctx, pk); err != nil {
 		return "", "", "", time.Time{}, err
 	} else if found {
-		if now.Unix() >= existing.ExpiresAt {
+		switch {
+		case existing.State == "PREPARED" && now.Unix() >= existing.ExpiresAt:
 			if err := b.finish(ctx, existing, "EXPIRED"); err != nil {
 				return "", "", "", time.Time{}, err
 			}
-		} else if err := existing.matches(session, purpose, now); err != nil {
-			return "", "", "", time.Time{}, err
-		} else {
+		case existing.State == "PREPARED":
+			if err := existing.matches(session, purpose, now); err != nil {
+				return "", "", "", time.Time{}, err
+			}
+			if err := b.restoreInput(ctx, existing); err != nil {
+				return "", "", "", time.Time{}, err
+			}
 			return b.urls(ctx, existing, time.Unix(existing.ExpiresAt, 0).Sub(now))
+		case existing.State == "FAILED", existing.State == "EXPIRED", existing.State == "PROMOTED":
+			if err := existing.matchesIdentity(session, purpose); err != nil {
+				return "", "", "", time.Time{}, err
+			}
+			if err := b.finish(ctx, existing, existing.State); err != nil {
+				return "", "", "", time.Time{}, err
+			}
+		case existing.State == "REAUTH_REQUIRED":
+			return "", "", "", time.Time{}, fmt.Errorf("Steam authorization requires operator re-enrollment")
+		default:
+			return "", "", "", time.Time{}, fmt.Errorf("Steam exchange has invalid state %q", existing.State)
 		}
 	}
 
-	secret, err := b.secrets.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(b.secretID), VersionStage: aws.String("AWSCURRENT")})
-	if err != nil {
-		return "", "", "", time.Time{}, fmt.Errorf("read Steam authorization cache: %w", err)
-	}
-	payload := []byte(strings.TrimSpace(aws.ToString(secret.SecretString)))
-	if err := validatePayload(payload, ""); err != nil {
-		return "", "", "", time.Time{}, fmt.Errorf("validate Steam authorization cache: %w", err)
-	}
-	var sourcePayload cachePayload
-	_ = json.Unmarshal(payload, &sourcePayload)
-	versionID := strings.TrimSpace(aws.ToString(secret.VersionId))
-	if versionID == "" {
-		return "", "", "", time.Time{}, fmt.Errorf("Steam authorization cache has no version ID")
-	}
-	var exchangePayload map[string]any
-	if err := json.Unmarshal(payload, &exchangePayload); err != nil {
-		return "", "", "", time.Time{}, fmt.Errorf("decode Steam authorization cache")
-	}
-	exchangePayload["source_version_id"] = versionID
-	payload, err = json.Marshal(exchangePayload)
-	if err != nil {
-		return "", "", "", time.Time{}, fmt.Errorf("encode Steam authorization exchange")
-	}
 	exchangeID, err := b.ids.NewID()
 	if err != nil || !safeIdentity.MatchString(exchangeID) {
 		return "", "", "", time.Time{}, fmt.Errorf("generate Steam exchange ID")
 	}
-	owner := session.ActiveWorkflowID + ":" + purpose
+	owner := exchangeLeaseOwner(session.ActiveWorkflowID, purpose, exchangeID)
 	_, err = b.dynamo.UpdateItem(ctx, &dynamodb.UpdateItemInput{
 		TableName: aws.String(b.table), Key: key("STEAM_AUTH#CACHE", "STATE"),
 		UpdateExpression:         aws.String("SET lease_owner = :owner, lease_expires_at = :expires"),
@@ -186,21 +183,70 @@ func (b *Broker) Prepare(ctx context.Context, session domain.Session, purpose st
 	if err != nil {
 		return "", "", "", time.Time{}, fmt.Errorf("acquire Steam authorization lease: %w", err)
 	}
+	payload, sourcePayload, versionID, err := b.readSourcePayload(ctx, "")
+	if err != nil {
+		return "", "", "", time.Time{}, errors.Join(err, b.releaseLease(ctx, owner))
+	}
 	digest := sha256.Sum256(payload)
 	base := "platform/steam-exchanges/" + exchangeID + "/"
-	rec := record{PK: pk, SK: "STATE", ExchangeID: exchangeID, SessionID: session.ID, WorkflowID: session.ActiveWorkflowID, WorkflowType: string(session.ActiveWorkflowType), InstanceID: session.Infrastructure.InstanceID, Purpose: purpose, SourceVersionID: versionID, SourceSHA256: hex.EncodeToString(digest[:]), SourceConfigSHA256: sourcePayload.ConfigSHA256, InputKey: base + "input.json", OutputKey: base + "output.json", State: "PREPARED", ExpiresAt: expires.Unix(), ExpiresAtEpoch: expires.Add(24 * time.Hour).Unix()}
+	rec := record{SchemaVersion: 1, PK: pk, SK: "STATE", ExchangeID: exchangeID, SessionID: session.ID, WorkflowID: session.ActiveWorkflowID, WorkflowType: string(session.ActiveWorkflowType), InstanceID: session.Infrastructure.InstanceID, Purpose: purpose, SourceVersionID: versionID, SourceSHA256: hex.EncodeToString(digest[:]), SourceConfigSHA256: sourcePayload.ConfigSHA256, SourceUsername: sourcePayload.Username, SourceEnrolledAt: sourcePayload.EnrolledAt, InputKey: base + "input.json", OutputKey: base + "output.json", State: "PREPARED", CreatedAt: now.Unix(), ExpiresAt: expires.Unix(), ExpiresAtEpoch: expires.Add(24 * time.Hour).Unix()}
 	item, _ := attributevalue.MarshalMap(rec)
 	if _, err = b.dynamo.PutItem(ctx, &dynamodb.PutItemInput{TableName: aws.String(b.table), Item: item, ConditionExpression: aws.String("attribute_not_exists(pk) OR #state IN (:failed, :expired, :promoted, :reauth)"), ExpressionAttributeNames: map[string]string{"#state": "state"}, ExpressionAttributeValues: map[string]types.AttributeValue{":failed": &types.AttributeValueMemberS{Value: "FAILED"}, ":expired": &types.AttributeValueMemberS{Value: "EXPIRED"}, ":promoted": &types.AttributeValueMemberS{Value: "PROMOTED"}, ":reauth": &types.AttributeValueMemberS{Value: "REAUTH_REQUIRED"}}}); err != nil {
 		if existing, found, loadErr := b.load(ctx, pk); loadErr == nil && found && existing.matches(session, purpose, now) == nil {
+			if restoreErr := b.restoreInput(ctx, existing); restoreErr != nil {
+				return "", "", "", time.Time{}, restoreErr
+			}
 			return b.urls(ctx, existing, time.Unix(existing.ExpiresAt, 0).Sub(now))
 		}
 		return "", "", "", time.Time{}, fmt.Errorf("record Steam exchange: %w", err)
 	}
 	if _, err = b.objects.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(b.bucket), Key: aws.String(rec.InputKey), Body: bytes.NewReader(payload), ContentType: aws.String("application/json"), ServerSideEncryption: "AES256"}); err != nil {
-		_ = b.finish(ctx, rec, "FAILED")
-		return "", "", "", time.Time{}, fmt.Errorf("write Steam exchange input: %w", err)
+		cleanupErr := b.finish(ctx, rec, "FAILED")
+		return "", "", "", time.Time{}, errors.Join(fmt.Errorf("write Steam exchange input: %w", err), cleanupErr)
 	}
 	return b.urls(ctx, rec, duration)
+}
+
+func (b *Broker) readSourcePayload(ctx context.Context, expectedVersion string) ([]byte, cachePayload, string, error) {
+	secret, err := b.secrets.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(b.secretID), VersionStage: aws.String("AWSCURRENT")})
+	if err != nil {
+		return nil, cachePayload{}, "", fmt.Errorf("read Steam authorization cache: %w", err)
+	}
+	payload := []byte(strings.TrimSpace(aws.ToString(secret.SecretString)))
+	if err := validatePayload(payload, ""); err != nil {
+		return nil, cachePayload{}, "", fmt.Errorf("validate Steam authorization cache: %w", err)
+	}
+	var source cachePayload
+	_ = json.Unmarshal(payload, &source)
+	versionID := strings.TrimSpace(aws.ToString(secret.VersionId))
+	if versionID == "" || (expectedVersion != "" && versionID != expectedVersion) {
+		return nil, cachePayload{}, "", fmt.Errorf("Steam authorization cache changed during exchange")
+	}
+	var exchangePayload map[string]any
+	if err := json.Unmarshal(payload, &exchangePayload); err != nil {
+		return nil, cachePayload{}, "", fmt.Errorf("decode Steam authorization cache")
+	}
+	exchangePayload["source_version_id"] = versionID
+	payload, err = json.Marshal(exchangePayload)
+	if err != nil {
+		return nil, cachePayload{}, "", fmt.Errorf("encode Steam authorization exchange")
+	}
+	return payload, source, versionID, nil
+}
+
+func (b *Broker) restoreInput(ctx context.Context, rec record) error {
+	payload, source, _, err := b.readSourcePayload(ctx, rec.SourceVersionID)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(payload)
+	if hex.EncodeToString(digest[:]) != rec.SourceSHA256 || source.ConfigSHA256 != rec.SourceConfigSHA256 || source.Username != rec.SourceUsername || source.EnrolledAt != rec.SourceEnrolledAt {
+		return fmt.Errorf("Steam authorization source does not match the recorded exchange")
+	}
+	if _, err := b.objects.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(b.bucket), Key: aws.String(rec.InputKey), Body: bytes.NewReader(payload), ContentType: aws.String("application/json"), ServerSideEncryption: "AES256"}); err != nil {
+		return fmt.Errorf("restore Steam exchange input: %w", err)
+	}
+	return nil
 }
 
 func (b *Broker) Complete(ctx context.Context, reference, outcome string) error {
@@ -219,13 +265,28 @@ func (b *Broker) Complete(ctx context.Context, reference, outcome string) error 
 		return fmt.Errorf("Steam exchange reference mismatch")
 	}
 	if rec.State == "PROMOTED" {
-		return nil
+		return b.finish(ctx, rec, "PROMOTED")
 	}
-	if rec.State == "REAUTH_REQUIRED" && outcome == "reauth_required" {
-		return nil
+	if rec.State == "REAUTH_REQUIRED" {
+		if err := b.finish(ctx, rec, "REAUTH_REQUIRED"); err != nil {
+			return err
+		}
+		if outcome == "reauth_required" {
+			return nil
+		}
+		return fmt.Errorf("Steam exchange is terminal in state %s", rec.State)
 	}
-	if rec.State == "FAILED" && outcome != "succeeded" {
-		return nil
+	if rec.State == "FAILED" {
+		if err := b.finish(ctx, rec, "FAILED"); err != nil {
+			return err
+		}
+		if outcome != "succeeded" {
+			return nil
+		}
+		return fmt.Errorf("Steam exchange is terminal in state %s", rec.State)
+	}
+	if rec.State == "EXPIRED" {
+		return b.finish(ctx, rec, "EXPIRED")
 	}
 	if rec.State != "PREPARED" {
 		return fmt.Errorf("Steam exchange is terminal in state %s", rec.State)
@@ -234,44 +295,60 @@ func (b *Broker) Complete(ctx context.Context, reference, outcome string) error 
 		return b.finish(ctx, rec, "EXPIRED")
 	}
 	if outcome == "reauth_required" {
-		owner := rec.WorkflowID + ":" + rec.Purpose
-		_, stateErr := b.dynamo.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(b.table), Key: key("STEAM_AUTH#CACHE", "STATE"), UpdateExpression: aws.String("SET #status = :status, last_error_code = :code, updated_at = :now REMOVE lease_owner, lease_expires_at"), ConditionExpression: aws.String("lease_owner = :owner"), ExpressionAttributeNames: map[string]string{"#status": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":status": &types.AttributeValueMemberS{Value: "REAUTH_REQUIRED"}, ":code": &types.AttributeValueMemberS{Value: "ERR_STEAM_REAUTH_REQUIRED"}, ":now": &types.AttributeValueMemberS{Value: b.clock.Now().UTC().Format(time.RFC3339)}, ":owner": &types.AttributeValueMemberS{Value: owner}}})
-		cleanupErr := b.finishWithoutRelease(ctx, rec, "REAUTH_REQUIRED")
-		return errors.Join(stateErr, cleanupErr)
+		owner := rec.leaseOwner()
+		_, stateErr := b.dynamo.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(b.table), Key: key("STEAM_AUTH#CACHE", "STATE"), UpdateExpression: aws.String("SET #status = :status, last_error_code = :code, updated_at = :now REMOVE lease_owner, lease_expires_at"), ConditionExpression: aws.String("lease_owner = :owner OR (#status = :status AND attribute_not_exists(lease_owner))"), ExpressionAttributeNames: map[string]string{"#status": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":status": &types.AttributeValueMemberS{Value: "REAUTH_REQUIRED"}, ":code": &types.AttributeValueMemberS{Value: "ERR_STEAM_REAUTH_REQUIRED"}, ":now": &types.AttributeValueMemberS{Value: b.clock.Now().UTC().Format(time.RFC3339)}, ":owner": &types.AttributeValueMemberS{Value: owner}}})
+		if stateErr != nil {
+			return fmt.Errorf("record Steam reauthorization requirement: %w", stateErr)
+		}
+		return b.finishWithoutRelease(ctx, rec, "REAUTH_REQUIRED")
 	}
 	if outcome != "succeeded" {
 		return b.finish(ctx, rec, "FAILED")
 	}
 	result, err := b.objects.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(b.bucket), Key: aws.String(rec.OutputKey)})
 	if err != nil {
-		_ = b.finish(ctx, rec, "FAILED")
 		return fmt.Errorf("read Steam authorization exchange output: %w", err)
 	}
 	defer result.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(result.Body, maximumCacheBytes+1))
-	if err != nil || len(payload) > maximumCacheBytes {
+	if err != nil {
+		return fmt.Errorf("read Steam authorization exchange output: %w", err)
+	}
+	if len(payload) > maximumCacheBytes {
 		return b.finish(ctx, rec, "FAILED")
 	}
 	if err := validatePayload(payload, rec.SourceVersionID); err != nil {
-		_ = b.finish(ctx, rec, "FAILED")
-		return err
-	}
-	current, err := b.secrets.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(b.secretID), VersionStage: aws.String("AWSCURRENT")})
-	if err != nil || strings.TrimSpace(aws.ToString(current.VersionId)) != rec.SourceVersionID {
-		_ = b.finish(ctx, rec, "FAILED")
-		return fmt.Errorf("Steam authorization cache changed during exchange")
+		return errors.Join(err, b.finish(ctx, rec, "FAILED"))
 	}
 	var validated cachePayload
 	_ = json.Unmarshal(payload, &validated)
+	if validated.Username != rec.SourceUsername || validated.EnrolledAt != rec.SourceEnrolledAt || rec.SourceUsername == "" || rec.SourceEnrolledAt == "" {
+		return errors.Join(fmt.Errorf("Steam authorization identity changed during exchange"), b.finish(ctx, rec, "FAILED"))
+	}
+	current, err := b.secrets.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(b.secretID), VersionStage: aws.String("AWSCURRENT")})
+	if err != nil {
+		return fmt.Errorf("read current Steam authorization cache: %w", err)
+	}
+	currentVersion := strings.TrimSpace(aws.ToString(current.VersionId))
 	promotedVersion := rec.SourceVersionID
-	if validated.ConfigSHA256 != rec.SourceConfigSHA256 {
+	if currentVersion == rec.ExchangeID {
+		if strings.TrimSpace(aws.ToString(current.SecretString)) != strings.TrimSpace(string(payload)) {
+			return errors.Join(fmt.Errorf("Steam authorization promotion replay did not match the current cache"), b.finish(ctx, rec, "FAILED"))
+		}
+		promotedVersion = currentVersion
+	} else if currentVersion != rec.SourceVersionID {
+		return errors.Join(fmt.Errorf("Steam authorization cache changed during exchange"), b.finish(ctx, rec, "FAILED"))
+	} else if validated.ConfigSHA256 != rec.SourceConfigSHA256 {
 		promoted, putErr := b.secrets.PutSecretValue(ctx, &secretsmanager.PutSecretValueInput{SecretId: aws.String(b.secretID), ClientRequestToken: aws.String(rec.ExchangeID), SecretString: aws.String(string(payload))})
 		if putErr != nil {
 			return fmt.Errorf("promote Steam authorization cache: %w", putErr)
 		}
 		promotedVersion = aws.ToString(promoted.VersionId)
+		if strings.TrimSpace(promotedVersion) == "" {
+			promotedVersion = rec.ExchangeID
+		}
 	}
-	owner := rec.WorkflowID + ":" + rec.Purpose
+	owner := rec.leaseOwner()
 	_, err = b.dynamo.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(b.table), Key: key("STEAM_AUTH#CACHE", "STATE"), UpdateExpression: aws.String("SET #status = :status, current_version_id = :version, config_sha256 = :sha, updated_at = :now REMOVE last_error_code"), ConditionExpression: aws.String("lease_owner = :owner"), ExpressionAttributeNames: map[string]string{"#status": "status"}, ExpressionAttributeValues: map[string]types.AttributeValue{":status": &types.AttributeValueMemberS{Value: "ACTIVE"}, ":version": &types.AttributeValueMemberS{Value: promotedVersion}, ":sha": &types.AttributeValueMemberS{Value: validated.ConfigSHA256}, ":now": &types.AttributeValueMemberS{Value: b.clock.Now().UTC().Format(time.RFC3339)}, ":owner": &types.AttributeValueMemberS{Value: owner}}})
 	if err != nil {
 		return fmt.Errorf("record Steam authorization promotion: %w", err)
@@ -309,27 +386,66 @@ func (b *Broker) load(ctx context.Context, pk string) (record, bool, error) {
 	if err := attributevalue.UnmarshalMap(output.Item, &rec); err != nil {
 		return record{}, false, err
 	}
+	if rec.SchemaVersion != 1 {
+		return record{}, false, fmt.Errorf("unsupported Steam exchange schema version %d", rec.SchemaVersion)
+	}
 	return rec, true, nil
 }
 
 func (r record) matches(session domain.Session, purpose string, now time.Time) error {
-	if r.State != "PREPARED" || r.SessionID != session.ID || r.WorkflowID != session.ActiveWorkflowID || r.WorkflowType != string(session.ActiveWorkflowType) || r.InstanceID != session.Infrastructure.InstanceID || r.Purpose != purpose || now.Unix() >= r.ExpiresAt {
+	if r.State != "PREPARED" || now.Unix() >= r.ExpiresAt {
+		return fmt.Errorf("Steam exchange does not match the active workflow")
+	}
+	return r.matchesIdentity(session, purpose)
+}
+
+func (r record) matchesIdentity(session domain.Session, purpose string) error {
+	if r.SessionID != session.ID || r.WorkflowID != session.ActiveWorkflowID || r.WorkflowType != string(session.ActiveWorkflowType) || r.InstanceID != session.Infrastructure.InstanceID || r.Purpose != purpose {
 		return fmt.Errorf("Steam exchange does not match the active workflow")
 	}
 	return nil
 }
 
+func (r record) leaseOwner() string {
+	return exchangeLeaseOwner(r.WorkflowID, r.Purpose, r.ExchangeID)
+}
+
+func exchangeLeaseOwner(workflowID, purpose, exchangeID string) string {
+	return workflowID + ":" + purpose + ":" + exchangeID
+}
+
 func (b *Broker) finish(ctx context.Context, rec record, state string) error {
 	cleanupErr := b.finishWithoutRelease(ctx, rec, state)
-	owner := rec.WorkflowID + ":" + rec.Purpose
-	_, releaseErr := b.dynamo.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(b.table), Key: key("STEAM_AUTH#CACHE", "STATE"), UpdateExpression: aws.String("REMOVE lease_owner, lease_expires_at"), ConditionExpression: aws.String("lease_owner = :owner"), ExpressionAttributeValues: map[string]types.AttributeValue{":owner": &types.AttributeValueMemberS{Value: owner}}})
-	return errors.Join(cleanupErr, releaseErr)
+	if cleanupErr != nil {
+		return cleanupErr
+	}
+	owner := rec.leaseOwner()
+	return errors.Join(cleanupErr, b.releaseLease(ctx, owner))
+}
+
+func (b *Broker) releaseLease(ctx context.Context, owner string) error {
+	_, err := b.dynamo.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(b.table), Key: key("STEAM_AUTH#CACHE", "STATE"), UpdateExpression: aws.String("REMOVE lease_owner, lease_expires_at"), ConditionExpression: aws.String("attribute_not_exists(lease_owner) OR lease_owner = :owner"), ExpressionAttributeValues: map[string]types.AttributeValue{":owner": &types.AttributeValueMemberS{Value: owner}}})
+	if conditionalFailure(err) {
+		return nil
+	}
+	return err
 }
 
 func (b *Broker) finishWithoutRelease(ctx context.Context, rec record, state string) error {
-	_, deleteErr := b.objects.DeleteObjects(ctx, &s3.DeleteObjectsInput{Bucket: aws.String(b.bucket), Delete: &s3types.Delete{Objects: []s3types.ObjectIdentifier{{Key: aws.String(rec.InputKey)}, {Key: aws.String(rec.OutputKey)}}}})
-	_, updateErr := b.dynamo.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(b.table), Key: key(rec.PK, rec.SK), UpdateExpression: aws.String("SET #state = :state"), ConditionExpression: aws.String("exchange_id = :id AND #state = :prepared"), ExpressionAttributeNames: map[string]string{"#state": "state"}, ExpressionAttributeValues: map[string]types.AttributeValue{":state": &types.AttributeValueMemberS{Value: state}, ":id": &types.AttributeValueMemberS{Value: rec.ExchangeID}, ":prepared": &types.AttributeValueMemberS{Value: "PREPARED"}}})
+	deleted, deleteErr := b.objects.DeleteObjects(ctx, &s3.DeleteObjectsInput{Bucket: aws.String(b.bucket), Delete: &s3types.Delete{Objects: []s3types.ObjectIdentifier{{Key: aws.String(rec.InputKey)}, {Key: aws.String(rec.OutputKey)}}}})
+	if deleteErr == nil && deleted != nil && len(deleted.Errors) > 0 {
+		deleteErr = fmt.Errorf("delete Steam authorization exchange objects: %d object errors (first code %q)", len(deleted.Errors), aws.ToString(deleted.Errors[0].Code))
+	}
+	_, updateErr := b.dynamo.UpdateItem(ctx, &dynamodb.UpdateItemInput{TableName: aws.String(b.table), Key: key(rec.PK, rec.SK), UpdateExpression: aws.String("SET #state = :state"), ConditionExpression: aws.String("exchange_id = :id AND (#state = :prepared OR #state = :state)"), ExpressionAttributeNames: map[string]string{"#state": "state"}, ExpressionAttributeValues: map[string]types.AttributeValue{":state": &types.AttributeValueMemberS{Value: state}, ":id": &types.AttributeValueMemberS{Value: rec.ExchangeID}, ":prepared": &types.AttributeValueMemberS{Value: "PREPARED"}}})
+	if conditionalFailure(updateErr) {
+		updateErr = nil
+	}
 	return errors.Join(deleteErr, updateErr)
+}
+
+func conditionalFailure(err error) bool {
+	var conditional *types.ConditionalCheckFailedException
+	return errors.As(err, &conditional)
 }
 
 func key(pk, sk string) map[string]types.AttributeValue {
@@ -344,7 +460,8 @@ func validatePayload(raw []byte, sourceVersion string) error {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return fmt.Errorf("Steam authorization payload is malformed")
 	}
-	if payload.SchemaVersion != 1 || payload.CacheFormat != "steamcmd-config-vdf" || payload.Status != "ACTIVE" || payload.Username == "" || len(payload.Username) > 64 || strings.ContainsAny(payload.Username, " \t\r\n\"\\") || (sourceVersion != "" && payload.SourceVersionID != sourceVersion) {
+	_, enrolledErr := time.Parse(time.RFC3339, payload.EnrolledAt)
+	if payload.SchemaVersion != 1 || payload.CacheFormat != "steamcmd-config-vdf" || payload.Status != "ACTIVE" || payload.Username == "" || len(payload.Username) > 64 || strings.ContainsAny(payload.Username, " \t\r\n\"\\") || enrolledErr != nil || !strings.HasSuffix(payload.EnrolledAt, "Z") || (sourceVersion != "" && payload.SourceVersionID != sourceVersion) {
 		return fmt.Errorf("Steam authorization payload fields are invalid")
 	}
 	decoded, err := base64.StdEncoding.DecodeString(payload.ConfigVDFBase64)

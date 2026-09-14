@@ -84,6 +84,8 @@ func (handler *handler) Handle(ctx context.Context, event events.SQSEvent) (even
 			deliveryErr = handler.deliverModlist(ctx, request)
 		} else if request.Kind == domain.NotificationSessionReady {
 			deliveryErr = handler.deliverReady(ctx, request)
+		} else if request.Kind == domain.NotificationSessionDuration {
+			deliveryErr = handler.deliverDuration(ctx, request)
 		} else {
 			deliveryErr = handler.sender.Send(ctx, request)
 		}
@@ -117,6 +119,21 @@ func (handler *handler) deliverReady(ctx context.Context, request domain.Notific
 		session.GuildID != request.GuildID || session.ReadyNotificationChannelID != request.ChannelID ||
 		len(request.AllowedUserIDs) != 1 || request.AllowedUserIDs[0] != session.OwnerDiscordUserID {
 		return fmt.Errorf("session ready notification does not match claimed session metadata")
+	}
+	return handler.sender.Send(ctx, request)
+}
+
+func (handler *handler) deliverDuration(ctx context.Context, request domain.NotificationRequest) error {
+	if err := request.Validate(); err != nil {
+		return fmt.Errorf("validate session duration notification: %w", err)
+	}
+	session, err := handler.cards.Get(ctx, request.SessionID)
+	if err != nil {
+		return fmt.Errorf("get session for duration notification: %w", err)
+	}
+	if session.GuildID != request.GuildID || session.ChannelID != request.ChannelID ||
+		len(request.AllowedUserIDs) != 1 || request.AllowedUserIDs[0] != session.OwnerDiscordUserID {
+		return fmt.Errorf("session duration notification does not match claimed session metadata")
 	}
 	return handler.sender.Send(ctx, request)
 }

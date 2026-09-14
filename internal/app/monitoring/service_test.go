@@ -3,6 +3,7 @@ package monitoring
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,30 @@ func (repo *monitoringRepo) SaveMonitoring(_ context.Context, session domain.Ses
 	repo.session = session
 	repo.events = append(repo.events, events...)
 	return nil
+}
+
+type multiMonitoringRepo struct {
+	sessions []domain.Session
+	events   []domain.SessionEvent
+}
+
+func (repo *multiMonitoringRepo) ListInactivityCandidates(context.Context, int32) ([]domain.Session, error) {
+	return append([]domain.Session(nil), repo.sessions...), nil
+}
+
+func (repo *multiMonitoringRepo) SaveMonitoring(_ context.Context, session domain.Session, expected int64, events []domain.SessionEvent) error {
+	for index := range repo.sessions {
+		if repo.sessions[index].ID != session.ID {
+			continue
+		}
+		if repo.sessions[index].Version != expected || session.Version != expected+1 {
+			return domain.ErrConflict
+		}
+		repo.sessions[index] = session
+		repo.events = append(repo.events, events...)
+		return nil
+	}
+	return domain.ErrNotFound
 }
 
 type monitoringRunner struct{ status ports.MonitoringCommandStatus }
@@ -66,6 +91,7 @@ func TestMaximumDurationWarningRetriesFailedEnqueue(t *testing.T) {
 	session := runningMonitoringSession(t, now)
 	session.MaximumDuration.StartedAt = now.Add(-23 * time.Hour)
 	session.MaximumDuration.DeadlineAt = now.Add(45 * time.Minute)
+	session.MaximumDuration.Seconds = int64(session.MaximumDuration.DeadlineAt.Sub(session.MaximumDuration.StartedAt) / time.Second)
 	repo := &monitoringRepo{session: session}
 	warnings := &durationNotifications{err: errors.New("queue unavailable")}
 	service, err := NewService(repo, monitoringRunner{}, warnings, &monitoringIDs{}, monitoringClock{now})
@@ -101,11 +127,40 @@ func TestMaximumDurationWarningRetriesFailedEnqueue(t *testing.T) {
 	}
 }
 
+func TestRunContinuesAfterOneSessionFails(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	warning := runningMonitoringSession(t, now)
+	warning.ID, warning.Slug = "warning-session", "warning-session"
+	warning.MaximumDuration.StartedAt = now.Add(-23 * time.Hour)
+	warning.MaximumDuration.DeadlineAt = now.Add(45 * time.Minute)
+	warning.MaximumDuration.Seconds = int64(warning.MaximumDuration.DeadlineAt.Sub(warning.MaximumDuration.StartedAt) / time.Second)
+	expired := runningMonitoringSession(t, now)
+	expired.ID, expired.Slug = "expired-session", "expired-session"
+	expired.DesiredState, expired.ObservedState, expired.LifecycleState, expired.HealthStatus = domain.StateSleeping, domain.StateSleeping, domain.StateSleeping, domain.HealthStopped
+	expired.SleepingSince = now.Add(-time.Hour)
+	expired.MaximumDuration.StartedAt = now.Add(-24 * time.Hour)
+	expired.MaximumDuration.DeadlineAt = now
+	repo := &multiMonitoringRepo{sessions: []domain.Session{warning, expired}}
+	commands := &monitoringCommands{}
+	service, err := NewService(repo, monitoringRunner{}, &durationNotifications{err: errors.New("queue unavailable")}, &monitoringIDs{}, monitoringClock{now}, WithCommandQueue(commands))
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := service.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), warning.ID) {
+		t.Fatalf("run error = %v", err)
+	}
+	if completed != 1 || len(commands.commands) != 1 || commands.commands[0].SessionID != expired.ID || commands.commands[0].CommandType != domain.CommandArchiveSession {
+		t.Fatalf("completed=%d commands=%#v", completed, commands.commands)
+	}
+}
+
 func TestMaximumDurationWarningIsBoundedAndDeadlineQueuesSleep(t *testing.T) {
 	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
 	session := runningMonitoringSession(t, now)
 	session.MaximumDuration.StartedAt = now.Add(-23 * time.Hour)
 	session.MaximumDuration.DeadlineAt = now.Add(45 * time.Minute)
+	session.MaximumDuration.Seconds = int64(session.MaximumDuration.DeadlineAt.Sub(session.MaximumDuration.StartedAt) / time.Second)
 	repo := &monitoringRepo{session: session}
 	warnings := &durationNotifications{}
 	commands := &monitoringCommands{}
@@ -142,6 +197,7 @@ func TestMaximumDurationWarningsAdvanceAndResetOnlyForNewDeadline(t *testing.T) 
 	session := runningMonitoringSession(t, now)
 	session.MaximumDuration.StartedAt = now.Add(-23 * time.Hour)
 	session.MaximumDuration.DeadlineAt = now.Add(45 * time.Minute)
+	session.MaximumDuration.Seconds = int64(session.MaximumDuration.DeadlineAt.Sub(session.MaximumDuration.StartedAt) / time.Second)
 	repo := &monitoringRepo{session: session}
 	warnings := &durationNotifications{}
 	service, err := NewService(repo, monitoringRunner{}, warnings, &monitoringIDs{}, monitoringClock{now})
@@ -167,6 +223,7 @@ func TestMaximumDurationWarningsAdvanceAndResetOnlyForNewDeadline(t *testing.T) 
 		t.Fatalf("duration warnings = %d, levels = %d/%d", len(requests), repo.session.MaximumDurationWarningLevel, repo.session.MaximumDurationWarningQueuedLevel)
 	}
 	repo.session.MaximumDuration.DeadlineAt = now.Add(60 * time.Minute)
+	repo.session.MaximumDuration.Seconds = int64(repo.session.MaximumDuration.DeadlineAt.Sub(repo.session.MaximumDuration.StartedAt) / time.Second)
 	service.clock = monitoringClock{now.Add(40 * time.Minute)}
 	if _, err := service.Run(context.Background()); err != nil {
 		t.Fatal(err)

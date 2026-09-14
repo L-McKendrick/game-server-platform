@@ -57,6 +57,12 @@ func TestAdminDurationConfigurationAndExtensionAreAuditedAndReplaySafe(t *testin
 		t.Fatal(err)
 	}
 	extend := DurationCommand{Actor: testActor("admin"), GuildID: "guild", SessionID: session.ID, CorrelationID: "extend-correlation", IdempotencyKey: "extend-key", Reason: "event delay", IsAdministrator: true, ExtensionSeconds: 3600}
+	invalidExtend := extend
+	invalidExtend.IdempotencyKey = "invalid-extend-key"
+	invalidExtend.ExtensionSeconds = 5400
+	if _, err := service.ExtendMaximumDuration(context.Background(), invalidExtend); err == nil {
+		t.Fatal("fractional-hour extension was accepted")
+	}
 	first, err := service.ExtendMaximumDuration(context.Background(), extend)
 	if err != nil {
 		t.Fatal(err)
@@ -67,5 +73,8 @@ func TestAdminDurationConfigurationAndExtensionAreAuditedAndReplaySafe(t *testin
 	}
 	if len(repo.Events(session.ID)) != 4 || repo.Events(session.ID)[3].Type != domain.EventMaximumDurationExtended {
 		t.Fatal("missing extension audit")
+	}
+	if first.MaximumDuration.Seconds != 3*3600 || repo.Events(session.ID)[3].Data["previous_seconds"] != "7200" || repo.Events(session.ID)[3].Data["seconds"] != "10800" {
+		t.Fatalf("extended duration or audit is inconsistent: session=%#v event=%#v", first.MaximumDuration, repo.Events(session.ID)[3])
 	}
 }
