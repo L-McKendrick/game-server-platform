@@ -39,11 +39,8 @@ func (repository *SessionRepository) ListInactivityCandidates(ctx context.Contex
 	defer repository.mu.RUnlock()
 	result := []domain.Session{}
 	for _, session := range repository.sessions {
-		if session.LifecycleState == domain.StateRunning || session.LifecycleState == domain.StateSleeping {
+		if session.LifecycleState == domain.StateRunning || session.LifecycleState == domain.StateIdle || session.LifecycleState == domain.StateSleeping || session.LifecycleState == domain.StateFailed {
 			result = append(result, session)
-			if int32(len(result)) >= limit {
-				break
-			}
 		}
 	}
 	return result, nil

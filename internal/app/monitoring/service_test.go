@@ -48,6 +48,188 @@ type monitoringCommands struct {
 	err      error
 }
 
+type durationNotifications struct {
+	requests []domain.NotificationRequest
+	err      error
+}
+
+func (queue *durationNotifications) Enqueue(_ context.Context, request domain.NotificationRequest) error {
+	if queue.err != nil {
+		return queue.err
+	}
+	queue.requests = append(queue.requests, request)
+	return nil
+}
+
+func TestMaximumDurationWarningRetriesFailedEnqueue(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	session := runningMonitoringSession(t, now)
+	session.MaximumDuration.StartedAt = now.Add(-23 * time.Hour)
+	session.MaximumDuration.DeadlineAt = now.Add(45 * time.Minute)
+	repo := &monitoringRepo{session: session}
+	warnings := &durationNotifications{err: errors.New("queue unavailable")}
+	service, err := NewService(repo, monitoringRunner{}, warnings, &monitoringIDs{}, monitoringClock{now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background()); err == nil {
+		t.Fatal("expected enqueue failure")
+	}
+	if repo.session.MaximumDurationWarningLevel != 1 || repo.session.MaximumDurationWarningQueuedLevel != 0 || len(repo.events) != 1 {
+		t.Fatalf("pending warning = %#v, events = %#v", repo.session, repo.events)
+	}
+	warnings.err = nil
+	if _, err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	durationCount, eventCount := 0, 0
+	for _, request := range warnings.requests {
+		if request.Kind == domain.NotificationSessionDuration {
+			durationCount++
+		}
+	}
+	for _, event := range repo.events {
+		if event.Type == domain.EventMaximumDurationWarning {
+			eventCount++
+		}
+	}
+	if durationCount != 1 || repo.session.MaximumDurationWarningQueuedLevel != 1 || eventCount != 1 {
+		t.Fatalf("duration warnings = %d, queued level = %d, duration events = %d", durationCount, repo.session.MaximumDurationWarningQueuedLevel, eventCount)
+	}
+}
+
+func TestMaximumDurationWarningIsBoundedAndDeadlineQueuesSleep(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	session := runningMonitoringSession(t, now)
+	session.MaximumDuration.StartedAt = now.Add(-23 * time.Hour)
+	session.MaximumDuration.DeadlineAt = now.Add(45 * time.Minute)
+	repo := &monitoringRepo{session: session}
+	warnings := &durationNotifications{}
+	commands := &monitoringCommands{}
+	service, err := NewService(repo, monitoringRunner{status: ports.MonitoringCommandStatus{Status: "Success", Observation: domain.HealthObservation{ArmaService: true, ArmaUDP: true}}}, warnings, &monitoringIDs{}, monitoringClock{now}, WithCommandQueue(commands))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings.requests) != 1 || warnings.requests[0].Kind != domain.NotificationSessionDuration || len(warnings.requests[0].AllowedUserIDs) != 1 || warnings.requests[0].AllowedUserIDs[0] != session.OwnerDiscordUserID {
+		t.Fatalf("warnings = %#v", warnings.requests)
+	}
+	if repo.session.MaximumDurationWarningLevel != 1 {
+		t.Fatalf("warning marker = %#v", repo.session)
+	}
+	service.clock = monitoringClock{now.Add(time.Hour)}
+	if _, err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(commands.commands) != 1 || commands.commands[0].CommandType != domain.CommandSleepSession {
+		t.Fatalf("deadline commands = %#v", commands.commands)
+	}
+	if err := domain.ValidateAutomaticSleepCommand(commands.commands[0], repo.session, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMaximumDurationWarningsAdvanceAndResetOnlyForNewDeadline(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	session := runningMonitoringSession(t, now)
+	session.MaximumDuration.StartedAt = now.Add(-23 * time.Hour)
+	session.MaximumDuration.DeadlineAt = now.Add(45 * time.Minute)
+	repo := &monitoringRepo{session: session}
+	warnings := &durationNotifications{}
+	service, err := NewService(repo, monitoringRunner{}, warnings, &monitoringIDs{}, monitoringClock{now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range []time.Time{now, now.Add(31 * time.Minute), now.Add(31 * time.Minute)} {
+		service.clock = monitoringClock{at}
+		if _, err := service.Run(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	durationWarnings := func() []domain.NotificationRequest {
+		var result []domain.NotificationRequest
+		for _, request := range warnings.requests {
+			if request.Kind == domain.NotificationSessionDuration {
+				result = append(result, request)
+			}
+		}
+		return result
+	}
+	if requests := durationWarnings(); len(requests) != 2 || repo.session.MaximumDurationWarningLevel != 2 || repo.session.MaximumDurationWarningQueuedLevel != 2 || requests[0].NotificationID == requests[1].NotificationID {
+		t.Fatalf("duration warnings = %d, levels = %d/%d", len(requests), repo.session.MaximumDurationWarningLevel, repo.session.MaximumDurationWarningQueuedLevel)
+	}
+	repo.session.MaximumDuration.DeadlineAt = now.Add(60 * time.Minute)
+	service.clock = monitoringClock{now.Add(40 * time.Minute)}
+	if _, err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(durationWarnings()) != 3 || repo.session.MaximumDurationWarningLevel != 1 || repo.session.MaximumDurationWarningQueuedLevel != 1 {
+		t.Fatalf("extension duration warnings = %d, levels = %d/%d", len(durationWarnings()), repo.session.MaximumDurationWarningLevel, repo.session.MaximumDurationWarningQueuedLevel)
+	}
+}
+
+func TestFailedDurationDeadlineAlertsWithoutLaunchingUnverifiedCleanup(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	session := runningMonitoringSession(t, now)
+	session.DesiredState, session.ObservedState, session.LifecycleState = domain.StateFailed, domain.StateFailed, domain.StateFailed
+	session.MaximumDuration.StartedAt = now.Add(-24 * time.Hour)
+	session.MaximumDuration.DeadlineAt = now
+	repo := &monitoringRepo{session: session}
+	warnings := &durationNotifications{}
+	commands := &monitoringCommands{}
+	service, err := NewService(repo, monitoringRunner{}, warnings, &monitoringIDs{}, monitoringClock{now}, WithCommandQueue(commands))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings.requests) != 1 || repo.session.MaximumDurationWarningLevel != 3 || len(commands.commands) != 0 {
+		t.Fatalf("warnings=%#v commands=%#v", warnings.requests, commands.commands)
+	}
+}
+
+func TestFailedInitialCreationDeadlineQueuesExistingTerminationWorkflow(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	session := runningMonitoringSession(t, now)
+	session.DesiredState, session.ObservedState, session.LifecycleState = domain.StateRunning, domain.StateFailed, domain.StateFailed
+	session.MaximumDuration.StartedAt = now.Add(-24 * time.Hour)
+	session.MaximumDuration.DeadlineAt = now
+	session.Progress = domain.SessionProgress{WorkflowID: "bootstrap", WorkflowType: domain.BootstrapWorkflowType, Milestone: domain.ProgressFailed, State: domain.ProgressActionRequired, StartedAt: now.Add(-time.Hour), LastProgressAt: now}
+	var err error
+	session.Failure, err = domain.NewFailureRecord(domain.FailureRecordInput{Code: "ERR_BOOTSTRAP_FAILED", Stage: "Setup", RetryDisposition: domain.RetryNotScheduled, ResourceImpact: domain.ResourceCostRetained, Detail: "Setup failed", FailedAt: now, SupportReference: "ref_123456"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &monitoringRepo{session: session}
+	alerts := &durationNotifications{}
+	commands := &monitoringCommands{}
+	service, err := NewService(repo, monitoringRunner{}, alerts, &monitoringIDs{}, monitoringClock{now}, WithCommandQueue(commands))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(commands.commands) != 1 || commands.commands[0].CommandType != domain.CommandDestroySession || len(alerts.requests) != 0 {
+		t.Fatalf("commands=%#v alerts=%#v", commands.commands, alerts.requests)
+	}
+	if err := domain.ValidateAutomaticTerminationCommand(commands.commands[0], session, now); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func (queue *monitoringCommands) Enqueue(_ context.Context, command domain.CommandEnvelope) error {
 	queue.commands = append(queue.commands, command)
 	return queue.err

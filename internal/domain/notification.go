@@ -97,10 +97,11 @@ func (reference SessionCardReference) Validate() error {
 }
 
 const (
-	NotificationMessage        NotificationKind = ""
-	NotificationSessionCard    NotificationKind = "SESSION_CARD"
-	NotificationSessionModlist NotificationKind = "SESSION_MODLIST"
-	NotificationSessionReady   NotificationKind = "SESSION_READY"
+	NotificationMessage         NotificationKind = ""
+	NotificationSessionCard     NotificationKind = "SESSION_CARD"
+	NotificationSessionModlist  NotificationKind = "SESSION_MODLIST"
+	NotificationSessionReady    NotificationKind = "SESSION_READY"
+	NotificationSessionDuration NotificationKind = "SESSION_DURATION"
 )
 
 type NotificationAttachment struct {
@@ -208,12 +209,12 @@ func (request NotificationRequest) Validate() error {
 		return fmt.Errorf("notification channel ID is required")
 	case strings.TrimSpace(request.Content) == "" || len(request.Content) > 1900:
 		return fmt.Errorf("notification content must contain 1 to 1900 characters")
-	case request.Kind != NotificationMessage && request.Kind != NotificationSessionCard && request.Kind != NotificationSessionModlist && request.Kind != NotificationSessionReady:
+	case request.Kind != NotificationMessage && request.Kind != NotificationSessionCard && request.Kind != NotificationSessionModlist && request.Kind != NotificationSessionReady && request.Kind != NotificationSessionDuration:
 		return fmt.Errorf("unsupported notification kind %q", request.Kind)
-	case request.Kind == NotificationSessionReady && (len(request.AllowedUserIDs) != 1 || strings.TrimSpace(request.AllowedUserIDs[0]) == ""):
-		return fmt.Errorf("session-ready notification must allow exactly one user mention")
-	case request.Kind != NotificationSessionReady && len(request.AllowedUserIDs) != 0:
-		return fmt.Errorf("allowed user mentions are only valid for session-ready notifications")
+	case (request.Kind == NotificationSessionReady || request.Kind == NotificationSessionDuration) && (len(request.AllowedUserIDs) != 1 || strings.TrimSpace(request.AllowedUserIDs[0]) == ""):
+		return fmt.Errorf("owner notification must allow exactly one user mention")
+	case request.Kind != NotificationSessionReady && request.Kind != NotificationSessionDuration && len(request.AllowedUserIDs) != 0:
+		return fmt.Errorf("allowed user mentions are only valid for owner notifications")
 	case request.CardRevision < 0:
 		return fmt.Errorf("card revision cannot be negative")
 	case request.Kind != NotificationSessionCard && request.CardRevision != 0:

@@ -66,7 +66,7 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 	if err != nil {
 		return domain.Workflow{}, err
 	}
-	trustedAutomation := command.Actor.System && command.Actor.DiscordUserID == domain.InactivityMonitorActorID && (workflowType == domain.SleepWorkflowType || workflowType == domain.ArchiveWorkflowType)
+	trustedAutomation := command.Actor.System && command.Actor.DiscordUserID == domain.InactivityMonitorActorID && (workflowType == domain.SleepWorkflowType || workflowType == domain.ArchiveWorkflowType || workflowType == domain.TerminationWorkflowType)
 	canManageLifecycle := command.Actor.CanManageGuild && isOwnerOrAdminLifecycle(workflowType)
 	if !trustedContinuation && !trustedAutomation && !canManageLifecycle {
 		if err := service.authorizer.Authorize(
@@ -98,12 +98,17 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 		return domain.Workflow{}, domain.ErrForbidden
 	}
 	now := service.clock.Now().UTC()
+	if session.MaximumDuration.Expired(now) && workflowType != domain.SleepWorkflowType && workflowType != domain.ArchiveWorkflowType && workflowType != domain.TerminationWorkflowType {
+		return domain.Workflow{}, fmt.Errorf("maximum session duration has expired: %w", domain.ErrInvalidTransition)
+	}
 	if trustedAutomation {
 		var automationErr error
 		if workflowType == domain.SleepWorkflowType {
 			automationErr = domain.ValidateAutomaticSleepCommand(command, session, now)
-		} else {
+		} else if workflowType == domain.ArchiveWorkflowType {
 			automationErr = domain.ValidateAutomaticArchiveCommand(command, session, now)
+		} else {
+			automationErr = domain.ValidateAutomaticTerminationCommand(command, session, now)
 		}
 		if automationErr != nil {
 			return domain.Workflow{}, automationErr
@@ -118,6 +123,11 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 	}
 	if err := acquireWorkflowLock(&session, workflowID, workflowType, service.lease, now); err != nil {
 		return domain.Workflow{}, err
+	}
+	if workflowType == domain.ProvisionWorkflowType {
+		if err := session.MaximumDuration.Start(now); err != nil {
+			return domain.Workflow{}, err
+		}
 	}
 	workflow := domain.Workflow{
 		ID: workflowID, SessionID: session.ID, Type: workflowType, Status: domain.WorkflowPending,

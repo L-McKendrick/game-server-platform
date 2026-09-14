@@ -2214,7 +2214,7 @@ func TestHandlerAdministratorResetFlowIsTypedReplaySafeAndFreezesSessionCommands
 	menuResponse := executeSignedRequest(t, handler, privateKey, adminMenuCommandBody("reset-menu", "admin-1", "8"), testNow)
 	var menu interactionResponse
 	decodeResponse(t, menuResponse, &menu)
-	if menu.Data == nil || menu.Data.Components == nil || len((*menu.Data.Components)[0].Components[0].Options) != 5 {
+	if menu.Data == nil || menu.Data.Components == nil || len((*menu.Data.Components)[0].Components[0].Options) != 6 {
 		t.Fatalf("Administrator menu = %#v", menu)
 	}
 
@@ -2257,6 +2257,46 @@ func TestHandlerAdministratorResetFlowIsTypedReplaySafeAndFreezesSessionCommands
 	decodeResponse(t, listResponse, &list)
 	if list.Data == nil || !strings.Contains(list.Data.Content, "reset is in progress") || !strings.Contains(list.Data.Content, "No session operation was queued") {
 		t.Fatalf("command during reset = %#v", list)
+	}
+}
+
+func TestAdminMaximumDurationModalRequiresAdministratorAndAuditsOnce(t *testing.T) {
+	handler, repository, privateKey := newTestHandler(t, []string{"duration-open", "duration-submit", "duration-replay"}, []string{"duration-event"})
+	seedAutocompleteSession(t, repository, "duration-session", "Duration", "duration", "owner-1", "guild-1")
+	denied := executeSignedRequest(t, handler, privateKey, adminComponentBody("duration-denied", "manager-1", "32", adminDurationConfigureID, componentTypeButton, nil), testNow)
+	var deniedResponse interactionResponse
+	decodeResponse(t, denied, &deniedResponse)
+	if deniedResponse.Type == interactionResponseModal {
+		t.Fatal("Manage Server member opened protected duration modal")
+	}
+	opened := executeSignedRequest(t, handler, privateKey, adminComponentBody("duration-open-id", "admin-1", "8", adminDurationConfigureID, componentTypeButton, nil), testNow)
+	var modal interactionResponse
+	decodeResponse(t, opened, &modal)
+	if modal.Type != interactionResponseModal || modal.Data == nil || modal.Data.CustomID != adminDurationConfigureID {
+		t.Fatalf("modal = %#v", modal)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"id": "duration-submit-id", "application_id": "app-1", "type": interactionTypeModalSubmit, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "admin-1"}, "permissions": "8"},
+		"data": map[string]any{"custom_id": adminDurationConfigureID, "components": []any{
+			map[string]any{"type": componentTypeActionRow, "components": []any{map[string]any{"type": componentTypeTextInput, "custom_id": adminDurationSessionID, "value": "duration"}}},
+			map[string]any{"type": componentTypeActionRow, "components": []any{map[string]any{"type": componentTypeTextInput, "custom_id": adminDurationHoursID, "value": "2"}}},
+			map[string]any{"type": componentTypeActionRow, "components": []any{map[string]any{"type": componentTypeTextInput, "custom_id": adminDurationReasonID, "value": "planned event"}}},
+		}},
+	})
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	var result interactionResponse
+	decodeResponse(t, response, &result)
+	if result.Data == nil || !strings.Contains(result.Data.Content, "Maximum duration updated") || result.Data.Flags&messageFlagEphemeral == 0 {
+		t.Fatalf("result = %#v, data = %#v", result, result.Data)
+	}
+	if len(repository.Events("duration-session")) != 2 || repository.Events("duration-session")[1].Type != domain.EventMaximumDurationConfigured {
+		t.Fatal("missing duration event")
+	}
+	response = executeSignedRequest(t, handler, privateKey, body, testNow)
+	decodeResponse(t, response, &result)
+	if len(repository.Events("duration-session")) != 2 {
+		t.Fatal("replay created another event")
 	}
 }
 

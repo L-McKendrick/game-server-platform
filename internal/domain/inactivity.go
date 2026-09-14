@@ -15,6 +15,7 @@ const (
 	InactivityMonitorActorID        = "inactivity-monitor"
 	AutomaticIdleSinceParameter     = "automatic_idle_since"
 	AutomaticSleepingSinceParameter = "automatic_sleeping_since"
+	MaximumDeadlineParameter        = "maximum_duration_deadline"
 )
 
 // PlayerActivityObservation is a bounded point-in-time player count. Known is
@@ -41,6 +42,9 @@ func AutomaticArchiveCommandID(sessionID string, sleepingSince time.Time) string
 func ValidateAutomaticArchiveCommand(command CommandEnvelope, session Session, now time.Time) error {
 	if !command.Actor.System || command.Actor.DiscordUserID != InactivityMonitorActorID || command.CommandType != CommandArchiveSession {
 		return ErrForbidden
+	}
+	if command.Parameters[MaximumDeadlineParameter] != "" {
+		return validateMaximumDeadlineCommand(command, session, now, CommandArchiveSession)
 	}
 	sleepingSince, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(command.Parameters[AutomaticSleepingSinceParameter]))
 	if err != nil || !sleepingSince.Equal(session.SleepingSince) || command.CommandID != AutomaticArchiveCommandID(session.ID, sleepingSince) ||
@@ -71,6 +75,9 @@ func ValidateAutomaticSleepCommand(command CommandEnvelope, session Session, now
 	if !command.Actor.System || command.Actor.DiscordUserID != InactivityMonitorActorID || command.CommandType != CommandSleepSession {
 		return ErrForbidden
 	}
+	if command.Parameters[MaximumDeadlineParameter] != "" {
+		return validateMaximumDeadlineCommand(command, session, now, CommandSleepSession)
+	}
 	idleSince, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(command.Parameters[AutomaticIdleSinceParameter]))
 	if err != nil || !idleSince.Equal(session.IdleSince) || command.CommandID != AutomaticSleepCommandID(session.ID, idleSince) ||
 		command.IdempotencyKey != "automatic-sleep:"+command.CommandID || command.CorrelationID != command.CommandID {
@@ -80,6 +87,55 @@ func ValidateAutomaticSleepCommand(command CommandEnvelope, session Session, now
 		return fmt.Errorf("automatic sleep is no longer due: %w", ErrInvalidTransition)
 	}
 	return nil
+}
+
+func (session Session) MaximumDeadlineAction(now time.Time) string {
+	if !session.MaximumDuration.Expired(now) || session.ActiveWorkflowID != "" {
+		return ""
+	}
+	switch session.LifecycleState {
+	case StateRunning, StateIdle:
+		if session.Infrastructure.InstanceID != "" {
+			return CommandSleepSession
+		}
+	case StateSleeping:
+		if session.Infrastructure.InstanceID != "" && session.Infrastructure.DataVolumeID != "" {
+			return CommandArchiveSession
+		}
+	case StateFailed:
+		if session.FailedInitialCreation() {
+			return CommandDestroySession
+		}
+	}
+	return ""
+}
+
+// FailedInitialCreation deliberately excludes failed wake, restore, restart,
+// archive, and prior termination attempts. Those states can contain valuable
+// durable data and need an operator decision rather than automatic deletion.
+func (session Session) FailedInitialCreation() bool {
+	return session.LifecycleState == StateFailed && !session.Failure.Empty() && session.Archive.Empty() &&
+		(session.Progress.WorkflowType == ProvisionWorkflowType || session.Progress.WorkflowType == BootstrapWorkflowType)
+}
+
+func MaximumDeadlineCommandID(sessionID string, deadline time.Time, commandType string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + deadline.UTC().Format(time.RFC3339Nano) + "\x00" + commandType))
+	return "max-duration-" + hex.EncodeToString(sum[:])[:22]
+}
+
+func validateMaximumDeadlineCommand(command CommandEnvelope, session Session, now time.Time, commandType string) error {
+	deadline, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(command.Parameters[MaximumDeadlineParameter]))
+	if err != nil || !deadline.Equal(session.MaximumDuration.DeadlineAt) || session.MaximumDeadlineAction(now) != commandType || command.CommandType != commandType || command.CommandID != MaximumDeadlineCommandID(session.ID, deadline, commandType) || command.IdempotencyKey != "maximum-duration:"+command.CommandID || command.CorrelationID != command.CommandID {
+		return ErrIdempotencyConflict
+	}
+	return nil
+}
+
+func ValidateAutomaticTerminationCommand(command CommandEnvelope, session Session, now time.Time) error {
+	if !command.Actor.System || command.Actor.DiscordUserID != InactivityMonitorActorID || command.CommandType != CommandDestroySession {
+		return ErrForbidden
+	}
+	return validateMaximumDeadlineCommand(command, session, now, CommandDestroySession)
 }
 
 // RecordPlayerActivity updates the durable evidence used by inactivity policy.

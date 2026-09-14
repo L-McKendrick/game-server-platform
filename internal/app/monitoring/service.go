@@ -51,8 +51,35 @@ func (service *Service) Run(ctx context.Context) (int, error) {
 	}
 	completed := 0
 	for _, session := range sessions {
+		if session.LifecycleState == domain.StateFailed {
+			if session.FailedInitialCreation() {
+				if warned, warningErr := service.warnIfDue(ctx, session); warningErr != nil {
+					return completed, warningErr
+				} else {
+					session = warned
+				}
+			}
+			var actionErr error
+			if action := session.MaximumDeadlineAction(service.clock.Now().UTC()); action == domain.CommandDestroySession {
+				actionErr = service.enforceDeadline(ctx, session, action)
+			} else {
+				actionErr = service.alertFailedDeadline(ctx, session)
+			}
+			if actionErr != nil {
+				return completed, actionErr
+			}
+			completed++
+			continue
+		}
+		if warned, warningErr := service.warnIfDue(ctx, session); warningErr != nil {
+			return completed, warningErr
+		} else {
+			session = warned
+		}
 		var runErr error
-		if session.LifecycleState == domain.StateSleeping {
+		if action := session.MaximumDeadlineAction(service.clock.Now().UTC()); action != "" {
+			runErr = service.enforceDeadline(ctx, session, action)
+		} else if session.LifecycleState == domain.StateSleeping {
 			runErr = service.archiveIfDue(ctx, session)
 		} else {
 			runErr = service.monitor(ctx, session)
@@ -63,6 +90,92 @@ func (service *Service) Run(ctx context.Context) (int, error) {
 		completed++
 	}
 	return completed, nil
+}
+
+func (service *Service) alertFailedDeadline(ctx context.Context, session domain.Session) error {
+	if service.notifications == nil || !session.MaximumDuration.Expired(service.clock.Now().UTC()) || (session.Infrastructure.InstanceID == "" && session.Infrastructure.DataVolumeID == "") || (session.MaximumDurationWarningDeadline.Equal(session.MaximumDuration.DeadlineAt) && session.MaximumDurationWarningLevel == 3) {
+		return nil
+	}
+	now := service.clock.Now().UTC()
+	deadline := session.MaximumDuration.DeadlineAt
+	id := domain.MaximumDeadlineCommandID(session.ID, deadline, "failed-alert")
+	content := fmt.Sprintf("<@%s> `%s` has reached its maximum duration, but its failed state prevented automatic sleep/archive. Resources may still incur cost. Give the support reference to an operator for safe cleanup.", session.OwnerDiscordUserID, session.Slug)
+	if err := service.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: id, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: content, Kind: domain.NotificationSessionDuration, AllowedUserIDs: []string{session.OwnerDiscordUserID}, CorrelationID: id, RequestedAt: now}); err != nil {
+		return err
+	}
+	expected := session.Version
+	session.MaximumDurationWarningDeadline = deadline
+	session.MaximumDurationWarningLevel = 3
+	session.Version++
+	session.UpdatedAt = now
+	event := domain.SessionEvent{ID: id, SessionID: session.ID, Type: domain.EventMaximumDurationWarning, OccurredAt: now, ActorType: string(domain.ActorTypeSystem), ActorID: domain.InactivityMonitorActorID, CorrelationID: id, Data: map[string]string{"deadline": deadline.Format(time.RFC3339Nano), "level": "failed-attention"}}
+	return service.repo.SaveMonitoring(ctx, session, expected, []domain.SessionEvent{event})
+}
+
+func (service *Service) warnIfDue(ctx context.Context, session domain.Session) (domain.Session, error) {
+	now := service.clock.Now().UTC()
+	deadline := session.MaximumDuration.DeadlineAt
+	if deadline.IsZero() || !deadline.After(now) || service.notifications == nil {
+		return session, nil
+	}
+	if session.LifecycleState != domain.StateRunning && session.LifecycleState != domain.StateIdle && session.LifecycleState != domain.StateSleeping && !session.FailedInitialCreation() {
+		return session, nil
+	}
+	remaining := deadline.Sub(now)
+	level := 0
+	if remaining <= time.Hour {
+		level = 1
+	}
+	if remaining <= 15*time.Minute {
+		level = 2
+	}
+	if level == 0 || (session.MaximumDurationWarningDeadline.Equal(deadline) && session.MaximumDurationWarningQueuedLevel >= level) {
+		return session, nil
+	}
+	if !session.MaximumDurationWarningDeadline.Equal(deadline) || session.MaximumDurationWarningLevel < level {
+		previous := session.Version
+		session.MaximumDurationWarningDeadline = deadline
+		session.MaximumDurationWarningLevel = level
+		session.MaximumDurationWarningQueuedLevel = 0
+		session.Version++
+		session.UpdatedAt = now
+		eventID := domain.MaximumDeadlineCommandID(session.ID, deadline, fmt.Sprintf("warning-%d", level))
+		event := domain.SessionEvent{ID: eventID, SessionID: session.ID, Type: domain.EventMaximumDurationWarning, OccurredAt: now, ActorType: string(domain.ActorTypeSystem), ActorID: domain.InactivityMonitorActorID, CorrelationID: eventID, Data: map[string]string{"deadline": deadline.Format(time.RFC3339Nano), "level": fmt.Sprintf("%d", level)}}
+		if err := service.repo.SaveMonitoring(ctx, session, previous, []domain.SessionEvent{event}); err != nil {
+			return session, err
+		}
+	}
+	eventID := domain.MaximumDeadlineCommandID(session.ID, deadline, fmt.Sprintf("warning-%d", level))
+	content := fmt.Sprintf("<@%s> `%s` reaches its maximum duration at <t:%d:F>. The platform will sleep and archive it automatically; contact an administrator before then if you need an extension.", session.OwnerDiscordUserID, session.Slug, deadline.Unix())
+	if session.FailedInitialCreation() {
+		content = fmt.Sprintf("<@%s> `%s` did not finish initial setup. Its retained resources and session files will be permanently deleted at <t:%d:F> unless an administrator extends the deadline. Save anything you need before then.", session.OwnerDiscordUserID, session.Slug, deadline.Unix())
+	}
+	request := domain.NotificationRequest{SchemaVersion: 1, NotificationID: eventID, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: content, Kind: domain.NotificationSessionDuration, AllowedUserIDs: []string{session.OwnerDiscordUserID}, CorrelationID: eventID, RequestedAt: now}
+	if err := service.notifications.Enqueue(ctx, request); err != nil {
+		return session, fmt.Errorf("enqueue maximum-duration warning: %w", err)
+	}
+	previous := session.Version
+	session.MaximumDurationWarningQueuedLevel = level
+	session.Version++
+	session.UpdatedAt = now
+	if err := service.repo.SaveMonitoring(ctx, session, previous, nil); err != nil {
+		return session, err
+	}
+	return session, nil
+}
+
+func (service *Service) enforceDeadline(ctx context.Context, session domain.Session, action string) error {
+	if service.commands == nil {
+		return fmt.Errorf("maximum-duration enforcement command queue is required")
+	}
+	now := service.clock.Now().UTC()
+	commandID := domain.MaximumDeadlineCommandID(session.ID, session.MaximumDuration.DeadlineAt, action)
+	return service.commands.Enqueue(ctx, domain.CommandEnvelope{
+		SchemaVersion: 1, CommandID: commandID, CommandType: action, RequestedAt: now,
+		Actor:     domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true},
+		SessionID: session.ID, IdempotencyKey: "maximum-duration:" + commandID, CorrelationID: commandID,
+		Parameters: map[string]string{domain.MaximumDeadlineParameter: session.MaximumDuration.DeadlineAt.UTC().Format(time.RFC3339Nano)},
+	})
 }
 
 func (service *Service) archiveIfDue(ctx context.Context, session domain.Session) error {

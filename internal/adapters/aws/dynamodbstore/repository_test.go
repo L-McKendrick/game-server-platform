@@ -34,6 +34,58 @@ type fakeAPI struct {
 	putItemInput       *dynamodb.PutItemInput
 }
 
+func TestMaximumDurationPersistenceAndLegacyDefault(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC)
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner", GuildID: "guild", ChannelID: "channel"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.MaximumDuration.StartedAt = now
+	session.MaximumDuration.DeadlineAt = now.Add(24 * time.Hour)
+	session.MaximumDurationWarningDeadline = session.MaximumDuration.DeadlineAt
+	session.MaximumDurationWarningLevel = 2
+	session.MaximumDurationWarningQueuedLevel = 1
+	stored, err := fromSessionItem(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.MaximumDuration != session.MaximumDuration {
+		t.Fatalf("maximum duration round trip = %#v, want %#v", stored.MaximumDuration, session.MaximumDuration)
+	}
+	if stored.MaximumDurationWarningLevel != 2 || stored.MaximumDurationWarningQueuedLevel != 1 {
+		t.Fatalf("warning intent/queue markers did not round trip: %#v", stored)
+	}
+	legacy := toSessionItem(session)
+	legacy.MaximumDurationSeconds = 0
+	legacy.MaximumDurationStartedAt = ""
+	legacy.MaximumDurationDeadlineAt = ""
+	stored, err = fromSessionItem(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.MaximumDuration.EffectiveSeconds() != domain.DefaultMaximumDurationSeconds || !stored.MaximumDuration.StartedAt.IsZero() || !stored.MaximumDuration.DeadlineAt.IsZero() {
+		t.Fatalf("legacy maximum duration = %#v", stored.MaximumDuration)
+	}
+}
+
+func TestListInactivityCandidatesPagesBeyondFirstLimit(t *testing.T) {
+	session := testSession(t, time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC))
+	session.LifecycleState = domain.StateSleeping
+	item, err := attributevalue.MarshalMap(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeAPI{scanOutputs: []*dynamodb.ScanOutput{
+		{LastEvaluatedKey: map[string]types.AttributeValue{"pk": &types.AttributeValueMemberS{Value: "page-1"}}},
+		{Items: []map[string]types.AttributeValue{item}},
+	}}
+	sessions, err := New(client, "metadata-table").ListInactivityCandidates(context.Background(), 25)
+	if err != nil || len(sessions) != 1 || sessions[0].ID != session.ID || client.scanIndex != 2 {
+		t.Fatalf("sessions = %#v, err = %v, pages = %d", sessions, err, client.scanIndex)
+	}
+}
+
 func TestSaveWithEventClassifiesInvalidVersionDeltaAsPersistenceInvariant(t *testing.T) {
 	now := time.Date(2026, 9, 3, 10, 26, 17, 0, time.UTC)
 	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner", GuildID: "guild", ChannelID: "channel"}, now)

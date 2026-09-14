@@ -104,7 +104,14 @@ func renderSessionStatusAt(session domain.Session, players *domain.PlayerStatus,
 	if players != nil {
 		options.PlayersObservedAt = now
 	}
-	return sessioncard.RenderDetailed(sessioncard.Project(session, options))
+	status := sessioncard.RenderDetailed(sessioncard.Project(session, options))
+	duration := fmt.Sprintf("\nMaximum duration: %d hours", session.MaximumDuration.EffectiveSeconds()/3600)
+	if !session.MaximumDuration.DeadlineAt.IsZero() {
+		duration += " · Deadline: " + discordTimestamp(session.MaximumDuration.DeadlineAt)
+	} else {
+		duration += " · Clock starts on first provisioning"
+	}
+	return boundDiscordContent(status + duration)
 }
 
 func formatSessionList(sessions []domain.Session) string {

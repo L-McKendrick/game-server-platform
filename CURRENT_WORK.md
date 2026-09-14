@@ -2,99 +2,77 @@
 
 ## State and Objective
 
-Phase 19.1 development is complete on `codex/phase-19-production-guardrails`.
-Managed game hosts no longer need standing Secrets Manager or Steam-lease
-DynamoDB access. Its Test-58 presigned-GET integration defect is corrected
-locally and awaits deployment. Phase 19.2 maximum-duration guardrails are next;
-Phase 19.3 will close the separately accepted development-stage cross-session
-S3 risk.
+Phase 19.2 is complete on `codex/phase-19-production-guardrails` but is not
+deployed. Phase 19.3 (managed-host S3 isolation) remains before production or
+multi-tenant use. Do not claim a guaranteed AWS spending cap.
 
 ## Current Handoff
 
-- Added a trusted Steam authorization exchange broker used by bootstrap, wake,
-  restart, restore, Workshop synchronization, and reliability recovery paths.
-- Each exchange is bound to the exact session, workflow, workflow type,
-  instance, purpose, source secret version, random 256-bit ID, and expiry.
-  Duplicate work reuses the same active exchange; competing workflows fail the
-  global owner-checked lease.
-- The broker writes cache material only to encrypted non-session S3 exchange
-  objects and passes exact expiring GET/PUT capabilities to the target through
-  SSM. The secret identifier and metadata-table name are no longer present in
-  host command text.
-- The host validates and stages the cache under `/run`, uses username-only
-  SteamCMD login, uploads a bounded update, and scrubs authentication material
-  on every exit path. It no longer calls Secrets Manager or DynamoDB.
-- The broker rejects wrong references, stale source versions, malformed or
-  oversized updates, missing output, and terminal replay conflicts. It
-  preserves `ERR_STEAM_REAUTH_REQUIRED`, serialized promotion, and cleanup.
-- Removed Secrets Manager and DynamoDB authorization from the managed-game
-  bootstrap policy. Exact broker permissions are attached only to the five
-  trusted lifecycle workers. S3 and DynamoDB TTLs backstop abandoned exchange
-  cleanup.
-- Advanced the bootstrap runtime contract to `steam-auth-broker-v2`, so an
-  inconsistent worker/script Terraform rollout fails closed.
-- Corrected the live Test-58 failure: the AWS SDK had made optional
-  `x-amz-checksum-mode` part of the presigned GET signature while the host's
-  plain `curl` consumer did not send that header. The broker now requests
-  response checksums only when required, producing a host-only signature.
-- Added a real AWS presigner regression and stable
-  `ERR_STEAM_EXCHANGE_READ` diagnostics and failure-catalog guidance. Focused
-  broker, bootstrap, all broker worker construction, failure presentation, and
-  Terraform validation pass.
-- Focused broker, bootstrap/script, IAM security-contract, affected command,
-  and Terraform validation passed. Per user direction, the full repository
-  test/coverage, vet, build, packaging verification, and recursive Terraform
-  checks are deferred for streamlined development.
-- Nothing was deployed, registered, or mutated in AWS, Discord, or Steam. No
-  cache rotation is required without evidence of exposure.
+- Persisted 24-hour default, 1–168-hour configured bounds, immutable first
+  provisioning clock, current deadline, and warning marker. Legacy rows remain
+  unstarted on read.
+- Administrator-only `/rb admin` duration modals configure a draft/new session
+  or extend a started deadline (up to seven days from its original start).
+  Mutations require a reason, use versioned idempotent writes, create immutable
+  audit events, and notify only the owner by mention.
+- The existing five-minute monitor pages through all candidates and warns at one hour and fifteen minutes;
+  expired running/idle sessions queue sleep, then sleeping sessions queue
+  archive. Warning intent is durably recorded before enqueue; failed enqueue
+  retries on the next pass using a deterministic notification ID. An ambiguous
+  enqueue success followed by failed acknowledgement can repeat a warning,
+  but cannot silently lose it. The command worker revalidates deadline, state, and lock so stale
+  queued actions fail closed. Expired sessions cannot start or wake.
+- A failed initial provisioning/bootstrap session warns its owner before the
+  deadline and queues the existing termination workflow at expiry. It uses
+  exact deadline/state binding; stale commands, later lifecycle failures, and
+  active workflow locks cannot trigger automatic deletion. Existing verified
+  resource cleanup, capacity release, and retained failure truth are reused.
+  Later-lifecycle failures with retained resources receive operator attention
+  rather than automatic data loss. See `docs/phase-19-maximum-duration.md`.
+- Focused policy, persistence, admin authorization, warning/retry, extension,
+  stale-command, workflow, and state-matrix tests pass. `go test -count=1 ./...`,
+  `go vet ./...`, and `go build ./cmd/...` completed successfully on this host.
+  No AWS mutation, deployment, command registration, or live-session test was
+  performed. See `docs/phase-19-maximum-duration.md` for operator checks.
 
 ## Important Operator Attention
 
-- Deploy the broker, worker packages, bootstrap artifact, lifecycle rule, and
-  IAM removal together through one fresh reviewed Terraform plan. Do not apply
-  only the restrictive host IAM change ahead of the compatible workers and
-  script.
-- Do not retry Test-58 before deploying this correction. Its EC2 instance
-  `i-0c5454e906c2acd41` and EBS volume remain retained and potentially billable;
-  the failed exchange objects and lease were cleaned up correctly.
-- Existing EC2 instance-role credentials may retain the old permissions until
-  AWS expires them. Verify explicit denial after deployment and credential
-  refresh or instance replacement before treating standing access as closed
-  live.
-- Cross-session session-assets access remains intentionally accepted for
-  supervised development only and is tracked by Phase 19.3. Production and
-  multi-tenant use remain blocked until it is closed.
-- The inherited Phase 20 restore correction and Test-56 live acceptance remain
-  pending. Do not recover Test-54.
+- Maximum duration is **not a guaranteed cost cap**. Later-lifecycle failures
+  or incomplete termination can retain billable infrastructure; default action
+  is manual operator inspection and AWS billing alarms.
+- Monitor scans now cover all pages, so very large metadata tables may increase
+  scan work per pass. Default action is to review monitor runtime after deployment.
+- Test-58's retained instance and volume may remain billable. Do not retry it
+  until the Phase 19.1 Steam exchange correction is confirmed deployed.
+- Cross-session managed-host S3 access is an accepted supervised-development
+  risk scheduled for Phase 19.3 before production or multi-tenant use.
 
 ## Commands to Apply Current Changes
 
-Run from the repository root. Package the affected workers and create a new
-saved plan; preserve every existing user-owned plan file.
+No deployment or Discord re-registration has been performed. Command
+definitions did not change, so re-registration is not required. Only after
+separate approval to deploy the reviewed development plan, run from the
+repository root:
 
 ```powershell
-$env:AWS_PROFILE = "game-server-dev"
-$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$steamBrokerPlan = "phase19-steam-broker-get-fix-$timestamp.tfplan"
 ./scripts/package-discord-lambda.ps1
-terraform -chdir=infra/terraform/environments/dev plan "-out=$steamBrokerPlan"
-terraform -chdir=infra/terraform/environments/dev show $steamBrokerPlan
+aws login --profile game-server-dev --region us-west-2
+$env:AWS_PROFILE = "game-server-dev"
+$env:AWS_REGION = "us-west-2"
+$env:AWS_EC2_METADATA_DISABLED = "true"
+aws sts get-caller-identity
+terraform -chdir=infra/terraform/environments/dev init -backend-config=backend.hcl -input=false
+terraform -chdir=infra/terraform/environments/dev plan -out=phase-19-2-maximum-duration.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-19-2-maximum-duration.tfplan
 ```
 
-Confirm the plan updates the bootstrap artifact and the artifact, bootstrap,
-sleep/wake, restore, and reliability workers, and sets the bootstrap runtime
-contract to `steam-auth-broker-v2`. After approving that exact plan, in the
-same PowerShell session:
+Review the fresh plan for intended Lambda/package changes, especially
+Discord interactions, monitor, command, and notification workers; stop for
+unexpected replacement, deletion, budget/provisioning drift, or sensitive
+output. Apply **only that exact reviewed plan** after approval:
 
 ```powershell
-terraform -chdir=infra/terraform/environments/dev apply $steamBrokerPlan
-aws iam get-role-policy --role-name game-server-platform-dev-game-instance --policy-name bootstrap-secrets --query PolicyDocument --output json
-aws s3api get-bucket-lifecycle-configuration --bucket game-server-platform-dev-assets-622211271532-us-west-2 --region us-west-2 --output json
-./scripts/verify-bootstrap-worker-deployment.ps1
+terraform -chdir=infra/terraform/environments/dev apply phase-19-2-maximum-duration.tfplan
 ```
 
-No Discord command registration is required. After deployment, run one
-controlled retry of Test-58 and one replay-capable wake/restart path.
-Confirm successful Steam download, exchange-object cleanup, cache promotion or
-unchanged completion, lease release, redacted logs, and explicit host denial
-for Secrets Manager and the `STEAM_AUTH#CACHE` DynamoDB item.
+Then perform the operator checks in `docs/phase-19-maximum-duration.md`.

@@ -783,12 +783,25 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 	if payload.Data == nil {
 		return newUserError("This administration control is invalid or has expired.")
 	}
-	if handler.reset != nil && (payload.Data.CustomID == adminRoleSelectCustomID || payload.Data.CustomID == adminRepairSelectCustomID || payload.Data.CustomID == adminPublicCardChannelCustomID || strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix)) {
+	if handler.reset != nil && (payload.Data.CustomID == adminRoleSelectCustomID || payload.Data.CustomID == adminRepairSelectCustomID || payload.Data.CustomID == adminPublicCardChannelCustomID || payload.Data.CustomID == adminDurationConfigureID || payload.Data.CustomID == adminDurationExtendID || strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix)) {
 		if operation, active, err := handler.reset.Active(ctx); err != nil {
 			return fmt.Errorf("check reset mutation lock: %w", err)
 		} else if active {
 			return newUserError(fmt.Sprintf("Platform reset is in progress at **%s**. This administration change was not applied.", sanitizeInline(operation.Stage)))
 		}
+	}
+	if payload.Data.CustomID == adminDurationConfigureID || payload.Data.CustomID == adminDurationExtendID {
+		if !payload.memberIsAdministrator() {
+			return domain.ErrForbidden
+		}
+		if payload.Type == interactionTypeModalSubmit {
+			return handler.submitDurationModal(ctx, writer, payload, actorID, correlationID)
+		}
+		if payload.Type == interactionTypeMessageComponent && payload.Data.ComponentType == componentTypeButton {
+			writeDurationModal(writer, payload.Data.CustomID)
+			return nil
+		}
+		return newUserError("This duration control is invalid. Reopen `/rb admin`.")
 	}
 	if strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) && payload.Type == interactionTypeModalSubmit {
 		return handler.submitServerConfigModal(ctx, writer, payload, actorID, correlationID)
@@ -851,6 +864,16 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 				return domain.ErrForbidden
 			}
 			return handler.writeAdminServerConfigView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "")
+		case adminMenuDuration:
+			if !payload.memberIsAdministrator() {
+				return domain.ErrForbidden
+			}
+			controls := []interactionComponent{{Type: componentTypeActionRow, Components: []interactionComponent{
+				{Type: componentTypeButton, Style: buttonStylePrimary, Label: "Configure draft", CustomID: adminDurationConfigureID},
+				{Type: componentTypeButton, Style: buttonStylePrimary, Label: "Extend deadline", CustomID: adminDurationExtendID},
+			}}}
+			handler.writeAdminView(writer, interactionResponseUpdateMessage, "**Maximum session duration**\nSet a draft's limit (1–168 hours) or extend a started session's deadline, up to 7 days from its original start. Extensions require a reason and are audited. Existing deadlines never move backward.", adminMenuDuration, controls, true)
+			return nil
 		default:
 			return newUserError("That administration area is not available.")
 		}
@@ -1070,6 +1093,7 @@ func (handler *Handler) writeAdminView(writer http.ResponseWriter, responseType 
 		}},
 	}
 	if showReset {
+		menu.Components[0].Options = append(menu.Components[0].Options, interactionSelectOption{Label: "Maximum duration", Value: adminMenuDuration, Description: "Configure or extend a session limit", Default: selected == adminMenuDuration})
 		menu.Components[0].Options = append(menu.Components[0].Options, interactionSelectOption{Label: "Server config", Value: adminMenuServerConfig, Description: "Set the Arma server.cfg for future sessions", Default: selected == adminMenuServerConfig})
 		menu.Components[0].Options = append(menu.Components[0].Options, interactionSelectOption{Label: "Reset platform", Value: adminMenuReset, Description: "Permanently clear runtime state", Default: selected == adminMenuReset})
 	}
@@ -1176,13 +1200,13 @@ func (payload interactionPayload) isAdminComponent() bool {
 		return false
 	}
 	if payload.Type == interactionTypeModalSubmit {
-		return strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix)
+		return strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || payload.Data.CustomID == adminDurationConfigureID || payload.Data.CustomID == adminDurationExtendID
 	}
 	if payload.Type != interactionTypeMessageComponent {
 		return false
 	}
 	switch payload.Data.CustomID {
-	case adminMenuCustomID, adminRoleSelectCustomID, adminRoleClearPromptCustomID, adminRoleClearCancelCustomID, adminRepairSelectCustomID, adminPublicCardChannelCustomID, adminResetPrepareCustomID, adminServerConfigCancelID:
+	case adminMenuCustomID, adminRoleSelectCustomID, adminRoleClearPromptCustomID, adminRoleClearCancelCustomID, adminRepairSelectCustomID, adminPublicCardChannelCustomID, adminResetPrepareCustomID, adminServerConfigCancelID, adminDurationConfigureID, adminDurationExtendID:
 		return true
 	default:
 		return strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigRemovePrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix)

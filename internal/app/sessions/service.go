@@ -569,6 +569,9 @@ func (service *Service) RequestStart(ctx context.Context, command StartCommand) 
 	if operation := activeOperation(session, service.clock.Now().UTC()); operation != nil {
 		return *operation
 	}
+	if session.MaximumDuration.Expired(service.clock.Now().UTC()) {
+		return fmt.Errorf("maximum session duration has expired: %w", domain.ErrInvalidTransition)
+	}
 	commandType := domain.CommandStartSession
 	switch {
 	case session.CanStartInfrastructureProvisioning():
