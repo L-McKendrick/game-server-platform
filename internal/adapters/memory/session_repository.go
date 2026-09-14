@@ -33,6 +33,7 @@ type SessionRepository struct {
 }
 
 var _ ports.SessionRepository = (*SessionRepository)(nil)
+var _ ports.SessionSlugRepository = (*SessionRepository)(nil)
 var _ ports.SessionCardRepository = (*SessionRepository)(nil)
 var _ ports.SessionCardControlRepository = (*SessionRepository)(nil)
 
@@ -137,6 +138,20 @@ func (repository *SessionRepository) Get(
 	}
 
 	return session, nil
+}
+
+func (repository *SessionRepository) GetByGuildSlug(ctx context.Context, guildID, slug string) (domain.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.Session{}, err
+	}
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	for _, session := range repository.sessions {
+		if session.GuildID == guildID && session.Slug == slug {
+			return session, nil
+		}
+	}
+	return domain.Session{}, domain.ErrNotFound
 }
 
 // SaveCardReference stores replaceable delivery metadata independently of the

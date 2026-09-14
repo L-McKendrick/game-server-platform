@@ -3,6 +3,7 @@ package sessions
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -67,6 +68,44 @@ func TestResolveDoesNotCrossOwnerOrGuildBoundaries(t *testing.T) {
 		if _, err := service.Resolve(context.Background(), query); !errors.Is(err, domain.ErrNotFound) {
 			t.Fatalf("Resolve(%#v) error = %v; want ErrNotFound", query, err)
 		}
+	}
+}
+
+func TestResolveExactSlugBeyondBoundedGuildListing(t *testing.T) {
+	t.Parallel()
+
+	repository := memory.NewSessionRepository()
+	ids := make([]string, 0, 202)
+	for index := 0; index <= 100; index++ {
+		suffix := fmt.Sprintf("%03d", index)
+		ids = append(ids, "session-"+suffix, "event-"+suffix)
+	}
+	service := newTestService(t, repository, ids...)
+	for index := 0; index <= 100; index++ {
+		suffix := fmt.Sprintf("%03d", index)
+		_, err := service.Create(context.Background(), CreateCommand{
+			Actor: testActor("owner-1"), CorrelationID: "create-" + suffix,
+			IdempotencyKey: "resolve:large-guild:" + suffix, Slug: "test-" + suffix,
+			DisplayName: "Test " + suffix, GameType: "arma3", GuildID: "guild-1", ChannelID: "channel-1",
+		})
+		if err != nil {
+			t.Fatalf("Create(%s) returned error: %v", suffix, err)
+		}
+	}
+	listed, err := repository.ListByGuild(context.Background(), "guild-1", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range listed {
+		if session.Slug == "test-000" {
+			t.Fatal("regression setup did not place exact slug beyond bounded listing")
+		}
+	}
+	selection, err := service.Resolve(context.Background(), ResolveQuery{
+		Actor: testActor("admin-1"), GuildID: "guild-1", Reference: "test-000", CanManageGuild: true, AllowGuildMember: true,
+	})
+	if err != nil || selection.ID != "session-000" {
+		t.Fatalf("Resolve(test-000) = %#v, %v", selection, err)
 	}
 }
 

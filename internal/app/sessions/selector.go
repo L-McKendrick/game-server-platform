@@ -107,6 +107,18 @@ func (service *Service) Resolve(ctx context.Context, query ResolveQuery) (Select
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return Selection{}, fmt.Errorf("get selected session: %w", err)
 	}
+	if repository, ok := service.repository.(ports.SessionSlugRepository); ok {
+		session, slugErr := repository.GetByGuildSlug(ctx, guildID, reference)
+		if slugErr == nil {
+			if query.AllowGuildMember || query.CanManageGuild || session.OwnerDiscordUserID == query.Actor.ID {
+				return selectionFromSession(session), nil
+			}
+			return Selection{}, domain.ErrNotFound
+		}
+		if !errors.Is(slugErr, domain.ErrNotFound) {
+			return Selection{}, fmt.Errorf("get selected session by slug: %w", slugErr)
+		}
+	}
 
 	sessions, err := service.selectableSessions(ctx, query.Actor, guildID, query.AllowGuildMember)
 	if err != nil {

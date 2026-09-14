@@ -206,6 +206,24 @@ func TestResolveCardControlUsesDirectClaim(t *testing.T) {
 	}
 }
 
+func TestGetByGuildSlugUsesDirectClaim(t *testing.T) {
+	t.Parallel()
+	session := testSession(t, time.Date(2026, 9, 14, 19, 0, 0, 0, time.UTC))
+	claim, err := attributevalue.MarshalMap(toSlugClaimItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := attributevalue.MarshalMap(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeAPI{getItemOutputs: []*dynamodb.GetItemOutput{{Item: claim}, {Item: metadata}}}
+	resolved, err := New(client, "metadata-table").GetByGuildSlug(context.Background(), session.GuildID, session.Slug)
+	if err != nil || resolved.ID != session.ID || client.scanInput != nil || client.getItemIndex != 2 {
+		t.Fatalf("GetByGuildSlug() = %#v, %v; reads=%d scan=%#v", resolved, err, client.getItemIndex, client.scanInput)
+	}
+}
+
 func TestResolveCardControlFindsAndBackfillsLegacySessionBeyondFirstThousandItems(t *testing.T) {
 	t.Parallel()
 	session := testSession(t, time.Date(2026, 9, 8, 6, 0, 0, 0, time.UTC))

@@ -24,6 +24,12 @@ not claim a guaranteed AWS spending cap.
   provisioning clock, current deadline, and warning marker. Legacy rows remain
   unstarted on read. Extensions accept whole hours and keep persisted duration
   and deadline consistent.
+- Exact session slugs entered in `/rb admin` duration forms now resolve through
+  the durable guild slug claim instead of the first 100 results from a bounded
+  guild listing. This fixes test-61 in guilds with more than 100 records;
+  genuine missing sessions now receive specific input guidance instead of a
+  misleading stale-control response. Legacy sessions without slug claims keep
+  the bounded compatibility fallback.
 - Administrator-only `/rb admin` duration modals configure a draft/new session
   or extend a started deadline (up to seven days from its original start).
   Mutations require a reason, use versioned idempotent writes, create immutable
@@ -73,6 +79,12 @@ not claim a guaranteed AWS spending cap.
   Default action is to avoid another creation attempt, deploy this correction,
   then reconcile or terminate the retained test resources through the existing
   guarded operator workflow.
+- Test-61 is running with its original 24-hour deadline at
+  `2026-09-15T18:46:03Z`. Two failed duration submissions at 18:58 UTC resolved
+  `test-61` as not found because it fell beyond the first 100 guild records;
+  neither attempt changed its deadline. Default action is to deploy this
+  correction before using the slug again. Until then, its immutable session ID
+  `01M2GKV5ME3MG97V0FY5894M0V` bypasses the affected slug fallback.
 - Cross-session managed-host S3 access is an accepted supervised-development
   risk scheduled for Phase 19.3 before production or multi-tenant use.
 
@@ -91,7 +103,7 @@ $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 terraform -chdir=infra/terraform/environments/dev init -backend-config backend.hcl -input=false
-$phase19Plan = "phase-19-test60-fix-$(Get-Date -Format 'yyyyMMdd-HHmmss').tfplan"
+$phase19Plan = "phase-19-test61-admin-slug-fix-$(Get-Date -Format 'yyyyMMdd-HHmmss').tfplan"
 terraform -chdir=infra/terraform/environments/dev plan -out $phase19Plan
 terraform -chdir=infra/terraform/environments/dev show $phase19Plan
 ```

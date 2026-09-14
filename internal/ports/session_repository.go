@@ -334,3 +334,10 @@ type SessionRepository interface {
 		limit int32,
 	) ([]domain.Session, error)
 }
+
+// SessionSlugRepository resolves the durable guild-scoped slug claim without
+// depending on a bounded session listing. Repositories without slug claims may
+// omit this optional capability and use the selector's legacy fallback.
+type SessionSlugRepository interface {
+	GetByGuildSlug(ctx context.Context, guildID, slug string) (domain.Session, error)
+}

@@ -459,6 +459,48 @@ func (repository *Repository) slugClaimExists(ctx context.Context, guildID strin
 	return output != nil && len(output.Item) > 0, nil
 }
 
+// GetByGuildSlug follows the strongly consistent guild slug claim to its
+// authoritative session record. This keeps exact resolution independent of
+// ListByGuild's intentionally bounded discovery scan.
+func (repository *Repository) GetByGuildSlug(ctx context.Context, guildID, slug string) (domain.Session, error) {
+	if err := repository.validate(); err != nil {
+		return domain.Session{}, err
+	}
+	guildID, slug = strings.TrimSpace(guildID), strings.TrimSpace(slug)
+	if guildID == "" || slug == "" {
+		return domain.Session{}, domain.ErrNotFound
+	}
+	output, err := repository.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      aws.String(repository.tableName),
+		ConsistentRead: aws.Bool(true),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: "GUILD#" + guildID},
+			"sk": &types.AttributeValueMemberS{Value: "SLUG#" + slug},
+		},
+	})
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("get session slug claim: %w", err)
+	}
+	if output == nil || len(output.Item) == 0 {
+		return domain.Session{}, domain.ErrNotFound
+	}
+	var claim slugClaimItem
+	if err := attributevalue.UnmarshalMap(output.Item, &claim); err != nil {
+		return domain.Session{}, fmt.Errorf("decode session slug claim: %w", err)
+	}
+	if claim.GuildID != guildID || claim.Slug != slug || strings.TrimSpace(claim.SessionID) == "" {
+		return domain.Session{}, fmt.Errorf("session slug claim is inconsistent: %w", domain.ErrNotFound)
+	}
+	session, err := repository.Get(ctx, claim.SessionID)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if session.GuildID != guildID || session.Slug != slug {
+		return domain.Session{}, fmt.Errorf("session slug claim target is inconsistent: %w", domain.ErrNotFound)
+	}
+	return session, nil
+}
+
 // legacyGuildSlugExists protects sessions created before guild-scoped slug
 // claims were introduced. New concurrent writers are still serialized by the
 // transactional claim in Create.

@@ -2,6 +2,7 @@ package interactions
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -71,6 +72,9 @@ func (handler *Handler) submitDurationModal(ctx context.Context, writer http.Res
 	actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID}
 	selection, err := handler.service.Resolve(ctx, appsession.ResolveQuery{Actor: actor, GuildID: payload.GuildID, Reference: values[adminDurationSessionID], CanManageGuild: true, AllowGuildMember: true})
 	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return newUserError("Session not found in this server. Enter its exact slug or ID and try again.")
+		}
 		return err
 	}
 	command := appsession.DurationCommand{Actor: actor, GuildID: payload.GuildID, SessionID: selection.ID, CorrelationID: correlationID, IdempotencyKey: "discord:duration:" + payload.ID, Reason: values[adminDurationReasonID], IsAdministrator: payload.memberIsAdministrator()}
