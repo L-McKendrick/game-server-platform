@@ -14,8 +14,12 @@ not claim a guaranteed AWS spending cap.
   It reconstructs a missing exchange input from the authoritative secret,
   recognizes an ambiguously successful secret promotion, rejects changed
   authorization identity, validates object-deletion results, and permits safe
-  reacquisition of failed exchanges. Broker DynamoDB access is restricted to
-  the cache lease and exchange keyspaces.
+  reacquisition of failed exchanges. Successful SteamCMD authentication is
+  propagated across isolated shell helpers with a root-owned ephemeral marker,
+  so the parent returns the cache while a nested Guard failure still clears
+  validity and the Steam user cannot forge promotion evidence.
+  Broker DynamoDB access is restricted to the cache lease and exchange
+  keyspaces.
 - Persisted 24-hour default, 1–168-hour configured bounds, immutable first
   provisioning clock, current deadline, and warning marker. Legacy rows remain
   unstarted on read. Extensions accept whole hours and keep persisted duration
@@ -63,6 +67,12 @@ not claim a guaranteed AWS spending cap.
   Default action is to wait for active operations to finish before deployment.
 - Test-58's retained instance and volume may remain billable. Do not retry it
   until the Phase 19.1 Steam exchange correction is confirmed deployed.
+- Test-60 (`ref_f735121a5ef9`) completed its host bootstrap but was marked
+  failed because the parent shell skipped the broker output upload. Its
+  `c7i-flex.large` instance and two volumes were still running when inspected.
+  Default action is to avoid another creation attempt, deploy this correction,
+  then reconcile or terminate the retained test resources through the existing
+  guarded operator workflow.
 - Cross-session managed-host S3 access is an accepted supervised-development
   risk scheduled for Phase 19.3 before production or multi-tenant use.
 
@@ -81,7 +91,7 @@ $env:AWS_REGION = "us-west-2"
 $env:AWS_EC2_METADATA_DISABLED = "true"
 aws sts get-caller-identity
 terraform -chdir=infra/terraform/environments/dev init -backend-config backend.hcl -input=false
-$phase19Plan = "phase-19-review-$(Get-Date -Format 'yyyyMMdd-HHmmss').tfplan"
+$phase19Plan = "phase-19-test60-fix-$(Get-Date -Format 'yyyyMMdd-HHmmss').tfplan"
 terraform -chdir=infra/terraform/environments/dev plan -out $phase19Plan
 terraform -chdir=infra/terraform/environments/dev show $phase19Plan
 ```

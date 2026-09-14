@@ -68,9 +68,13 @@ IAM has no permission for this namespace.
    in its SSM command. The host downloads into a root-only tmpfs/staging file,
    runs the existing username-only SteamCMD flow, and scrubs persistent and
    temporary authentication data on every exit path.
-5. If SteamCMD produces a valid updated cache, the host uploads only to the
-   exact output URL. The SSM output identifies the exchange for trusted-worker
-   completion; it does not print cache contents or URLs.
+5. A successful SteamCMD process records validity through an ephemeral,
+   root-owned marker beside the private Steam-owned authorization directory.
+   This marker crosses isolated shell-function boundaries without granting the
+   Steam user control of promotion evidence or persisting on the managed
+   volume; a Guard challenge removes it. Only a marked-valid cache is uploaded
+   to the exact output URL. The SSM output identifies the exchange for
+   trusted-worker completion; it does not print cache contents or URLs.
 6. The worker observes completion, reloads the exchange and workflow, reads the
    output object with its own role, applies size/schema/digest validation,
    preserves the enrolled username and timestamp, and conditionally promotes it
@@ -143,3 +147,6 @@ rollout or rollback and is required only when evidence indicates disclosure.
   terminal cleanup without releasing a different exchange's lease.
 - Existing enrollment, rollback, lease heartbeat, and
   `ERR_STEAM_REAUTH_REQUIRED` behavior remain intact.
+- Successful bootstrap, resumed-install, and Workshop subshell paths propagate
+  authorization validity to the parent, while a nested Guard failure clears it
+  before exit cleanup can upload a cache.

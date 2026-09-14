@@ -40,6 +40,7 @@ ROOT=/srv/game-server
 STATE_DIR="$ROOT/state"
 LOG_DIR="$ROOT/logs"
 STEAM_AUTH_ROOT=""
+STEAM_AUTH_VALID_FILE=""
 STEAM_AUTH_USERNAME=""
 STEAM_AUTH_SOURCE_VERSION=""
 STEAM_AUTH_ENROLLED_AT=""
@@ -124,6 +125,12 @@ scrub_persistent_steam_auth() {
 
 mark_steam_reauthorization_required() {
   STEAM_AUTH_VALID=false
+  [ -z "${STEAM_AUTH_VALID_FILE:-}" ] || rm -f -- "$STEAM_AUTH_VALID_FILE"
+}
+
+mark_steam_authorization_valid() {
+  STEAM_AUTH_VALID=true
+  [ -z "${STEAM_AUTH_VALID_FILE:-}" ] || : > "$STEAM_AUTH_VALID_FILE"
 }
 
 link_ephemeral_steam_path() {
@@ -137,6 +144,7 @@ begin_steam_auth() {
   local payload config_b64 expected_sha actual_sha config_size
   [ -n "$STEAM_EXCHANGE_GET_URL" ] && [ -n "$STEAM_EXCHANGE_PUT_URL" ] || { printf 'ERR_STEAM_REAUTH_REQUIRED: Steam authorization exchange is not configured.\n' >&2; return 42; }
   STEAM_AUTH_ROOT="$(mktemp -d /run/gsp-steam-auth.XXXXXX)"
+  STEAM_AUTH_VALID_FILE="$STEAM_AUTH_ROOT.validated"
   chmod 700 "$STEAM_AUTH_ROOT"
   STEAM_AUTH_ACTIVE=true
   payload="$STEAM_AUTH_ROOT/cache.json"
@@ -192,7 +200,7 @@ begin_steam_auth() {
 persist_steam_auth() {
   local config_file config_size config_sha config_b64 payload now
   $STEAM_AUTH_ACTIVE || return 0
-  $STEAM_AUTH_VALID || return 0
+  [ -f "$STEAM_AUTH_VALID_FILE" ] || return 0
   STEAM_AUTH_PERSIST_ATTEMPTED=true
   config_file="$STEAM_AUTH_ROOT/config/config.vdf"
   [ -f "$config_file" ] || { log "Steam authorization cache update is missing"; return 1; }
@@ -211,8 +219,10 @@ persist_steam_auth() {
 
 cleanup_steam_auth() {
   scrub_persistent_steam_auth
+  [ -z "$STEAM_AUTH_VALID_FILE" ] || rm -f -- "$STEAM_AUTH_VALID_FILE"
   [ -z "$STEAM_AUTH_ROOT" ] || rm -rf -- "$STEAM_AUTH_ROOT"
   STEAM_AUTH_ROOT=""
+  STEAM_AUTH_VALID_FILE=""
   STEAM_AUTH_ACTIVE=false
   STEAM_AUTH_USERNAME=""
   STEAM_AUTH_INITIAL_SHA=""
@@ -229,7 +239,7 @@ steam_auth_exit() {
   local code=$?
   trap - EXIT INT TERM
   if $STEAM_AUTH_ACTIVE; then
-    if $STEAM_AUTH_VALID && ! $STEAM_AUTH_FINALIZED && ! $STEAM_AUTH_PERSIST_ATTEMPTED; then persist_steam_auth || code=1; fi
+    if [ -f "$STEAM_AUTH_VALID_FILE" ] && ! $STEAM_AUTH_FINALIZED && ! $STEAM_AUTH_PERSIST_ATTEMPTED; then persist_steam_auth || code=1; fi
     cleanup_steam_auth
   fi
   cleanup_workshop_staging
@@ -308,8 +318,8 @@ run_steamcmd() {
     printf 'ERR_STEAM_REAUTH_REQUIRED: Steam authorization requires operator re-enrollment.\n' >&2
     return 42
   fi
-  if grep -Eqi 'Logged in OK|Waiting for user info.*OK' "$output_file"; then STEAM_AUTH_VALID=true; fi
-  if [ "$code" -eq 0 ]; then STEAM_AUTH_VALID=true; fi
+  if grep -Eqi 'Logged in OK|Waiting for user info.*OK' "$output_file"; then mark_steam_authorization_valid; fi
+  if [ "$code" -eq 0 ]; then mark_steam_authorization_valid; fi
   if [ "$code" -ne 0 ]; then
 	if grep -Eqi 'timeout|timed out|connection|network|content server|rate limit|temporarily unavailable|service unavailable' "$output_file"; then
 	  rm -f -- "$output_file"; log "SteamCMD transient download failure"; return 75
