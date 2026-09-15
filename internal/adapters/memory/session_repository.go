@@ -30,9 +30,12 @@ type SessionRepository struct {
 	activeResets       map[string]string
 	latestResets       map[string]domain.ResetOperation
 	serverConfigs      map[string]domain.GuildServerConfig
+	lifecycleTimeouts  map[string]domain.GuildLifecycleTimeoutPolicy
+	lifecycleAudits    map[string][]domain.LifecycleTimeoutPolicyAudit
 }
 
 var _ ports.SessionRepository = (*SessionRepository)(nil)
+var _ ports.LifecycleTimeoutPolicyRepository = (*SessionRepository)(nil)
 var _ ports.SessionSlugRepository = (*SessionRepository)(nil)
 var _ ports.SessionCardRepository = (*SessionRepository)(nil)
 var _ ports.SessionCardControlRepository = (*SessionRepository)(nil)
@@ -57,7 +60,62 @@ func NewSessionRepository() *SessionRepository {
 		activeResets:       make(map[string]string),
 		latestResets:       make(map[string]domain.ResetOperation),
 		serverConfigs:      make(map[string]domain.GuildServerConfig),
+		lifecycleTimeouts:  make(map[string]domain.GuildLifecycleTimeoutPolicy),
+		lifecycleAudits:    make(map[string][]domain.LifecycleTimeoutPolicyAudit),
 	}
+}
+
+func (repository *SessionRepository) GetLifecycleTimeoutPolicy(ctx context.Context, guildID string) (domain.GuildLifecycleTimeoutPolicy, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.GuildLifecycleTimeoutPolicy{}, err
+	}
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	policy, found := repository.lifecycleTimeouts[guildID]
+	if !found {
+		return domain.GuildLifecycleTimeoutPolicy{}, domain.ErrNotFound
+	}
+	return policy, nil
+}
+
+func (repository *SessionRepository) SaveLifecycleTimeoutPolicy(ctx context.Context, policy domain.GuildLifecycleTimeoutPolicy, expectedVersion int64, audit domain.LifecycleTimeoutPolicyAudit, idempotency domain.IdempotencyRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := policy.Validate(); err != nil {
+		return err
+	}
+	if err := audit.Validate(); err != nil {
+		return err
+	}
+	if err := idempotency.Validate(); err != nil {
+		return err
+	}
+	if idempotency.ResultReference != policy.GuildID {
+		return fmt.Errorf("lifecycle timeout idempotency result must reference guild")
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	current, found := repository.lifecycleTimeouts[policy.GuildID]
+	if stored, exists := repository.idempotency[idempotency.Key]; exists {
+		if stored.RequestHash != idempotency.RequestHash {
+			return domain.ErrIdempotencyConflict
+		}
+		return nil
+	}
+	if policy.Version < 1 || (!found && expectedVersion != 0) || (found && current.Version != expectedVersion) {
+		return domain.ErrConflict
+	}
+	repository.lifecycleTimeouts[policy.GuildID] = policy
+	repository.lifecycleAudits[policy.GuildID] = append(repository.lifecycleAudits[policy.GuildID], audit)
+	repository.idempotency[idempotency.Key] = idempotency
+	return nil
+}
+
+func (repository *SessionRepository) LifecycleTimeoutAudits(guildID string) []domain.LifecycleTimeoutPolicyAudit {
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	return append([]domain.LifecycleTimeoutPolicyAudit(nil), repository.lifecycleAudits[guildID]...)
 }
 
 // Create atomically stores a session and its initial event.

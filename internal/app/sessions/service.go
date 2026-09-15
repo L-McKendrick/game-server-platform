@@ -85,6 +85,21 @@ func WithNotificationQueue(queue ports.NotificationQueue) Option {
 	return func(service *Service) { service.notificationQueue = queue }
 }
 
+// LifecycleTimeoutDefaults returns the guild policy used by future sessions.
+// An absent policy is the backward-compatible platform default.
+func (service *Service) LifecycleTimeoutDefaults(ctx context.Context, guildID string) (domain.GuildLifecycleTimeoutPolicy, error) {
+	fallback := domain.DefaultGuildLifecycleTimeoutPolicy(guildID)
+	repository, ok := service.repository.(ports.LifecycleTimeoutPolicyRepository)
+	if !ok {
+		return fallback, nil
+	}
+	policy, err := repository.GetLifecycleTimeoutPolicy(ctx, strings.TrimSpace(guildID))
+	if errors.Is(err, domain.ErrNotFound) {
+		return fallback, nil
+	}
+	return policy, err
+}
+
 func WithReliabilityService(reliability *appreliability.Service) Option {
 	return func(service *Service) { service.reliability = reliability }
 }
@@ -1266,6 +1281,12 @@ func (service *Service) Create(
 			err,
 		)
 	}
+	policy, err := service.LifecycleTimeoutDefaults(ctx, command.GuildID)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("get lifecycle timeout defaults: %w", err)
+	}
+	session.SleepAfterSeconds = policy.SleepAfterSeconds
+	session.ArchiveAfterSeconds = policy.ArchiveAfterSeconds
 
 	idempotency, err := domain.NewCompletedIdempotencyRecord(
 		idempotencyKey,

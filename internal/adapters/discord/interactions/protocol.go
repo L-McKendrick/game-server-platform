@@ -99,6 +99,12 @@ const (
 	adminDurationSessionID   = "duration:session"
 	adminDurationHoursID     = "duration:hours"
 	adminDurationReasonID    = "duration:reason"
+	adminTimeoutDefaultsID   = "rb:admin:timeouts:defaults:v1"
+	adminTimeoutSessionID    = "rb:admin:timeouts:session:v1"
+	adminTimeoutExtendPrefix = "rb:admin:timeouts:extend:v1:"
+	adminTimeoutSleepID      = "timeouts:sleep"
+	adminTimeoutArchiveID    = "timeouts:archive"
+	adminTimeoutReasonID     = "timeouts:reason"
 )
 
 type interactionPayload struct {

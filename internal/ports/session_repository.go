@@ -17,6 +17,11 @@ type GuildServerConfigRepository interface {
 	SaveGuildServerConfig(ctx context.Context, config domain.GuildServerConfig, expectedRevision int64) (domain.GuildServerConfig, error)
 }
 
+type LifecycleTimeoutPolicyRepository interface {
+	GetLifecycleTimeoutPolicy(ctx context.Context, guildID string) (domain.GuildLifecycleTimeoutPolicy, error)
+	SaveLifecycleTimeoutPolicy(ctx context.Context, policy domain.GuildLifecycleTimeoutPolicy, expectedVersion int64, audit domain.LifecycleTimeoutPolicyAudit, idempotency domain.IdempotencyRecord) error
+}
+
 type CommandQueue interface {
 	Enqueue(ctx context.Context, command domain.CommandEnvelope) error
 }

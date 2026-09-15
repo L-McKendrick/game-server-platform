@@ -378,8 +378,8 @@ func NewSession(input NewSessionInput, now time.Time) (Session, error) {
 		GuildID:               strings.TrimSpace(input.GuildID),
 		ChannelID:             strings.TrimSpace(input.ChannelID),
 		GameProfileID:         "arma3-default",
-		SleepAfterSeconds:     1800,
-		ArchiveAfterSeconds:   7 * 24 * 60 * 60,
+		SleepAfterSeconds:     DefaultSleepAfterSeconds,
+		ArchiveAfterSeconds:   DefaultArchiveAfterSeconds,
 		MaximumDuration:       MaximumDuration{Seconds: DefaultMaximumDurationSeconds},
 		ConfigurationRevision: 0,
 		ConfiguredMission:     DefaultMissionSelection(),
@@ -552,10 +552,8 @@ func (session Session) Validate() error {
 		return fmt.Errorf("server preset artifact issue requires rejected status")
 	case strings.TrimSpace(session.GameProfileID) == "":
 		return fmt.Errorf("game profile ID is required")
-	case session.SleepAfterSeconds < 600:
-		return fmt.Errorf("sleep policy must be at least 600 seconds")
-	case session.ArchiveAfterSeconds < 86400:
-		return fmt.Errorf("archive policy must be at least 86400 seconds")
+	case ValidateLifecycleTimeouts(session.SleepAfterSeconds, session.ArchiveAfterSeconds) != nil:
+		return ValidateLifecycleTimeouts(session.SleepAfterSeconds, session.ArchiveAfterSeconds)
 	case session.ConfigurationRevision < 0:
 		return fmt.Errorf("configuration revision cannot be negative")
 	case session.NotifyWhenReady && strings.TrimSpace(session.ReadyNotificationChannelID) == "":
@@ -873,11 +871,8 @@ func (session *Session) applyConfiguration(configuration SessionConfiguration) e
 	if configuration.GameProfileID != "arma3-default" {
 		return fmt.Errorf("unsupported game profile %q", configuration.GameProfileID)
 	}
-	if configuration.SleepAfterSeconds < 600 || configuration.SleepAfterSeconds > 86400 {
-		return fmt.Errorf("sleep policy must be between 600 and 86400 seconds")
-	}
-	if configuration.ArchiveAfterSeconds < 86400 || configuration.ArchiveAfterSeconds > 90*86400 {
-		return fmt.Errorf("archive policy must be between 1 and 90 days")
+	if err := ValidateLifecycleTimeouts(configuration.SleepAfterSeconds, configuration.ArchiveAfterSeconds); err != nil {
+		return err
 	}
 	creatorDLCs, err := NormalizeCreatorDLCs(configuration.CreatorDLCs)
 	if err != nil {

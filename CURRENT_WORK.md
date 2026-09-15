@@ -2,12 +2,26 @@
 
 ## State and Objective
 
-Phase 19.1 and 19.2, including their branch review corrections, are complete on
-`codex/phase-19-production-guardrails` but are not deployed. Phase 19.3
-(managed-host S3 isolation) remains before production or multi-tenant use. Do
-not claim a guaranteed AWS spending cap.
+Phase 19.1 is complete. Phase 19.2 lifecycle-timeout redesign tasks 19.2.8–11
+are implemented and committed; tasks 19.2.12–19.2.13 remain. Phase 19.3
+(managed-host S3 isolation) remains before
+production or multi-tenant use. Do not claim a guaranteed AWS spending cap.
 
 ## Current Handoff
+
+- Guild-scoped lifecycle timeout defaults now persist separately and fall back
+  to 30 minutes without players before sleep and 7 days asleep before archive.
+  New sessions snapshot the current guild values; existing and legacy sessions
+  retain their persisted settings.
+- `/rb admin` now presents **Session timeouts**, displays both current defaults,
+  and offers **Edit future sessions** plus an eligible RUNNING/IDLE session
+  selector. Selecting a session shows its current values before **Add time**;
+  both modals use brief labels and include the current values for reference.
+  Administrators can now replace both future defaults or add positive time to
+  both values for a RUNNING/IDLE session. Mutations recheck authorization and
+  current state, enforce bounds, use replay-safe optimistic writes, retain the
+  reason in immutable audit data, and report the resulting values. Monitor
+  enforcement remains for 19.2.12. Do not deploy this partial flow.
 
 - The trusted Steam authorization broker now uses exchange-specific lease
   ownership and replay-safe prepare, promotion, reauthorization, and cleanup.
@@ -58,6 +72,7 @@ not claim a guaranteed AWS spending cap.
   workflow shutdown, with a load-tolerant regression. `go test -count=1 ./...`,
   `go vet ./...`, `go build ./cmd/...`, Lambda packaging, Terraform
   formatting, and Terraform validation completed successfully on this host.
+  After tasks 19.2.10–11, `go test ./...` and `go vet ./...` also pass.
   No AWS mutation, deployment, command registration, or live-session test was
   performed. See the Phase 19 operator documents for deployment checks.
 
@@ -90,35 +105,6 @@ not claim a guaranteed AWS spending cap.
 
 ## Commands to Apply Current Changes
 
-No deployment or Discord re-registration has been performed. Command
-definitions did not change, so re-registration is not required. Only after
-separate approval to deploy the reviewed development plan, run from the
-repository root:
-
-```powershell
-./scripts/package-discord-lambda.ps1
-aws login --profile game-server-dev --region us-west-2
-$env:AWS_PROFILE = "game-server-dev"
-$env:AWS_REGION = "us-west-2"
-$env:AWS_EC2_METADATA_DISABLED = "true"
-aws sts get-caller-identity
-terraform -chdir=infra/terraform/environments/dev init -backend-config backend.hcl -input=false
-$phase19Plan = "phase-19-test61-admin-slug-fix-$(Get-Date -Format 'yyyyMMdd-HHmmss').tfplan"
-terraform -chdir=infra/terraform/environments/dev plan -out $phase19Plan
-terraform -chdir=infra/terraform/environments/dev show $phase19Plan
-```
-
-Review the fresh plan for intended Lambda/package changes, especially
-Discord interactions, bootstrap, restore, sleep/wake, reliability, artifact,
-monitor, command, and notification workers plus the broker IAM restriction;
-stop for unexpected replacement, deletion, budget/provisioning drift, or
-sensitive output. Ensure no Steam-authenticated lifecycle operation or broker
-exchange is active. Apply **only that exact reviewed plan** after approval:
-
-```powershell
-terraform -chdir=infra/terraform/environments/dev apply $phase19Plan
-```
-
-Then perform the operator checks in
-`docs/phase-19-steam-authorization-broker.md` and
-`docs/phase-19-maximum-duration.md`.
+Do not deploy this incomplete development slice. No apply or Discord command
+registration should be run until tasks 19.2.12–19.2.13 are implemented and
+validated.

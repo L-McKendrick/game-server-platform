@@ -56,6 +56,7 @@ const (
 	EventMaximumDurationConfigured EventType = "MaximumDurationConfigured"
 	EventMaximumDurationExtended   EventType = "MaximumDurationExtended"
 	EventMaximumDurationWarning    EventType = "MaximumDurationWarning"
+	EventLifecycleTimeoutsExtended EventType = "LifecycleTimeoutsExtended"
 	EventWorkshopMissionResolved   EventType = "WorkshopMissionResolved"
 	EventWorkshopModResolved       EventType = "WorkshopModResolved"
 	EventWorkshopResolutionQueued  EventType = "WorkshopResolutionQueued"

@@ -403,7 +403,7 @@ func preserveMetadataItem(entity, pk, sk, operationID, currentResetOperationID s
 	if pk == "STEAM_AUTH#CACHE" && sk == "STATE" {
 		return true
 	}
-	if entity == "GuildAccessPolicy" || entity == "GuildServerConfig" || entity == "ResetAudit" {
+	if entity == "GuildAccessPolicy" || entity == "GuildLifecycleTimeoutPolicy" || entity == "LifecycleTimeoutPolicyAudit" || entity == "GuildServerConfig" || entity == "ResetAudit" {
 		return true
 	}
 	if entity == "ResetLock" {
