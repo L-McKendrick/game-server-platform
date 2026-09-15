@@ -92,6 +92,7 @@ func TestMaximumDurationWarningRetriesFailedEnqueue(t *testing.T) {
 	session.MaximumDuration.StartedAt = now.Add(-23 * time.Hour)
 	session.MaximumDuration.DeadlineAt = now.Add(45 * time.Minute)
 	session.MaximumDuration.Seconds = int64(session.MaximumDuration.DeadlineAt.Sub(session.MaximumDuration.StartedAt) / time.Second)
+	session.SleepAfterSeconds, session.IdleSince, session.PlayerCountKnown, session.PlayerCount, session.PlayerCountObservedAt = 60*60, now.Add(-15*time.Minute), true, 0, now
 	repo := &monitoringRepo{session: session}
 	warnings := &durationNotifications{err: errors.New("queue unavailable")}
 	service, err := NewService(repo, monitoringRunner{}, warnings, &monitoringIDs{}, monitoringClock{now})
@@ -118,7 +119,7 @@ func TestMaximumDurationWarningRetriesFailedEnqueue(t *testing.T) {
 		}
 	}
 	for _, event := range repo.events {
-		if event.Type == domain.EventMaximumDurationWarning {
+		if event.Type == domain.EventLifecycleTimeoutWarning {
 			eventCount++
 		}
 	}
@@ -134,10 +135,12 @@ func TestRunContinuesAfterOneSessionFails(t *testing.T) {
 	warning.MaximumDuration.StartedAt = now.Add(-23 * time.Hour)
 	warning.MaximumDuration.DeadlineAt = now.Add(45 * time.Minute)
 	warning.MaximumDuration.Seconds = int64(warning.MaximumDuration.DeadlineAt.Sub(warning.MaximumDuration.StartedAt) / time.Second)
+	warning.SleepAfterSeconds, warning.IdleSince, warning.PlayerCountKnown, warning.PlayerCount, warning.PlayerCountObservedAt = 60*60, now.Add(-15*time.Minute), true, 0, now
 	expired := runningMonitoringSession(t, now)
 	expired.ID, expired.Slug = "expired-session", "expired-session"
 	expired.DesiredState, expired.ObservedState, expired.LifecycleState, expired.HealthStatus = domain.StateSleeping, domain.StateSleeping, domain.StateSleeping, domain.HealthStopped
-	expired.SleepingSince = now.Add(-time.Hour)
+	expired.SleepingSince = now.Add(-24 * time.Hour)
+	expired.ArchiveAfterSeconds = 24 * 60 * 60
 	expired.MaximumDuration.StartedAt = now.Add(-24 * time.Hour)
 	expired.MaximumDuration.DeadlineAt = now
 	repo := &multiMonitoringRepo{sessions: []domain.Session{warning, expired}}
@@ -161,10 +164,11 @@ func TestMaximumDurationWarningIsBoundedAndDeadlineQueuesSleep(t *testing.T) {
 	session.MaximumDuration.StartedAt = now.Add(-23 * time.Hour)
 	session.MaximumDuration.DeadlineAt = now.Add(45 * time.Minute)
 	session.MaximumDuration.Seconds = int64(session.MaximumDuration.DeadlineAt.Sub(session.MaximumDuration.StartedAt) / time.Second)
+	session.SleepAfterSeconds, session.IdleSince, session.PlayerCountKnown, session.PlayerCount, session.PlayerCountObservedAt = 60*60, now.Add(-15*time.Minute), true, 0, now
 	repo := &monitoringRepo{session: session}
 	warnings := &durationNotifications{}
 	commands := &monitoringCommands{}
-	service, err := NewService(repo, monitoringRunner{status: ports.MonitoringCommandStatus{Status: "Success", Observation: domain.HealthObservation{ArmaService: true, ArmaUDP: true}}}, warnings, &monitoringIDs{}, monitoringClock{now}, WithCommandQueue(commands))
+	service, err := NewService(repo, monitoringRunner{status: ports.MonitoringCommandStatus{Status: "Success", Observation: domain.HealthObservation{ArmaService: true, ArmaUDP: true}}}, warnings, &monitoringIDs{}, monitoringClock{now}, WithPlayerQuery(monitoringQuery{status: domain.PlayerStatus{PlayerCount: 0}}), WithCommandQueue(commands))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +188,9 @@ func TestMaximumDurationWarningIsBoundedAndDeadlineQueuesSleep(t *testing.T) {
 	if _, err := service.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := service.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if len(commands.commands) != 1 || commands.commands[0].CommandType != domain.CommandSleepSession {
 		t.Fatalf("deadline commands = %#v", commands.commands)
 	}
@@ -198,9 +205,10 @@ func TestMaximumDurationWarningsAdvanceAndResetOnlyForNewDeadline(t *testing.T) 
 	session.MaximumDuration.StartedAt = now.Add(-23 * time.Hour)
 	session.MaximumDuration.DeadlineAt = now.Add(45 * time.Minute)
 	session.MaximumDuration.Seconds = int64(session.MaximumDuration.DeadlineAt.Sub(session.MaximumDuration.StartedAt) / time.Second)
+	session.SleepAfterSeconds, session.IdleSince, session.PlayerCountKnown, session.PlayerCount, session.PlayerCountObservedAt = 60*60, now.Add(-15*time.Minute), true, 0, now
 	repo := &monitoringRepo{session: session}
 	warnings := &durationNotifications{}
-	service, err := NewService(repo, monitoringRunner{}, warnings, &monitoringIDs{}, monitoringClock{now})
+	service, err := NewService(repo, monitoringRunner{status: ports.MonitoringCommandStatus{Status: "Success", Observation: domain.HealthObservation{ArmaService: true, ArmaUDP: true}}}, warnings, &monitoringIDs{}, monitoringClock{now}, WithPlayerQuery(monitoringQuery{status: domain.PlayerStatus{PlayerCount: 0}}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,8 +230,7 @@ func TestMaximumDurationWarningsAdvanceAndResetOnlyForNewDeadline(t *testing.T) 
 	if requests := durationWarnings(); len(requests) != 2 || repo.session.MaximumDurationWarningLevel != 2 || repo.session.MaximumDurationWarningQueuedLevel != 2 || requests[0].NotificationID == requests[1].NotificationID {
 		t.Fatalf("duration warnings = %d, levels = %d/%d", len(requests), repo.session.MaximumDurationWarningLevel, repo.session.MaximumDurationWarningQueuedLevel)
 	}
-	repo.session.MaximumDuration.DeadlineAt = now.Add(60 * time.Minute)
-	repo.session.MaximumDuration.Seconds = int64(repo.session.MaximumDuration.DeadlineAt.Sub(repo.session.MaximumDuration.StartedAt) / time.Second)
+	repo.session.SleepAfterSeconds = 75 * 60
 	service.clock = monitoringClock{now.Add(40 * time.Minute)}
 	if _, err := service.Run(context.Background()); err != nil {
 		t.Fatal(err)
@@ -397,7 +404,7 @@ func TestRunQueuesDeterministicAutomaticSleepOnlyWhenDue(t *testing.T) {
 		t.Fatalf("commands = %#v", queue.commands)
 	}
 	command := queue.commands[0]
-	wantID := domain.AutomaticSleepCommandID(session.ID, session.IdleSince)
+	wantID := domain.AutomaticSleepCommandID(session.ID, session.AutomaticSleepDeadline())
 	if command.CommandID != wantID || !command.Actor.System || command.Parameters[domain.AutomaticIdleSinceParameter] != session.IdleSince.Format(time.RFC3339Nano) {
 		t.Fatalf("automatic sleep command = %#v", command)
 	}
@@ -427,6 +434,7 @@ func TestRunQueuesDeterministicArchiveAfterSeventyTwoSleepingHours(t *testing.T)
 	session := runningMonitoringSession(t, now)
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateSleeping, domain.StateSleeping, domain.StateSleeping, domain.HealthStopped
 	session.SleepingSince = now.Add(-72 * time.Hour)
+	session.ArchiveAfterSeconds = 72 * 60 * 60
 	repo := &monitoringRepo{session: session}
 	queue := &monitoringCommands{}
 	service, err := NewService(repo, monitoringRunner{}, nil, &monitoringIDs{}, monitoringClock{now}, WithCommandQueue(queue))
@@ -440,7 +448,7 @@ func TestRunQueuesDeterministicArchiveAfterSeventyTwoSleepingHours(t *testing.T)
 		t.Fatalf("commands = %#v", queue.commands)
 	}
 	command := queue.commands[0]
-	wantID := domain.AutomaticArchiveCommandID(session.ID, session.SleepingSince)
+	wantID := domain.AutomaticArchiveCommandID(session.ID, session.AutomaticArchiveDeadline())
 	if command.CommandID != wantID || command.CommandType != domain.CommandArchiveSession || command.Parameters[domain.AutomaticSleepingSinceParameter] != session.SleepingSince.Format(time.RFC3339Nano) {
 		t.Fatalf("automatic archive command = %#v", command)
 	}

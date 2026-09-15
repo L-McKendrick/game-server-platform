@@ -503,8 +503,9 @@ func seedAutomaticSleep(t *testing.T, now time.Time, due bool) (*memory.SessionR
 	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
 		t.Fatal(err)
 	}
-	commandID := domain.AutomaticSleepCommandID(session.ID, idleSince)
-	return repository, domain.CommandEnvelope{SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandSleepSession, RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true}, SessionID: session.ID, IdempotencyKey: "automatic-sleep:" + commandID, CorrelationID: commandID, Parameters: map[string]string{domain.AutomaticIdleSinceParameter: idleSince.Format(time.RFC3339Nano)}}
+	deadline := session.AutomaticSleepDeadline()
+	commandID := domain.AutomaticSleepCommandID(session.ID, deadline)
+	return repository, domain.CommandEnvelope{SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandSleepSession, RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true}, SessionID: session.ID, IdempotencyKey: "automatic-sleep:" + commandID, CorrelationID: commandID, Parameters: map[string]string{domain.AutomaticIdleSinceParameter: idleSince.Format(time.RFC3339Nano), domain.AutomaticLifecycleDeadlineParameter: deadline.Format(time.RFC3339Nano)}}
 }
 
 func seedAutomaticArchive(t *testing.T, now time.Time) (*memory.SessionRepository, domain.CommandEnvelope) {
@@ -517,13 +518,15 @@ func seedAutomaticArchive(t *testing.T, now time.Time) (*memory.SessionRepositor
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateSleeping, domain.StateSleeping, domain.StateSleeping, domain.HealthStopped
 	session.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "instance-profile", AMIID: "ami-1", InstanceType: "c7i-flex.large", InstanceID: "i-1", DataVolumeID: "vol-1", LastObservedAt: now.Add(-72 * time.Hour)}
 	session.SleepingSince = now.Add(-72 * time.Hour)
+	session.ArchiveAfterSeconds = 72 * 60 * 60
 	event := domain.NewSessionCreatedEvent("archive-created", "archive-created", domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}, session, now.Add(-100*time.Hour))
 	idempotency, _ := domain.NewCompletedIdempotencyRecord("archive-create", "archive-hash", session.ID, now.Add(-100*time.Hour), time.Hour)
 	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
 		t.Fatal(err)
 	}
-	commandID := domain.AutomaticArchiveCommandID(session.ID, session.SleepingSince)
-	return repository, domain.CommandEnvelope{SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandArchiveSession, RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true}, SessionID: session.ID, IdempotencyKey: "automatic-archive:" + commandID, CorrelationID: commandID, Parameters: map[string]string{domain.AutomaticSleepingSinceParameter: session.SleepingSince.Format(time.RFC3339Nano)}}
+	deadline := session.AutomaticArchiveDeadline()
+	commandID := domain.AutomaticArchiveCommandID(session.ID, deadline)
+	return repository, domain.CommandEnvelope{SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandArchiveSession, RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true}, SessionID: session.ID, IdempotencyKey: "automatic-archive:" + commandID, CorrelationID: commandID, Parameters: map[string]string{domain.AutomaticSleepingSinceParameter: session.SleepingSince.Format(time.RFC3339Nano), domain.AutomaticLifecycleDeadlineParameter: deadline.Format(time.RFC3339Nano)}}
 }
 
 func seedRunningWorkflowRepository(t *testing.T, now time.Time) *memory.SessionRepository {

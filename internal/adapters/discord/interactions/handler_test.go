@@ -2260,43 +2260,51 @@ func TestHandlerAdministratorResetFlowIsTypedReplaySafeAndFreezesSessionCommands
 	}
 }
 
-func TestAdminMaximumDurationModalRequiresAdministratorAndAuditsOnce(t *testing.T) {
-	handler, repository, privateKey := newTestHandler(t, []string{"duration-open", "duration-submit", "duration-replay"}, []string{"duration-event"})
-	seedAutocompleteSession(t, repository, "duration-session", "Duration", "duration", "owner-1", "guild-1")
-	denied := executeSignedRequest(t, handler, privateKey, adminComponentBody("duration-denied", "manager-1", "32", adminDurationConfigureID, componentTypeButton, nil), testNow)
-	var deniedResponse interactionResponse
-	decodeResponse(t, denied, &deniedResponse)
-	if deniedResponse.Type == interactionResponseModal {
-		t.Fatal("Manage Server member opened protected duration modal")
+func TestAdminLegacyMaximumDurationControlIsRetired(t *testing.T) {
+	handler, _, privateKey := newTestHandler(t, []string{"legacy-control"}, nil)
+	response := executeSignedRequest(t, handler, privateKey, adminComponentBody("legacy", "admin-1", "8", adminDurationConfigureID, componentTypeButton, nil), testNow)
+	var result interactionResponse
+	decodeResponse(t, response, &result)
+	if result.Data == nil || !strings.Contains(result.Data.Content, "has been replaced") || !strings.Contains(result.Data.Content, "Session timeouts") {
+		t.Fatalf("result = %#v", result)
 	}
-	opened := executeSignedRequest(t, handler, privateKey, adminComponentBody("duration-open-id", "admin-1", "8", adminDurationConfigureID, componentTypeButton, nil), testNow)
-	var modal interactionResponse
-	decodeResponse(t, opened, &modal)
-	if modal.Type != interactionResponseModal || modal.Data == nil || modal.Data.CustomID != adminDurationConfigureID {
-		t.Fatalf("modal = %#v", modal)
+}
+
+func TestAdminLifecycleTimeoutDefaultsRequireAdministratorAndAuditOnce(t *testing.T) {
+	handler, repository, privateKey := newTestHandler(t, []string{"denied", "open", "submit", "replay"}, []string{"timeout-audit"})
+	denied := executeSignedRequest(t, handler, privateKey, adminComponentBody("timeout-denied", "manager-1", "32", adminTimeoutDefaultsID, componentTypeButton, nil), testNow)
+	var decoded interactionResponse
+	decodeResponse(t, denied, &decoded)
+	if decoded.Type == interactionResponseModal {
+		t.Fatal("Manage Server member opened protected timeout modal")
 	}
-	body, _ := json.Marshal(map[string]any{
-		"id": "duration-submit-id", "application_id": "app-1", "type": interactionTypeModalSubmit, "guild_id": "guild-1", "channel_id": "channel-1",
+	opened := executeSignedRequest(t, handler, privateKey, adminComponentBody("timeout-open", "admin-1", "8", adminTimeoutDefaultsID, componentTypeButton, nil), testNow)
+	decodeResponse(t, opened, &decoded)
+	if decoded.Type != interactionResponseModal || decoded.Data == nil || decoded.Data.Components == nil || len(*decoded.Data.Components) != 3 {
+		t.Fatalf("modal = %#v data = %#v", decoded, decoded.Data)
+	}
+	body := marshalPayload(map[string]any{
+		"id": "timeout-submit", "application_id": "app-1", "type": interactionTypeModalSubmit, "guild_id": "guild-1", "channel_id": "channel-1",
 		"member": map[string]any{"user": map[string]any{"id": "admin-1"}, "permissions": "8"},
-		"data": map[string]any{"custom_id": adminDurationConfigureID, "components": []any{
-			map[string]any{"type": componentTypeActionRow, "components": []any{map[string]any{"type": componentTypeTextInput, "custom_id": adminDurationSessionID, "value": "duration"}}},
-			map[string]any{"type": componentTypeActionRow, "components": []any{map[string]any{"type": componentTypeTextInput, "custom_id": adminDurationHoursID, "value": "2"}}},
-			map[string]any{"type": componentTypeActionRow, "components": []any{map[string]any{"type": componentTypeTextInput, "custom_id": adminDurationReasonID, "value": "planned event"}}},
+		"data": map[string]any{"custom_id": adminTimeoutDefaultsID, "components": []any{
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeTextInput, "custom_id": adminTimeoutSleepID, "value": "45"}},
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeTextInput, "custom_id": adminTimeoutArchiveID, "value": "14"}},
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeTextInput, "custom_id": adminTimeoutReasonID, "value": "planned event"}},
 		}},
 	})
 	response := executeSignedRequest(t, handler, privateKey, body, testNow)
-	var result interactionResponse
-	decodeResponse(t, response, &result)
-	if result.Data == nil || !strings.Contains(result.Data.Content, "Maximum duration updated") || result.Data.Flags&messageFlagEphemeral == 0 {
-		t.Fatalf("result = %#v, data = %#v", result, result.Data)
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "45 minutes") || !strings.Contains(decoded.Data.Content, "14 days") || decoded.Data.Flags&messageFlagEphemeral == 0 {
+		t.Fatalf("result = %#v", decoded)
 	}
-	if len(repository.Events("duration-session")) != 2 || repository.Events("duration-session")[1].Type != domain.EventMaximumDurationConfigured {
-		t.Fatal("missing duration event")
+	policy, err := repository.GetLifecycleTimeoutPolicy(context.Background(), "guild-1")
+	if err != nil || policy.SleepAfterSeconds != 45*60 || len(repository.LifecycleTimeoutAudits("guild-1")) != 1 {
+		t.Fatalf("policy = %#v, audits = %#v, err = %v", policy, repository.LifecycleTimeoutAudits("guild-1"), err)
 	}
 	response = executeSignedRequest(t, handler, privateKey, body, testNow)
-	decodeResponse(t, response, &result)
-	if len(repository.Events("duration-session")) != 2 {
-		t.Fatal("replay created another event")
+	decodeResponse(t, response, &decoded)
+	if len(repository.LifecycleTimeoutAudits("guild-1")) != 1 {
+		t.Fatal("replay created another audit")
 	}
 }
 

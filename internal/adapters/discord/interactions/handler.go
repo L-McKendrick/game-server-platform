@@ -839,17 +839,7 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 		return nil
 	}
 	if payload.Data.CustomID == adminDurationConfigureID || payload.Data.CustomID == adminDurationExtendID {
-		if !payload.memberIsAdministrator() {
-			return domain.ErrForbidden
-		}
-		if payload.Type == interactionTypeModalSubmit {
-			return handler.submitDurationModal(ctx, writer, payload, actorID, correlationID)
-		}
-		if payload.Type == interactionTypeMessageComponent && payload.Data.ComponentType == componentTypeButton {
-			writeDurationModal(writer, payload.Data.CustomID)
-			return nil
-		}
-		return newUserError("This duration control is invalid. Reopen `/rb admin`.")
+		return newUserError("This administration control has been replaced. Reopen `/rb admin` and choose **Session timeouts**.")
 	}
 	if strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) && payload.Type == interactionTypeModalSubmit {
 		return handler.submitServerConfigModal(ctx, writer, payload, actorID, correlationID)
@@ -1243,16 +1233,16 @@ func (payload interactionPayload) isAdminComponent() bool {
 		return false
 	}
 	if payload.Type == interactionTypeModalSubmit {
-		return strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || payload.Data.CustomID == adminDurationConfigureID || payload.Data.CustomID == adminDurationExtendID
+		return strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || payload.Data.CustomID == adminTimeoutDefaultsID || strings.HasPrefix(payload.Data.CustomID, adminTimeoutExtendPrefix) || payload.Data.CustomID == adminDurationConfigureID || payload.Data.CustomID == adminDurationExtendID
 	}
 	if payload.Type != interactionTypeMessageComponent {
 		return false
 	}
 	switch payload.Data.CustomID {
-	case adminMenuCustomID, adminRoleSelectCustomID, adminRoleClearPromptCustomID, adminRoleClearCancelCustomID, adminRepairSelectCustomID, adminPublicCardChannelCustomID, adminResetPrepareCustomID, adminServerConfigCancelID, adminDurationConfigureID, adminDurationExtendID:
+	case adminMenuCustomID, adminRoleSelectCustomID, adminRoleClearPromptCustomID, adminRoleClearCancelCustomID, adminRepairSelectCustomID, adminPublicCardChannelCustomID, adminResetPrepareCustomID, adminServerConfigCancelID, adminTimeoutDefaultsID, adminTimeoutSessionID, adminDurationConfigureID, adminDurationExtendID:
 		return true
 	default:
-		return strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigRemovePrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix)
+		return strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigRemovePrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix) || strings.HasPrefix(payload.Data.CustomID, adminTimeoutExtendPrefix)
 	}
 }
 

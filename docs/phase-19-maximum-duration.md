@@ -1,96 +1,63 @@
-# Phase 19.2 maximum-duration contract
+# Phase 19.2 lifecycle-timeout contract
 
-## Persisted model and policy
+## Policy and administration
 
-The existing session metadata item stores `maximum_duration_seconds`,
-`maximum_duration_started_at`, and `maximum_duration_deadline_at`. New drafts
-carry a 24-hour default. Valid configured durations are 1 hour through 7 days.
-An absent duration on a legacy item resolves to the 24-hour default in the
-domain without mutating the item on read. An absent start/deadline pair means
-the clock has not started; loading an old session never creates an overdue
-deadline. A partially populated or reversed timestamp pair is invalid.
+Each session stores two independent thresholds: time with no verified players
+before automatic sleep, and time sleeping before automatic archive. New sessions
+snapshot the guild defaults, which are 30 minutes and 7 days when no guild policy
+exists. Legacy rows with absent values receive the same defaults when loaded.
 
-The duration is wall-clock time, not accumulated running time. Later lifecycle
-work starts it once when the first resource-bearing start is committed. Sleep,
-wake, failure, archive, and restore never reset that original anchor. A
-configured policy change affects new starts; existing sessions retain their
-persisted duration and deadline unless explicitly extended by an admin.
+Discord Administrators use `/rb admin` → **Session timeouts**. **Edit future
+sessions** replaces both guild defaults within 10–1,440 minutes and 1–90 days.
+**Extend an active session** lists only `RUNNING` and `IDLE` sessions and adds a
+positive amount to both stored values; it cannot shorten either threshold or
+change drafts, transitions, sleeping, archived, failed, or deleted sessions.
+Both forms show current values and the response shows the resulting values.
 
-The first accepted provisioning workflow starts the wall-clock clock. A failed
-workflow start does not reset it; this is conservative for cost. Wake, restore,
-and restart do not reset it. An expired session cannot start, wake, restore, or
-restart; it may still sleep, archive, or be explicitly terminated.
+Every mutation requires a reason of at most 200 characters. Guild policy writes
+atomically store the versioned policy, immutable audit record, and idempotency
+record. Session extensions use the existing atomic session/event/idempotency
+write. Replays return the original result and conflicting reuse fails closed.
 
-The Administrator-only `/rb admin` maximum-duration menu configures a draft
-session from 1 to 168 whole hours. A started session can only be extended,
-in whole-hour increments, to a later deadline no more than seven days after
-the immutable start. The persisted duration is updated to the resulting total
-so status, owner messages, and audit data agree with the deadline. The admin
-supplies an audit reason (up to 200 characters).
-The session event records actor, request/correlation ID, previous and new
-deadline, reason, and time. Versioned writes and idempotency records reject
-conflicting updates and replay. The owner is notified in the session channel;
-only that owner's mention is permitted. The private status view shows the
-configured limit and current deadline.
+## Monitoring and enforcement
 
-The existing five-minute monitor checks the persisted deadline, not
-`created_at`. It queues at most one 1-hour and one 15-minute owner warning for
-each deadline. Extension creates a new deadline identity, so a newly due
-warning may be sent for it. At expiry, running/idle sessions queue the normal
-sleep workflow; sleeping sessions queue the normal archive workflow, without
-waiting for inactivity. Command IDs bind the session, deadline, and action;
-the worker revalidates all three against current state and rejects stale
-commands after extension or workflow-state drift. An active workflow lock
-defers new deadline action until reconciliation releases the lock. The
-duration clock continues while sleeping and during other workflows.
+The five-minute monitor calculates the next deadlines independently:
 
-If initial provisioning or game/content bootstrap fails, the monitor warns
-the owner that setup files and retained resources will be permanently deleted
-at the deadline. At expiry it queues the **existing** termination workflow,
-which verifies resource ownership before deleting the instance and volume,
-removes session-owned objects, releases capacity, and retains an auditable
-terminal record. A stale deadline, later extension, active workflow, or failure
-from wake, restore, restart, archive, or termination itself cannot authorize
-automatic deletion. An extension is rejected once termination or another
-active lifecycle workflow has begun. Later-lifecycle failures with retained
-resources still receive one owner-facing operator-attention alert; their data
-is not automatically destroyed. An incomplete termination also retains
-resource references and requires operator inspection rather than an unsafe
-automatic retry.
+- automatic sleep: `idle_since + sleep_after_seconds`;
+- automatic archive: `sleeping_since + archive_after_seconds`.
 
-The monitor scans all candidate pages in bounded DynamoDB requests and isolates
-per-session processing failures, so a broken earlier row or downstream request
-does not prevent later sessions from being checked. It returns the joined
-errors after processing the full candidate set. Warning intent and its audit
-event are saved together before queueing. If queueing fails, the next monitor
-pass retries the same deterministic notification ID and only marks it queued
-after a successful send. A crash after queue acceptance but before that final
-marker may repeat a warning; delivery is at-least-once, not exactly-once.
-Very large metadata tables can increase the work per monitor pass.
+Sleep still requires a fresh authoritative zero-player observation. Unknown,
+failed, malformed, or stale player evidence clears or pauses the idle window and
+is never treated as an empty server. Archive still requires `SLEEPING`, retained
+instance and volume references, and no active workflow lock.
+
+The monitor durably records at most one owner warning at one hour and fifteen
+minutes before each current deadline, then queues the existing sleep or archive
+command. Notification mentions are limited to the session owner. Command IDs and
+parameters bind the session, timing anchor, calculated deadline, and action. The
+worker reloads the session and recomputes the deadline before acquiring the
+normal workflow lock, so an extension, player return, state change, or concurrent
+workflow invalidates stale queued work. Queue failures remain retryable under the
+existing deterministic command identity.
+
+The old 24-hour wall-clock maximum no longer sleeps or archives normal sessions
+and no longer blocks start, wake, restore, or restart. Its persisted timestamps
+remain backward compatible and continue to guard only failed initial
+provisioning/bootstrap cleanup. Later-lifecycle failures retain resources and
+data for operator action; automation does not bypass archive verification,
+resource ownership checks, capacity truth, or workflow reconciliation.
 
 ## Operator checks
 
-After a separately approved deployment, confirm the five-minute monitor runs
-without errors and inspect its duration-warning and command-queue messages for
-one test session before relying on the guardrail. Verify a one-hour warning,
-a fifteen-minute warning, and that an expired running session starts the
-normal sleep workflow; an expired sleeping session should start the normal
-archive workflow. Check that an extension changes the deadline and invalidates
-already queued old-deadline commands. Inspect retained EC2/EBS resources and
-capacity when a workflow fails or a deadline action cannot complete. Do not
-manually replay a termination command against an altered session; use the
-existing operator cleanup path after checking resource tags and references.
+After a separately approved deployment, use a disposable session to verify the
+configured values shown by `/rb status`, the one-hour/fifteen-minute warnings,
+automatic sleep after continuous verified emptiness, and archive after continuous
+sleep. Extend the session after a command is queued and confirm the old command
+fails closed while a command for the new deadline can proceed. Inspect monitor,
+command-worker, workflow, DLQ, EC2/EBS, and capacity state after any failure.
 
-This is a maximum-runtime policy, not an AWS spend guarantee. The monitor can
-run late, queue delivery or a lifecycle workflow can fail, and later-lifecycle
-failures deliberately preserve data and billable resources. Keep AWS budget
-alarms and operator review active; investigate a missed monitor run, queue
-DLQ item, or failed cleanup promptly. Never assume an expired timestamp alone
-means EC2/EBS cost has stopped.
-
-No `terraform apply` or live Discord command registration has been performed
-for this development slice. The existing five-minute monitor schedule and
-queues are reused; deploying updated Lambda packages requires a fresh reviewed
-Terraform plan. Keep independent AWS billing alarms and operator monitoring
-active until live verification and the later-lifecycle failed-state exception
-are resolved.
+This policy reduces unattended cost; it is not an AWS spending guarantee.
+Monitor, queue, workflow, or cleanup failures can leave billable resources, and
+later-lifecycle failures intentionally retain data. Keep AWS Budget alarms and
+operator review active. Never run Terraform apply or live command registration
+without a fresh reviewed plan and separate deployment approval.

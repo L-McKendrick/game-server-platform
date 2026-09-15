@@ -98,9 +98,6 @@ func (service *Service) Start(ctx context.Context, command domain.CommandEnvelop
 		return domain.Workflow{}, domain.ErrForbidden
 	}
 	now := service.clock.Now().UTC()
-	if session.MaximumDuration.Expired(now) && workflowType != domain.SleepWorkflowType && workflowType != domain.ArchiveWorkflowType && workflowType != domain.TerminationWorkflowType {
-		return domain.Workflow{}, fmt.Errorf("maximum session duration has expired: %w", domain.ErrInvalidTransition)
-	}
 	if trustedAutomation {
 		var automationErr error
 		if workflowType == domain.SleepWorkflowType {

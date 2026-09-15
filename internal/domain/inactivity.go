@@ -9,13 +9,12 @@ import (
 )
 
 const (
-	AutomaticSleepAfter             = 30 * time.Minute
-	AutomaticArchiveAfter           = 72 * time.Hour
-	MaximumActivityEvidenceAge      = 10 * time.Minute
-	InactivityMonitorActorID        = "inactivity-monitor"
-	AutomaticIdleSinceParameter     = "automatic_idle_since"
-	AutomaticSleepingSinceParameter = "automatic_sleeping_since"
-	MaximumDeadlineParameter        = "maximum_duration_deadline"
+	MaximumActivityEvidenceAge          = 10 * time.Minute
+	InactivityMonitorActorID            = "inactivity-monitor"
+	AutomaticIdleSinceParameter         = "automatic_idle_since"
+	AutomaticSleepingSinceParameter     = "automatic_sleeping_since"
+	AutomaticLifecycleDeadlineParameter = "automatic_lifecycle_deadline"
+	MaximumDeadlineParameter            = "maximum_duration_deadline"
 )
 
 // PlayerActivityObservation is a bounded point-in-time player count. Known is
@@ -29,9 +28,21 @@ type PlayerActivityObservation struct {
 
 func (session Session) AutomaticArchiveDue(now time.Time) bool {
 	now = now.UTC()
+	deadline := session.AutomaticArchiveDeadline()
 	return session.LifecycleState == StateSleeping && session.ActiveWorkflowID == "" &&
 		session.Infrastructure.InstanceID != "" && session.Infrastructure.DataVolumeID != "" &&
-		!session.SleepingSince.IsZero() && !session.SleepingSince.After(now) && now.Sub(session.SleepingSince) >= AutomaticArchiveAfter
+		!deadline.IsZero() && !deadline.After(now)
+}
+
+func (session Session) AutomaticArchiveDeadline() time.Time {
+	if session.SleepingSince.IsZero() {
+		return time.Time{}
+	}
+	seconds := session.ArchiveAfterSeconds
+	if seconds <= 0 {
+		seconds = DefaultArchiveAfterSeconds
+	}
+	return session.SleepingSince.UTC().Add(time.Duration(seconds) * time.Second)
 }
 
 func AutomaticArchiveCommandID(sessionID string, sleepingSince time.Time) string {
@@ -47,7 +58,8 @@ func ValidateAutomaticArchiveCommand(command CommandEnvelope, session Session, n
 		return validateMaximumDeadlineCommand(command, session, now, CommandArchiveSession)
 	}
 	sleepingSince, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(command.Parameters[AutomaticSleepingSinceParameter]))
-	if err != nil || !sleepingSince.Equal(session.SleepingSince) || command.CommandID != AutomaticArchiveCommandID(session.ID, sleepingSince) ||
+	deadline, deadlineErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(command.Parameters[AutomaticLifecycleDeadlineParameter]))
+	if err != nil || deadlineErr != nil || !sleepingSince.Equal(session.SleepingSince) || !deadline.Equal(session.AutomaticArchiveDeadline()) || command.CommandID != AutomaticArchiveCommandID(session.ID, deadline) ||
 		command.IdempotencyKey != "automatic-archive:"+command.CommandID || command.CorrelationID != command.CommandID {
 		return ErrIdempotencyConflict
 	}
@@ -59,16 +71,33 @@ func ValidateAutomaticArchiveCommand(command CommandEnvelope, session Session, n
 
 func (session Session) AutomaticSleepDue(now time.Time) bool {
 	now = now.UTC()
-	return session.LifecycleState == StateRunning && session.ActiveWorkflowID == "" &&
+	deadline := session.AutomaticSleepDeadline()
+	return (session.LifecycleState == StateRunning || session.LifecycleState == StateIdle) && session.ActiveWorkflowID == "" &&
 		session.PlayerCountKnown && session.PlayerCount == 0 && !session.IdleSince.IsZero() &&
 		!session.PlayerCountObservedAt.IsZero() && !session.PlayerCountObservedAt.After(now) &&
 		now.Sub(session.PlayerCountObservedAt) <= MaximumActivityEvidenceAge &&
-		now.Sub(session.IdleSince) >= AutomaticSleepAfter
+		!deadline.IsZero() && !deadline.After(now)
+}
+
+func (session Session) AutomaticSleepDeadline() time.Time {
+	if session.IdleSince.IsZero() {
+		return time.Time{}
+	}
+	seconds := session.SleepAfterSeconds
+	if seconds <= 0 {
+		seconds = DefaultSleepAfterSeconds
+	}
+	return session.IdleSince.UTC().Add(time.Duration(seconds) * time.Second)
 }
 
 func AutomaticSleepCommandID(sessionID string, idleSince time.Time) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + idleSince.UTC().Format(time.RFC3339Nano)))
 	return "auto-sleep-" + hex.EncodeToString(sum[:])[:24]
+}
+
+func LifecycleTimeoutWarningID(sessionID string, deadline time.Time, action string, level int) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(sessionID) + "\x00" + deadline.UTC().Format(time.RFC3339Nano) + "\x00" + action + "\x00" + fmt.Sprintf("%d", level)))
+	return "lifecycle-warning-" + hex.EncodeToString(sum[:])[:20]
 }
 
 func ValidateAutomaticSleepCommand(command CommandEnvelope, session Session, now time.Time) error {
@@ -79,7 +108,8 @@ func ValidateAutomaticSleepCommand(command CommandEnvelope, session Session, now
 		return validateMaximumDeadlineCommand(command, session, now, CommandSleepSession)
 	}
 	idleSince, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(command.Parameters[AutomaticIdleSinceParameter]))
-	if err != nil || !idleSince.Equal(session.IdleSince) || command.CommandID != AutomaticSleepCommandID(session.ID, idleSince) ||
+	deadline, deadlineErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(command.Parameters[AutomaticLifecycleDeadlineParameter]))
+	if err != nil || deadlineErr != nil || !idleSince.Equal(session.IdleSince) || !deadline.Equal(session.AutomaticSleepDeadline()) || command.CommandID != AutomaticSleepCommandID(session.ID, deadline) ||
 		command.IdempotencyKey != "automatic-sleep:"+command.CommandID || command.CorrelationID != command.CommandID {
 		return ErrIdempotencyConflict
 	}
@@ -94,14 +124,6 @@ func (session Session) MaximumDeadlineAction(now time.Time) string {
 		return ""
 	}
 	switch session.LifecycleState {
-	case StateRunning, StateIdle:
-		if session.Infrastructure.InstanceID != "" {
-			return CommandSleepSession
-		}
-	case StateSleeping:
-		if session.Infrastructure.InstanceID != "" && session.Infrastructure.DataVolumeID != "" {
-			return CommandArchiveSession
-		}
 	case StateFailed:
 		if session.FailedInitialCreation() {
 			return CommandDestroySession

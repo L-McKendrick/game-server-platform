@@ -32,29 +32,14 @@ func TestMaximumDurationLegacyAndBounds(t *testing.T) {
 	}
 }
 
-func TestMaximumDeadlineAutomationRevalidatesStateAndExtension(t *testing.T) {
+func TestMaximumDeadlineAutomationIsLimitedToFailedInitialCreation(t *testing.T) {
 	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
 	session := Session{ID: "session", GuildID: "guild", LifecycleState: StateRunning, Infrastructure: Infrastructure{InstanceID: "i-test", DataVolumeID: "vol-test"}, MaximumDuration: MaximumDuration{Seconds: 3600, StartedAt: now.Add(-time.Hour), DeadlineAt: now}}
-	if action := session.MaximumDeadlineAction(now); action != CommandSleepSession {
+	if action := session.MaximumDeadlineAction(now); action != "" {
 		t.Fatalf("action = %q", action)
 	}
-	id := MaximumDeadlineCommandID(session.ID, now, CommandSleepSession)
-	command := CommandEnvelope{SchemaVersion: 1, CommandID: id, CommandType: CommandSleepSession, Actor: CommandActor{System: true, DiscordUserID: InactivityMonitorActorID}, SessionID: session.ID, IdempotencyKey: "maximum-duration:" + id, CorrelationID: id, Parameters: map[string]string{MaximumDeadlineParameter: now.Format(time.RFC3339Nano)}}
-	if err := ValidateAutomaticSleepCommand(command, session, now); err != nil {
-		t.Fatal(err)
-	}
-	session.ActiveWorkflowID = "busy"
-	if err := ValidateAutomaticSleepCommand(command, session, now); !errors.Is(err, ErrIdempotencyConflict) {
-		t.Fatalf("active lock accepted: %v", err)
-	}
-	session.ActiveWorkflowID = ""
-	session.MaximumDuration.DeadlineAt = now.Add(time.Hour)
-	if err := ValidateAutomaticSleepCommand(command, session, now); !errors.Is(err, ErrIdempotencyConflict) {
-		t.Fatalf("stale deadline accepted: %v", err)
-	}
-	session.MaximumDuration.DeadlineAt = now
 	session.LifecycleState = StateSleeping
-	if action := session.MaximumDeadlineAction(now); action != CommandArchiveSession {
+	if action := session.MaximumDeadlineAction(now); action != "" {
 		t.Fatalf("sleeping action = %q", action)
 	}
 	session.LifecycleState = StateFailed
@@ -161,9 +146,9 @@ func TestMaximumDeadlineActionKeepsLaterFailuresAndLockedSessionsSafe(t *testing
 		state      LifecycleState
 		lock, want string
 	}{
-		{"running", StateRunning, "", CommandSleepSession},
-		{"idle", StateIdle, "", CommandSleepSession},
-		{"sleeping", StateSleeping, "", CommandArchiveSession},
+		{"running", StateRunning, "", ""},
+		{"idle", StateIdle, "", ""},
+		{"sleeping", StateSleeping, "", ""},
 		{"restoring", StateRestoring, "", ""},
 		{"archiving", StateArchiving, "", ""},
 		{"destroying", StateDestroying, "", ""},

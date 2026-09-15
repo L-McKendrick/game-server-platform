@@ -44,7 +44,7 @@ printf 'Update state (0x61) downloading, progress: 101.00 (2 / 100)\n' > "$work/
 [ "$(arma_download_activity "$work/output")" = ARMA_SERVER ]
 log() { :; }
 activity() { printf '%s\n' "$1" >> "$work/activity"; }
-runuser() { printf 'Logged in OK\n'; sleep 0.2; return 0; }
+runuser() { printf 'Logged in OK\n'; sleep 1; return 0; }
 STEAM_AUTH_ROOT="$work"; STEAM_AUTH_VALID_FILE="$work/validated"; ROOT="$work"; STEAM_AUTH_VALID=false
 mark_steam_authorization_valid() { STEAM_AUTH_VALID=true; : > "$STEAM_AUTH_VALID_FILE"; }
 run_steamcmd "$work/runfile" arma
@@ -68,12 +68,12 @@ code=0; run_steamcmd "$work/runfile" arma 2>/dev/null || code=$?
 
 # Exercise the real publisher with a slow external command, not an activity stub.
 mkdir "$work/bin"
-printf '#!/usr/bin/env bash\nsleep 0.1\ntouch "$UPLOAD_STARTED"\nexec sleep 30\n' > "$work/bin/aws"
+printf '#!/usr/bin/env bash\ntouch "$UPLOAD_STARTED"\nexec sleep 30\n' > "$work/bin/aws"
 chmod +x "$work/bin/aws"
 export PATH="$work/bin:$PATH" UPLOAD_STARTED="$work/upload-started"
 PROGRESS_FILE="$work/progress"; ASSETS_BUCKET=test; PROGRESS_KEY=test; AWS_REGION=test
 activity() { printf '%s\n' "$1" > "$PROGRESS_FILE"; publish_progress; }
-runuser() { for n in $(seq 1 500); do [ ! -f "$UPLOAD_STARTED" ] || return 0; sleep 0.01; done; return 1; }
+runuser() { for n in $(seq 1 500); do [ ! -f "$UPLOAD_STARTED" ] || { sleep 0.2; return 0; }; sleep 0.01; done; return 1; }
 run_steamcmd "$work/runfile" arma
 [ -f "$UPLOAD_STARTED" ]
 ! jobs -pr | grep -q .

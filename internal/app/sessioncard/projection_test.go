@@ -218,10 +218,10 @@ func TestBootstrapActivityAndInactivityDeadlinesRenderFromAuthoritativeState(t *
 
 	idle := domain.Session{
 		DisplayName: "Idle", Slug: "idle", GameType: "arma3", LifecycleState: domain.StateRunning, UpdatedAt: now,
-		PlayerCountKnown: true, PlayerCount: 0, IdleSince: now.Add(-10 * time.Minute),
+		PlayerCountKnown: true, PlayerCount: 0, IdleSince: now.Add(-10 * time.Minute), SleepAfterSeconds: 45 * 60, ArchiveAfterSeconds: 14 * 86400,
 	}
 	idleContent := RenderDetailed(Project(idle, Options{Now: now}))
-	wantSleep := idle.IdleSince.Add(domain.AutomaticSleepAfter).Unix()
+	wantSleep := idle.AutomaticSleepDeadline().Unix()
 	if !strings.Contains(idleContent, fmt.Sprintf("**Automatic sleep:** <t:%d:F> (<t:%d:R>)", wantSleep, wantSleep)) {
 		t.Fatalf("idle status = %q", idleContent)
 	}
@@ -230,7 +230,7 @@ func TestBootstrapActivityAndInactivityDeadlinesRenderFromAuthoritativeState(t *
 	sleeping.LifecycleState = domain.StateSleeping
 	sleeping.SleepingSince = now.Add(-time.Hour)
 	sleeping.IdleSince = time.Time{}
-	wantArchive := sleeping.SleepingSince.Add(domain.AutomaticArchiveAfter).Unix()
+	wantArchive := sleeping.AutomaticArchiveDeadline().Unix()
 	sleepingContent := RenderDetailed(Project(sleeping, Options{Now: now}))
 	if !strings.Contains(sleepingContent, fmt.Sprintf("**Automatic archive:** <t:%d:F> (<t:%d:R>)", wantArchive, wantArchive)) {
 		t.Fatalf("sleeping status = %q", sleepingContent)

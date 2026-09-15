@@ -2,109 +2,83 @@
 
 ## State and Objective
 
-Phase 19.1 is complete. Phase 19.2 lifecycle-timeout redesign tasks 19.2.8–11
-are implemented and committed; tasks 19.2.12–19.2.13 remain. Phase 19.3
-(managed-host S3 isolation) remains before
+Phase 19.2 is complete locally on `codex/phase-19-production-guardrails` and is
+not deployed. Phase 19.3 managed-host S3 isolation remains required before
 production or multi-tenant use. Do not claim a guaranteed AWS spending cap.
 
 ## Current Handoff
 
-- Guild-scoped lifecycle timeout defaults now persist separately and fall back
-  to 30 minutes without players before sleep and 7 days asleep before archive.
-  New sessions snapshot the current guild values; existing and legacy sessions
-  retain their persisted settings.
-- `/rb admin` now presents **Session timeouts**, displays both current defaults,
-  and offers **Edit future sessions** plus an eligible RUNNING/IDLE session
-  selector. Selecting a session shows its current values before **Add time**;
-  both modals use brief labels and include the current values for reference.
-  Administrators can now replace both future defaults or add positive time to
-  both values for a RUNNING/IDLE session. Mutations recheck authorization and
-  current state, enforce bounds, use replay-safe optimistic writes, retain the
-  reason in immutable audit data, and report the resulting values. Monitor
-  enforcement remains for 19.2.12. Do not deploy this partial flow.
-
-- The trusted Steam authorization broker now uses exchange-specific lease
-  ownership and replay-safe prepare, promotion, reauthorization, and cleanup.
-  It reconstructs a missing exchange input from the authoritative secret,
-  recognizes an ambiguously successful secret promotion, rejects changed
-  authorization identity, validates object-deletion results, and permits safe
-  reacquisition of failed exchanges. Successful SteamCMD authentication is
-  propagated across isolated shell helpers with a root-owned ephemeral marker,
-  so the parent returns the cache while a nested Guard failure still clears
-  validity and the Steam user cannot forge promotion evidence.
-  Broker DynamoDB access is restricted to the cache lease and exchange
-  keyspaces.
-- Persisted 24-hour default, 1–168-hour configured bounds, immutable first
-  provisioning clock, current deadline, and warning marker. Legacy rows remain
-  unstarted on read. Extensions accept whole hours and keep persisted duration
-  and deadline consistent.
-- Exact session slugs entered in `/rb admin` duration forms now resolve through
-  the durable guild slug claim instead of the first 100 results from a bounded
-  guild listing. This fixes test-61 in guilds with more than 100 records;
-  genuine missing sessions now receive specific input guidance instead of a
-  misleading stale-control response. Legacy sessions without slug claims keep
-  the bounded compatibility fallback.
-- Administrator-only `/rb admin` duration modals configure a draft/new session
-  or extend a started deadline (up to seven days from its original start).
-  Mutations require a reason, use versioned idempotent writes, create immutable
-  audit events, and notify only the owner by mention.
-- The existing five-minute monitor pages through all candidates, continues
-  after per-session failures, and reports aggregated errors after processing.
-  It warns at one hour and fifteen minutes; expired running/idle sessions queue
-  sleep, then sleeping sessions queue archive. Warning intent is durably
-  recorded before enqueue; failed enqueue retries on the next pass using a
-  deterministic notification ID. The notification worker revalidates the
-  current guild, channel, and owner before mentioning anyone. An ambiguous
-  enqueue success followed by failed acknowledgement can repeat a warning, but
-  cannot silently lose it. The command worker revalidates deadline, state, and
-  lock so stale queued actions fail closed. Expired sessions cannot start or
-  wake.
-- A failed initial provisioning/bootstrap session warns its owner before the
-  deadline and queues the existing termination workflow at expiry. It uses
-  exact deadline/state binding; stale commands, later lifecycle failures, and
-  active workflow locks cannot trigger automatic deletion. Existing verified
-  resource cleanup, capacity release, and retained failure truth are reused.
-  Later-lifecycle failures with retained resources receive operator attention
-  rather than automatic data loss. See `docs/phase-19-maximum-duration.md`.
-- Focused broker, policy, persistence, admin authorization, warning/retry,
-  extension, stale-command, workflow, and state-matrix tests pass. The bootstrap
-  progress sampler now interrupts an in-flight S3 uploader promptly during
-  workflow shutdown, with a load-tolerant regression. `go test -count=1 ./...`,
-  `go vet ./...`, `go build ./cmd/...`, Lambda packaging, Terraform
-  formatting, and Terraform validation completed successfully on this host.
-  After tasks 19.2.10–11, `go test ./...` and `go vet ./...` also pass.
-  No AWS mutation, deployment, command registration, or live-session test was
-  performed. See the Phase 19 operator documents for deployment checks.
+- Guild-scoped defaults persist separately and fall back to 30 minutes without
+  players before sleep and 7 days sleeping before archive. New sessions snapshot
+  the current defaults; legacy rows safely receive the same fallback values.
+- `/rb admin` → **Session timeouts** lets Discord Administrators replace both
+  future defaults or add positive time to both settings for a `RUNNING`/`IDLE`
+  session. Current and resulting values are shown. Mutations enforce bounds,
+  current state, optimistic versions, idempotent replay, and immutable reasons.
+- The five-minute monitor calculates independent sleep and archive deadlines
+  from the persisted timeout plus `idle_since` or `sleeping_since`. It records
+  bounded one-hour/fifteen-minute owner warnings and queues the existing guarded
+  workflows. Command identity binds the calculated deadline, so extensions,
+  player return, state drift, or an active workflow make stale work fail closed.
+- The former wall-clock maximum no longer sleeps/archives normal sessions or
+  blocks start/wake/restore/restart. Its persisted clock remains only for guarded
+  failed-initial-creation cleanup. Later-lifecycle failures continue to retain
+  data and resources for operator action.
+- Old maximum-duration Discord components now direct administrators to the new
+  menu. A routing defect found during coverage was corrected so all new timeout
+  buttons, selects, and modal submissions reach the admin handler.
+- Focused domain, service, DynamoDB atomic-write, Discord authorization/replay,
+  workflow, monitoring, projection, migration, and stale-command tests pass.
+  `go test -count=1 ./...`, `go vet ./...`, `go build ./cmd/...`, Terraform
+  formatting/validation, and Lambda packaging pass. The bootstrap progress
+  sampler regression now waits for its slow uploader to be fully established,
+  removing a load-sensitive test race without changing runtime behavior. No AWS
+  mutation or live Discord registration occurred.
 
 ## Important Operator Attention
 
-- Maximum duration is **not a guaranteed cost cap**. Later-lifecycle failures
-  or incomplete termination can retain billable infrastructure; default action
-  is manual operator inspection and AWS billing alarms.
-- Monitor scans now cover all pages, so very large metadata tables may increase
-  scan work per pass. Default action is to review monitor runtime after deployment.
+- Lifecycle timeouts reduce unattended cost but do not guarantee an AWS spending
+  cap. Monitor, queue, workflow, or cleanup failures can retain billable resources;
+  keep AWS Budget alarms and operator review active.
 - Deploy only when no Steam-authenticated lifecycle operation or broker exchange
-  is active; the review tightened the exchange record and lease-owner contracts.
-  Default action is to wait for active operations to finish before deployment.
-- Test-58's retained instance and volume may remain billable. Do not retry it
-  until the Phase 19.1 Steam exchange correction is confirmed deployed.
-- Test-60 (`ref_f735121a5ef9`) completed its host bootstrap but was marked
-  failed because the parent shell skipped the broker output upload. Its
-  `c7i-flex.large` instance and two volumes were still running when inspected.
-  Default action is to avoid another creation attempt, deploy this correction,
-  then reconcile or terminate the retained test resources through the existing
-  guarded operator workflow.
-- Test-61 is running with its original 24-hour deadline at
-  `2026-09-15T18:46:03Z`. Two failed duration submissions at 18:58 UTC resolved
-  `test-61` as not found because it fell beyond the first 100 guild records;
-  neither attempt changed its deadline. Default action is to deploy this
-  correction before using the slug again. Until then, its immutable session ID
-  `01M2GKV5ME3MG97V0FY5894M0V` bypasses the affected slug fallback.
-- Cross-session managed-host S3 access is an accepted supervised-development
-  risk scheduled for Phase 19.3 before production or multi-tenant use.
+  is active. Wait for active operations before deployment.
+- Test-58 may retain a billable instance and volume. Inspect it before retrying.
+- Test-60 (`ref_f735121a5ef9`) completed host bootstrap but was marked failed by
+  the previously corrected broker-output path. Reconcile or terminate retained
+  resources through the guarded operator workflow after deployment.
+- Test-61 (`01M2GKV5ME3MG97V0FY5894M0V`) retains its earlier deadline state. Use
+  the new session-timeout controls only after this slice is deployed.
+- Cross-session managed-host S3 access remains an accepted supervised-development
+  risk scheduled for Phase 19.3.
 
 ## Commands to Apply Current Changes
 
-Do not deploy this incomplete development slice. No apply or Discord command
-registration should be run until tasks 19.2.12–19.2.13 are implemented and
-validated.
+Run only after separately approving deployment and confirming no lifecycle or
+Steam broker exchange is active:
+
+```powershell
+$Workspace = (Resolve-Path ".").Path
+$env:GOCACHE = Join-Path $Workspace ".cache/go-build"
+$env:GOMODCACHE = Join-Path $Workspace ".cache/go-mod"
+$env:AWS_PROFILE = "game-server-dev"
+$env:AWS_REGION = "us-west-2"
+
+go test ./...
+go vet ./...
+go build ./cmd/...
+terraform fmt -check -recursive infra/terraform
+./scripts/package-discord-lambda.ps1
+terraform -chdir=infra/terraform/environments/dev init -backend-config=backend.hcl -input=false
+terraform -chdir=infra/terraform/environments/dev validate
+terraform -chdir=infra/terraform/environments/dev plan -out=phase-19-2-lifecycle-timeouts.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-19-2-lifecycle-timeouts.tfplan
+terraform -chdir=infra/terraform/environments/dev apply phase-19-2-lifecycle-timeouts.tfplan
+
+aws lambda get-function-configuration --function-name game-server-platform-dev-discord-interactions --query '{State:State,Updated:LastModified}'
+aws lambda get-function-configuration --function-name game-server-platform-dev-monitor-worker --query '{State:State,Updated:LastModified}'
+aws lambda get-function-configuration --function-name game-server-platform-dev-command-worker --query '{State:State,Updated:LastModified}'
+```
+
+No Discord command registration is required because command definitions did not
+change. Never reuse this saved plan after source, variables, credentials, or
+remote state change; create and review a new plan instead.
