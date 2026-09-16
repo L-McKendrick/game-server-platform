@@ -15,8 +15,9 @@ Server owners can revise mods and mission files between runs. Discord
 administrators control access, upload a shared `server.cfg`, repair session
 cards, and reset runtime data.
 
-Running servers automatically sleep after 30 continuous minutes of verified
-zero-player activity. A server that remains sleeping for 72 continuous hours
+Running servers automatically sleep after the session's configured period of
+verified zero-player activity (30 minutes by default). A server that remains
+sleeping for its configured archive period (7 days by default)
 automatically enters the same verified archive workflow used by an owner
 request. Missing or failed player queries pause the policy rather than being
 treated as an empty server; see [Automatic inactivity lifecycle](docs/phase-14-inactivity-lifecycle.md).

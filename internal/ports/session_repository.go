@@ -7,6 +7,24 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
 
+// GuildSessionPage is a storage-independent request for one deterministic page.
+// Cursor is opaque to callers and bound to the guild and requested state set.
+type GuildSessionPage struct {
+	Size   int32
+	Cursor string
+}
+
+type GuildSessionPageResult struct {
+	Sessions   []domain.Session
+	NextCursor string
+}
+
+// GuildSessionRepository discovers candidates through explicit lifecycle-state
+// ranges. Callers must still authoritatively Get and revalidate before mutation.
+type GuildSessionRepository interface {
+	ListGuildSessions(ctx context.Context, guildID string, states []domain.LifecycleState, page GuildSessionPage) (GuildSessionPageResult, error)
+}
+
 // ArtifactQueue accepts validated, bounded attachment-ingest requests.
 type ArtifactQueue interface {
 	Enqueue(ctx context.Context, request domain.ArtifactIngestRequest) error
@@ -15,6 +33,11 @@ type ArtifactQueue interface {
 type GuildServerConfigRepository interface {
 	GetGuildServerConfig(ctx context.Context, guildID string) (domain.GuildServerConfig, error)
 	SaveGuildServerConfig(ctx context.Context, config domain.GuildServerConfig, expectedRevision int64) (domain.GuildServerConfig, error)
+}
+
+type LifecycleTimeoutPolicyRepository interface {
+	GetLifecycleTimeoutPolicy(ctx context.Context, guildID string) (domain.GuildLifecycleTimeoutPolicy, error)
+	SaveLifecycleTimeoutPolicy(ctx context.Context, policy domain.GuildLifecycleTimeoutPolicy, expectedVersion int64, audit domain.LifecycleTimeoutPolicyAudit, idempotency domain.IdempotencyRecord) error
 }
 
 type CommandQueue interface {
@@ -291,6 +314,8 @@ type ComputeProvisioner interface {
 
 // SessionRepository provides durable access to session metadata.
 type SessionRepository interface {
+	GuildSessionRepository
+
 	Create(
 		ctx context.Context,
 		session domain.Session,
@@ -321,16 +346,11 @@ type SessionRepository interface {
 		sessionID string,
 		limit int,
 	) error
+}
 
-	ListByOwner(
-		ctx context.Context,
-		ownerDiscordUserID string,
-		limit int32,
-	) ([]domain.Session, error)
-
-	ListByGuild(
-		ctx context.Context,
-		guildID string,
-		limit int32,
-	) ([]domain.Session, error)
+// SessionSlugRepository resolves the durable guild-scoped slug claim without
+// depending on a bounded session listing. Repositories without slug claims may
+// omit this optional capability and use the selector's legacy fallback.
+type SessionSlugRepository interface {
+	GetByGuildSlug(ctx context.Context, guildID, slug string) (domain.Session, error)
 }

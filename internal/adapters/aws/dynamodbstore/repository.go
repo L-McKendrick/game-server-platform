@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,15 +21,14 @@ import (
 )
 
 const (
-	sessionSortKey             = "METADATA"
-	sessionCardSortKey         = "DISCORD_CARD"
-	cardControlSortKey         = "CLAIM"
-	sessionModlistSortKey      = "DISCORD_MODLIST"
-	idempotencySortKey         = "RESULT"
-	ownerIndexName             = "gsi1"
-	schemaVersion              = 3
-	maximumGuildScanItems      = int32(1000)
-	maximumLegacyCardScanItems = int32(10000)
+	sessionSortKey        = "METADATA"
+	sessionCardSortKey    = "DISCORD_CARD"
+	cardControlSortKey    = "CLAIM"
+	sessionModlistSortKey = "DISCORD_MODLIST"
+	idempotencySortKey    = "RESULT"
+	ownerIndexName        = "gsi1"
+	schemaVersion         = 3
+	maximumGuildScanItems = int32(1000)
 )
 
 func marshalSessionJSON(value any) string {
@@ -74,6 +72,12 @@ type API interface {
 		optFns ...func(*dynamodb.Options),
 	) (*dynamodb.DeleteItemOutput, error)
 
+	UpdateItem(
+		ctx context.Context,
+		params *dynamodb.UpdateItemInput,
+		optFns ...func(*dynamodb.Options),
+	) (*dynamodb.UpdateItemOutput, error)
+
 	TransactWriteItems(
 		ctx context.Context,
 		params *dynamodb.TransactWriteItemsInput,
@@ -105,108 +109,114 @@ type sessionItem struct {
 	EntityType    string `dynamodbav:"entity_type"`
 	SchemaVersion int    `dynamodbav:"schema_version"`
 
-	SessionID                        string   `dynamodbav:"session_id"`
-	Slug                             string   `dynamodbav:"slug"`
-	DisplayName                      string   `dynamodbav:"display_name"`
-	Description                      string   `dynamodbav:"description,omitempty"`
-	GameType                         string   `dynamodbav:"game_type"`
-	OwnerDiscordUserID               string   `dynamodbav:"owner_discord_user_id"`
-	GuildID                          string   `dynamodbav:"guild_id"`
-	ChannelID                        string   `dynamodbav:"channel_id"`
-	GameProfileID                    string   `dynamodbav:"game_profile_id"`
-	SleepAfterSeconds                int64    `dynamodbav:"sleep_after_seconds"`
-	ArchiveAfterSeconds              int64    `dynamodbav:"archive_after_seconds"`
-	TeamSpeakEnabled                 bool     `dynamodbav:"teamspeak_enabled"`
-	Vanilla                          bool     `dynamodbav:"vanilla"`
-	CreatorDLCs                      []string `dynamodbav:"creator_dlcs,omitempty"`
-	StartWhenReady                   bool     `dynamodbav:"start_when_ready,omitempty"`
-	NotifyWhenReady                  bool     `dynamodbav:"notify_when_ready,omitempty"`
-	ReadyNotificationChannelID       string   `dynamodbav:"ready_notification_channel_id,omitempty"`
-	ReadyNotificationAttemptedAt     string   `dynamodbav:"ready_notification_attempted_at,omitempty"`
-	ConfigurationRevision            int64    `dynamodbav:"configuration_revision"`
-	ServerConfigRevision             int64    `dynamodbav:"server_config_revision,omitempty"`
-	ServerConfigObjectKey            string   `dynamodbav:"server_config_object_key,omitempty"`
-	ServerConfigSHA256               string   `dynamodbav:"server_config_sha256,omitempty"`
-	MissionObjectKey                 string   `dynamodbav:"mission_object_key,omitempty"`
-	MissionFilesJSON                 string   `dynamodbav:"mission_files_json,omitempty"`
-	ConfiguredMissionJSON            string   `dynamodbav:"configured_mission_json,omitempty"`
-	CurrentMissionJSON               string   `dynamodbav:"current_mission_json,omitempty"`
-	WorkshopMissionSourcesJSON       string   `dynamodbav:"workshop_mission_sources_json,omitempty"`
-	WorkshopModSourcesJSON           string   `dynamodbav:"workshop_mod_sources_json,omitempty"`
-	PresetObjectKey                  string   `dynamodbav:"preset_object_key,omitempty"`
-	PresetRevisionSequence           int64    `dynamodbav:"preset_revision_sequence,omitempty"`
-	ActivePresetRevision             int64    `dynamodbav:"active_preset_revision,omitempty"`
-	ActivePresetObjectKey            string   `dynamodbav:"active_preset_object_key,omitempty"`
-	ActivePresetModlistKey           string   `dynamodbav:"active_preset_modlist_key,omitempty"`
-	ActivePresetModlistName          string   `dynamodbav:"active_preset_modlist_name,omitempty"`
-	ActivePresetModlistSHA           string   `dynamodbav:"active_preset_modlist_sha256,omitempty"`
-	ActivePresetModlistSize          int64    `dynamodbav:"active_preset_modlist_size,omitempty"`
-	ActivePresetWorkshopCount        int      `dynamodbav:"active_preset_workshop_count,omitempty"`
-	ActivePresetStagedAt             string   `dynamodbav:"active_preset_staged_at,omitempty"`
-	ActivePresetActivatedAt          string   `dynamodbav:"active_preset_activated_at,omitempty"`
-	PendingPresetRevision            int64    `dynamodbav:"pending_preset_revision,omitempty"`
-	PendingPresetBaseRevision        int64    `dynamodbav:"pending_preset_base_revision,omitempty"`
-	PendingPresetObjectKey           string   `dynamodbav:"pending_preset_object_key,omitempty"`
-	PendingPresetModlistKey          string   `dynamodbav:"pending_preset_modlist_key,omitempty"`
-	PendingPresetModlistName         string   `dynamodbav:"pending_preset_modlist_name,omitempty"`
-	PendingPresetModlistSHA          string   `dynamodbav:"pending_preset_modlist_sha256,omitempty"`
-	PendingPresetModlistSize         int64    `dynamodbav:"pending_preset_modlist_size,omitempty"`
-	PendingPresetWorkshopCount       int      `dynamodbav:"pending_preset_workshop_count,omitempty"`
-	PendingPresetStatus              string   `dynamodbav:"pending_preset_status,omitempty"`
-	PendingPresetStagedAt            string   `dynamodbav:"pending_preset_staged_at,omitempty"`
-	PendingPresetWorkflowID          string   `dynamodbav:"pending_preset_workflow_id,omitempty"`
-	PendingPresetApplyStartedAt      string   `dynamodbav:"pending_preset_apply_started_at,omitempty"`
-	PendingPresetFailedAt            string   `dynamodbav:"pending_preset_failed_at,omitempty"`
-	PendingPresetFailureDetail       string   `dynamodbav:"pending_preset_failure_detail,omitempty"`
-	PendingPresetRollbackDisposition string   `dynamodbav:"pending_preset_rollback_disposition,omitempty"`
-	PendingPresetRollbackAt          string   `dynamodbav:"pending_preset_rollback_at,omitempty"`
-	PendingPresetRollbackDetail      string   `dynamodbav:"pending_preset_rollback_detail,omitempty"`
-	ServerPresetObjectKey            string   `dynamodbav:"server_preset_object_key,omitempty"`
-	ServerPresetRevisionSequence     int64    `dynamodbav:"server_preset_revision_sequence,omitempty"`
-	ActiveServerPresetJSON           string   `dynamodbav:"active_server_preset_json,omitempty"`
-	PendingServerPresetJSON          string   `dynamodbav:"pending_server_preset_json,omitempty"`
-	MissionArtifactStatus            string   `dynamodbav:"mission_artifact_status,omitempty"`
-	PresetArtifactStatus             string   `dynamodbav:"preset_artifact_status,omitempty"`
-	ServerPresetArtifactStatus       string   `dynamodbav:"server_preset_artifact_status,omitempty"`
-	MissionArtifactIssue             string   `dynamodbav:"mission_artifact_issue,omitempty"`
-	PresetArtifactIssue              string   `dynamodbav:"preset_artifact_issue,omitempty"`
-	ServerPresetArtifactIssue        string   `dynamodbav:"server_preset_artifact_issue,omitempty"`
-	WorkshopResolutionTarget         string   `dynamodbav:"workshop_resolution_target,omitempty"`
-	WorkshopResolutionRequestKey     string   `dynamodbav:"workshop_resolution_request_key,omitempty"`
-	WorkshopResolutionRequestedAt    string   `dynamodbav:"workshop_resolution_requested_at,omitempty"`
-	WorkshopResolutionLastTarget     string   `dynamodbav:"workshop_resolution_last_target,omitempty"`
-	WorkshopResolutionIssue          string   `dynamodbav:"workshop_resolution_issue,omitempty"`
-	WorkshopResolutionFailedAt       string   `dynamodbav:"workshop_resolution_failed_at,omitempty"`
-	CapacitySlotID                   string   `dynamodbav:"capacity_slot_id,omitempty"`
-	AvailabilityZone                 string   `dynamodbav:"availability_zone,omitempty"`
-	SubnetID                         string   `dynamodbav:"subnet_id,omitempty"`
-	SecurityGroupIDs                 []string `dynamodbav:"security_group_ids,omitempty"`
-	InstanceProfile                  string   `dynamodbav:"instance_profile,omitempty"`
-	AMIID                            string   `dynamodbav:"ami_id,omitempty"`
-	InstanceType                     string   `dynamodbav:"instance_type,omitempty"`
-	InstanceID                       string   `dynamodbav:"instance_id,omitempty"`
-	DataVolumeID                     string   `dynamodbav:"data_volume_id,omitempty"`
-	PublicIPv4                       string   `dynamodbav:"public_ipv4,omitempty"`
-	InfrastructureObservedAt         string   `dynamodbav:"infrastructure_observed_at,omitempty"`
-	ArchiveID                        string   `dynamodbav:"archive_id,omitempty"`
-	ArchiveObjectKey                 string   `dynamodbav:"archive_object_key,omitempty"`
-	ArchiveManifestObjectKey         string   `dynamodbav:"archive_manifest_object_key,omitempty"`
-	ArchiveManifestSHA256            string   `dynamodbav:"archive_manifest_sha256,omitempty"`
-	ArchiveManifestSizeBytes         int64    `dynamodbav:"archive_manifest_size_bytes,omitempty"`
-	ArchiveSHA256                    string   `dynamodbav:"archive_sha256,omitempty"`
-	ArchiveSizeBytes                 int64    `dynamodbav:"archive_size_bytes,omitempty"`
-	ArchiveFormat                    string   `dynamodbav:"archive_format,omitempty"`
-	ArchiveVerifiedAt                string   `dynamodbav:"archive_verified_at,omitempty"`
-	ArchiveSourceState               string   `dynamodbav:"archive_source_state,omitempty"`
-	ProgressWorkflowID               string   `dynamodbav:"progress_workflow_id,omitempty"`
-	ProgressWorkflowType             string   `dynamodbav:"progress_workflow_type,omitempty"`
-	ProgressMilestone                string   `dynamodbav:"progress_milestone,omitempty"`
-	ProgressCompletedMilestones      []string `dynamodbav:"progress_completed_milestones,omitempty"`
-	ProgressSkippedMilestones        []string `dynamodbav:"progress_skipped_milestones,omitempty"`
-	ProgressState                    string   `dynamodbav:"progress_state,omitempty"`
-	ProgressActivity                 string   `dynamodbav:"progress_activity,omitempty"`
-	ProgressStartedAt                string   `dynamodbav:"progress_started_at,omitempty"`
-	ProgressLastProgressAt           string   `dynamodbav:"progress_last_progress_at,omitempty"`
+	SessionID                         string   `dynamodbav:"session_id"`
+	Slug                              string   `dynamodbav:"slug"`
+	DisplayName                       string   `dynamodbav:"display_name"`
+	Description                       string   `dynamodbav:"description,omitempty"`
+	GameType                          string   `dynamodbav:"game_type"`
+	OwnerDiscordUserID                string   `dynamodbav:"owner_discord_user_id"`
+	GuildID                           string   `dynamodbav:"guild_id"`
+	ChannelID                         string   `dynamodbav:"channel_id"`
+	GameProfileID                     string   `dynamodbav:"game_profile_id"`
+	SleepAfterSeconds                 int64    `dynamodbav:"sleep_after_seconds"`
+	ArchiveAfterSeconds               int64    `dynamodbav:"archive_after_seconds"`
+	MaximumDurationSeconds            int64    `dynamodbav:"maximum_duration_seconds,omitempty"`
+	MaximumDurationStartedAt          string   `dynamodbav:"maximum_duration_started_at,omitempty"`
+	MaximumDurationDeadlineAt         string   `dynamodbav:"maximum_duration_deadline_at,omitempty"`
+	MaximumDurationWarningDeadline    string   `dynamodbav:"maximum_duration_warning_deadline,omitempty"`
+	MaximumDurationWarningLevel       int      `dynamodbav:"maximum_duration_warning_level,omitempty"`
+	MaximumDurationWarningQueuedLevel int      `dynamodbav:"maximum_duration_warning_queued_level,omitempty"`
+	TeamSpeakEnabled                  bool     `dynamodbav:"teamspeak_enabled"`
+	Vanilla                           bool     `dynamodbav:"vanilla"`
+	CreatorDLCs                       []string `dynamodbav:"creator_dlcs,omitempty"`
+	StartWhenReady                    bool     `dynamodbav:"start_when_ready,omitempty"`
+	NotifyWhenReady                   bool     `dynamodbav:"notify_when_ready,omitempty"`
+	ReadyNotificationChannelID        string   `dynamodbav:"ready_notification_channel_id,omitempty"`
+	ReadyNotificationAttemptedAt      string   `dynamodbav:"ready_notification_attempted_at,omitempty"`
+	ConfigurationRevision             int64    `dynamodbav:"configuration_revision"`
+	ServerConfigRevision              int64    `dynamodbav:"server_config_revision,omitempty"`
+	ServerConfigObjectKey             string   `dynamodbav:"server_config_object_key,omitempty"`
+	ServerConfigSHA256                string   `dynamodbav:"server_config_sha256,omitempty"`
+	MissionObjectKey                  string   `dynamodbav:"mission_object_key,omitempty"`
+	MissionFilesJSON                  string   `dynamodbav:"mission_files_json,omitempty"`
+	ConfiguredMissionJSON             string   `dynamodbav:"configured_mission_json,omitempty"`
+	CurrentMissionJSON                string   `dynamodbav:"current_mission_json,omitempty"`
+	WorkshopMissionSourcesJSON        string   `dynamodbav:"workshop_mission_sources_json,omitempty"`
+	WorkshopModSourcesJSON            string   `dynamodbav:"workshop_mod_sources_json,omitempty"`
+	PresetObjectKey                   string   `dynamodbav:"preset_object_key,omitempty"`
+	PresetRevisionSequence            int64    `dynamodbav:"preset_revision_sequence,omitempty"`
+	ActivePresetRevision              int64    `dynamodbav:"active_preset_revision,omitempty"`
+	ActivePresetObjectKey             string   `dynamodbav:"active_preset_object_key,omitempty"`
+	ActivePresetModlistKey            string   `dynamodbav:"active_preset_modlist_key,omitempty"`
+	ActivePresetModlistName           string   `dynamodbav:"active_preset_modlist_name,omitempty"`
+	ActivePresetModlistSHA            string   `dynamodbav:"active_preset_modlist_sha256,omitempty"`
+	ActivePresetModlistSize           int64    `dynamodbav:"active_preset_modlist_size,omitempty"`
+	ActivePresetWorkshopCount         int      `dynamodbav:"active_preset_workshop_count,omitempty"`
+	ActivePresetStagedAt              string   `dynamodbav:"active_preset_staged_at,omitempty"`
+	ActivePresetActivatedAt           string   `dynamodbav:"active_preset_activated_at,omitempty"`
+	PendingPresetRevision             int64    `dynamodbav:"pending_preset_revision,omitempty"`
+	PendingPresetBaseRevision         int64    `dynamodbav:"pending_preset_base_revision,omitempty"`
+	PendingPresetObjectKey            string   `dynamodbav:"pending_preset_object_key,omitempty"`
+	PendingPresetModlistKey           string   `dynamodbav:"pending_preset_modlist_key,omitempty"`
+	PendingPresetModlistName          string   `dynamodbav:"pending_preset_modlist_name,omitempty"`
+	PendingPresetModlistSHA           string   `dynamodbav:"pending_preset_modlist_sha256,omitempty"`
+	PendingPresetModlistSize          int64    `dynamodbav:"pending_preset_modlist_size,omitempty"`
+	PendingPresetWorkshopCount        int      `dynamodbav:"pending_preset_workshop_count,omitempty"`
+	PendingPresetStatus               string   `dynamodbav:"pending_preset_status,omitempty"`
+	PendingPresetStagedAt             string   `dynamodbav:"pending_preset_staged_at,omitempty"`
+	PendingPresetWorkflowID           string   `dynamodbav:"pending_preset_workflow_id,omitempty"`
+	PendingPresetApplyStartedAt       string   `dynamodbav:"pending_preset_apply_started_at,omitempty"`
+	PendingPresetFailedAt             string   `dynamodbav:"pending_preset_failed_at,omitempty"`
+	PendingPresetFailureDetail        string   `dynamodbav:"pending_preset_failure_detail,omitempty"`
+	PendingPresetRollbackDisposition  string   `dynamodbav:"pending_preset_rollback_disposition,omitempty"`
+	PendingPresetRollbackAt           string   `dynamodbav:"pending_preset_rollback_at,omitempty"`
+	PendingPresetRollbackDetail       string   `dynamodbav:"pending_preset_rollback_detail,omitempty"`
+	ServerPresetObjectKey             string   `dynamodbav:"server_preset_object_key,omitempty"`
+	ServerPresetRevisionSequence      int64    `dynamodbav:"server_preset_revision_sequence,omitempty"`
+	ActiveServerPresetJSON            string   `dynamodbav:"active_server_preset_json,omitempty"`
+	PendingServerPresetJSON           string   `dynamodbav:"pending_server_preset_json,omitempty"`
+	MissionArtifactStatus             string   `dynamodbav:"mission_artifact_status,omitempty"`
+	PresetArtifactStatus              string   `dynamodbav:"preset_artifact_status,omitempty"`
+	ServerPresetArtifactStatus        string   `dynamodbav:"server_preset_artifact_status,omitempty"`
+	MissionArtifactIssue              string   `dynamodbav:"mission_artifact_issue,omitempty"`
+	PresetArtifactIssue               string   `dynamodbav:"preset_artifact_issue,omitempty"`
+	ServerPresetArtifactIssue         string   `dynamodbav:"server_preset_artifact_issue,omitempty"`
+	WorkshopResolutionTarget          string   `dynamodbav:"workshop_resolution_target,omitempty"`
+	WorkshopResolutionRequestKey      string   `dynamodbav:"workshop_resolution_request_key,omitempty"`
+	WorkshopResolutionRequestedAt     string   `dynamodbav:"workshop_resolution_requested_at,omitempty"`
+	WorkshopResolutionLastTarget      string   `dynamodbav:"workshop_resolution_last_target,omitempty"`
+	WorkshopResolutionIssue           string   `dynamodbav:"workshop_resolution_issue,omitempty"`
+	WorkshopResolutionFailedAt        string   `dynamodbav:"workshop_resolution_failed_at,omitempty"`
+	CapacitySlotID                    string   `dynamodbav:"capacity_slot_id,omitempty"`
+	AvailabilityZone                  string   `dynamodbav:"availability_zone,omitempty"`
+	SubnetID                          string   `dynamodbav:"subnet_id,omitempty"`
+	SecurityGroupIDs                  []string `dynamodbav:"security_group_ids,omitempty"`
+	InstanceProfile                   string   `dynamodbav:"instance_profile,omitempty"`
+	AMIID                             string   `dynamodbav:"ami_id,omitempty"`
+	InstanceType                      string   `dynamodbav:"instance_type,omitempty"`
+	InstanceID                        string   `dynamodbav:"instance_id,omitempty"`
+	DataVolumeID                      string   `dynamodbav:"data_volume_id,omitempty"`
+	PublicIPv4                        string   `dynamodbav:"public_ipv4,omitempty"`
+	InfrastructureObservedAt          string   `dynamodbav:"infrastructure_observed_at,omitempty"`
+	ArchiveID                         string   `dynamodbav:"archive_id,omitempty"`
+	ArchiveObjectKey                  string   `dynamodbav:"archive_object_key,omitempty"`
+	ArchiveManifestObjectKey          string   `dynamodbav:"archive_manifest_object_key,omitempty"`
+	ArchiveManifestSHA256             string   `dynamodbav:"archive_manifest_sha256,omitempty"`
+	ArchiveManifestSizeBytes          int64    `dynamodbav:"archive_manifest_size_bytes,omitempty"`
+	ArchiveSHA256                     string   `dynamodbav:"archive_sha256,omitempty"`
+	ArchiveSizeBytes                  int64    `dynamodbav:"archive_size_bytes,omitempty"`
+	ArchiveFormat                     string   `dynamodbav:"archive_format,omitempty"`
+	ArchiveVerifiedAt                 string   `dynamodbav:"archive_verified_at,omitempty"`
+	ArchiveSourceState                string   `dynamodbav:"archive_source_state,omitempty"`
+	ProgressWorkflowID                string   `dynamodbav:"progress_workflow_id,omitempty"`
+	ProgressWorkflowType              string   `dynamodbav:"progress_workflow_type,omitempty"`
+	ProgressMilestone                 string   `dynamodbav:"progress_milestone,omitempty"`
+	ProgressCompletedMilestones       []string `dynamodbav:"progress_completed_milestones,omitempty"`
+	ProgressSkippedMilestones         []string `dynamodbav:"progress_skipped_milestones,omitempty"`
+	ProgressState                     string   `dynamodbav:"progress_state,omitempty"`
+	ProgressActivity                  string   `dynamodbav:"progress_activity,omitempty"`
+	ProgressStartedAt                 string   `dynamodbav:"progress_started_at,omitempty"`
+	ProgressLastProgressAt            string   `dynamodbav:"progress_last_progress_at,omitempty"`
 	// ProgressUpdatedAt is retained as a write-through compatibility projection
 	// while older deployed readers still consume the Phase 12.4 field.
 	ProgressUpdatedAt       string `dynamodbav:"progress_updated_at,omitempty"`
@@ -241,6 +251,8 @@ type sessionItem struct {
 
 	GSI1PK string `dynamodbav:"gsi1pk"`
 	GSI1SK string `dynamodbav:"gsi1sk"`
+	GSI2PK string `dynamodbav:"gsi2pk"`
+	GSI2SK string `dynamodbav:"gsi2sk"`
 }
 
 type sessionCardItem struct {
@@ -453,22 +465,57 @@ func (repository *Repository) slugClaimExists(ctx context.Context, guildID strin
 	return output != nil && len(output.Item) > 0, nil
 }
 
+// GetByGuildSlug follows the strongly consistent guild slug claim to its
+// authoritative session record.
+func (repository *Repository) GetByGuildSlug(ctx context.Context, guildID, slug string) (domain.Session, error) {
+	if err := repository.validate(); err != nil {
+		return domain.Session{}, err
+	}
+	guildID, slug = strings.TrimSpace(guildID), strings.TrimSpace(slug)
+	if guildID == "" || slug == "" {
+		return domain.Session{}, domain.ErrNotFound
+	}
+	output, err := repository.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      aws.String(repository.tableName),
+		ConsistentRead: aws.Bool(true),
+		Key: map[string]types.AttributeValue{
+			"pk": &types.AttributeValueMemberS{Value: "GUILD#" + guildID},
+			"sk": &types.AttributeValueMemberS{Value: "SLUG#" + slug},
+		},
+	})
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("get session slug claim: %w", err)
+	}
+	if output == nil || len(output.Item) == 0 {
+		return domain.Session{}, domain.ErrNotFound
+	}
+	var claim slugClaimItem
+	if err := attributevalue.UnmarshalMap(output.Item, &claim); err != nil {
+		return domain.Session{}, fmt.Errorf("decode session slug claim: %w", err)
+	}
+	if claim.GuildID != guildID || claim.Slug != slug || strings.TrimSpace(claim.SessionID) == "" {
+		return domain.Session{}, fmt.Errorf("session slug claim is inconsistent: %w", domain.ErrNotFound)
+	}
+	session, err := repository.Get(ctx, claim.SessionID)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if session.GuildID != guildID || session.Slug != slug {
+		return domain.Session{}, fmt.Errorf("session slug claim target is inconsistent: %w", domain.ErrNotFound)
+	}
+	return session, nil
+}
+
 // legacyGuildSlugExists protects sessions created before guild-scoped slug
 // claims were introduced. New concurrent writers are still serialized by the
 // transactional claim in Create.
 func (repository *Repository) legacyGuildSlugExists(ctx context.Context, guildID string, slug string) (bool, error) {
 	var startKey map[string]types.AttributeValue
-	var scanned int32
-	pages := 0
-	for scanned < maximumGuildScanItems && pages < 10 {
-		pages++
-		pageLimit := maximumGuildScanItems - scanned
-		if pageLimit > 100 {
-			pageLimit = 100
-		}
+	for {
 		output, err := repository.client.Scan(ctx, &dynamodb.ScanInput{
 			TableName:         aws.String(repository.tableName),
-			Limit:             aws.Int32(pageLimit),
+			ConsistentRead:    aws.Bool(true),
+			Limit:             aws.Int32(100),
 			ExclusiveStartKey: startKey,
 			FilterExpression:  aws.String("entity_type = :type AND guild_id = :guild AND slug = :slug"),
 			ExpressionAttributeValues: map[string]types.AttributeValue{
@@ -483,13 +530,11 @@ func (repository *Repository) legacyGuildSlugExists(ctx context.Context, guildID
 		if len(output.Items) > 0 {
 			return true, nil
 		}
-		scanned += output.ScannedCount
 		startKey = output.LastEvaluatedKey
 		if len(startKey) == 0 {
 			return false, nil
 		}
 	}
-	return false, nil
 }
 
 func toSlugClaimItem(session domain.Session) slugClaimItem {
@@ -680,42 +725,32 @@ func (repository *Repository) ResolveCardControl(ctx context.Context, guildID st
 }
 
 func (repository *Repository) resolveLegacyCardControl(ctx context.Context, guildID string, token string) (domain.Session, error) {
-	var startKey map[string]types.AttributeValue
-	var scanned int32
-	for scanned < maximumLegacyCardScanItems {
-		remaining := maximumLegacyCardScanItems - scanned
-		if remaining > 100 {
-			remaining = 100
-		}
-		output, err := repository.client.Scan(ctx, &dynamodb.ScanInput{
-			TableName: aws.String(repository.tableName), Limit: aws.Int32(remaining), ExclusiveStartKey: startKey,
-			FilterExpression: aws.String("entity_type = :type AND guild_id = :guild"),
-			ExpressionAttributeValues: map[string]types.AttributeValue{
-				":type": &types.AttributeValueMemberS{Value: "Session"}, ":guild": &types.AttributeValueMemberS{Value: guildID},
-			},
-		})
+	cursor := ""
+	for {
+		page, err := repository.ListGuildSessions(ctx, guildID, allGuildSessionLifecycleStates(), ports.GuildSessionPage{Size: 100, Cursor: cursor})
 		if err != nil {
-			return domain.Session{}, fmt.Errorf("scan legacy Discord card controls: %w", err)
+			return domain.Session{}, fmt.Errorf("list legacy Discord card controls: %w", err)
 		}
-		scanned += output.ScannedCount
-		for _, attributes := range output.Items {
-			var item sessionItem
-			if err := attributevalue.UnmarshalMap(attributes, &item); err != nil {
-				return domain.Session{}, fmt.Errorf("decode legacy Discord card session: %w", err)
-			}
-			if domain.SessionCardControlToken(item.SessionID) == token {
-				session, err := fromSessionItem(item)
-				if err != nil {
+		for _, session := range page.Sessions {
+			if domain.SessionCardControlToken(session.ID) == token {
+				authoritative, getErr := repository.Get(ctx, session.ID)
+				if getErr != nil {
+					if errors.Is(getErr, domain.ErrNotFound) {
+						continue
+					}
+					return domain.Session{}, getErr
+				}
+				if authoritative.GuildID != guildID || domain.SessionCardControlToken(authoritative.ID) != token {
+					continue
+				}
+				if err := repository.saveCardControlClaim(ctx, authoritative.ID, token); err != nil {
 					return domain.Session{}, err
 				}
-				if err := repository.saveCardControlClaim(ctx, session.ID, token); err != nil {
-					return domain.Session{}, err
-				}
-				return session, nil
+				return authoritative, nil
 			}
 		}
-		startKey = output.LastEvaluatedKey
-		if len(startKey) == 0 {
+		cursor = page.NextCursor
+		if cursor == "" {
 			break
 		}
 	}
@@ -1049,81 +1084,6 @@ func (repository *Repository) ListByOwner(
 	return sessions, nil
 }
 
-// ListByGuild returns recent session metadata from one guild. The bounded scan
-// includes legacy sessions that predate guild slug claims and secondary-index
-// attributes.
-func (repository *Repository) ListByGuild(
-	ctx context.Context,
-	guildID string,
-	limit int32,
-) ([]domain.Session, error) {
-	if err := repository.validate(); err != nil {
-		return nil, err
-	}
-	guildID = strings.TrimSpace(guildID)
-	if guildID == "" {
-		return nil, fmt.Errorf("Discord guild ID is required")
-	}
-	if limit <= 0 {
-		limit = 25
-	}
-	if limit > 100 {
-		limit = 100
-	}
-
-	sessions := make([]domain.Session, 0, limit)
-	var startKey map[string]types.AttributeValue
-	var scanned int32
-	pages := 0
-	for scanned < maximumGuildScanItems && pages < 10 {
-		pages++
-		remainingScan := maximumGuildScanItems - scanned
-		if remainingScan > 100 {
-			remainingScan = 100
-		}
-		output, err := repository.client.Scan(ctx, &dynamodb.ScanInput{
-			TableName:         aws.String(repository.tableName),
-			Limit:             aws.Int32(remainingScan),
-			ExclusiveStartKey: startKey,
-			FilterExpression:  aws.String("entity_type = :type AND guild_id = :guild"),
-			ExpressionAttributeValues: map[string]types.AttributeValue{
-				":type":  &types.AttributeValueMemberS{Value: "Session"},
-				":guild": &types.AttributeValueMemberS{Value: guildID},
-			},
-		})
-		if err != nil {
-			return nil, fmt.Errorf("scan sessions by guild: %w", err)
-		}
-		scanned += output.ScannedCount
-		for _, attributes := range output.Items {
-			var item sessionItem
-			if err := attributevalue.UnmarshalMap(attributes, &item); err != nil {
-				return nil, fmt.Errorf("unmarshal guild session: %w", err)
-			}
-			session, err := fromSessionItem(item)
-			if err != nil {
-				return nil, fmt.Errorf("decode guild session: %w", err)
-			}
-			sessions = append(sessions, session)
-		}
-		startKey = output.LastEvaluatedKey
-		if len(startKey) == 0 {
-			break
-		}
-	}
-
-	sort.Slice(sessions, func(first, second int) bool {
-		if sessions[first].UpdatedAt.Equal(sessions[second].UpdatedAt) {
-			return sessions[first].ID > sessions[second].ID
-		}
-		return sessions[first].UpdatedAt.After(sessions[second].UpdatedAt)
-	})
-	if int32(len(sessions)) > limit {
-		sessions = sessions[:limit]
-	}
-	return sessions, nil
-}
-
 func (repository *Repository) validate() error {
 	if repository == nil {
 		return fmt.Errorf("DynamoDB repository is nil")
@@ -1192,120 +1152,126 @@ func toSessionItem(session domain.Session) sessionItem {
 		EntityType:    "Session",
 		SchemaVersion: schemaVersion,
 
-		SessionID:                        session.ID,
-		Slug:                             session.Slug,
-		DisplayName:                      session.DisplayName,
-		Description:                      session.Description,
-		GameType:                         session.GameType,
-		OwnerDiscordUserID:               session.OwnerDiscordUserID,
-		GuildID:                          session.GuildID,
-		ChannelID:                        session.ChannelID,
-		GameProfileID:                    session.GameProfileID,
-		SleepAfterSeconds:                session.SleepAfterSeconds,
-		ArchiveAfterSeconds:              session.ArchiveAfterSeconds,
-		TeamSpeakEnabled:                 session.TeamSpeakEnabled,
-		Vanilla:                          session.Vanilla,
-		CreatorDLCs:                      append([]string(nil), session.CreatorDLCs...),
-		StartWhenReady:                   session.StartWhenReady,
-		NotifyWhenReady:                  session.NotifyWhenReady,
-		ReadyNotificationChannelID:       session.ReadyNotificationChannelID,
-		ReadyNotificationAttemptedAt:     optionalTimestamp(session.ReadyNotificationAttemptedAt),
-		ConfigurationRevision:            session.ConfigurationRevision,
-		ServerConfigRevision:             session.ServerConfigRevision,
-		ServerConfigObjectKey:            session.ServerConfigObjectKey,
-		ServerConfigSHA256:               session.ServerConfigSHA256,
-		MissionObjectKey:                 session.MissionObjectKey,
-		MissionFilesJSON:                 marshalSessionJSON(session.MissionFiles),
-		ConfiguredMissionJSON:            marshalSessionJSON(session.ConfiguredMission),
-		CurrentMissionJSON:               marshalSessionJSON(session.CurrentMission),
-		WorkshopMissionSourcesJSON:       marshalSessionJSON(session.WorkshopMissionSources),
-		WorkshopModSourcesJSON:           marshalSessionJSON(session.WorkshopModSources),
-		PresetObjectKey:                  session.PresetObjectKey,
-		PresetRevisionSequence:           presetSequence,
-		ActivePresetRevision:             activePreset.Number,
-		ActivePresetObjectKey:            activePreset.PresetObjectKey,
-		ActivePresetModlistKey:           activePreset.Modlist.ObjectKey,
-		ActivePresetModlistName:          activePreset.Modlist.Filename,
-		ActivePresetModlistSHA:           activePreset.Modlist.SHA256,
-		ActivePresetModlistSize:          activePreset.Modlist.SizeBytes,
-		ActivePresetWorkshopCount:        activePreset.Modlist.WorkshopCount,
-		ActivePresetStagedAt:             optionalTimestamp(activePreset.StagedAt),
-		ActivePresetActivatedAt:          optionalTimestamp(activePreset.ActivatedAt),
-		PendingPresetRevision:            pendingPreset.Number,
-		PendingPresetBaseRevision:        pendingPreset.BaseRevision,
-		PendingPresetObjectKey:           pendingPreset.PresetObjectKey,
-		PendingPresetModlistKey:          pendingPreset.Modlist.ObjectKey,
-		PendingPresetModlistName:         pendingPreset.Modlist.Filename,
-		PendingPresetModlistSHA:          pendingPreset.Modlist.SHA256,
-		PendingPresetModlistSize:         pendingPreset.Modlist.SizeBytes,
-		PendingPresetWorkshopCount:       pendingPreset.Modlist.WorkshopCount,
-		PendingPresetStatus:              string(pendingPreset.Status),
-		PendingPresetStagedAt:            optionalTimestamp(pendingPreset.StagedAt),
-		PendingPresetWorkflowID:          pendingPreset.ApplyWorkflowID,
-		PendingPresetApplyStartedAt:      optionalTimestamp(pendingPreset.ApplyStartedAt),
-		PendingPresetFailedAt:            optionalTimestamp(pendingPreset.FailedAt),
-		PendingPresetFailureDetail:       pendingPreset.FailureDetail,
-		PendingPresetRollbackDisposition: string(pendingPreset.RollbackDisposition),
-		PendingPresetRollbackAt:          optionalTimestamp(pendingPreset.RollbackAt),
-		PendingPresetRollbackDetail:      pendingPreset.RollbackDetail,
-		ServerPresetObjectKey:            session.ServerPresetObjectKey,
-		ServerPresetRevisionSequence:     session.EffectiveServerPresetRevisionSequence(),
-		ActiveServerPresetJSON:           marshalPresetRevisionJSON(session.EffectiveActiveServerPresetRevision()),
-		PendingServerPresetJSON:          marshalPresetRevisionJSON(session.PendingServerPresetRevision),
-		MissionArtifactStatus:            string(session.MissionArtifactStatus),
-		PresetArtifactStatus:             string(session.PresetArtifactStatus),
-		ServerPresetArtifactStatus:       string(session.ServerPresetArtifactStatus),
-		MissionArtifactIssue:             session.MissionArtifactIssue,
-		PresetArtifactIssue:              session.PresetArtifactIssue,
-		ServerPresetArtifactIssue:        session.ServerPresetArtifactIssue,
-		WorkshopResolutionTarget:         string(session.WorkshopResolutionTarget),
-		WorkshopResolutionRequestKey:     session.WorkshopResolutionRequestKey,
-		WorkshopResolutionRequestedAt:    optionalTimestamp(session.WorkshopResolutionRequestedAt),
-		WorkshopResolutionLastTarget:     string(session.WorkshopResolutionLastTarget),
-		WorkshopResolutionIssue:          session.WorkshopResolutionIssue,
-		WorkshopResolutionFailedAt:       optionalTimestamp(session.WorkshopResolutionFailedAt),
-		CapacitySlotID:                   session.Infrastructure.CapacitySlotID,
-		AvailabilityZone:                 session.Infrastructure.AvailabilityZone,
-		SubnetID:                         session.Infrastructure.SubnetID,
-		SecurityGroupIDs:                 append([]string(nil), session.Infrastructure.SecurityGroupIDs...),
-		InstanceProfile:                  session.Infrastructure.InstanceProfile,
-		AMIID:                            session.Infrastructure.AMIID,
-		InstanceType:                     session.Infrastructure.InstanceType,
-		InstanceID:                       session.Infrastructure.InstanceID,
-		DataVolumeID:                     session.Infrastructure.DataVolumeID,
-		PublicIPv4:                       session.Infrastructure.PublicIPv4,
-		InfrastructureObservedAt:         optionalTimestamp(session.Infrastructure.LastObservedAt),
-		ArchiveID:                        session.Archive.ID,
-		ArchiveObjectKey:                 session.Archive.ObjectKey,
-		ArchiveManifestObjectKey:         session.Archive.ManifestObjectKey,
-		ArchiveManifestSHA256:            session.Archive.ManifestSHA256,
-		ArchiveManifestSizeBytes:         session.Archive.ManifestSizeBytes,
-		ArchiveSHA256:                    session.Archive.SHA256,
-		ArchiveSizeBytes:                 session.Archive.SizeBytes,
-		ArchiveFormat:                    session.Archive.Format,
-		ArchiveVerifiedAt:                optionalTimestamp(session.Archive.VerifiedAt),
-		ArchiveSourceState:               string(session.ArchiveSourceState),
-		ProgressWorkflowID:               session.Progress.WorkflowID,
-		ProgressWorkflowType:             session.Progress.WorkflowType,
-		ProgressMilestone:                string(session.Progress.Milestone),
-		ProgressCompletedMilestones:      progressMilestoneStrings(session.Progress.CompletedMilestones),
-		ProgressSkippedMilestones:        progressMilestoneStrings(session.Progress.SkippedMilestones),
-		ProgressState:                    string(session.Progress.State),
-		ProgressActivity:                 session.Progress.Activity,
-		ProgressStartedAt:                optionalTimestamp(session.Progress.StartedAt),
-		ProgressLastProgressAt:           optionalTimestamp(session.Progress.LastProgressAt),
-		ProgressUpdatedAt:                optionalTimestamp(session.Progress.LastProgressAt),
-		FailureCode:                      session.Failure.Code,
-		FailureStage:                     session.Failure.Stage,
-		FailureRetryDisposition:          string(session.Failure.RetryDisposition),
-		FailureResourceImpact:            string(session.Failure.ResourceImpact),
-		FailureDetail:                    session.Failure.Detail,
-		FailureAt:                        optionalTimestamp(session.Failure.FailedAt),
-		FailureSupportReference:          session.Failure.SupportReference,
-		ActiveWorkflowID:                 session.ActiveWorkflowID,
-		ActiveWorkflowType:               session.ActiveWorkflowType,
-		ActiveWorkflowStartedAt:          fixedTimestamp(session.ActiveWorkflowStartedAt),
-		ActiveWorkflowLeaseExpiresAt:     fixedTimestamp(session.ActiveWorkflowLeaseExpiresAt),
+		SessionID:                         session.ID,
+		Slug:                              session.Slug,
+		DisplayName:                       session.DisplayName,
+		Description:                       session.Description,
+		GameType:                          session.GameType,
+		OwnerDiscordUserID:                session.OwnerDiscordUserID,
+		GuildID:                           session.GuildID,
+		ChannelID:                         session.ChannelID,
+		GameProfileID:                     session.GameProfileID,
+		SleepAfterSeconds:                 session.SleepAfterSeconds,
+		ArchiveAfterSeconds:               session.ArchiveAfterSeconds,
+		MaximumDurationSeconds:            session.MaximumDuration.Seconds,
+		MaximumDurationStartedAt:          optionalTimestamp(session.MaximumDuration.StartedAt),
+		MaximumDurationDeadlineAt:         optionalTimestamp(session.MaximumDuration.DeadlineAt),
+		MaximumDurationWarningDeadline:    optionalTimestamp(session.MaximumDurationWarningDeadline),
+		MaximumDurationWarningLevel:       session.MaximumDurationWarningLevel,
+		MaximumDurationWarningQueuedLevel: session.MaximumDurationWarningQueuedLevel,
+		TeamSpeakEnabled:                  session.TeamSpeakEnabled,
+		Vanilla:                           session.Vanilla,
+		CreatorDLCs:                       append([]string(nil), session.CreatorDLCs...),
+		StartWhenReady:                    session.StartWhenReady,
+		NotifyWhenReady:                   session.NotifyWhenReady,
+		ReadyNotificationChannelID:        session.ReadyNotificationChannelID,
+		ReadyNotificationAttemptedAt:      optionalTimestamp(session.ReadyNotificationAttemptedAt),
+		ConfigurationRevision:             session.ConfigurationRevision,
+		ServerConfigRevision:              session.ServerConfigRevision,
+		ServerConfigObjectKey:             session.ServerConfigObjectKey,
+		ServerConfigSHA256:                session.ServerConfigSHA256,
+		MissionObjectKey:                  session.MissionObjectKey,
+		MissionFilesJSON:                  marshalSessionJSON(session.MissionFiles),
+		ConfiguredMissionJSON:             marshalSessionJSON(session.ConfiguredMission),
+		CurrentMissionJSON:                marshalSessionJSON(session.CurrentMission),
+		WorkshopMissionSourcesJSON:        marshalSessionJSON(session.WorkshopMissionSources),
+		WorkshopModSourcesJSON:            marshalSessionJSON(session.WorkshopModSources),
+		PresetObjectKey:                   session.PresetObjectKey,
+		PresetRevisionSequence:            presetSequence,
+		ActivePresetRevision:              activePreset.Number,
+		ActivePresetObjectKey:             activePreset.PresetObjectKey,
+		ActivePresetModlistKey:            activePreset.Modlist.ObjectKey,
+		ActivePresetModlistName:           activePreset.Modlist.Filename,
+		ActivePresetModlistSHA:            activePreset.Modlist.SHA256,
+		ActivePresetModlistSize:           activePreset.Modlist.SizeBytes,
+		ActivePresetWorkshopCount:         activePreset.Modlist.WorkshopCount,
+		ActivePresetStagedAt:              optionalTimestamp(activePreset.StagedAt),
+		ActivePresetActivatedAt:           optionalTimestamp(activePreset.ActivatedAt),
+		PendingPresetRevision:             pendingPreset.Number,
+		PendingPresetBaseRevision:         pendingPreset.BaseRevision,
+		PendingPresetObjectKey:            pendingPreset.PresetObjectKey,
+		PendingPresetModlistKey:           pendingPreset.Modlist.ObjectKey,
+		PendingPresetModlistName:          pendingPreset.Modlist.Filename,
+		PendingPresetModlistSHA:           pendingPreset.Modlist.SHA256,
+		PendingPresetModlistSize:          pendingPreset.Modlist.SizeBytes,
+		PendingPresetWorkshopCount:        pendingPreset.Modlist.WorkshopCount,
+		PendingPresetStatus:               string(pendingPreset.Status),
+		PendingPresetStagedAt:             optionalTimestamp(pendingPreset.StagedAt),
+		PendingPresetWorkflowID:           pendingPreset.ApplyWorkflowID,
+		PendingPresetApplyStartedAt:       optionalTimestamp(pendingPreset.ApplyStartedAt),
+		PendingPresetFailedAt:             optionalTimestamp(pendingPreset.FailedAt),
+		PendingPresetFailureDetail:        pendingPreset.FailureDetail,
+		PendingPresetRollbackDisposition:  string(pendingPreset.RollbackDisposition),
+		PendingPresetRollbackAt:           optionalTimestamp(pendingPreset.RollbackAt),
+		PendingPresetRollbackDetail:       pendingPreset.RollbackDetail,
+		ServerPresetObjectKey:             session.ServerPresetObjectKey,
+		ServerPresetRevisionSequence:      session.EffectiveServerPresetRevisionSequence(),
+		ActiveServerPresetJSON:            marshalPresetRevisionJSON(session.EffectiveActiveServerPresetRevision()),
+		PendingServerPresetJSON:           marshalPresetRevisionJSON(session.PendingServerPresetRevision),
+		MissionArtifactStatus:             string(session.MissionArtifactStatus),
+		PresetArtifactStatus:              string(session.PresetArtifactStatus),
+		ServerPresetArtifactStatus:        string(session.ServerPresetArtifactStatus),
+		MissionArtifactIssue:              session.MissionArtifactIssue,
+		PresetArtifactIssue:               session.PresetArtifactIssue,
+		ServerPresetArtifactIssue:         session.ServerPresetArtifactIssue,
+		WorkshopResolutionTarget:          string(session.WorkshopResolutionTarget),
+		WorkshopResolutionRequestKey:      session.WorkshopResolutionRequestKey,
+		WorkshopResolutionRequestedAt:     optionalTimestamp(session.WorkshopResolutionRequestedAt),
+		WorkshopResolutionLastTarget:      string(session.WorkshopResolutionLastTarget),
+		WorkshopResolutionIssue:           session.WorkshopResolutionIssue,
+		WorkshopResolutionFailedAt:        optionalTimestamp(session.WorkshopResolutionFailedAt),
+		CapacitySlotID:                    session.Infrastructure.CapacitySlotID,
+		AvailabilityZone:                  session.Infrastructure.AvailabilityZone,
+		SubnetID:                          session.Infrastructure.SubnetID,
+		SecurityGroupIDs:                  append([]string(nil), session.Infrastructure.SecurityGroupIDs...),
+		InstanceProfile:                   session.Infrastructure.InstanceProfile,
+		AMIID:                             session.Infrastructure.AMIID,
+		InstanceType:                      session.Infrastructure.InstanceType,
+		InstanceID:                        session.Infrastructure.InstanceID,
+		DataVolumeID:                      session.Infrastructure.DataVolumeID,
+		PublicIPv4:                        session.Infrastructure.PublicIPv4,
+		InfrastructureObservedAt:          optionalTimestamp(session.Infrastructure.LastObservedAt),
+		ArchiveID:                         session.Archive.ID,
+		ArchiveObjectKey:                  session.Archive.ObjectKey,
+		ArchiveManifestObjectKey:          session.Archive.ManifestObjectKey,
+		ArchiveManifestSHA256:             session.Archive.ManifestSHA256,
+		ArchiveManifestSizeBytes:          session.Archive.ManifestSizeBytes,
+		ArchiveSHA256:                     session.Archive.SHA256,
+		ArchiveSizeBytes:                  session.Archive.SizeBytes,
+		ArchiveFormat:                     session.Archive.Format,
+		ArchiveVerifiedAt:                 optionalTimestamp(session.Archive.VerifiedAt),
+		ArchiveSourceState:                string(session.ArchiveSourceState),
+		ProgressWorkflowID:                session.Progress.WorkflowID,
+		ProgressWorkflowType:              session.Progress.WorkflowType,
+		ProgressMilestone:                 string(session.Progress.Milestone),
+		ProgressCompletedMilestones:       progressMilestoneStrings(session.Progress.CompletedMilestones),
+		ProgressSkippedMilestones:         progressMilestoneStrings(session.Progress.SkippedMilestones),
+		ProgressState:                     string(session.Progress.State),
+		ProgressActivity:                  session.Progress.Activity,
+		ProgressStartedAt:                 optionalTimestamp(session.Progress.StartedAt),
+		ProgressLastProgressAt:            optionalTimestamp(session.Progress.LastProgressAt),
+		ProgressUpdatedAt:                 optionalTimestamp(session.Progress.LastProgressAt),
+		FailureCode:                       session.Failure.Code,
+		FailureStage:                      session.Failure.Stage,
+		FailureRetryDisposition:           string(session.Failure.RetryDisposition),
+		FailureResourceImpact:             string(session.Failure.ResourceImpact),
+		FailureDetail:                     session.Failure.Detail,
+		FailureAt:                         optionalTimestamp(session.Failure.FailedAt),
+		FailureSupportReference:           session.Failure.SupportReference,
+		ActiveWorkflowID:                  session.ActiveWorkflowID,
+		ActiveWorkflowType:                session.ActiveWorkflowType,
+		ActiveWorkflowStartedAt:           fixedTimestamp(session.ActiveWorkflowStartedAt),
+		ActiveWorkflowLeaseExpiresAt:      fixedTimestamp(session.ActiveWorkflowLeaseExpiresAt),
 
 		DesiredState:          string(session.DesiredState),
 		ObservedState:         string(session.ObservedState),
@@ -1326,6 +1292,13 @@ func toSessionItem(session domain.Session) sessionItem {
 		GSI1PK: ownerPartitionKey(session.OwnerDiscordUserID),
 		GSI1SK: fmt.Sprintf(
 			"UPDATED#%s#SESSION#%s",
+			sortTimestamp(session.UpdatedAt),
+			session.ID,
+		),
+		GSI2PK: "GUILD#" + session.GuildID,
+		GSI2SK: fmt.Sprintf(
+			"STATE#%s#UPDATED#%s#SESSION#%s",
+			session.LifecycleState,
 			sortTimestamp(session.UpdatedAt),
 			session.ID,
 		),
@@ -1514,43 +1487,61 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("parse ready notification attempt timestamp: %w", err)
 	}
+	maximumDurationStartedAt, err := parseOptionalTimestamp(item.MaximumDurationStartedAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse maximum duration start: %w", err)
+	}
+	maximumDurationDeadlineAt, err := parseOptionalTimestamp(item.MaximumDurationDeadlineAt)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse maximum duration deadline: %w", err)
+	}
+	maximumDurationWarningDeadline, err := parseOptionalTimestamp(item.MaximumDurationWarningDeadline)
+	if err != nil {
+		return domain.Session{}, fmt.Errorf("parse maximum duration warning deadline: %w", err)
+	}
 	session := domain.Session{
-		ID:                            item.SessionID,
-		Slug:                          item.Slug,
-		DisplayName:                   item.DisplayName,
-		Description:                   item.Description,
-		GameType:                      item.GameType,
-		OwnerDiscordUserID:            item.OwnerDiscordUserID,
-		GuildID:                       item.GuildID,
-		ChannelID:                     item.ChannelID,
-		GameProfileID:                 item.GameProfileID,
-		SleepAfterSeconds:             item.SleepAfterSeconds,
-		ArchiveAfterSeconds:           item.ArchiveAfterSeconds,
-		TeamSpeakEnabled:              item.TeamSpeakEnabled,
-		Vanilla:                       item.Vanilla,
-		CreatorDLCs:                   append([]string(nil), item.CreatorDLCs...),
-		StartWhenReady:                item.StartWhenReady,
-		NotifyWhenReady:               item.NotifyWhenReady,
-		ReadyNotificationChannelID:    item.ReadyNotificationChannelID,
-		ReadyNotificationAttemptedAt:  readyNotificationAttemptedAt,
-		ConfigurationRevision:         item.ConfigurationRevision,
-		ServerConfigRevision:          item.ServerConfigRevision,
-		ServerConfigObjectKey:         item.ServerConfigObjectKey,
-		ServerConfigSHA256:            item.ServerConfigSHA256,
-		MissionObjectKey:              item.MissionObjectKey,
-		MissionFiles:                  missionFiles,
-		ConfiguredMission:             configuredMission,
-		CurrentMission:                currentMission,
-		WorkshopMissionSources:        workshopMissionSources,
-		WorkshopModSources:            workshopModSources,
-		WorkshopResolutionTarget:      domain.WorkshopTarget(item.WorkshopResolutionTarget),
-		WorkshopResolutionRequestKey:  item.WorkshopResolutionRequestKey,
-		WorkshopResolutionRequestedAt: workshopResolutionRequestedAt,
-		WorkshopResolutionLastTarget:  domain.WorkshopTarget(item.WorkshopResolutionLastTarget),
-		WorkshopResolutionIssue:       item.WorkshopResolutionIssue,
-		WorkshopResolutionFailedAt:    workshopResolutionFailedAt,
-		PresetObjectKey:               item.PresetObjectKey,
-		PresetRevisionSequence:        item.PresetRevisionSequence,
+		ID:                  item.SessionID,
+		Slug:                item.Slug,
+		DisplayName:         item.DisplayName,
+		Description:         item.Description,
+		GameType:            item.GameType,
+		OwnerDiscordUserID:  item.OwnerDiscordUserID,
+		GuildID:             item.GuildID,
+		ChannelID:           item.ChannelID,
+		GameProfileID:       item.GameProfileID,
+		SleepAfterSeconds:   item.SleepAfterSeconds,
+		ArchiveAfterSeconds: item.ArchiveAfterSeconds,
+		MaximumDuration: domain.MaximumDuration{
+			Seconds: item.MaximumDurationSeconds, StartedAt: maximumDurationStartedAt, DeadlineAt: maximumDurationDeadlineAt,
+		},
+		MaximumDurationWarningDeadline:    maximumDurationWarningDeadline,
+		MaximumDurationWarningLevel:       item.MaximumDurationWarningLevel,
+		MaximumDurationWarningQueuedLevel: item.MaximumDurationWarningQueuedLevel,
+		TeamSpeakEnabled:                  item.TeamSpeakEnabled,
+		Vanilla:                           item.Vanilla,
+		CreatorDLCs:                       append([]string(nil), item.CreatorDLCs...),
+		StartWhenReady:                    item.StartWhenReady,
+		NotifyWhenReady:                   item.NotifyWhenReady,
+		ReadyNotificationChannelID:        item.ReadyNotificationChannelID,
+		ReadyNotificationAttemptedAt:      readyNotificationAttemptedAt,
+		ConfigurationRevision:             item.ConfigurationRevision,
+		ServerConfigRevision:              item.ServerConfigRevision,
+		ServerConfigObjectKey:             item.ServerConfigObjectKey,
+		ServerConfigSHA256:                item.ServerConfigSHA256,
+		MissionObjectKey:                  item.MissionObjectKey,
+		MissionFiles:                      missionFiles,
+		ConfiguredMission:                 configuredMission,
+		CurrentMission:                    currentMission,
+		WorkshopMissionSources:            workshopMissionSources,
+		WorkshopModSources:                workshopModSources,
+		WorkshopResolutionTarget:          domain.WorkshopTarget(item.WorkshopResolutionTarget),
+		WorkshopResolutionRequestKey:      item.WorkshopResolutionRequestKey,
+		WorkshopResolutionRequestedAt:     workshopResolutionRequestedAt,
+		WorkshopResolutionLastTarget:      domain.WorkshopTarget(item.WorkshopResolutionLastTarget),
+		WorkshopResolutionIssue:           item.WorkshopResolutionIssue,
+		WorkshopResolutionFailedAt:        workshopResolutionFailedAt,
+		PresetObjectKey:                   item.PresetObjectKey,
+		PresetRevisionSequence:            item.PresetRevisionSequence,
 		PendingPresetRevision: domain.PresetRevision{
 			Number: item.PendingPresetRevision, BaseRevision: item.PendingPresetBaseRevision, PresetObjectKey: item.PendingPresetObjectKey,
 			Modlist: domain.PresetModlistMetadata{ObjectKey: item.PendingPresetModlistKey, Filename: item.PendingPresetModlistName, SHA256: item.PendingPresetModlistSHA, SizeBytes: item.PendingPresetModlistSize, WorkshopCount: item.PendingPresetWorkshopCount},

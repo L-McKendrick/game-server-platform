@@ -2,6 +2,7 @@ package monitoring
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
@@ -50,19 +51,138 @@ func (service *Service) Run(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	completed := 0
+	var sessionErrors []error
 	for _, session := range sessions {
-		var runErr error
-		if session.LifecycleState == domain.StateSleeping {
-			runErr = service.archiveIfDue(ctx, session)
-		} else {
-			runErr = service.monitor(ctx, session)
-		}
-		if runErr != nil {
-			return completed, runErr
+		if err := service.runSession(ctx, session); err != nil {
+			sessionErrors = append(sessionErrors, fmt.Errorf("monitor session %s: %w", session.ID, err))
+			continue
 		}
 		completed++
 	}
-	return completed, nil
+	return completed, errors.Join(sessionErrors...)
+}
+
+func (service *Service) runSession(ctx context.Context, session domain.Session) error {
+	if session.LifecycleState == domain.StateFailed {
+		if session.FailedInitialCreation() {
+			warned, err := service.warnIfDue(ctx, session)
+			if err != nil {
+				return err
+			}
+			session = warned
+		}
+		if action := session.MaximumDeadlineAction(service.clock.Now().UTC()); action == domain.CommandDestroySession {
+			return service.enforceDeadline(ctx, session, action)
+		}
+		return service.alertFailedDeadline(ctx, session)
+	}
+	warned, err := service.warnIfDue(ctx, session)
+	if err != nil {
+		return err
+	}
+	session = warned
+	if session.LifecycleState == domain.StateSleeping {
+		return service.archiveIfDue(ctx, session)
+	}
+	return service.monitor(ctx, session)
+}
+
+func (service *Service) alertFailedDeadline(ctx context.Context, session domain.Session) error {
+	if service.notifications == nil || !session.MaximumDuration.Expired(service.clock.Now().UTC()) || (session.Infrastructure.InstanceID == "" && session.Infrastructure.DataVolumeID == "") || (session.MaximumDurationWarningDeadline.Equal(session.MaximumDuration.DeadlineAt) && session.MaximumDurationWarningLevel == 3) {
+		return nil
+	}
+	now := service.clock.Now().UTC()
+	deadline := session.MaximumDuration.DeadlineAt
+	id := domain.MaximumDeadlineCommandID(session.ID, deadline, "failed-alert")
+	content := fmt.Sprintf("<@%s> `%s` has reached its maximum duration, but its failed state prevented automatic sleep/archive. Resources may still incur cost. Give the support reference to an operator for safe cleanup.", session.OwnerDiscordUserID, session.Slug)
+	if err := service.notifications.Enqueue(ctx, domain.NotificationRequest{SchemaVersion: 1, NotificationID: id, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: content, Kind: domain.NotificationSessionDuration, AllowedUserIDs: []string{session.OwnerDiscordUserID}, CorrelationID: id, RequestedAt: now}); err != nil {
+		return err
+	}
+	expected := session.Version
+	session.MaximumDurationWarningDeadline = deadline
+	session.MaximumDurationWarningLevel = 3
+	session.Version++
+	session.UpdatedAt = now
+	event := domain.SessionEvent{ID: id, SessionID: session.ID, Type: domain.EventMaximumDurationWarning, OccurredAt: now, ActorType: string(domain.ActorTypeSystem), ActorID: domain.InactivityMonitorActorID, CorrelationID: id, Data: map[string]string{"deadline": deadline.Format(time.RFC3339Nano), "level": "failed-attention"}}
+	return service.repo.SaveMonitoring(ctx, session, expected, []domain.SessionEvent{event})
+}
+
+func (service *Service) warnIfDue(ctx context.Context, session domain.Session) (domain.Session, error) {
+	now := service.clock.Now().UTC()
+	deadline, action := time.Time{}, ""
+	switch {
+	case session.FailedInitialCreation():
+		deadline, action = session.MaximumDuration.DeadlineAt, domain.CommandDestroySession
+	case (session.LifecycleState == domain.StateRunning || session.LifecycleState == domain.StateIdle) && session.PlayerCountKnown && session.PlayerCount == 0:
+		deadline, action = session.AutomaticSleepDeadline(), domain.CommandSleepSession
+	case session.LifecycleState == domain.StateSleeping:
+		deadline, action = session.AutomaticArchiveDeadline(), domain.CommandArchiveSession
+	}
+	if deadline.IsZero() || !deadline.After(now) || service.notifications == nil {
+		return session, nil
+	}
+	remaining := deadline.Sub(now)
+	level := 0
+	if remaining <= time.Hour {
+		level = 1
+	}
+	if remaining <= 15*time.Minute {
+		level = 2
+	}
+	if level == 0 || (session.MaximumDurationWarningDeadline.Equal(deadline) && session.MaximumDurationWarningQueuedLevel >= level) {
+		return session, nil
+	}
+	if !session.MaximumDurationWarningDeadline.Equal(deadline) || session.MaximumDurationWarningLevel < level {
+		previous := session.Version
+		session.MaximumDurationWarningDeadline = deadline
+		session.MaximumDurationWarningLevel = level
+		session.MaximumDurationWarningQueuedLevel = 0
+		session.Version++
+		session.UpdatedAt = now
+		eventID := domain.LifecycleTimeoutWarningID(session.ID, deadline, action, level)
+		eventType := domain.EventLifecycleTimeoutWarning
+		if action == domain.CommandDestroySession {
+			eventType = domain.EventMaximumDurationWarning
+		}
+		event := domain.SessionEvent{ID: eventID, SessionID: session.ID, Type: eventType, OccurredAt: now, ActorType: string(domain.ActorTypeSystem), ActorID: domain.InactivityMonitorActorID, CorrelationID: eventID, Data: map[string]string{"deadline": deadline.Format(time.RFC3339Nano), "action": action, "level": fmt.Sprintf("%d", level)}}
+		if err := service.repo.SaveMonitoring(ctx, session, previous, []domain.SessionEvent{event}); err != nil {
+			return session, err
+		}
+	}
+	eventID := domain.LifecycleTimeoutWarningID(session.ID, deadline, action, level)
+	content := fmt.Sprintf("<@%s> `%s` will sleep at <t:%d:F> if it remains empty. An administrator can add time in `/rb admin`.", session.OwnerDiscordUserID, session.Slug, deadline.Unix())
+	if action == domain.CommandArchiveSession {
+		content = fmt.Sprintf("<@%s> `%s` will archive at <t:%d:F>. An administrator can add time in `/rb admin`.", session.OwnerDiscordUserID, session.Slug, deadline.Unix())
+	}
+	if session.FailedInitialCreation() {
+		content = fmt.Sprintf("<@%s> `%s` did not finish initial setup. Its retained resources and session files will be permanently deleted at <t:%d:F> unless an administrator extends the deadline. Save anything you need before then.", session.OwnerDiscordUserID, session.Slug, deadline.Unix())
+	}
+	request := domain.NotificationRequest{SchemaVersion: 1, NotificationID: eventID, SessionID: session.ID, GuildID: session.GuildID, ChannelID: session.ChannelID, Content: content, Kind: domain.NotificationSessionDuration, AllowedUserIDs: []string{session.OwnerDiscordUserID}, CorrelationID: eventID, RequestedAt: now}
+	if err := service.notifications.Enqueue(ctx, request); err != nil {
+		return session, fmt.Errorf("enqueue lifecycle-timeout warning: %w", err)
+	}
+	previous := session.Version
+	session.MaximumDurationWarningQueuedLevel = level
+	session.Version++
+	session.UpdatedAt = now
+	if err := service.repo.SaveMonitoring(ctx, session, previous, nil); err != nil {
+		return session, err
+	}
+	return session, nil
+}
+
+func (service *Service) enforceDeadline(ctx context.Context, session domain.Session, action string) error {
+	if service.commands == nil {
+		return fmt.Errorf("maximum-duration enforcement command queue is required")
+	}
+	now := service.clock.Now().UTC()
+	commandID := domain.MaximumDeadlineCommandID(session.ID, session.MaximumDuration.DeadlineAt, action)
+	return service.commands.Enqueue(ctx, domain.CommandEnvelope{
+		SchemaVersion: 1, CommandID: commandID, CommandType: action, RequestedAt: now,
+		Actor:     domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true},
+		SessionID: session.ID, IdempotencyKey: "maximum-duration:" + commandID, CorrelationID: commandID,
+		Parameters: map[string]string{domain.MaximumDeadlineParameter: session.MaximumDuration.DeadlineAt.UTC().Format(time.RFC3339Nano)},
+	})
 }
 
 func (service *Service) archiveIfDue(ctx context.Context, session domain.Session) error {
@@ -70,12 +190,13 @@ func (service *Service) archiveIfDue(ctx context.Context, session domain.Session
 		return nil
 	}
 	now := service.clock.Now().UTC()
-	commandID := domain.AutomaticArchiveCommandID(session.ID, session.SleepingSince)
+	deadline := session.AutomaticArchiveDeadline()
+	commandID := domain.AutomaticArchiveCommandID(session.ID, deadline)
 	return service.commands.Enqueue(ctx, domain.CommandEnvelope{
 		SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandArchiveSession, RequestedAt: now,
 		Actor:     domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true},
 		SessionID: session.ID, IdempotencyKey: "automatic-archive:" + commandID, CorrelationID: commandID,
-		Parameters: map[string]string{domain.AutomaticSleepingSinceParameter: session.SleepingSince.UTC().Format(time.RFC3339Nano)},
+		Parameters: map[string]string{domain.AutomaticSleepingSinceParameter: session.SleepingSince.UTC().Format(time.RFC3339Nano), domain.AutomaticLifecycleDeadlineParameter: deadline.Format(time.RFC3339Nano)},
 	})
 }
 func (service *Service) monitor(ctx context.Context, session domain.Session) error {
@@ -133,12 +254,13 @@ func (service *Service) monitor(ctx context.Context, session domain.Session) err
 		return err
 	}
 	if service.commands != nil && session.AutomaticSleepDue(now) {
-		commandID := domain.AutomaticSleepCommandID(session.ID, session.IdleSince)
+		deadline := session.AutomaticSleepDeadline()
+		commandID := domain.AutomaticSleepCommandID(session.ID, deadline)
 		command := domain.CommandEnvelope{
 			SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandSleepSession, RequestedAt: now,
 			Actor:     domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true},
 			SessionID: session.ID, IdempotencyKey: "automatic-sleep:" + commandID, CorrelationID: commandID,
-			Parameters: map[string]string{domain.AutomaticIdleSinceParameter: session.IdleSince.UTC().Format(time.RFC3339Nano)},
+			Parameters: map[string]string{domain.AutomaticIdleSinceParameter: session.IdleSince.UTC().Format(time.RFC3339Nano), domain.AutomaticLifecycleDeadlineParameter: deadline.Format(time.RFC3339Nano)},
 		}
 		if err := service.commands.Enqueue(ctx, command); err != nil {
 			return fmt.Errorf("enqueue automatic sleep: %w", err)

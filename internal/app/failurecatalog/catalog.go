@@ -53,6 +53,12 @@ var entries = map[string]entry{
 		"The platform stopped the workflow and retained the server for diagnosis.",
 		"Give the support reference to an operator before trying another start.",
 	},
+	"ERR_STEAM_EXCHANGE_READ": {
+		"Steam authorization could not be delivered to the game server.",
+		"The workflow-scoped download capability was rejected or unavailable.",
+		"The platform stopped setup, removed the failed exchange, and retained the server for a safe retry.",
+		"Give the support reference to an operator and retry only after the platform correction is deployed.",
+	},
 	"ERR_STEAM_REAUTH_REQUIRED": {
 		"Steam authorization needs renewed approval.",
 		"Steam rejected the cached login token or requested Steam Guard approval again.",

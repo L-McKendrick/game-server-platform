@@ -160,6 +160,12 @@ terraform -chdir=infra/terraform/environments/dev apply initial-control-plane.tf
 Never reuse a saved plan after changing source files, variables, credentials,
 or remote state.
 
+When upgrading an existing environment to the Phase 19.4 guild-session index,
+follow [Phase 19.4 Guild-Session Discovery](phase-19-guild-session-index.md).
+Deploy the index and current session writers, wait for `gsi2` to become
+`ACTIVE`, then backfill, verify, and explicitly cut over. Do not write the
+cutover marker manually or infer readiness from an empty query.
+
 ## 7. Store the Discord bot token
 
 Get the Terraform-managed secret name:

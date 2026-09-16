@@ -70,11 +70,11 @@ bounded packet sizes/timeouts, malformed packets, and a connected UDP socket
 that accepts only the configured server endpoint. A query failure is `UNKNOWN`,
 never zero players.
 
-Phase 14 adds the initial fixed-policy automation on top of this manual
-lifecycle. It uses bounded A2S counts as the current activity signal, sleeps
-after 30 continuous verified zero-player minutes, and treats every missing,
+The automatic lifecycle uses bounded A2S counts as the current activity signal,
+sleeps after the session's configured continuous zero-player period (30 minutes
+by default), and treats every missing,
 malformed, stale, or failed query as `UNKNOWN`, which resets the idle window.
-It deliberately does not yet require a second server-side signal or provide an
-owner warning/cancellation window. Those richer safeguards remain deferred.
+Administrators configure future defaults and can add time to active sessions;
+owners receive bounded warnings before automatic sleep or archive.
 See [Automatic inactivity lifecycle](phase-14-inactivity-lifecycle.md) for the
 implemented policy and expansion boundaries.

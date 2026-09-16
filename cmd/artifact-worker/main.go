@@ -25,6 +25,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmbootstrap"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmlivemission"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/steamexchange"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/httpartifact"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/steamworkshop"
 	"github.com/L-McKendrick/game-server-platform/internal/app/artifacts"
@@ -124,6 +125,11 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	steamBroker, err := steamexchange.NewAWS(awsCfg, clock, cfg.MetadataTable, cfg.SessionAssetsBucket, strings.TrimSpace(os.Getenv("STEAM_AUTH_SECRET_ID")))
+	if err != nil {
+		return nil, err
+	}
+	contentRunner.WithSteamAuthorizationBroker(steamBroker)
 	contentSync, err := workshopcontent.New(repository, repository, contentRunner, identity.Generator{}, clock, workshopcontent.WithWorkshopMissionManifest(objects))
 	if err != nil {
 		return nil, err

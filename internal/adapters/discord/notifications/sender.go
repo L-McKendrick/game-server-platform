@@ -81,7 +81,7 @@ func (sender *Sender) Send(ctx context.Context, request domain.NotificationReque
 		return err
 	}
 	allowedMentions := map[string]any{"parse": []string{}}
-	if request.Kind == domain.NotificationSessionReady {
+	if request.Kind == domain.NotificationSessionReady || request.Kind == domain.NotificationSessionDuration {
 		allowedMentions["users"] = append([]string(nil), request.AllowedUserIDs...)
 	}
 	body, err := json.Marshal(map[string]any{

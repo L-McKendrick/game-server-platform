@@ -16,6 +16,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sfnworkflow"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsdlq"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmbootstrap"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/steamexchange"
 	apporphan "github.com/L-McKendrick/game-server-platform/internal/app/orphan"
 	appreliability "github.com/L-McKendrick/game-server-platform/internal/app/reliability"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
@@ -90,6 +91,11 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	steamBroker, err := steamexchange.NewAWS(awsConfig, clock, base.MetadataTable, bucket, strings.TrimSpace(os.Getenv("STEAM_AUTH_SECRET_ID")))
+	if err != nil {
+		return nil, err
+	}
+	contentRunner.WithSteamAuthorizationBroker(steamBroker)
 	contentSync, err := workshopcontent.New(repository, repository, contentRunner, ids, clock, workshopcontent.WithWorkshopMissionManifest(s3objects.New(s3Client, bucket)))
 	if err != nil {
 		return nil, err

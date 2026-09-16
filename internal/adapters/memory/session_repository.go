@@ -2,8 +2,12 @@ package memory
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
@@ -30,9 +34,14 @@ type SessionRepository struct {
 	activeResets       map[string]string
 	latestResets       map[string]domain.ResetOperation
 	serverConfigs      map[string]domain.GuildServerConfig
+	lifecycleTimeouts  map[string]domain.GuildLifecycleTimeoutPolicy
+	lifecycleAudits    map[string][]domain.LifecycleTimeoutPolicyAudit
 }
 
 var _ ports.SessionRepository = (*SessionRepository)(nil)
+var _ ports.GuildSessionRepository = (*SessionRepository)(nil)
+var _ ports.LifecycleTimeoutPolicyRepository = (*SessionRepository)(nil)
+var _ ports.SessionSlugRepository = (*SessionRepository)(nil)
 var _ ports.SessionCardRepository = (*SessionRepository)(nil)
 var _ ports.SessionCardControlRepository = (*SessionRepository)(nil)
 
@@ -56,7 +65,62 @@ func NewSessionRepository() *SessionRepository {
 		activeResets:       make(map[string]string),
 		latestResets:       make(map[string]domain.ResetOperation),
 		serverConfigs:      make(map[string]domain.GuildServerConfig),
+		lifecycleTimeouts:  make(map[string]domain.GuildLifecycleTimeoutPolicy),
+		lifecycleAudits:    make(map[string][]domain.LifecycleTimeoutPolicyAudit),
 	}
+}
+
+func (repository *SessionRepository) GetLifecycleTimeoutPolicy(ctx context.Context, guildID string) (domain.GuildLifecycleTimeoutPolicy, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.GuildLifecycleTimeoutPolicy{}, err
+	}
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	policy, found := repository.lifecycleTimeouts[guildID]
+	if !found {
+		return domain.GuildLifecycleTimeoutPolicy{}, domain.ErrNotFound
+	}
+	return policy, nil
+}
+
+func (repository *SessionRepository) SaveLifecycleTimeoutPolicy(ctx context.Context, policy domain.GuildLifecycleTimeoutPolicy, expectedVersion int64, audit domain.LifecycleTimeoutPolicyAudit, idempotency domain.IdempotencyRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := policy.Validate(); err != nil {
+		return err
+	}
+	if err := audit.Validate(); err != nil {
+		return err
+	}
+	if err := idempotency.Validate(); err != nil {
+		return err
+	}
+	if idempotency.ResultReference != policy.GuildID {
+		return fmt.Errorf("lifecycle timeout idempotency result must reference guild")
+	}
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	current, found := repository.lifecycleTimeouts[policy.GuildID]
+	if stored, exists := repository.idempotency[idempotency.Key]; exists {
+		if stored.RequestHash != idempotency.RequestHash {
+			return domain.ErrIdempotencyConflict
+		}
+		return nil
+	}
+	if policy.Version < 1 || (!found && expectedVersion != 0) || (found && current.Version != expectedVersion) {
+		return domain.ErrConflict
+	}
+	repository.lifecycleTimeouts[policy.GuildID] = policy
+	repository.lifecycleAudits[policy.GuildID] = append(repository.lifecycleAudits[policy.GuildID], audit)
+	repository.idempotency[idempotency.Key] = idempotency
+	return nil
+}
+
+func (repository *SessionRepository) LifecycleTimeoutAudits(guildID string) []domain.LifecycleTimeoutPolicyAudit {
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	return append([]domain.LifecycleTimeoutPolicyAudit(nil), repository.lifecycleAudits[guildID]...)
 }
 
 // Create atomically stores a session and its initial event.
@@ -137,6 +201,20 @@ func (repository *SessionRepository) Get(
 	}
 
 	return session, nil
+}
+
+func (repository *SessionRepository) GetByGuildSlug(ctx context.Context, guildID, slug string) (domain.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.Session{}, err
+	}
+	repository.mu.RLock()
+	defer repository.mu.RUnlock()
+	for _, session := range repository.sessions {
+		if session.GuildID == guildID && session.Slug == slug {
+			return session, nil
+		}
+	}
+	return domain.Session{}, domain.ErrNotFound
 }
 
 // SaveCardReference stores replaceable delivery metadata independently of the
@@ -384,40 +462,95 @@ func (repository *SessionRepository) ListByOwner(
 	return sessions, nil
 }
 
-// ListByGuild returns sessions in one Discord guild, newest first.
-func (repository *SessionRepository) ListByGuild(
-	ctx context.Context,
-	guildID string,
-	limit int32,
-) ([]domain.Session, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if limit <= 0 {
-		limit = 25
-	}
-	if limit > 100 {
-		limit = 100
-	}
+type guildSessionMemoryCursor struct {
+	GuildID string                  `json:"guild_id"`
+	States  []domain.LifecycleState `json:"states"`
+	Offset  int                     `json:"offset"`
+}
 
+func (repository *SessionRepository) ListGuildSessions(ctx context.Context, guildID string, states []domain.LifecycleState, page ports.GuildSessionPage) (ports.GuildSessionPageResult, error) {
+	if err := ctx.Err(); err != nil {
+		return ports.GuildSessionPageResult{}, err
+	}
+	normalized, err := normalizeMemoryGuildStates(states)
+	if err != nil {
+		return ports.GuildSessionPageResult{}, err
+	}
+	guildID = strings.TrimSpace(guildID)
+	if guildID == "" {
+		return ports.GuildSessionPageResult{}, fmt.Errorf("guild ID is required")
+	}
+	size := page.Size
+	if size <= 0 {
+		size = 25
+	}
+	if size > 100 {
+		return ports.GuildSessionPageResult{}, fmt.Errorf("page size must not exceed 100")
+	}
+	offset := 0
+	if page.Cursor != "" {
+		decoded, decodeErr := base64.RawURLEncoding.DecodeString(page.Cursor)
+		if decodeErr != nil {
+			return ports.GuildSessionPageResult{}, fmt.Errorf("decode guild session cursor: %w", decodeErr)
+		}
+		var cursor guildSessionMemoryCursor
+		if json.Unmarshal(decoded, &cursor) != nil || cursor.GuildID != guildID || !slices.Equal(cursor.States, normalized) || cursor.Offset < 0 {
+			return ports.GuildSessionPageResult{}, fmt.Errorf("guild session cursor does not match request")
+		}
+		offset = cursor.Offset
+	}
+	wanted := make(map[domain.LifecycleState]struct{}, len(normalized))
+	for _, state := range normalized {
+		wanted[state] = struct{}{}
+	}
 	repository.mu.RLock()
-	defer repository.mu.RUnlock()
-	sessions := make([]domain.Session, 0)
+	matching := make([]domain.Session, 0)
 	for _, session := range repository.sessions {
 		if session.GuildID == guildID {
-			sessions = append(sessions, session)
+			if _, ok := wanted[session.LifecycleState]; ok {
+				matching = append(matching, session)
+			}
 		}
 	}
-	sort.Slice(sessions, func(first, second int) bool {
-		if sessions[first].UpdatedAt.Equal(sessions[second].UpdatedAt) {
-			return sessions[first].ID > sessions[second].ID
+	repository.mu.RUnlock()
+	sort.Slice(matching, func(i, j int) bool {
+		if matching[i].UpdatedAt.Equal(matching[j].UpdatedAt) {
+			return matching[i].ID > matching[j].ID
 		}
-		return sessions[first].UpdatedAt.After(sessions[second].UpdatedAt)
+		return matching[i].UpdatedAt.After(matching[j].UpdatedAt)
 	})
-	if len(sessions) > int(limit) {
-		sessions = sessions[:limit]
+	if offset > len(matching) {
+		return ports.GuildSessionPageResult{}, fmt.Errorf("guild session cursor is beyond available results")
 	}
-	return sessions, nil
+	end := offset + int(size)
+	if end > len(matching) {
+		end = len(matching)
+	}
+	result := ports.GuildSessionPageResult{Sessions: append([]domain.Session(nil), matching[offset:end]...)}
+	if end < len(matching) {
+		encoded, _ := json.Marshal(guildSessionMemoryCursor{GuildID: guildID, States: normalized, Offset: end})
+		result.NextCursor = base64.RawURLEncoding.EncodeToString(encoded)
+	}
+	return result, nil
+}
+
+func normalizeMemoryGuildStates(states []domain.LifecycleState) ([]domain.LifecycleState, error) {
+	if len(states) == 0 {
+		return nil, fmt.Errorf("at least one lifecycle state is required")
+	}
+	seen := make(map[domain.LifecycleState]struct{}, len(states))
+	result := make([]domain.LifecycleState, 0, len(states))
+	for _, state := range states {
+		if !state.Valid() {
+			return nil, fmt.Errorf("invalid lifecycle state %q", state)
+		}
+		if _, ok := seen[state]; !ok {
+			seen[state] = struct{}{}
+			result = append(result, state)
+		}
+	}
+	slices.Sort(result)
+	return result, nil
 }
 
 // Events returns a copy of the events stored for a session.

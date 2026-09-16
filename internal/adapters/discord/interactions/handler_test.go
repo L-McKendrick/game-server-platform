@@ -2214,7 +2214,7 @@ func TestHandlerAdministratorResetFlowIsTypedReplaySafeAndFreezesSessionCommands
 	menuResponse := executeSignedRequest(t, handler, privateKey, adminMenuCommandBody("reset-menu", "admin-1", "8"), testNow)
 	var menu interactionResponse
 	decodeResponse(t, menuResponse, &menu)
-	if menu.Data == nil || menu.Data.Components == nil || len((*menu.Data.Components)[0].Components[0].Options) != 5 {
+	if menu.Data == nil || menu.Data.Components == nil || len((*menu.Data.Components)[0].Components[0].Options) != 6 {
 		t.Fatalf("Administrator menu = %#v", menu)
 	}
 
@@ -2257,6 +2257,54 @@ func TestHandlerAdministratorResetFlowIsTypedReplaySafeAndFreezesSessionCommands
 	decodeResponse(t, listResponse, &list)
 	if list.Data == nil || !strings.Contains(list.Data.Content, "reset is in progress") || !strings.Contains(list.Data.Content, "No session operation was queued") {
 		t.Fatalf("command during reset = %#v", list)
+	}
+}
+
+func TestAdminLegacyMaximumDurationControlIsRetired(t *testing.T) {
+	handler, _, privateKey := newTestHandler(t, []string{"legacy-control"}, nil)
+	response := executeSignedRequest(t, handler, privateKey, adminComponentBody("legacy", "admin-1", "8", adminDurationConfigureID, componentTypeButton, nil), testNow)
+	var result interactionResponse
+	decodeResponse(t, response, &result)
+	if result.Data == nil || !strings.Contains(result.Data.Content, "has been replaced") || !strings.Contains(result.Data.Content, "Session timeouts") {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestAdminLifecycleTimeoutDefaultsRequireAdministratorAndAuditOnce(t *testing.T) {
+	handler, repository, privateKey := newTestHandler(t, []string{"denied", "open", "submit", "replay"}, []string{"timeout-audit"})
+	denied := executeSignedRequest(t, handler, privateKey, adminComponentBody("timeout-denied", "manager-1", "32", adminTimeoutDefaultsID, componentTypeButton, nil), testNow)
+	var decoded interactionResponse
+	decodeResponse(t, denied, &decoded)
+	if decoded.Type == interactionResponseModal {
+		t.Fatal("Manage Server member opened protected timeout modal")
+	}
+	opened := executeSignedRequest(t, handler, privateKey, adminComponentBody("timeout-open", "admin-1", "8", adminTimeoutDefaultsID, componentTypeButton, nil), testNow)
+	decodeResponse(t, opened, &decoded)
+	if decoded.Type != interactionResponseModal || decoded.Data == nil || decoded.Data.Components == nil || len(*decoded.Data.Components) != 3 {
+		t.Fatalf("modal = %#v data = %#v", decoded, decoded.Data)
+	}
+	body := marshalPayload(map[string]any{
+		"id": "timeout-submit", "application_id": "app-1", "type": interactionTypeModalSubmit, "guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "admin-1"}, "permissions": "8"},
+		"data": map[string]any{"custom_id": adminTimeoutDefaultsID, "components": []any{
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeTextInput, "custom_id": adminTimeoutSleepID, "value": "45"}},
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeTextInput, "custom_id": adminTimeoutArchiveID, "value": "14"}},
+			map[string]any{"type": componentTypeLabel, "component": map[string]any{"type": componentTypeTextInput, "custom_id": adminTimeoutReasonID, "value": "planned event"}},
+		}},
+	})
+	response := executeSignedRequest(t, handler, privateKey, body, testNow)
+	decodeResponse(t, response, &decoded)
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "45 minutes") || !strings.Contains(decoded.Data.Content, "14 days") || decoded.Data.Flags&messageFlagEphemeral == 0 {
+		t.Fatalf("result = %#v", decoded)
+	}
+	policy, err := repository.GetLifecycleTimeoutPolicy(context.Background(), "guild-1")
+	if err != nil || policy.SleepAfterSeconds != 45*60 || len(repository.LifecycleTimeoutAudits("guild-1")) != 1 {
+		t.Fatalf("policy = %#v, audits = %#v, err = %v", policy, repository.LifecycleTimeoutAudits("guild-1"), err)
+	}
+	response = executeSignedRequest(t, handler, privateKey, body, testNow)
+	decodeResponse(t, response, &decoded)
+	if len(repository.LifecycleTimeoutAudits("guild-1")) != 1 {
+		t.Fatal("replay created another audit")
 	}
 }
 

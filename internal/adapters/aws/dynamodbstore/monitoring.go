@@ -25,8 +25,8 @@ func (repository *Repository) ListInactivityCandidates(ctx context.Context, limi
 	}
 	sessions := make([]domain.Session, 0, limit)
 	var startKey map[string]types.AttributeValue
-	for len(sessions) < int(limit) {
-		output, err := repository.client.Scan(ctx, &dynamodb.ScanInput{TableName: aws.String(repository.tableName), Limit: aws.Int32(limit), ExclusiveStartKey: startKey, FilterExpression: aws.String("entity_type = :type AND lifecycle_state IN (:running, :sleeping)"), ExpressionAttributeValues: map[string]types.AttributeValue{":type": &types.AttributeValueMemberS{Value: "Session"}, ":running": &types.AttributeValueMemberS{Value: string(domain.StateRunning)}, ":sleeping": &types.AttributeValueMemberS{Value: string(domain.StateSleeping)}}})
+	for {
+		output, err := repository.client.Scan(ctx, &dynamodb.ScanInput{TableName: aws.String(repository.tableName), Limit: aws.Int32(limit), ExclusiveStartKey: startKey, FilterExpression: aws.String("entity_type = :type AND lifecycle_state IN (:running, :idle, :sleeping, :failed)"), ExpressionAttributeValues: map[string]types.AttributeValue{":type": &types.AttributeValueMemberS{Value: "Session"}, ":running": &types.AttributeValueMemberS{Value: string(domain.StateRunning)}, ":idle": &types.AttributeValueMemberS{Value: string(domain.StateIdle)}, ":sleeping": &types.AttributeValueMemberS{Value: string(domain.StateSleeping)}, ":failed": &types.AttributeValueMemberS{Value: string(domain.StateFailed)}}})
 		if err != nil {
 			return nil, fmt.Errorf("scan running sessions: %w", err)
 		}
@@ -40,9 +40,6 @@ func (repository *Repository) ListInactivityCandidates(ctx context.Context, limi
 				return nil, err
 			}
 			sessions = append(sessions, session)
-			if len(sessions) == int(limit) {
-				break
-			}
 		}
 		if len(output.LastEvaluatedKey) == 0 {
 			break

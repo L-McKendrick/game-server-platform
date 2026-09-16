@@ -783,12 +783,63 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 	if payload.Data == nil {
 		return newUserError("This administration control is invalid or has expired.")
 	}
-	if handler.reset != nil && (payload.Data.CustomID == adminRoleSelectCustomID || payload.Data.CustomID == adminRepairSelectCustomID || payload.Data.CustomID == adminPublicCardChannelCustomID || strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix)) {
+	if handler.reset != nil && (payload.Data.CustomID == adminRoleSelectCustomID || payload.Data.CustomID == adminRepairSelectCustomID || payload.Data.CustomID == adminPublicCardChannelCustomID || payload.Data.CustomID == adminDurationConfigureID || payload.Data.CustomID == adminDurationExtendID || payload.Data.CustomID == adminTimeoutDefaultsID || payload.Data.CustomID == adminTimeoutSessionID || strings.HasPrefix(payload.Data.CustomID, adminTimeoutExtendPrefix) || strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix)) {
 		if operation, active, err := handler.reset.Active(ctx); err != nil {
 			return fmt.Errorf("check reset mutation lock: %w", err)
 		} else if active {
 			return newUserError(fmt.Sprintf("Platform reset is in progress at **%s**. This administration change was not applied.", sanitizeInline(operation.Stage)))
 		}
+	}
+	if payload.Data.CustomID == adminTimeoutDefaultsID && payload.Type == interactionTypeMessageComponent && payload.Data.ComponentType == componentTypeButton {
+		service, ok := handler.service.(lifecycleTimeoutQueryService)
+		if !ok || !payload.memberIsAdministrator() {
+			return domain.ErrForbidden
+		}
+		policy, err := service.LifecycleTimeoutDefaults(ctx, payload.GuildID)
+		if err != nil {
+			return err
+		}
+		writeTimeoutDefaultsModal(writer, policy)
+		return nil
+	}
+	if (payload.Data.CustomID == adminTimeoutDefaultsID || strings.HasPrefix(payload.Data.CustomID, adminTimeoutExtendPrefix)) && payload.Type == interactionTypeModalSubmit {
+		if !payload.memberIsAdministrator() {
+			return domain.ErrForbidden
+		}
+		return handler.submitTimeoutModal(ctx, writer, payload, actorID, correlationID)
+	}
+	if payload.Data.CustomID == adminTimeoutSessionID && payload.Type == interactionTypeMessageComponent && payload.Data.ComponentType == componentTypeStringSelect {
+		if !payload.memberIsAdministrator() || len(payload.Data.Values) != 1 {
+			return domain.ErrForbidden
+		}
+		session, err := handler.service.Get(ctx, appsession.GetQuery{Actor: domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID}, SessionID: payload.Data.Values[0], GuildID: payload.GuildID, AllowGuildMember: true})
+		if err != nil {
+			return err
+		}
+		if session.LifecycleState != domain.StateRunning && session.LifecycleState != domain.StateIdle {
+			return domain.ErrInvalidTransition
+		}
+		content := fmt.Sprintf("**Extend `%s`**\nCurrent sleep timeout: **%d minutes**\nCurrent archive timeout: **%d days**\nAdded time never shortens either setting.", sanitizeInline(session.Slug), session.SleepAfterSeconds/60, session.ArchiveAfterSeconds/86400)
+		controls := []interactionComponent{{Type: componentTypeActionRow, Components: []interactionComponent{{Type: componentTypeButton, Style: buttonStylePrimary, Label: "Add time", CustomID: adminTimeoutExtendPrefix + session.ID}}}}
+		handler.writeAdminView(writer, interactionResponseUpdateMessage, content, adminMenuDuration, controls, true)
+		return nil
+	}
+	if strings.HasPrefix(payload.Data.CustomID, adminTimeoutExtendPrefix) && payload.Type == interactionTypeMessageComponent && payload.Data.ComponentType == componentTypeButton {
+		if !payload.memberIsAdministrator() {
+			return domain.ErrForbidden
+		}
+		session, err := handler.service.Get(ctx, appsession.GetQuery{Actor: domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID}, SessionID: strings.TrimPrefix(payload.Data.CustomID, adminTimeoutExtendPrefix), GuildID: payload.GuildID, AllowGuildMember: true})
+		if err != nil {
+			return err
+		}
+		if session.LifecycleState != domain.StateRunning && session.LifecycleState != domain.StateIdle {
+			return domain.ErrInvalidTransition
+		}
+		writeTimeoutExtensionModal(writer, session)
+		return nil
+	}
+	if payload.Data.CustomID == adminDurationConfigureID || payload.Data.CustomID == adminDurationExtendID {
+		return newUserError("This administration control has been replaced. Reopen `/rb admin` and choose **Session timeouts**.")
 	}
 	if strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) && payload.Type == interactionTypeModalSubmit {
 		return handler.submitServerConfigModal(ctx, writer, payload, actorID, correlationID)
@@ -851,6 +902,11 @@ func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWri
 				return domain.ErrForbidden
 			}
 			return handler.writeAdminServerConfigView(ctx, writer, interactionResponseUpdateMessage, payload.GuildID, "")
+		case adminMenuDuration:
+			if !payload.memberIsAdministrator() {
+				return domain.ErrForbidden
+			}
+			return handler.writeAdminTimeoutView(ctx, writer, payload.GuildID, actorID)
 		default:
 			return newUserError("That administration area is not available.")
 		}
@@ -1070,6 +1126,7 @@ func (handler *Handler) writeAdminView(writer http.ResponseWriter, responseType 
 		}},
 	}
 	if showReset {
+		menu.Components[0].Options = append(menu.Components[0].Options, interactionSelectOption{Label: "Session timeouts", Value: adminMenuDuration, Description: "Set sleep and archive timing", Default: selected == adminMenuDuration})
 		menu.Components[0].Options = append(menu.Components[0].Options, interactionSelectOption{Label: "Server config", Value: adminMenuServerConfig, Description: "Set the Arma server.cfg for future sessions", Default: selected == adminMenuServerConfig})
 		menu.Components[0].Options = append(menu.Components[0].Options, interactionSelectOption{Label: "Reset platform", Value: adminMenuReset, Description: "Permanently clear runtime state", Default: selected == adminMenuReset})
 	}
@@ -1176,16 +1233,16 @@ func (payload interactionPayload) isAdminComponent() bool {
 		return false
 	}
 	if payload.Type == interactionTypeModalSubmit {
-		return strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix)
+		return strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || payload.Data.CustomID == adminTimeoutDefaultsID || strings.HasPrefix(payload.Data.CustomID, adminTimeoutExtendPrefix) || payload.Data.CustomID == adminDurationConfigureID || payload.Data.CustomID == adminDurationExtendID
 	}
 	if payload.Type != interactionTypeMessageComponent {
 		return false
 	}
 	switch payload.Data.CustomID {
-	case adminMenuCustomID, adminRoleSelectCustomID, adminRoleClearPromptCustomID, adminRoleClearCancelCustomID, adminRepairSelectCustomID, adminPublicCardChannelCustomID, adminResetPrepareCustomID, adminServerConfigCancelID:
+	case adminMenuCustomID, adminRoleSelectCustomID, adminRoleClearPromptCustomID, adminRoleClearCancelCustomID, adminRepairSelectCustomID, adminPublicCardChannelCustomID, adminResetPrepareCustomID, adminServerConfigCancelID, adminTimeoutDefaultsID, adminTimeoutSessionID, adminDurationConfigureID, adminDurationExtendID:
 		return true
 	default:
-		return strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigRemovePrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix)
+		return strings.HasPrefix(payload.Data.CustomID, adminRoleClearConfirmCustomID+":") || strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigRemovePrefix) || strings.HasPrefix(payload.Data.CustomID, adminServerConfigConfirmPrefix) || strings.HasPrefix(payload.Data.CustomID, adminTimeoutExtendPrefix)
 	}
 }
 
@@ -1347,7 +1404,7 @@ func (handler *Handler) listSessions(
 	}
 	sessions, err := handler.service.List(
 		ctx,
-		appsession.ListQuery{Actor: actor, Limit: 100, States: states},
+		appsession.ListQuery{Actor: actor, GuildID: guildID, Limit: 100, States: states},
 	)
 	if err != nil {
 		return "", fmt.Errorf("list sessions: %w", err)

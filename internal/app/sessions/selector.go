@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -22,6 +23,7 @@ type SelectQuery struct {
 	Limit            int
 	AllowGuildMember bool
 	IncludeDeleted   bool
+	States           []domain.LifecycleState
 }
 
 // Selection exposes human-readable session identity while keeping the
@@ -62,7 +64,7 @@ func (service *Service) ResolveCardControl(ctx context.Context, query CardContro
 	if repository, ok := service.repository.(ports.SessionCardControlRepository); ok {
 		return repository.ResolveCardControl(ctx, guildID, token)
 	}
-	sessions, err := service.selectableSessions(ctx, query.Actor, guildID, true)
+	sessions, err := service.selectableSessions(ctx, query.Actor, guildID, true, allSessionLifecycleStates())
 	if err != nil {
 		return domain.Session{}, err
 	}
@@ -107,8 +109,20 @@ func (service *Service) Resolve(ctx context.Context, query ResolveQuery) (Select
 	if err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return Selection{}, fmt.Errorf("get selected session: %w", err)
 	}
+	if repository, ok := service.repository.(ports.SessionSlugRepository); ok {
+		session, slugErr := repository.GetByGuildSlug(ctx, guildID, reference)
+		if slugErr == nil {
+			if query.AllowGuildMember || query.CanManageGuild || session.OwnerDiscordUserID == query.Actor.ID {
+				return selectionFromSession(session), nil
+			}
+			return Selection{}, domain.ErrNotFound
+		}
+		if !errors.Is(slugErr, domain.ErrNotFound) {
+			return Selection{}, fmt.Errorf("get selected session by slug: %w", slugErr)
+		}
+	}
 
-	sessions, err := service.selectableSessions(ctx, query.Actor, guildID, query.AllowGuildMember)
+	sessions, err := service.selectableSessions(ctx, query.Actor, guildID, query.AllowGuildMember, allSessionLifecycleStates())
 	if err != nil {
 		return Selection{}, err
 	}
@@ -142,7 +156,14 @@ func (service *Service) Select(ctx context.Context, query SelectQuery) ([]Select
 		return nil, fmt.Errorf("Discord guild ID is required")
 	}
 
-	sessions, err := service.selectableSessions(ctx, query.Actor, guildID, query.AllowGuildMember)
+	states := append([]domain.LifecycleState(nil), query.States...)
+	if len(states) == 0 {
+		states = allSessionLifecycleStates()
+		if !query.IncludeDeleted {
+			states = slices.DeleteFunc(states, func(state domain.LifecycleState) bool { return state == domain.StateDeleted })
+		}
+	}
+	sessions, err := service.selectableSessions(ctx, query.Actor, guildID, query.AllowGuildMember, states)
 	if err != nil {
 		return nil, err
 	}
@@ -187,19 +208,81 @@ func (service *Service) selectableSessions(
 	actor domain.Actor,
 	guildID string,
 	allowGuildMember bool,
+	states []domain.LifecycleState,
 ) ([]domain.Session, error) {
-	if allowGuildMember {
-		sessions, err := service.repository.ListByGuild(ctx, guildID, 100)
-		if err != nil {
-			return nil, fmt.Errorf("list guild sessions: %w", err)
-		}
-		return sessions, nil
-	}
-	sessions, err := service.repository.ListByOwner(ctx, actor.ID, 100)
+	normalized, err := normalizeSelectionStates(states)
 	if err != nil {
-		return nil, fmt.Errorf("list owner sessions: %w", err)
+		return nil, err
 	}
-	return sessions, nil
+	wanted := make(map[domain.LifecycleState]struct{}, len(normalized))
+	for _, state := range normalized {
+		wanted[state] = struct{}{}
+	}
+	result := make([]domain.Session, 0)
+	seen := map[string]struct{}{}
+	cursor := ""
+	for {
+		page, listErr := service.repository.ListGuildSessions(ctx, guildID, normalized, ports.GuildSessionPage{Size: 100, Cursor: cursor})
+		if listErr != nil {
+			return nil, fmt.Errorf("list guild sessions: %w", listErr)
+		}
+		for _, candidate := range page.Sessions {
+			if _, duplicate := seen[candidate.ID]; duplicate {
+				continue
+			}
+			session, getErr := service.repository.Get(ctx, candidate.ID)
+			if errors.Is(getErr, domain.ErrNotFound) {
+				continue
+			}
+			if getErr != nil {
+				return nil, fmt.Errorf("revalidate guild session %s: %w", candidate.ID, getErr)
+			}
+			if session.GuildID != guildID {
+				continue
+			}
+			if _, eligible := wanted[session.LifecycleState]; !eligible {
+				continue
+			}
+			if !allowGuildMember && session.OwnerDiscordUserID != actor.ID {
+				continue
+			}
+			seen[session.ID] = struct{}{}
+			result = append(result, session)
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		if page.NextCursor == cursor {
+			return nil, fmt.Errorf("guild session pagination did not advance")
+		}
+		cursor = page.NextCursor
+	}
+	return result, nil
+}
+
+func normalizeSelectionStates(states []domain.LifecycleState) ([]domain.LifecycleState, error) {
+	if len(states) == 0 {
+		return nil, fmt.Errorf("at least one lifecycle state is required")
+	}
+	result := append([]domain.LifecycleState(nil), states...)
+	for _, state := range result {
+		if !state.Valid() {
+			return nil, fmt.Errorf("invalid lifecycle state %q", state)
+		}
+	}
+	slices.Sort(result)
+	return slices.Compact(result), nil
+}
+
+func allSessionLifecycleStates() []domain.LifecycleState {
+	return []domain.LifecycleState{
+		domain.StateDraft, domain.StateNew, domain.StateValidating, domain.StateProvisioning,
+		domain.StateBootstrapping, domain.StateInstalling, domain.StateReady, domain.StateRunning,
+		domain.StateIdle, domain.StateStopping, domain.StateSleeping, domain.StateWaking,
+		domain.StateRestarting, domain.StateWarning1, domain.StateWarning2, domain.StateArchiving,
+		domain.StateDestroying, domain.StateArchived, domain.StateRestoring, domain.StateDeleting,
+		domain.StateDeleted, domain.StateFailed,
+	}
 }
 
 func sessionMatchesSelectionSearch(session domain.Session, search string) bool {

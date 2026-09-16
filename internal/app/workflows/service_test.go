@@ -215,6 +215,52 @@ func TestStart_AllowsOnlyDueBoundAutomaticArchive(t *testing.T) {
 	}
 }
 
+func TestStart_AutomaticallyTerminatesOnlyExpiredFailedInitialCreation(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "failed-create", Slug: "failed-create", DisplayName: "Failed create", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.DesiredState, session.ObservedState, session.LifecycleState = domain.StateRunning, domain.StateFailed, domain.StateFailed
+	session.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-1", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "profile", AMIID: "ami-1", InstanceType: "c7i.large", InstanceID: "i-1", DataVolumeID: "vol-1", LastObservedAt: now.Add(-time.Hour)}
+	session.MaximumDuration.StartedAt, session.MaximumDuration.DeadlineAt = now.Add(-24*time.Hour), now
+	session.Progress = domain.SessionProgress{WorkflowID: "bootstrap-1", WorkflowType: domain.BootstrapWorkflowType, Milestone: domain.ProgressFailed, State: domain.ProgressActionRequired, StartedAt: now.Add(-2 * time.Hour), LastProgressAt: now.Add(-time.Hour)}
+	session.Failure, err = domain.NewFailureRecord(domain.FailureRecordInput{Code: "ERR_BOOTSTRAP_FAILED", Stage: "Game setup", RetryDisposition: domain.RetryNotScheduled, ResourceImpact: domain.ResourceCostRetained, Detail: "Setup failed", FailedAt: now.Add(-time.Hour), SupportReference: "ref_123456"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.UpdatedAt = now
+	if err := session.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	seed, _ := domain.NewCompletedIdempotencyRecord("seed-failed-create", "hash", session.ID, now.Add(-time.Hour), time.Hour)
+	if err := repository.Create(context.Background(), session, domain.NewSessionCreatedEvent("seed-event", "seed-correlation", domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}, session, now.Add(-time.Hour)), seed); err != nil {
+		t.Fatal(err)
+	}
+	starter := &workflowStarter{arn: "arn:aws:states:us-west-2:123456789012:execution:DestroySession:auto-failed-create"}
+	service, err := NewService(repository, repository, starter, rejectAuthorizer{}, &workflowIDs{ids: []string{"auto-term-event"}}, workflowClock{now}, 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := domain.MaximumDeadlineCommandID(session.ID, now, domain.CommandDestroySession)
+	command := domain.CommandEnvelope{SchemaVersion: 1, CommandID: id, CommandType: domain.CommandDestroySession, RequestedAt: now, Actor: domain.CommandActor{System: true, DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID}, SessionID: session.ID, IdempotencyKey: "maximum-duration:" + id, CorrelationID: id, Parameters: map[string]string{domain.MaximumDeadlineParameter: now.Format(time.RFC3339Nano)}}
+	wf, err := service.Start(context.Background(), command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := repository.Get(context.Background(), session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.Type != domain.TerminationWorkflowType || updated.LifecycleState != domain.StateDeleting || updated.Infrastructure.InstanceID != session.Infrastructure.InstanceID || updated.Infrastructure.DataVolumeID != session.Infrastructure.DataVolumeID {
+		t.Fatalf("workflow=%#v session=%#v", wf, updated)
+	}
+	if _, err := service.Start(context.Background(), command); err != nil || starter.calls != 1 {
+		t.Fatalf("replay err=%v starts=%d", err, starter.calls)
+	}
+}
+
 func TestStart_AutomaticArchiveFailureRestoresSleepingStateAndUpdatesCard(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
@@ -457,8 +503,9 @@ func seedAutomaticSleep(t *testing.T, now time.Time, due bool) (*memory.SessionR
 	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
 		t.Fatal(err)
 	}
-	commandID := domain.AutomaticSleepCommandID(session.ID, idleSince)
-	return repository, domain.CommandEnvelope{SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandSleepSession, RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true}, SessionID: session.ID, IdempotencyKey: "automatic-sleep:" + commandID, CorrelationID: commandID, Parameters: map[string]string{domain.AutomaticIdleSinceParameter: idleSince.Format(time.RFC3339Nano)}}
+	deadline := session.AutomaticSleepDeadline()
+	commandID := domain.AutomaticSleepCommandID(session.ID, deadline)
+	return repository, domain.CommandEnvelope{SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandSleepSession, RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true}, SessionID: session.ID, IdempotencyKey: "automatic-sleep:" + commandID, CorrelationID: commandID, Parameters: map[string]string{domain.AutomaticIdleSinceParameter: idleSince.Format(time.RFC3339Nano), domain.AutomaticLifecycleDeadlineParameter: deadline.Format(time.RFC3339Nano)}}
 }
 
 func seedAutomaticArchive(t *testing.T, now time.Time) (*memory.SessionRepository, domain.CommandEnvelope) {
@@ -471,13 +518,15 @@ func seedAutomaticArchive(t *testing.T, now time.Time) (*memory.SessionRepositor
 	session.DesiredState, session.ObservedState, session.LifecycleState, session.HealthStatus = domain.StateSleeping, domain.StateSleeping, domain.StateSleeping, domain.HealthStopped
 	session.Infrastructure = domain.Infrastructure{CapacitySlotID: "slot-0", AvailabilityZone: "us-west-2a", SubnetID: "subnet-1", SecurityGroupIDs: []string{"sg-1"}, InstanceProfile: "instance-profile", AMIID: "ami-1", InstanceType: "c7i-flex.large", InstanceID: "i-1", DataVolumeID: "vol-1", LastObservedAt: now.Add(-72 * time.Hour)}
 	session.SleepingSince = now.Add(-72 * time.Hour)
+	session.ArchiveAfterSeconds = 72 * 60 * 60
 	event := domain.NewSessionCreatedEvent("archive-created", "archive-created", domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}, session, now.Add(-100*time.Hour))
 	idempotency, _ := domain.NewCompletedIdempotencyRecord("archive-create", "archive-hash", session.ID, now.Add(-100*time.Hour), time.Hour)
 	if err := repository.Create(context.Background(), session, event, idempotency); err != nil {
 		t.Fatal(err)
 	}
-	commandID := domain.AutomaticArchiveCommandID(session.ID, session.SleepingSince)
-	return repository, domain.CommandEnvelope{SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandArchiveSession, RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true}, SessionID: session.ID, IdempotencyKey: "automatic-archive:" + commandID, CorrelationID: commandID, Parameters: map[string]string{domain.AutomaticSleepingSinceParameter: session.SleepingSince.Format(time.RFC3339Nano)}}
+	deadline := session.AutomaticArchiveDeadline()
+	commandID := domain.AutomaticArchiveCommandID(session.ID, deadline)
+	return repository, domain.CommandEnvelope{SchemaVersion: 1, CommandID: commandID, CommandType: domain.CommandArchiveSession, RequestedAt: now, Actor: domain.CommandActor{DiscordUserID: domain.InactivityMonitorActorID, GuildID: session.GuildID, ChannelID: session.ChannelID, System: true}, SessionID: session.ID, IdempotencyKey: "automatic-archive:" + commandID, CorrelationID: commandID, Parameters: map[string]string{domain.AutomaticSleepingSinceParameter: session.SleepingSince.Format(time.RFC3339Nano), domain.AutomaticLifecycleDeadlineParameter: deadline.Format(time.RFC3339Nano)}}
 }
 
 func seedRunningWorkflowRepository(t *testing.T, now time.Time) *memory.SessionRepository {

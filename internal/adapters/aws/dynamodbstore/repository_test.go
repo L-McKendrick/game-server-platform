@@ -3,13 +3,13 @@ package dynamodbstore
 import (
 	"context"
 	"errors"
-	"fmt"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -23,6 +23,9 @@ type fakeAPI struct {
 	getItemIndex       int
 	getItemErr         error
 	queryOutput        *dynamodb.QueryOutput
+	queryOutputs       []*dynamodb.QueryOutput
+	queryIndex         int
+	queryFunc          func(*dynamodb.QueryInput) (*dynamodb.QueryOutput, error)
 	queryErr           error
 	scanOutput         *dynamodb.ScanOutput
 	scanOutputs        []*dynamodb.ScanOutput
@@ -32,6 +35,115 @@ type fakeAPI struct {
 	transactWriteInput *dynamodb.TransactWriteItemsInput
 	transactWriteErr   error
 	putItemInput       *dynamodb.PutItemInput
+	updateItemInput    *dynamodb.UpdateItemInput
+	updateItemErr      error
+}
+
+func TestMaximumDurationPersistenceAndLegacyDefault(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC)
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-1", Slug: "session-1", DisplayName: "Session", GameType: "arma3", OwnerDiscordUserID: "owner", GuildID: "guild", ChannelID: "channel"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.MaximumDuration.StartedAt = now
+	session.MaximumDuration.DeadlineAt = now.Add(24 * time.Hour)
+	session.MaximumDurationWarningDeadline = session.MaximumDuration.DeadlineAt
+	session.MaximumDurationWarningLevel = 2
+	session.MaximumDurationWarningQueuedLevel = 1
+	stored, err := fromSessionItem(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.MaximumDuration != session.MaximumDuration {
+		t.Fatalf("maximum duration round trip = %#v, want %#v", stored.MaximumDuration, session.MaximumDuration)
+	}
+	if stored.MaximumDurationWarningLevel != 2 || stored.MaximumDurationWarningQueuedLevel != 1 {
+		t.Fatalf("warning intent/queue markers did not round trip: %#v", stored)
+	}
+	legacy := toSessionItem(session)
+	legacy.MaximumDurationSeconds = 0
+	legacy.MaximumDurationStartedAt = ""
+	legacy.MaximumDurationDeadlineAt = ""
+	stored, err = fromSessionItem(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.MaximumDuration.EffectiveSeconds() != domain.DefaultMaximumDurationSeconds || !stored.MaximumDuration.StartedAt.IsZero() || !stored.MaximumDuration.DeadlineAt.IsZero() {
+		t.Fatalf("legacy maximum duration = %#v", stored.MaximumDuration)
+	}
+}
+
+func TestSessionGuildStateIndexKeysMoveWithLifecycleState(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 15, 21, 22, 23, 456789000, time.UTC)
+	session := testSession(t, now)
+
+	created := toSessionItem(session)
+	if created.GSI2PK != "GUILD#"+session.GuildID {
+		t.Fatalf("created gsi2pk = %q", created.GSI2PK)
+	}
+	wantCreatedSortKey := "STATE#" + string(session.LifecycleState) + "#UPDATED#" + sortTimestamp(now) + "#SESSION#" + session.ID
+	if created.GSI2SK != wantCreatedSortKey {
+		t.Fatalf("created gsi2sk = %q, want %q", created.GSI2SK, wantCreatedSortKey)
+	}
+
+	session.LifecycleState = domain.StateRunning
+	session.UpdatedAt = now.Add(5 * time.Minute)
+	updated := toSessionItem(session)
+	wantUpdatedSortKey := "STATE#RUNNING#UPDATED#" + sortTimestamp(session.UpdatedAt) + "#SESSION#" + session.ID
+	if updated.GSI2SK != wantUpdatedSortKey {
+		t.Fatalf("updated gsi2sk = %q, want %q", updated.GSI2SK, wantUpdatedSortKey)
+	}
+	if updated.GSI2SK == created.GSI2SK {
+		t.Fatal("guild-state index sort key did not move after lifecycle transition")
+	}
+}
+
+func TestGuildStateIndexIsSparseToSessionMetadata(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 15, 21, 22, 23, 0, time.UTC)
+	session := testSession(t, now)
+
+	sessionAttributes, err := attributevalue.MarshalMap(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	eventAttributes, err := attributevalue.MarshalMap(toEventItem(domain.NewSessionCreatedEvent(
+		"event-1", "correlation-1", domain.Actor{Type: domain.ActorTypeSystem, ID: "test"}, session, now,
+	)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := sessionAttributes["gsi2pk"]; !ok {
+		t.Fatal("session metadata omitted gsi2pk")
+	}
+	if _, ok := sessionAttributes["gsi2sk"]; !ok {
+		t.Fatal("session metadata omitted gsi2sk")
+	}
+	if _, ok := eventAttributes["gsi2pk"]; ok {
+		t.Fatal("non-session event unexpectedly populated gsi2pk")
+	}
+	if _, ok := eventAttributes["gsi2sk"]; ok {
+		t.Fatal("non-session event unexpectedly populated gsi2sk")
+	}
+}
+
+func TestListInactivityCandidatesPagesBeyondFirstLimit(t *testing.T) {
+	session := testSession(t, time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC))
+	session.LifecycleState = domain.StateSleeping
+	item, err := attributevalue.MarshalMap(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeAPI{scanOutputs: []*dynamodb.ScanOutput{
+		{LastEvaluatedKey: map[string]types.AttributeValue{"pk": &types.AttributeValueMemberS{Value: "page-1"}}},
+		{Items: []map[string]types.AttributeValue{item}},
+	}}
+	sessions, err := New(client, "metadata-table").ListInactivityCandidates(context.Background(), 25)
+	if err != nil || len(sessions) != 1 || sessions[0].ID != session.ID || client.scanIndex != 2 {
+		t.Fatalf("sessions = %#v, err = %v, pages = %d", sessions, err, client.scanIndex)
+	}
 }
 
 func TestSaveWithEventClassifiesInvalidVersionDeltaAsPersistenceInvariant(t *testing.T) {
@@ -154,57 +266,44 @@ func TestResolveCardControlUsesDirectClaim(t *testing.T) {
 	}
 }
 
-func TestResolveCardControlFindsAndBackfillsLegacySessionBeyondFirstThousandItems(t *testing.T) {
+func TestGetByGuildSlugUsesDirectClaim(t *testing.T) {
+	t.Parallel()
+	session := testSession(t, time.Date(2026, 9, 14, 19, 0, 0, 0, time.UTC))
+	claim, err := attributevalue.MarshalMap(toSlugClaimItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := attributevalue.MarshalMap(toSessionItem(session))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeAPI{getItemOutputs: []*dynamodb.GetItemOutput{{Item: claim}, {Item: metadata}}}
+	resolved, err := New(client, "metadata-table").GetByGuildSlug(context.Background(), session.GuildID, session.Slug)
+	if err != nil || resolved.ID != session.ID || client.scanInput != nil || client.getItemIndex != 2 {
+		t.Fatalf("GetByGuildSlug() = %#v, %v; reads=%d scan=%#v", resolved, err, client.getItemIndex, client.scanInput)
+	}
+}
+
+func TestResolveCardControlFindsAndBackfillsLegacySessionThroughGuildIndex(t *testing.T) {
 	t.Parallel()
 	session := testSession(t, time.Date(2026, 9, 8, 6, 0, 0, 0, time.UTC))
 	metadata, err := attributevalue.MarshalMap(toSessionItem(session))
 	if err != nil {
 		t.Fatal(err)
 	}
-	pages := make([]*dynamodb.ScanOutput, 0, 11)
-	for page := 1; page <= 10; page++ {
-		pages = append(pages, &dynamodb.ScanOutput{
-			ScannedCount: 100,
-			LastEvaluatedKey: map[string]types.AttributeValue{
-				"pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("PAGE#%d", page)},
-			},
-		})
-	}
-	pages = append(pages, &dynamodb.ScanOutput{ScannedCount: 1, Items: []map[string]types.AttributeValue{metadata}})
 	client := &fakeAPI{
-		getItemOutput: &dynamodb.GetItemOutput{},
-		scanOutputs:   pages,
+		getItemOutputs: []*dynamodb.GetItemOutput{{}, readyGuildIndexMarker(), {Item: metadata}},
+		queryFunc: func(input *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+			prefix := stringAttribute(t, input.ExpressionAttributeValues[":state"])
+			if prefix == "STATE#DRAFT#" {
+				return &dynamodb.QueryOutput{Items: []map[string]types.AttributeValue{metadata}}, nil
+			}
+			return &dynamodb.QueryOutput{}, nil
+		},
 	}
 	resolved, err := New(client, "metadata-table").ResolveCardControl(context.Background(), session.GuildID, domain.SessionCardControlToken(session.ID))
-	if err != nil || resolved.ID != session.ID || client.scanIndex != 11 || client.putItemInput == nil {
-		t.Fatalf("ResolveCardControl() = %#v, %v; pages=%d backfill=%#v", resolved, err, client.scanIndex, client.putItemInput)
-	}
-}
-
-func TestListByGuildReadsLegacySessionMetadataWithBoundedScan(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
-	session := testSession(t, now)
-	attributes, err := attributevalue.MarshalMap(toSessionItem(session))
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := &fakeAPI{scanOutput: &dynamodb.ScanOutput{Items: []map[string]types.AttributeValue{attributes}, ScannedCount: 7}}
-	repository := New(client, "metadata-table")
-
-	sessions, err := repository.ListByGuild(context.Background(), "guild-1", 25)
-	if err != nil {
-		t.Fatalf("ListByGuild() returned error: %v", err)
-	}
-	if len(sessions) != 1 || sessions[0].ID != session.ID {
-		t.Fatalf("ListByGuild() = %#v", sessions)
-	}
-	if client.scanInput == nil || client.scanInput.FilterExpression == nil || *client.scanInput.FilterExpression != "entity_type = :type AND guild_id = :guild" {
-		t.Fatalf("scan input = %#v", client.scanInput)
-	}
-	if client.scanInput.Limit == nil || *client.scanInput.Limit > 100 {
-		t.Fatalf("scan limit = %#v; want bounded page", client.scanInput.Limit)
+	if err != nil || resolved.ID != session.ID || client.scanInput != nil || client.putItemInput == nil {
+		t.Fatalf("ResolveCardControl() = %#v, %v; scan=%#v backfill=%#v", resolved, err, client.scanInput, client.putItemInput)
 	}
 }
 
@@ -223,9 +322,17 @@ func (fake *fakeAPI) GetItem(
 
 func (fake *fakeAPI) Query(
 	_ context.Context,
-	_ *dynamodb.QueryInput,
+	input *dynamodb.QueryInput,
 	_ ...func(*dynamodb.Options),
 ) (*dynamodb.QueryOutput, error) {
+	if fake.queryFunc != nil {
+		return fake.queryFunc(input)
+	}
+	if fake.queryIndex < len(fake.queryOutputs) {
+		output := fake.queryOutputs[fake.queryIndex]
+		fake.queryIndex++
+		return output, fake.queryErr
+	}
 	return fake.queryOutput, fake.queryErr
 }
 
@@ -244,6 +351,15 @@ func (fake *fakeAPI) DeleteItem(
 	_ ...func(*dynamodb.Options),
 ) (*dynamodb.DeleteItemOutput, error) {
 	return &dynamodb.DeleteItemOutput{}, nil
+}
+
+func (fake *fakeAPI) UpdateItem(
+	_ context.Context,
+	input *dynamodb.UpdateItemInput,
+	_ ...func(*dynamodb.Options),
+) (*dynamodb.UpdateItemOutput, error) {
+	fake.updateItemInput = input
+	return &dynamodb.UpdateItemOutput{}, fake.updateItemErr
 }
 
 func (fake *fakeAPI) TransactWriteItems(
@@ -363,6 +479,9 @@ func TestCreateRejectsSlugUsedByLegacySessionWithoutClaim(t *testing.T) {
 	}
 	if client.transactWriteInput != nil {
 		t.Fatal("Create() attempted a transaction after finding a legacy slug collision")
+	}
+	if client.scanInput == nil || !aws.ToBool(client.scanInput.ConsistentRead) {
+		t.Fatal("Create() did not strongly read the legacy slug collision fallback")
 	}
 }
 

@@ -169,7 +169,7 @@ func main() {
 	ownedSessions, err := service.List(
 		ctx,
 		sessions.ListQuery{
-			Actor: actor,
+			Actor: actor, GuildID: createCommand.GuildID,
 			Limit: 10,
 		},
 	)

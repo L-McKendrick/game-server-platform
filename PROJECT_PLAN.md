@@ -271,11 +271,11 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **18.10** [x] Remove inapplicable public-card controls after termination.
       - **18.10.1** [x] Clear `Show players` and `Refresh` from terminated public cards through an explicit terminal notification contract, including termination, refresh, repair, Discord PATCH, backward-compatibility, and focused regression coverage.
 
-19. **Discord Public Card Channel Configuration — Done**
-    - **19.1** [x] Let an authorized guild administrator choose the channel where new public session cards are posted, using the existing `/rb admin` infrastructure.
-      - **19.1.1** [x] Add one guild configuration field for the public-card channel ID and expose a channel-selection action through the existing `/rb admin` menu.
-      - **19.1.2** [x] Use the configured channel when creating a public card and its linked public modlist message; continue storing the created message references so existing update and repair paths work unchanged.
-      - **19.1.3** [x] Add focused admin-authorization, setting persistence, selected-channel delivery, and Discord failure coverage; update the relevant admin documentation and run proportional validation.
+**Completed Maintenance — Discord Public Card Channel Configuration**
+    - **M.2** [x] Let an authorized guild administrator choose the channel where new public session cards are posted, using the existing `/rb admin` infrastructure.
+      - **M.2.1** [x] Add one guild configuration field for the public-card channel ID and expose a channel-selection action through the existing `/rb admin` menu.
+      - **M.2.2** [x] Use the configured channel when creating a public card and its linked public modlist message; continue storing the created message references so existing update and repair paths work unchanged.
+      - **M.2.3** [x] Add focused admin-authorization, setting persistence, selected-channel delivery, and Discord failure coverage; update the relevant admin documentation and run proportional validation.
 
 **Completed Maintenance — Mission Wake Synchronization Repair**
     - **M.1** [x] Make wake/bootstrap content deployment replay when its exact mission or server-configuration inputs change instead of trusting the stale host-wide completion marker.
@@ -434,8 +434,47 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **18.12** [x] Correct the final restart mission review finding.
       - **18.12.1** [x] Deploy accepted mission files before Workshop synchronization so new scenarios survive restart; cover current and legacy records with a reproducing shell regression, refresh documentation, and prepare the local review-fix commit without pushing or opening a PR.
 
-19. **Maximum Session Duration Guardrails — Pending**
-    - **19.1** [ ] Add an admin-configurable maximum session duration with safe defaults, bounded owner warnings, an auditable admin extension path, and enforcement that composes safely with inactivity sleep/archive and active workflow locks.
+19. **Production Guardrails and Managed-Host Isolation — In Progress**
+    - Started after Phase 20.2 by explicit user direction on
+      `codex/phase-19-production-guardrails`. Treat shared session S3 access as
+      an accepted development-stage risk, but close it before production or
+      multi-tenant use. Do not rotate the Steam authorization cache without
+      evidence of exposure.
+    - **19.1** [x] Remove standing managed-host access to the shared Steam authorization cache through a workflow-scoped brokered exchange.
+      - **19.1.1** [x] Define the broker contract, trust boundaries, one-time exchange lifecycle, replay/concurrency rules, cleanup guarantees, and backward-compatible rollout plan without placing Steam authorization material in SSM command history.
+      - **19.1.2** [x] Implement the trusted control-plane broker and short-lived encrypted exchange storage with exact workflow, session, instance, purpose, and expiry binding.
+      - **19.1.3** [x] Update bootstrap, wake, restart, restore, and Workshop synchronization to consume and return brokered authorization only during an authenticated Steam operation, with cleanup on every exit path.
+      - **19.1.4** [x] Validate returned cache updates before serialized promotion, preserve reauthorization and rollback behavior, and reject stale, replayed, mismatched, oversized, or malformed exchanges.
+      - **19.1.5** [x] Remove Secrets Manager and Steam-lease DynamoDB permissions from the managed-game instance profile and add negative IAM/security contract coverage.
+      - **19.1.6** [x] Add focused broker, expiry, replay, concurrency, cleanup, redaction, lifecycle, vanilla, replacement-host, and failure-recovery coverage and document deployment and rollback.
+      - **19.1.7** [x] Correct the live presigned-GET checksum-header mismatch, add stable exchange-read diagnostics, and advance the atomic runtime contract.
+      - **19.1.8** [x] Close the phase review findings: make source delivery, promotion, reauthorization, terminal cleanup, and failed-exchange reacquisition replay-safe; bind leases to exchange IDs; validate immutable cache identity and per-object deletion results; restrict broker DynamoDB keys; revalidate duration notifications before Discord delivery; and make progress-uploader shutdown prompt and deterministic under host load.
+      - **19.1.9** [x] Propagate successful Steam authentication out of the isolated Arma installation helper, prove the successful bootstrap path uploads its broker response, and reconcile the test-60 deployment and retry handoff.
+    - **19.2** [x] Add admin-configurable lifecycle timeouts with safe defaults, bounded owner warnings, auditable per-session extensions, and enforcement that composes safely with inactivity sleep/archive and active workflow locks. Later-lifecycle failures retain resources for operator action; this is not a guaranteed AWS spending cap.
+      - **19.2.1** [x] Define persisted maximum-duration policy, safe defaults and bounds, extension audit records, deadline semantics, and backward-compatible behavior for existing sessions.
+      - **19.2.2** [x] Add protected admin configuration and extension operations with owner-visible, mention-safe responses and strict authorization, validation, idempotency, and replay handling.
+      - **19.2.3** [x] Schedule bounded owner warnings and deadline enforcement through the existing five-minute monitor and workflow lock. Page through all candidates so later sessions are not starved; persist warning intent before enqueue and retry failed enqueue with a deterministic notification ID.
+      - **19.2.4** [x] Compose deadline enforcement with running, idle, sleeping, restoring, archiving, terminating, and failed states while preserving capacity and retained-resource truth. Expired running/idle sessions sleep, sleeping sessions archive, initial-creation failures use the existing verified termination workflow, and active locks defer. Later-lifecycle failures remain operator-attention cases rather than unsafe automatic data deletion.
+      - **19.2.5** [x] Add focused policy, authorization, warning, extension, state-race, retry, reconciliation, and cost-bound coverage plus operator documentation. Full Go tests and build pass; no live deployment or cost-cap acceptance claimed.
+      - **19.2.6** [x] Close the phase review findings: continue monitoring later candidates after a per-session failure, keep an extended duration's persisted hours and deadline consistent, enforce whole-hour extensions, and reconcile security and operator documentation.
+      - **19.2.7** [x] Resolve exact admin duration slugs authoritatively beyond bounded guild listings, improve not-found feedback, and cover the test-61 regression.
+      - **19.2.8** [x] Define and persist two clear policies: time without players before automatic sleep and time asleep before automatic archive. Store administrator defaults for future sessions, snapshot them into new sessions, and preserve existing records safely.
+      - **19.2.9** [x] Redesign `/rb admin` deadline settings into two brief choices: edit defaults for future sessions or extend one eligible existing session. Show the current sleep and archive values before asking for changes.
+      - **19.2.10** [x] Let administrators replace both future-session defaults with validated bounded values, using plain-language labels and an auditable, idempotent write.
+      - **19.2.11** [x] Let administrators add time to both deadlines for a specific RUNNING or IDLE session only; exclude drafts, transitions, sleeping, archived, failed, and deleted sessions, never shorten a deadline, and show the resulting values before confirmation.
+      - **19.2.12** [x] Update monitoring, warnings, stale-command binding, and lifecycle enforcement so the sleep and archive deadlines advance independently without weakening workflow-lock or retained-resource safeguards.
+      - **19.2.13** [x] Add focused default, migration, authorization, eligible-state, additive-extension, bounds, replay, race, presentation, and enforcement coverage; reconcile user and operator documentation before deployment.
+    - **19.3** [ ] Enforce session-specific managed-host S3 access before production or multi-tenant use.
+      - **19.3.1** [ ] Inventory every host-originated S3 read and write and define exact-key, short-lived capability contracts for bootstrap artifacts, session inputs, progress, results, logs, and archives.
+      - **19.3.2** [ ] Implement workflow-issued presigned reads and constrained writes bound to the authoritative session, workflow, instance, object purpose, checksum or size where available, and short expiry.
+      - **19.3.3** [ ] Migrate provisioning, bootstrap, wake, restart, archive, restore, and Workshop paths away from wildcard host S3 credentials with bounded legacy rollout behavior.
+      - **19.3.4** [ ] Remove session-asset permissions from the managed-game instance profile and add negative cross-session, wrong-purpose, expiry, replay, overwrite, and malformed-capability coverage.
+      - **19.3.5** [ ] Live-verify single-session lifecycle behavior, then verify that a managed host cannot use AWS credentials to access another session before approving production or multi-tenant use.
+    - **19.4** [x] Replace bounded metadata-table scans and ad hoc session discovery with one authoritative, paginated guild-and-state query contract used platform-wide.
+      - **19.4.1** [x] Add a sparse guild-session GSI populated only by session metadata: `gsi2pk = GUILD#<guild-id>` and `gsi2sk = STATE#<lifecycle-state>#UPDATED#<timestamp>#SESSION#<session-id>`. Maintain both keys atomically on every session create and update so DynamoDB automatically moves sessions between state ranges; do not maintain a shared active-session-ID record or another mutable aggregate.
+      - **19.4.2** [x] Expose a storage-independent repository operation such as `ListGuildSessions(guildID, states, page)` that requests explicit lifecycle states, paginates each matching GSI range, merges deterministically by update time and immutable ID, and applies caller display limits only after authorization and eligibility filtering. Retain strongly consistent `Get` plus state/version revalidation before every mutation; the eventually consistent discovery index identifies candidates but is never mutation authority.
+      - **19.4.3** [x] Backfill existing session metadata idempotently, verify per-guild and per-state counts against an exhaustive migration scan, and gate read cutover until verification succeeds. During rollout, keep a deliberate compatibility path rather than silently accepting partial-index results; remove the legacy bounded `ListByGuild` scan after cutover.
+      - **19.4.4** [x] Inventory and migrate every current guild/state session-discovery caller—including autocomplete, `/rb list`, admin timeout selection, repair controls, public-card lookup fallbacks, monitoring or operator checks, and future eligibility menus—to the shared query contract wherever its access pattern applies. Prohibit new bounded table scans for session discovery. Add over-1,000-table-item, more-than-100-session, pagination, multi-state merge, state-transition, backfill, eventual-consistency revalidation, authorization, and deterministic-limit coverage.
 
 20. **Production Hardening and Optimization — Pending**
     - Proceeded before Phase 19 by explicit user approval. Deliver on

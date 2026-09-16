@@ -88,11 +88,23 @@ const (
 	adminServerConfigConfirmPrefix = "rb:admin:servercfg:confirm:v1:"
 	adminServerConfigCancelID      = "rb:admin:servercfg:cancel:v1"
 
-	adminMenuAccess       = "access"
-	adminMenuRepair       = "repair-card"
-	adminMenuPublicCard   = "public-card-channel"
-	adminMenuReset        = "reset-platform"
-	adminMenuServerConfig = "server-config"
+	adminMenuAccess          = "access"
+	adminMenuRepair          = "repair-card"
+	adminMenuPublicCard      = "public-card-channel"
+	adminMenuReset           = "reset-platform"
+	adminMenuServerConfig    = "server-config"
+	adminMenuDuration        = "maximum-duration"
+	adminDurationConfigureID = "rb:admin:duration:configure:v1"
+	adminDurationExtendID    = "rb:admin:duration:extend:v1"
+	adminDurationSessionID   = "duration:session"
+	adminDurationHoursID     = "duration:hours"
+	adminDurationReasonID    = "duration:reason"
+	adminTimeoutDefaultsID   = "rb:admin:timeouts:defaults:v1"
+	adminTimeoutSessionID    = "rb:admin:timeouts:session:v1"
+	adminTimeoutExtendPrefix = "rb:admin:timeouts:extend:v1:"
+	adminTimeoutSleepID      = "timeouts:sleep"
+	adminTimeoutArchiveID    = "timeouts:archive"
+	adminTimeoutReasonID     = "timeouts:reason"
 )
 
 type interactionPayload struct {

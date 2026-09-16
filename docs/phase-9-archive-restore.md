@@ -11,8 +11,9 @@ extends the same workflow through guarded destruction and adds restore.
 - Owner-requested archives may start from `RUNNING` or `IDLE` with a managed
   instance and data volume. One normal workflow lock covers command dispatch,
   upload, verification, manifest persistence, and metadata completion.
-- Phase 14 extends the same guarded workflow to a session that has remained
-  `SLEEPING` for 72 continuous hours. The workflow starts the retained instance,
+- The automatic lifecycle extends the same guarded workflow to a session that
+  has remained `SLEEPING` for its configured archive timeout (7 days by default).
+  The workflow starts the retained instance,
   waits for EC2 and Systems Manager readiness, and then follows the same backup,
   checksum, ownership, and destruction boundaries described below.
 - The host takes an exclusive archive lock, stops active Arma and optional

@@ -31,11 +31,12 @@ The cache contract stored as an encrypted Secrets Manager value is:
 
 Secrets Manager encrypts the value at rest with its AWS managed KMS key;
 `AWSCURRENT` is the active cache and `AWSPREVIOUS` is the rollback point. Only
-the tagged game-instance role and the MFA-gated enrollment role can use the
-cache. DynamoDB key `STEAM_AUTH#CACHE / STATE` stores only non-secret status,
-version/checksum evidence, and the global mutation lease. The managed key keeps
-this same-account design cost-bounded and avoids a separately billed key while
-the exact-secret IAM policies remain the access-control boundary.
+trusted lifecycle workers and the MFA-gated enrollment role can use the cache.
+The managed game-instance role has no Secrets Manager or Steam-lease DynamoDB
+permission. DynamoDB key `STEAM_AUTH#CACHE / STATE` stores only non-secret
+status, version/checksum evidence, and the global mutation lease. The managed
+key keeps this same-account design cost-bounded and avoids a separately billed
+key while the exact-secret IAM policies remain the access-control boundary.
 
 This matches AWS's documented encrypted secret-version model and staging
 labels: <https://docs.aws.amazon.com/secretsmanager/latest/userguide/whats-in-a-secret.html>.
@@ -81,34 +82,26 @@ never arguments or payload fields.
 
 ## Runtime behavior
 
-For a modded bootstrap, the game host:
+For an authenticated Steam operation, the trusted lifecycle worker:
 
-1. acquires the single global DynamoDB lease;
-2. refuses immediately when state is `REAUTH_REQUIRED`;
-3. reads `AWSCURRENT`, validates its schema, checksum, and size;
-4. injects `config.vdf` through `/run`-backed directories and invokes
-   SteamCMD with username only;
-5. captures raw SteamCMD output only under `/run`, emits sanitized stable
-   errors, and promotes a successfully updated cache to a new Secrets Manager
-   version;
-6. removes config, sentry, login-user, and Steam log material and releases the
-   lease before the Arma service can start.
+1. reloads and validates the exact session, workflow, purpose, and instance;
+2. acquires the global cache lease and refuses `REAUTH_REQUIRED`;
+3. reads and validates `AWSCURRENT`, then writes a short-lived exact exchange
+   object outside every session prefix;
+4. passes exact-object presigned HTTPS GET and PUT capabilities—not cache bytes
+   or the secret identifier—through the targeted SSM command;
+5. validates the returned payload and source version before conditionally
+   promoting it to Secrets Manager; and
+6. deletes both exchange objects and releases the owner-checked lease on every
+   terminal path. S3 lifecycle expiration is a one-day cleanup backstop.
 
-The lease spans the Arma and Workshop downloads, preventing two replacement or
-ephemeral hosts from racing cache updates. The host renews a 15-minute lease
-every five minutes and stops bootstrap if renewal loses ownership. A forcibly
-killed host therefore leaves at most a 15-minute stale lease. Normal exit,
-error, interrupt, later launch, archive, and restore paths all scrub
-authentication material. Frozen AMIs or EBS snapshots may contain
-SteamCMD/game data only after that scrub; never bake a signed-in cache into a
-snapshot or session data volume.
-
-The renewal worker uses an interruptible tracked wait. Normal completion and
-error cleanup stop and reap it promptly, including during the short renewal
-retry delay, so the five-minute renewal cadence does not become completion
-latency or unnecessarily retain the shared lease. Cleanup signals only the
-shell's registered heartbeat job and DynamoDB releases only the matching lease
-owner.
+The game host downloads the cache only while the authorized operation is
+active, injects `config.vdf` through `/run`-backed directories, invokes
+SteamCMD with username only, uploads the bounded updated envelope, and removes
+config, sentry, login-user, and Steam log material before Arma can start. It
+cannot list exchange objects, call Secrets Manager, or mutate the cache lease.
+The exchange expiry spans the bounded Arma or Workshop download and prevents
+another workflow from racing the cache update.
 
 Vanilla and modded sessions use the same cached authorization and serialized
 lease for the Arma server package. Vanilla sessions still skip preset and
@@ -117,8 +110,9 @@ Workshop processing.
 ## Guard challenge, invalidation, and rollback
 
 When Steam asks for Guard approval, a password, or renewed two-factor login,
-bootstrap fails closed with `ERR_STEAM_REAUTH_REQUIRED`, marks state
-`REAUTH_REQUIRED`, and removes host-side authentication material. Re-run the
+bootstrap fails closed with `ERR_STEAM_REAUTH_REQUIRED`; the broker marks state
+`REAUTH_REQUIRED`, deletes the exchange, releases its lease, and the host
+removes authentication material. Re-run the
 local enrollment procedure; do not send authentication data through Discord.
 
 An operator can deliberately invalidate the cache:

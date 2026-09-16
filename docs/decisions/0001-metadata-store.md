@@ -55,5 +55,16 @@ Owner queries use:
 - `gsi1pk = OWNER#<discord-user-id>`
 - `gsi1sk = UPDATED#<timestamp>#SESSION#<session-id>`
 
-Global-secondary-index results are used for discovery and listing. Authoritative
-state changes always read and conditionally update the primary session item.
+Guild/state discovery uses a sparse session-metadata-only index:
+
+- `gsi2pk = GUILD#<guild-id>`
+- `gsi2sk = STATE#<lifecycle-state>#UPDATED#<timestamp>#SESSION#<session-id>`
+
+The guild/state index requires explicit lifecycle states and independent
+pagination of each matching range. Existing rows are conditionally backfilled
+and exhaustively verified before an explicit cutover marker enables reads.
+
+Global-secondary-index results are used only for candidate discovery and
+listing. Authorization, eligibility, and state changes strongly reread the
+primary session item; mutations remain conditional on its authoritative
+version and state.

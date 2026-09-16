@@ -19,40 +19,44 @@ const (
 
 // Session represents the persistent platform identity of a game server.
 type Session struct {
-	ID                            string
-	Slug                          string
-	DisplayName                   string
-	Description                   string
-	GameType                      string
-	OwnerDiscordUserID            string
-	GuildID                       string
-	ChannelID                     string
-	GameProfileID                 string
-	SleepAfterSeconds             int64
-	ArchiveAfterSeconds           int64
-	TeamSpeakEnabled              bool
-	Vanilla                       bool
-	CreatorDLCs                   []string
-	StartWhenReady                bool
-	NotifyWhenReady               bool
-	ReadyNotificationChannelID    string
-	ReadyNotificationAttemptedAt  time.Time
-	ConfigurationRevision         int64
-	ServerConfigRevision          int64
-	ServerConfigObjectKey         string
-	ServerConfigSHA256            string
-	MissionObjectKey              string
-	MissionFiles                  []MissionRecord
-	ConfiguredMission             MissionSelection
-	CurrentMission                MissionSelection
-	WorkshopMissionSources        []WorkshopMissionSource
-	WorkshopModSources            []WorkshopModSource
-	WorkshopResolutionTarget      WorkshopTarget
-	WorkshopResolutionRequestKey  string
-	WorkshopResolutionRequestedAt time.Time
-	WorkshopResolutionLastTarget  WorkshopTarget
-	WorkshopResolutionIssue       string
-	WorkshopResolutionFailedAt    time.Time
+	ID                                string
+	Slug                              string
+	DisplayName                       string
+	Description                       string
+	GameType                          string
+	OwnerDiscordUserID                string
+	GuildID                           string
+	ChannelID                         string
+	GameProfileID                     string
+	SleepAfterSeconds                 int64
+	ArchiveAfterSeconds               int64
+	MaximumDuration                   MaximumDuration
+	MaximumDurationWarningDeadline    time.Time
+	MaximumDurationWarningLevel       int
+	MaximumDurationWarningQueuedLevel int
+	TeamSpeakEnabled                  bool
+	Vanilla                           bool
+	CreatorDLCs                       []string
+	StartWhenReady                    bool
+	NotifyWhenReady                   bool
+	ReadyNotificationChannelID        string
+	ReadyNotificationAttemptedAt      time.Time
+	ConfigurationRevision             int64
+	ServerConfigRevision              int64
+	ServerConfigObjectKey             string
+	ServerConfigSHA256                string
+	MissionObjectKey                  string
+	MissionFiles                      []MissionRecord
+	ConfiguredMission                 MissionSelection
+	CurrentMission                    MissionSelection
+	WorkshopMissionSources            []WorkshopMissionSource
+	WorkshopModSources                []WorkshopModSource
+	WorkshopResolutionTarget          WorkshopTarget
+	WorkshopResolutionRequestKey      string
+	WorkshopResolutionRequestedAt     time.Time
+	WorkshopResolutionLastTarget      WorkshopTarget
+	WorkshopResolutionIssue           string
+	WorkshopResolutionFailedAt        time.Time
 	// PresetObjectKey remains a write-through compatibility projection of the
 	// active preset revision for older workers and persisted rows.
 	PresetObjectKey              string
@@ -374,8 +378,9 @@ func NewSession(input NewSessionInput, now time.Time) (Session, error) {
 		GuildID:               strings.TrimSpace(input.GuildID),
 		ChannelID:             strings.TrimSpace(input.ChannelID),
 		GameProfileID:         "arma3-default",
-		SleepAfterSeconds:     1800,
-		ArchiveAfterSeconds:   7 * 24 * 60 * 60,
+		SleepAfterSeconds:     DefaultSleepAfterSeconds,
+		ArchiveAfterSeconds:   DefaultArchiveAfterSeconds,
+		MaximumDuration:       MaximumDuration{Seconds: DefaultMaximumDurationSeconds},
 		ConfigurationRevision: 0,
 		ConfiguredMission:     DefaultMissionSelection(),
 
@@ -430,6 +435,12 @@ func GenerateSessionSlug(displayName string) string {
 
 // Validate verifies the session's domain invariants.
 func (session Session) Validate() error {
+	if err := session.MaximumDuration.Validate(); err != nil {
+		return err
+	}
+	if session.MaximumDurationWarningLevel < 0 || session.MaximumDurationWarningLevel > 3 || session.MaximumDurationWarningQueuedLevel < 0 || session.MaximumDurationWarningQueuedLevel > session.MaximumDurationWarningLevel || (session.MaximumDurationWarningLevel == 0) != session.MaximumDurationWarningDeadline.IsZero() {
+		return fmt.Errorf("maximum duration warning marker is invalid")
+	}
 	creatorDLCs, creatorDLCErr := NormalizeCreatorDLCs(session.CreatorDLCs)
 	if creatorDLCErr != nil {
 		return creatorDLCErr
@@ -541,10 +552,8 @@ func (session Session) Validate() error {
 		return fmt.Errorf("server preset artifact issue requires rejected status")
 	case strings.TrimSpace(session.GameProfileID) == "":
 		return fmt.Errorf("game profile ID is required")
-	case session.SleepAfterSeconds < 600:
-		return fmt.Errorf("sleep policy must be at least 600 seconds")
-	case session.ArchiveAfterSeconds < 86400:
-		return fmt.Errorf("archive policy must be at least 86400 seconds")
+	case ValidateLifecycleTimeouts(session.SleepAfterSeconds, session.ArchiveAfterSeconds) != nil:
+		return ValidateLifecycleTimeouts(session.SleepAfterSeconds, session.ArchiveAfterSeconds)
 	case session.ConfigurationRevision < 0:
 		return fmt.Errorf("configuration revision cannot be negative")
 	case session.NotifyWhenReady && strings.TrimSpace(session.ReadyNotificationChannelID) == "":
@@ -862,11 +871,8 @@ func (session *Session) applyConfiguration(configuration SessionConfiguration) e
 	if configuration.GameProfileID != "arma3-default" {
 		return fmt.Errorf("unsupported game profile %q", configuration.GameProfileID)
 	}
-	if configuration.SleepAfterSeconds < 600 || configuration.SleepAfterSeconds > 86400 {
-		return fmt.Errorf("sleep policy must be between 600 and 86400 seconds")
-	}
-	if configuration.ArchiveAfterSeconds < 86400 || configuration.ArchiveAfterSeconds > 90*86400 {
-		return fmt.Errorf("archive policy must be between 1 and 90 days")
+	if err := ValidateLifecycleTimeouts(configuration.SleepAfterSeconds, configuration.ArchiveAfterSeconds); err != nil {
+		return err
 	}
 	creatorDLCs, err := NormalizeCreatorDLCs(configuration.CreatorDLCs)
 	if err != nil {

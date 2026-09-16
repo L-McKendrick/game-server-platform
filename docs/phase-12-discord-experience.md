@@ -184,8 +184,9 @@ slash commands in this phase.
 Each durable card reference atomically stores a collision-protected opaque
 control-token claim. Button interactions resolve that claim directly and then
 revalidate the session guild, channel, and revision. Cards created before the
-claim existed use a bounded one-time compatibility scan that backfills the
-claim; routine button handling never depends on a bounded guild-session list.
+claim existed use the verified paginated guild/state index as a one-time
+compatibility lookup and backfill the direct claim; routine button handling
+does not scan the mixed metadata table.
 
 ### Status, list, and help
 

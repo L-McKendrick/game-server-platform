@@ -484,9 +484,9 @@ func lifecycleTimingProjection(session domain.Session, now time.Time) LifecycleT
 	switch {
 	case (session.LifecycleState == domain.StateRunning || session.LifecycleState == domain.StateIdle) &&
 		session.PlayerCountKnown && session.PlayerCount == 0 && !session.IdleSince.IsZero() && !session.IdleSince.After(now):
-		return LifecycleTimingProjection{Label: "Automatic sleep", DueAt: session.IdleSince.UTC().Add(domain.AutomaticSleepAfter)}
+		return LifecycleTimingProjection{Label: "Automatic sleep", DueAt: session.AutomaticSleepDeadline()}
 	case session.LifecycleState == domain.StateSleeping && !session.SleepingSince.IsZero() && !session.SleepingSince.After(now):
-		return LifecycleTimingProjection{Label: "Automatic archive", DueAt: session.SleepingSince.UTC().Add(domain.AutomaticArchiveAfter)}
+		return LifecycleTimingProjection{Label: "Automatic archive", DueAt: session.AutomaticArchiveDeadline()}
 	default:
 		return LifecycleTimingProjection{}
 	}

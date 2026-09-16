@@ -104,7 +104,11 @@ func renderSessionStatusAt(session domain.Session, players *domain.PlayerStatus,
 	if players != nil {
 		options.PlayersObservedAt = now
 	}
-	return sessioncard.RenderDetailed(sessioncard.Project(session, options))
+	status := sessioncard.RenderDetailed(sessioncard.Project(session, options))
+	if session.FailedInitialCreation() && !session.MaximumDuration.DeadlineAt.IsZero() {
+		status += "\nFailed-setup cleanup deadline: " + discordTimestamp(session.MaximumDuration.DeadlineAt)
+	}
+	return boundDiscordContent(status)
 }
 
 func formatSessionList(sessions []domain.Session) string {
