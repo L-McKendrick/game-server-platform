@@ -839,6 +839,8 @@ Baseline configuration:
 - deletion protection: enabled in production;
 - DynamoDB Streams: enabled when event-driven projections are needed;
 - TTL attribute: `expires_at_epoch` for disposable idempotency and lock records;
+- sparse guild/state GSI for paginated session discovery, with primary-record
+  revalidation before authorization-sensitive use or mutation;
 - table class: standard unless access patterns justify otherwise.
 
 ### 12.1.1 Common attributes

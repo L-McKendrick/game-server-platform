@@ -1468,8 +1468,9 @@ func TestListReturnsOnlyActorSessions(t *testing.T) {
 	sessions, err := service.List(
 		context.Background(),
 		ListQuery{
-			Actor: ownerOne,
-			Limit: 25,
+			Actor:   ownerOne,
+			GuildID: "guild-1",
+			Limit:   25,
 		},
 	)
 	if err != nil {

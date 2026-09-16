@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -22,15 +21,14 @@ import (
 )
 
 const (
-	sessionSortKey             = "METADATA"
-	sessionCardSortKey         = "DISCORD_CARD"
-	cardControlSortKey         = "CLAIM"
-	sessionModlistSortKey      = "DISCORD_MODLIST"
-	idempotencySortKey         = "RESULT"
-	ownerIndexName             = "gsi1"
-	schemaVersion              = 3
-	maximumGuildScanItems      = int32(1000)
-	maximumLegacyCardScanItems = int32(10000)
+	sessionSortKey        = "METADATA"
+	sessionCardSortKey    = "DISCORD_CARD"
+	cardControlSortKey    = "CLAIM"
+	sessionModlistSortKey = "DISCORD_MODLIST"
+	idempotencySortKey    = "RESULT"
+	ownerIndexName        = "gsi1"
+	schemaVersion         = 3
+	maximumGuildScanItems = int32(1000)
 )
 
 func marshalSessionJSON(value any) string {
@@ -73,6 +71,12 @@ type API interface {
 		params *dynamodb.DeleteItemInput,
 		optFns ...func(*dynamodb.Options),
 	) (*dynamodb.DeleteItemOutput, error)
+
+	UpdateItem(
+		ctx context.Context,
+		params *dynamodb.UpdateItemInput,
+		optFns ...func(*dynamodb.Options),
+	) (*dynamodb.UpdateItemOutput, error)
 
 	TransactWriteItems(
 		ctx context.Context,
@@ -247,6 +251,8 @@ type sessionItem struct {
 
 	GSI1PK string `dynamodbav:"gsi1pk"`
 	GSI1SK string `dynamodbav:"gsi1sk"`
+	GSI2PK string `dynamodbav:"gsi2pk"`
+	GSI2SK string `dynamodbav:"gsi2sk"`
 }
 
 type sessionCardItem struct {
@@ -460,8 +466,7 @@ func (repository *Repository) slugClaimExists(ctx context.Context, guildID strin
 }
 
 // GetByGuildSlug follows the strongly consistent guild slug claim to its
-// authoritative session record. This keeps exact resolution independent of
-// ListByGuild's intentionally bounded discovery scan.
+// authoritative session record.
 func (repository *Repository) GetByGuildSlug(ctx context.Context, guildID, slug string) (domain.Session, error) {
 	if err := repository.validate(); err != nil {
 		return domain.Session{}, err
@@ -506,17 +511,11 @@ func (repository *Repository) GetByGuildSlug(ctx context.Context, guildID, slug 
 // transactional claim in Create.
 func (repository *Repository) legacyGuildSlugExists(ctx context.Context, guildID string, slug string) (bool, error) {
 	var startKey map[string]types.AttributeValue
-	var scanned int32
-	pages := 0
-	for scanned < maximumGuildScanItems && pages < 10 {
-		pages++
-		pageLimit := maximumGuildScanItems - scanned
-		if pageLimit > 100 {
-			pageLimit = 100
-		}
+	for {
 		output, err := repository.client.Scan(ctx, &dynamodb.ScanInput{
 			TableName:         aws.String(repository.tableName),
-			Limit:             aws.Int32(pageLimit),
+			ConsistentRead:    aws.Bool(true),
+			Limit:             aws.Int32(100),
 			ExclusiveStartKey: startKey,
 			FilterExpression:  aws.String("entity_type = :type AND guild_id = :guild AND slug = :slug"),
 			ExpressionAttributeValues: map[string]types.AttributeValue{
@@ -531,13 +530,11 @@ func (repository *Repository) legacyGuildSlugExists(ctx context.Context, guildID
 		if len(output.Items) > 0 {
 			return true, nil
 		}
-		scanned += output.ScannedCount
 		startKey = output.LastEvaluatedKey
 		if len(startKey) == 0 {
 			return false, nil
 		}
 	}
-	return false, nil
 }
 
 func toSlugClaimItem(session domain.Session) slugClaimItem {
@@ -728,42 +725,32 @@ func (repository *Repository) ResolveCardControl(ctx context.Context, guildID st
 }
 
 func (repository *Repository) resolveLegacyCardControl(ctx context.Context, guildID string, token string) (domain.Session, error) {
-	var startKey map[string]types.AttributeValue
-	var scanned int32
-	for scanned < maximumLegacyCardScanItems {
-		remaining := maximumLegacyCardScanItems - scanned
-		if remaining > 100 {
-			remaining = 100
-		}
-		output, err := repository.client.Scan(ctx, &dynamodb.ScanInput{
-			TableName: aws.String(repository.tableName), Limit: aws.Int32(remaining), ExclusiveStartKey: startKey,
-			FilterExpression: aws.String("entity_type = :type AND guild_id = :guild"),
-			ExpressionAttributeValues: map[string]types.AttributeValue{
-				":type": &types.AttributeValueMemberS{Value: "Session"}, ":guild": &types.AttributeValueMemberS{Value: guildID},
-			},
-		})
+	cursor := ""
+	for {
+		page, err := repository.ListGuildSessions(ctx, guildID, allGuildSessionLifecycleStates(), ports.GuildSessionPage{Size: 100, Cursor: cursor})
 		if err != nil {
-			return domain.Session{}, fmt.Errorf("scan legacy Discord card controls: %w", err)
+			return domain.Session{}, fmt.Errorf("list legacy Discord card controls: %w", err)
 		}
-		scanned += output.ScannedCount
-		for _, attributes := range output.Items {
-			var item sessionItem
-			if err := attributevalue.UnmarshalMap(attributes, &item); err != nil {
-				return domain.Session{}, fmt.Errorf("decode legacy Discord card session: %w", err)
-			}
-			if domain.SessionCardControlToken(item.SessionID) == token {
-				session, err := fromSessionItem(item)
-				if err != nil {
+		for _, session := range page.Sessions {
+			if domain.SessionCardControlToken(session.ID) == token {
+				authoritative, getErr := repository.Get(ctx, session.ID)
+				if getErr != nil {
+					if errors.Is(getErr, domain.ErrNotFound) {
+						continue
+					}
+					return domain.Session{}, getErr
+				}
+				if authoritative.GuildID != guildID || domain.SessionCardControlToken(authoritative.ID) != token {
+					continue
+				}
+				if err := repository.saveCardControlClaim(ctx, authoritative.ID, token); err != nil {
 					return domain.Session{}, err
 				}
-				if err := repository.saveCardControlClaim(ctx, session.ID, token); err != nil {
-					return domain.Session{}, err
-				}
-				return session, nil
+				return authoritative, nil
 			}
 		}
-		startKey = output.LastEvaluatedKey
-		if len(startKey) == 0 {
+		cursor = page.NextCursor
+		if cursor == "" {
 			break
 		}
 	}
@@ -1097,81 +1084,6 @@ func (repository *Repository) ListByOwner(
 	return sessions, nil
 }
 
-// ListByGuild returns recent session metadata from one guild. The bounded scan
-// includes legacy sessions that predate guild slug claims and secondary-index
-// attributes.
-func (repository *Repository) ListByGuild(
-	ctx context.Context,
-	guildID string,
-	limit int32,
-) ([]domain.Session, error) {
-	if err := repository.validate(); err != nil {
-		return nil, err
-	}
-	guildID = strings.TrimSpace(guildID)
-	if guildID == "" {
-		return nil, fmt.Errorf("Discord guild ID is required")
-	}
-	if limit <= 0 {
-		limit = 25
-	}
-	if limit > 100 {
-		limit = 100
-	}
-
-	sessions := make([]domain.Session, 0, limit)
-	var startKey map[string]types.AttributeValue
-	var scanned int32
-	pages := 0
-	for scanned < maximumGuildScanItems && pages < 10 {
-		pages++
-		remainingScan := maximumGuildScanItems - scanned
-		if remainingScan > 100 {
-			remainingScan = 100
-		}
-		output, err := repository.client.Scan(ctx, &dynamodb.ScanInput{
-			TableName:         aws.String(repository.tableName),
-			Limit:             aws.Int32(remainingScan),
-			ExclusiveStartKey: startKey,
-			FilterExpression:  aws.String("entity_type = :type AND guild_id = :guild"),
-			ExpressionAttributeValues: map[string]types.AttributeValue{
-				":type":  &types.AttributeValueMemberS{Value: "Session"},
-				":guild": &types.AttributeValueMemberS{Value: guildID},
-			},
-		})
-		if err != nil {
-			return nil, fmt.Errorf("scan sessions by guild: %w", err)
-		}
-		scanned += output.ScannedCount
-		for _, attributes := range output.Items {
-			var item sessionItem
-			if err := attributevalue.UnmarshalMap(attributes, &item); err != nil {
-				return nil, fmt.Errorf("unmarshal guild session: %w", err)
-			}
-			session, err := fromSessionItem(item)
-			if err != nil {
-				return nil, fmt.Errorf("decode guild session: %w", err)
-			}
-			sessions = append(sessions, session)
-		}
-		startKey = output.LastEvaluatedKey
-		if len(startKey) == 0 {
-			break
-		}
-	}
-
-	sort.Slice(sessions, func(first, second int) bool {
-		if sessions[first].UpdatedAt.Equal(sessions[second].UpdatedAt) {
-			return sessions[first].ID > sessions[second].ID
-		}
-		return sessions[first].UpdatedAt.After(sessions[second].UpdatedAt)
-	})
-	if int32(len(sessions)) > limit {
-		sessions = sessions[:limit]
-	}
-	return sessions, nil
-}
-
 func (repository *Repository) validate() error {
 	if repository == nil {
 		return fmt.Errorf("DynamoDB repository is nil")
@@ -1380,6 +1292,13 @@ func toSessionItem(session domain.Session) sessionItem {
 		GSI1PK: ownerPartitionKey(session.OwnerDiscordUserID),
 		GSI1SK: fmt.Sprintf(
 			"UPDATED#%s#SESSION#%s",
+			sortTimestamp(session.UpdatedAt),
+			session.ID,
+		),
+		GSI2PK: "GUILD#" + session.GuildID,
+		GSI2SK: fmt.Sprintf(
+			"STATE#%s#UPDATED#%s#SESSION#%s",
+			session.LifecycleState,
 			sortTimestamp(session.UpdatedAt),
 			session.ID,
 		),

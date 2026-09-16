@@ -210,6 +210,16 @@ resource "aws_dynamodb_table" "metadata" {
     type = "S"
   }
 
+  attribute {
+    name = "gsi2pk"
+    type = "S"
+  }
+
+  attribute {
+    name = "gsi2sk"
+    type = "S"
+  }
+
   ttl {
     attribute_name = "expires_at_epoch"
     enabled        = true
@@ -225,6 +235,22 @@ resource "aws_dynamodb_table" "metadata" {
 
     key_schema {
       attribute_name = "gsi1sk"
+      key_type       = "RANGE"
+    }
+
+    projection_type = "ALL"
+  }
+
+  global_secondary_index {
+    name = "gsi2"
+
+    key_schema {
+      attribute_name = "gsi2pk"
+      key_type       = "HASH"
+    }
+
+    key_schema {
+      attribute_name = "gsi2sk"
       key_type       = "RANGE"
     }
 
@@ -312,6 +338,7 @@ data "aws_iam_policy_document" "discord_lambda" {
     resources = [
       aws_dynamodb_table.metadata.arn,
       "${aws_dynamodb_table.metadata.arn}/index/gsi1",
+      "${aws_dynamodb_table.metadata.arn}/index/gsi2",
     ]
   }
 

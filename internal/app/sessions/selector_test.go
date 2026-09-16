@@ -10,6 +10,7 @@ import (
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/memory"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
+	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
 func TestResolveAcceptsOpaqueIDOrExactSlugButNotDisplayName(t *testing.T) {
@@ -92,11 +93,11 @@ func TestResolveExactSlugBeyondBoundedGuildListing(t *testing.T) {
 			t.Fatalf("Create(%s) returned error: %v", suffix, err)
 		}
 	}
-	listed, err := repository.ListByGuild(context.Background(), "guild-1", 100)
+	page, err := repository.ListGuildSessions(context.Background(), "guild-1", allSessionLifecycleStates(), ports.GuildSessionPage{Size: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, session := range listed {
+	for _, session := range page.Sessions {
 		if session.Slug == "test-000" {
 			t.Fatal("regression setup did not place exact slug beyond bounded listing")
 		}
@@ -245,4 +246,145 @@ func TestSelectBoundsResultLimit(t *testing.T) {
 	if len(selections) != maximumSessionSelections {
 		t.Fatalf("selection count = %d; want %d", len(selections), maximumSessionSelections)
 	}
+}
+
+func TestSelectAppliesAuthorizationAndLimitAfterAllGuildPages(t *testing.T) {
+	t.Parallel()
+	base := memory.NewSessionRepository()
+	repository := &pagedGuildRepository{SessionRepository: base, authoritative: map[string]domain.Session{}}
+	first := ports.GuildSessionPageResult{NextCursor: "next"}
+	for index := 0; index < 100; index++ {
+		id := fmt.Sprintf("other-%03d", index)
+		session := selectorCandidate(id, "other-owner", domain.StateRunning)
+		first.Sessions = append(first.Sessions, session)
+		repository.authoritative[id] = session
+	}
+	owned := selectorCandidate("owned-after-first-page", "owner-1", domain.StateRunning)
+	repository.authoritative[owned.ID] = owned
+	repository.pages = []ports.GuildSessionPageResult{first, {Sessions: []domain.Session{owned}}}
+	service := newRepositoryTestService(t, repository)
+
+	selections, err := service.Select(context.Background(), SelectQuery{
+		Actor: testActor("owner-1"), GuildID: "guild-1", Limit: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selections) != 1 || selections[0].ID != owned.ID || repository.calls != 2 {
+		t.Fatalf("selections = %#v, pages = %d", selections, repository.calls)
+	}
+}
+
+func TestListUsesGuildStatePagesBeforeOwnerLimit(t *testing.T) {
+	t.Parallel()
+	other := selectorCandidate("other-owner-first", "other-owner", domain.StateRunning)
+	owned := selectorCandidate("test-62", "owner-1", domain.StateRunning)
+	repository := &pagedGuildRepository{
+		SessionRepository: memory.NewSessionRepository(),
+		pages: []ports.GuildSessionPageResult{
+			{Sessions: []domain.Session{other}, NextCursor: "next"},
+			{Sessions: []domain.Session{owned}},
+		},
+		authoritative: map[string]domain.Session{other.ID: other, owned.ID: owned},
+	}
+	service := newRepositoryTestService(t, repository)
+	sessions, err := service.List(context.Background(), ListQuery{
+		Actor: testActor("owner-1"), GuildID: "guild-1", States: []domain.LifecycleState{domain.StateRunning}, Limit: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].ID != owned.ID || repository.calls != 2 {
+		t.Fatalf("sessions=%#v pages=%d", sessions, repository.calls)
+	}
+}
+
+func TestSelectRevalidatesEventuallyConsistentCandidates(t *testing.T) {
+	t.Parallel()
+	candidate := selectorCandidate("stale-running", "owner-1", domain.StateRunning)
+	current := candidate
+	current.LifecycleState = domain.StateSleeping
+	repository := &pagedGuildRepository{
+		SessionRepository: memory.NewSessionRepository(),
+		pages:             []ports.GuildSessionPageResult{{Sessions: []domain.Session{candidate}}},
+		authoritative:     map[string]domain.Session{candidate.ID: current},
+	}
+	service := newRepositoryTestService(t, repository)
+	selections, err := service.Select(context.Background(), SelectQuery{
+		Actor: testActor("owner-1"), GuildID: "guild-1", AllowGuildMember: true,
+		States: []domain.LifecycleState{domain.StateRunning, domain.StateIdle}, Limit: 25,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selections) != 0 {
+		t.Fatalf("stale candidate survived authoritative revalidation: %#v", selections)
+	}
+}
+
+func TestSelectMergesEligibleStatesBeforeApplyingDiscordLimit(t *testing.T) {
+	t.Parallel()
+	repository := &pagedGuildRepository{SessionRepository: memory.NewSessionRepository(), authoritative: map[string]domain.Session{}}
+	page := ports.GuildSessionPageResult{}
+	for index := 0; index < 25; index++ {
+		id := fmt.Sprintf("running-%02d", index)
+		session := selectorCandidate(id, "owner-1", domain.StateRunning)
+		session.DisplayName = "Zulu " + id
+		page.Sessions = append(page.Sessions, session)
+		repository.authoritative[id] = session
+	}
+	idle := selectorCandidate("idle-visible", "owner-1", domain.StateIdle)
+	idle.DisplayName = "Alpha idle"
+	page.Sessions = append(page.Sessions, idle)
+	repository.authoritative[idle.ID] = idle
+	repository.pages = []ports.GuildSessionPageResult{page}
+	service := newRepositoryTestService(t, repository)
+
+	selections, err := service.Select(context.Background(), SelectQuery{
+		Actor: testActor("admin"), GuildID: "guild-1", AllowGuildMember: true, Limit: 25,
+		States: []domain.LifecycleState{domain.StateRunning, domain.StateIdle},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selections) != 25 || selections[0].ID != idle.ID {
+		t.Fatalf("merged selections = %#v", selections)
+	}
+}
+
+type pagedGuildRepository struct {
+	*memory.SessionRepository
+	pages         []ports.GuildSessionPageResult
+	authoritative map[string]domain.Session
+	calls         int
+}
+
+func (repository *pagedGuildRepository) ListGuildSessions(context.Context, string, []domain.LifecycleState, ports.GuildSessionPage) (ports.GuildSessionPageResult, error) {
+	if repository.calls >= len(repository.pages) {
+		return ports.GuildSessionPageResult{}, nil
+	}
+	page := repository.pages[repository.calls]
+	repository.calls++
+	return page, nil
+}
+
+func (repository *pagedGuildRepository) Get(_ context.Context, sessionID string) (domain.Session, error) {
+	session, ok := repository.authoritative[sessionID]
+	if !ok {
+		return domain.Session{}, domain.ErrNotFound
+	}
+	return session, nil
+}
+
+func selectorCandidate(id, owner string, state domain.LifecycleState) domain.Session {
+	return domain.Session{ID: id, Slug: id, DisplayName: id, OwnerDiscordUserID: owner, GuildID: "guild-1", LifecycleState: state}
+}
+
+func newRepositoryTestService(t *testing.T, repository ports.SessionRepository) *Service {
+	t.Helper()
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now: time.Date(2026, 9, 16, 0, 0, 0, 0, time.UTC)}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
 }

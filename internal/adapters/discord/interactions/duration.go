@@ -46,17 +46,12 @@ func (handler *Handler) writeAdminTimeoutView(ctx context.Context, writer http.R
 	}
 	content := fmt.Sprintf("**Session timeouts**\nFuture sessions sleep after **%d minutes** without players and archive after **%d days** asleep.", policy.SleepAfterSeconds/60, policy.ArchiveAfterSeconds/86400)
 	controls := []interactionComponent{{Type: componentTypeActionRow, Components: []interactionComponent{{Type: componentTypeButton, Style: buttonStylePrimary, Label: "Edit future sessions", CustomID: adminTimeoutDefaultsID}}}}
-	selections := make([]appsession.Selection, 0, 25)
-	for _, state := range []string{string(domain.StateRunning), string(domain.StateIdle)} {
-		matches, selectErr := handler.service.Select(ctx, appsession.SelectQuery{Actor: domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID}, GuildID: guildID, Search: state, Limit: 25, AllowGuildMember: true})
-		if selectErr != nil {
-			return selectErr
-		}
-		for _, selection := range matches {
-			if len(selections) < 25 {
-				selections = append(selections, selection)
-			}
-		}
+	selections, err := handler.service.Select(ctx, appsession.SelectQuery{
+		Actor: domain.Actor{Type: domain.ActorTypeDiscordUser, ID: actorID}, GuildID: guildID,
+		Limit: 25, AllowGuildMember: true, States: []domain.LifecycleState{domain.StateRunning, domain.StateIdle},
+	})
+	if err != nil {
+		return err
 	}
 	if len(selections) > 0 {
 		options := make([]interactionSelectOption, 0, len(selections))

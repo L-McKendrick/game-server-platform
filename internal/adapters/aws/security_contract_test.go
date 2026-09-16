@@ -85,6 +85,24 @@ func TestManagedGameHostHasNoStandingSteamAuthorizationAccess(t *testing.T) {
 	}
 }
 
+func TestGuildSessionIndexInfrastructureContract(t *testing.T) {
+	t.Parallel()
+	body := readTerraform(t, filepath.Join("..", "..", "..", "infra", "terraform", "environments", "dev", "main.tf"))
+	for _, required := range []string{
+		`name = "gsi2pk"`,
+		`name = "gsi2sk"`,
+		`name = "gsi2"`,
+		`attribute_name = "gsi2pk"`,
+		`attribute_name = "gsi2sk"`,
+		`projection_type = "ALL"`,
+		`"${aws_dynamodb_table.metadata.arn}/index/gsi2"`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Errorf("guild-session index infrastructure does not contain %q", required)
+		}
+	}
+}
+
 func readTerraform(t *testing.T, path string) string {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Clean(path))

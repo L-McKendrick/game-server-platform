@@ -8,7 +8,7 @@ identified otherwise.
 
 | Principal | Intended capabilities | Explicitly excluded |
 | --- | --- | --- |
-| Discord interaction Lambda | Read and conditionally mutate metadata; enqueue artifact, command, notification, and enabled reset requests; write its log group | No EC2, S3 object, secret, SSM, workflow-start, or destructive access |
+| Discord interaction Lambda | Read and conditionally mutate metadata; query the verified sparse guild/state session index; enqueue artifact, command, notification, and enabled reset requests; write its log group | No EC2, S3 object, secret, SSM, workflow-start, or destructive access |
 | Artifact worker | Validate/write session inputs and guild configuration; delete only superseded guild config; consume artifact queue; send tagged live-copy SSM commands; broker an exact Steam exchange for content sync; enqueue commands/notifications | No unrelated secrets, EC2 lifecycle, archive deletion, or arbitrary S3 prefixes |
 | Notification worker | Read card metadata/modlist objects; consume notification queue; read only Discord bot token; call Discord over HTTPS | No lifecycle mutation, EC2/SSM, archive write/delete, or Steam secret |
 | Command worker | Read/mutate workflow metadata; consume command queue; start only declared lifecycle state machines; enqueue notifications | No EC2/SSM/S3/secret access and no direct lifecycle implementation |

@@ -2,7 +2,7 @@
 
 ## State and Objective
 
-Phase 19.2 is complete locally on `codex/phase-19-production-guardrails` and is
+Phase 19.4 is complete locally on `codex/phase-19-production-guardrails` and is
 not deployed. Phase 19.3 managed-host S3 isolation remains required before
 production or multi-tenant use. Do not claim a guaranteed AWS spending cap.
 
@@ -27,10 +27,51 @@ production or multi-tenant use. Do not claim a guaranteed AWS spending cap.
 - Old maximum-duration Discord components now direct administrators to the new
   menu. A routing defect found during coverage was corrected so all new timeout
   buttons, selects, and modal submissions reach the admin handler.
+- The test-62 bounded-scan defect is fixed locally. Autocomplete, `/rb list`,
+  admin timeout and repair selectors, and legacy public-card claim backfill all
+  use one paginated guild/state repository contract. The old `ListByGuild`
+  operation and its bounded mixed-table scan are removed.
+- Session metadata now writes sparse `gsi2pk`/`gsi2sk` guild, lifecycle-state,
+  update-time, and immutable-ID keys through the same transactional session put
+  used by create and every versioned update. State changes therefore move the
+  DynamoDB index entry atomically with authoritative metadata. Other entity
+  types omit the keys, and no mutable active-session aggregate was introduced.
+- Terraform defines the `gsi2` all-attributes index and grants the Discord
+  execution role access to its ARN.
+- The storage-independent `GuildSessionRepository` accepts an explicit state
+  set and opaque page cursor. DynamoDB queries every requested state range,
+  merges candidates by descending update time and immutable ID, and advances
+  only consumed streams. Cursors are bound to the guild and normalized state
+  set. The in-memory adapter implements the same contract, including more than
+  100 sessions and deterministic pagination.
+- Before a strongly read `READY` marker exists, new readers use an explicit
+  strongly consistent exhaustive-scan compatibility path with deterministic
+  pagination and no arbitrary record ceiling. They never treat partial GSI
+  results as complete. Compatibility cursors remain on that path through a
+  mid-request cutover; new requests query `gsi2` after verification.
+- `cmd/guild-session-index` performs paginated conditional backfill, exhaustive
+  source-versus-index verification by guild and state, and explicit cutover.
+  Backfill updates require the scanned version, lifecycle state, and update
+  timestamp, so concurrent authoritative writes win and a replay projects the
+  current row. Cutover reruns verification and refuses to write `READY` on any
+  missing key, total mismatch, or per-range mismatch.
+- Every indexed candidate is strongly reread from the primary session key
+  before guild isolation, owner authorization, state eligibility, search, and
+  display limits. Stale, moved, missing, cross-guild, or duplicate candidates
+  are dropped. Timeout selection queries `RUNNING` and `IDLE` together so one
+  state cannot consume the 25-option Discord limit before the other is
+  considered. Exact immutable-ID and slug claims remain point lookups.
+- Review coverage includes more than 1,000 mixed records, more than 100 guild
+  sessions, single/multi-state pagination, deterministic ordering, state
+  movement, backfill replay/conflicts, partial-cutover refusal, guild/owner
+  isolation, post-authorization limits, stale-candidate revalidation,
+  public-card legacy claims, and a Terraform GSI/IAM contract.
 - Focused domain, service, DynamoDB atomic-write, Discord authorization/replay,
   workflow, monitoring, projection, migration, and stale-command tests pass.
-  `go test -count=1 ./...`, `go vet ./...`, `go build ./cmd/...`, Terraform
-  formatting/validation, and Lambda packaging pass. The bootstrap progress
+  `go test -count=1 ./...`, `go test -cover ./...`, `go vet ./...`,
+  `go build ./cmd/...`, Lambda packaging, and Terraform formatting/validation
+  pass. The race detector was not run because this Windows host has CGO
+  disabled and no C compiler; CI remains the required race check. The bootstrap progress
   sampler regression now waits for its slow uploader to be fully established,
   removing a load-sensitive test race without changing runtime behavior. No AWS
   mutation or live Discord registration occurred.
@@ -48,6 +89,14 @@ production or multi-tenant use. Do not claim a guaranteed AWS spending cap.
   resources through the guarded operator workflow after deployment.
 - Test-61 (`01M2GKV5ME3MG97V0FY5894M0V`) retains its earlier deadline state. Use
   the new session-timeout controls only after this slice is deployed.
+- Test-62 (`01M2KQZRR48XDKK0KZG6579EWB`) remains the live acceptance case after
+  deployment and cutover: confirm it appears in the timeout menu while still
+  `RUNNING`, then reopen the menu after any state change to verify authoritative
+  eligibility.
+- Do not run guild-session index cutover until Terraform reports `gsi2` as
+  `ACTIVE`, the session writers containing the `gsi2` projection are deployed,
+  backfill completes without conflicts, and standalone verification matches.
+  A conflict is safe but requires rerunning backfill before verification.
 - Cross-session managed-host S3 access remains an accepted supervised-development
   risk scheduled for Phase 19.3.
 
@@ -70,15 +119,18 @@ terraform fmt -check -recursive infra/terraform
 ./scripts/package-discord-lambda.ps1
 terraform -chdir=infra/terraform/environments/dev init -backend-config=backend.hcl -input=false
 terraform -chdir=infra/terraform/environments/dev validate
-terraform -chdir=infra/terraform/environments/dev plan -out=phase-19-2-lifecycle-timeouts.tfplan
-terraform -chdir=infra/terraform/environments/dev show phase-19-2-lifecycle-timeouts.tfplan
-terraform -chdir=infra/terraform/environments/dev apply phase-19-2-lifecycle-timeouts.tfplan
+terraform -chdir=infra/terraform/environments/dev plan -out=phase-19-4-authoritative-guild-discovery.tfplan
+terraform -chdir=infra/terraform/environments/dev show phase-19-4-authoritative-guild-discovery.tfplan
+terraform -chdir=infra/terraform/environments/dev apply phase-19-4-authoritative-guild-discovery.tfplan
 
-aws lambda get-function-configuration --function-name game-server-platform-dev-discord-interactions --query '{State:State,Updated:LastModified}'
-aws lambda get-function-configuration --function-name game-server-platform-dev-monitor-worker --query '{State:State,Updated:LastModified}'
-aws lambda get-function-configuration --function-name game-server-platform-dev-command-worker --query '{State:State,Updated:LastModified}'
+aws dynamodb describe-table --table-name game-server-platform-dev-metadata --query 'Table.{Status:TableStatus,GSI:GlobalSecondaryIndexes[?IndexName==`gsi2`].{Name:IndexName,Status:IndexStatus}}'
+go run ./cmd/guild-session-index -mode backfill -table game-server-platform-dev-metadata -region us-west-2
+go run ./cmd/guild-session-index -mode verify -table game-server-platform-dev-metadata -region us-west-2
+go run ./cmd/guild-session-index -mode cutover -table game-server-platform-dev-metadata -region us-west-2
+aws dynamodb get-item --table-name game-server-platform-dev-metadata --key '{"pk":{"S":"SYSTEM#GUILD_SESSION_INDEX"},"sk":{"S":"CUTOVER"}}' --consistent-read --projection-expression '#status,verified_at,source_count,indexed_count' --expression-attribute-names '{"#status":"status"}'
+aws dynamodb get-item --table-name game-server-platform-dev-metadata --key '{"pk":{"S":"SESSION#01M2KQZRR48XDKK0KZG6579EWB"},"sk":{"S":"METADATA"}}' --consistent-read --projection-expression 'session_id,guild_id,lifecycle_state,gsi2pk,gsi2sk'
 ```
 
-No Discord command registration is required because command definitions did not
-change. Never reuse this saved plan after source, variables, credentials, or
-remote state change; create and review a new plan instead.
+No Discord command registration is required because command definitions did
+not change. Never reuse this saved plan after source, variables, credentials,
+or remote state change; create and review a fresh plan instead.

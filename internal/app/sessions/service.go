@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1380,9 +1381,10 @@ func (service *Service) Get(
 
 // ListQuery identifies an owner-session query.
 type ListQuery struct {
-	Actor  domain.Actor
-	Limit  int32
-	States []domain.LifecycleState
+	Actor   domain.Actor
+	GuildID string
+	Limit   int32
+	States  []domain.LifecycleState
 }
 
 // List returns sessions owned by the requesting actor.
@@ -1401,11 +1403,16 @@ func (service *Service) List(
 		allowed[state] = struct{}{}
 	}
 
-	sessions, err := service.repository.ListByOwner(
-		ctx,
-		query.Actor.ID,
-		query.Limit,
-	)
+	guildID := strings.TrimSpace(query.GuildID)
+	if guildID == "" {
+		return nil, fmt.Errorf("Discord guild ID is required")
+	}
+	states := append([]domain.LifecycleState(nil), query.States...)
+	if len(states) == 0 {
+		states = allSessionLifecycleStates()
+		states = slices.DeleteFunc(states, func(state domain.LifecycleState) bool { return state == domain.StateDeleted })
+	}
+	sessions, err := service.selectableSessions(ctx, query.Actor, guildID, false, states)
 	if err != nil {
 		return nil, fmt.Errorf("list owner sessions: %w", err)
 	}
@@ -1420,6 +1427,10 @@ func (service *Service) List(
 			continue
 		}
 		filtered = append(filtered, session)
+	}
+	limit := query.Limit
+	if limit > 0 && len(filtered) > int(limit) {
+		filtered = filtered[:limit]
 	}
 	return filtered, nil
 }

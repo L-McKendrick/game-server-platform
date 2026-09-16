@@ -1404,7 +1404,7 @@ func (handler *Handler) listSessions(
 	}
 	sessions, err := handler.service.List(
 		ctx,
-		appsession.ListQuery{Actor: actor, Limit: 100, States: states},
+		appsession.ListQuery{Actor: actor, GuildID: guildID, Limit: 100, States: states},
 	)
 	if err != nil {
 		return "", fmt.Errorf("list sessions: %w", err)
