@@ -526,6 +526,9 @@ func TestAcquireWorkflowConditionallyWritesLockWorkflowAndEvent(t *testing.T) {
 	if client.transactWriteInput == nil || len(client.transactWriteInput.TransactItems) != 3 {
 		t.Fatalf("workflow transaction = %#v; want three writes", client.transactWriteInput)
 	}
+	if token := aws.ToString(client.transactWriteInput.ClientRequestToken); token != event.ID {
+		t.Fatalf("workflow transaction token = %q, want attempt event %q", token, event.ID)
+	}
 	condition := *client.transactWriteInput.TransactItems[0].Put.ConditionExpression
 	if condition != "#version = :expected_version AND (attribute_not_exists(active_workflow_id) OR active_workflow_lease_expires_at < :now)" {
 		t.Fatalf("session lock condition = %q", condition)

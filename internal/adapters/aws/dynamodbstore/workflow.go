@@ -87,7 +87,9 @@ func (repository *Repository) AcquireWorkflow(
 		return err
 	}
 	_, err = repository.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
-		ClientRequestToken: aws.String(workflow.ID),
+		// Bind the token to this exact transaction attempt. A later queue retry
+		// can legitimately rebuild the lock with a new event and timestamp.
+		ClientRequestToken: aws.String(event.ID),
 		TransactItems: []types.TransactWriteItem{
 			{Put: &types.Put{
 				TableName: aws.String(repository.tableName), Item: sessionAttributes,

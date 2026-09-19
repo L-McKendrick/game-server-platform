@@ -79,6 +79,76 @@ func TestPrepareCreationArtifactsAutomaticallyStartsReadyDefaultMissionSession(t
 	}
 }
 
+func TestPrepareCreationArtifactsDefersAutomaticStartForWorkshopMission(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 19, 7, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-workshop", Slug: "session-workshop", DisplayName: "Workshop mission", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(domain.SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 86400, Vanilla: true, StartWhenReady: true}, now); err != nil {
+		t.Fatal(err)
+	}
+	record, _ := domain.NewCompletedIdempotencyRecord("create-workshop", "hash", session.ID, now, time.Hour)
+	event := domain.NewSessionCreatedEvent("create-event", "create-correlation", testActor("owner-1"), session, now)
+	if err := repository.Create(ctx, session, event, record); err != nil {
+		t.Fatal(err)
+	}
+	queue := &recordingCommandQueue{}
+	service, err := NewService(repository, &sequenceIDGenerator{ids: []string{"artifact-event"}}, fixedClock{now}, time.Hour, WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := PrepareCreationArtifactsCommand{
+		Actor: testActor("owner-1"), SessionID: session.ID, GuildID: session.GuildID,
+		CorrelationID: "creation-correlation", IdempotencyKey: "creation-artifacts",
+		WaitForWorkshopMission: true, Roles: []string{"role-allowed"},
+	}
+	first, err := service.PrepareCreationArtifacts(ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.PrepareCreationArtifacts(ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.LifecycleState != domain.StateNew || second.LifecycleState != domain.StateNew || len(queue.commands) != 0 {
+		t.Fatalf("sessions=(%s,%s) commands=%#v; want ready metadata with start deferred", first.LifecycleState, second.LifecycleState, queue.commands)
+	}
+}
+
+func TestRequestAutomaticStartWaitsForPendingWorkshopResolution(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 19, 7, 0, 0, 0, time.UTC)
+	repository := memory.NewSessionRepository()
+	session, err := domain.NewSession(domain.NewSessionInput{ID: "session-workshop-pending", Slug: "session-workshop-pending", DisplayName: "Workshop pending", GameType: "arma3", OwnerDiscordUserID: "owner-1", GuildID: "guild-1", ChannelID: "channel-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Configure(domain.SessionConfiguration{GameProfileID: "arma3-default", SleepAfterSeconds: 1800, ArchiveAfterSeconds: 86400, Vanilla: true, StartWhenReady: true}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.PrepareOptionalCreationArtifacts(false, false, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.BeginWorkshopResolution(domain.WorkshopTargetMission, "workshop-request", now); err != nil {
+		t.Fatal(err)
+	}
+	queue := &recordingCommandQueue{}
+	service, err := NewService(repository, &sequenceIDGenerator{}, fixedClock{now}, time.Hour, WithCommandQueue(queue))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RequestAutomaticStart(context.Background(), session, "correlation", []string{"role-allowed"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.commands) != 0 {
+		t.Fatalf("commands = %#v; want pending Workshop resolution to defer start", queue.commands)
+	}
+}
+
 func TestUpdateModOptionsAutomaticallyStartsCreatorDLCOnlyReadySession(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

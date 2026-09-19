@@ -85,7 +85,8 @@ func (handler *Handler) submitCreateModal(
 	session, err = handler.service.PrepareCreationArtifacts(ctx, appsession.PrepareCreationArtifactsCommand{
 		Actor: actor, SessionID: session.ID, GuildID: payload.GuildID,
 		CorrelationID: correlationID, IdempotencyKey: keyPrefix + ":artifacts",
-		HasPreset: false, HasMission: submission.mission != nil, Roles: interactionRoles(payload),
+		HasPreset: false, HasMission: submission.mission != nil,
+		WaitForWorkshopMission: submission.missionWorkshop != "", Roles: interactionRoles(payload),
 	})
 	if err != nil {
 		return createModalResult{}, fmt.Errorf("prepare creation artifacts: %w", err)
