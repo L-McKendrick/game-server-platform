@@ -82,4 +82,28 @@ func TestWorkshopMissionsAcceptsOnlyPendingItemsFromPartialRefreshManifest(t *te
 	if err != nil || len(missions) != 1 || missions[0].WorkshopItemID != 200 {
 		t.Fatalf("partial refresh missions = %#v, err = %v", missions, err)
 	}
+	current := session.MissionFiles[0]
+	currentRow := strings.Repeat("c", 64) + "\t" + current.Filename + "\t" + current.ObjectKey + "\t100\n"
+	pendingRow := string(reader.body)
+	reader.body = []byte(currentRow + pendingRow)
+	missions, err = service.workshopMissions(context.Background(), session)
+	if err != nil || len(missions) != 1 || missions[0].WorkshopItemID != 200 {
+		t.Fatalf("full approved resolution did not select pending intent: %#v, %v", missions, err)
+	}
+	session.MissionFiles[0].RemovedAt = now.Add(3 * time.Minute)
+	missions, err = service.workshopMissions(context.Background(), session)
+	if err != nil || len(missions) != 1 || missions[0].WorkshopItemID != 200 || session.MissionFiles[0].RemovedAt.IsZero() {
+		t.Fatal("full resolution did not preserve user removal", err)
+	}
+	for _, body := range []string{
+		currentRow,
+		currentRow + pendingRow + currentRow,
+		strings.ReplaceAll(currentRow, "\t100\n", "\t999\n") + pendingRow,
+		strings.ReplaceAll(currentRow, "sessions/session-1/", "sessions/other/") + pendingRow,
+	} {
+		reader.body = []byte(body)
+		if _, err := service.workshopMissions(context.Background(), session); err == nil {
+			t.Fatal("missing, duplicated or unauthorized approved resolution accepted")
+		}
+	}
 }

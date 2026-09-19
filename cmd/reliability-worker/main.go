@@ -11,12 +11,15 @@ import (
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ec2orphans"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/hostdelivery"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/resourceinventory"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3objects"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3sessioncleanup"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sfnworkflow"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsdlq"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmbootstrap"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/steamexchange"
+	"github.com/L-McKendrick/game-server-platform/internal/app"
 	apporphan "github.com/L-McKendrick/game-server-platform/internal/app/orphan"
 	appreliability "github.com/L-McKendrick/game-server-platform/internal/app/reliability"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
@@ -95,6 +98,16 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	hostDelivery, err := hostdelivery.NewCommandDelivery(awsConfig, repository, bucket, env("PROJECT_NAME", "game-server-platform"), base.Environment, strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_KEY")), strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_SHA256")))
+	if err != nil {
+		return nil, err
+	}
+	contentRunner.WithHostAccess(hostDelivery)
+	attemptCleaner, err := s3sessioncleanup.New(s3Client, bucket)
+	if err != nil {
+		return nil, err
+	}
+	reliability.WithHostAccessMaintenance(app.HostAttemptMaintenance{Issuer: hostDelivery.Issuer, Lister: repository, Cleaner: attemptCleaner})
 	contentRunner.WithSteamAuthorizationBroker(steamBroker)
 	contentSync, err := workshopcontent.New(repository, repository, contentRunner, ids, clock, workshopcontent.WithWorkshopMissionManifest(s3objects.New(s3Client, bucket)))
 	if err != nil {

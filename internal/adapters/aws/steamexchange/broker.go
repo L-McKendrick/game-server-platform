@@ -307,12 +307,12 @@ func (b *Broker) Complete(ctx context.Context, reference, outcome string) error 
 	}
 	result, err := b.objects.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(b.bucket), Key: aws.String(rec.OutputKey)})
 	if err != nil {
-		return fmt.Errorf("read Steam authorization exchange output: %w", err)
+		return errors.Join(fmt.Errorf("read Steam authorization exchange output: %w", err), b.finish(ctx, rec, "FAILED"))
 	}
 	defer result.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(result.Body, maximumCacheBytes+1))
 	if err != nil {
-		return fmt.Errorf("read Steam authorization exchange output: %w", err)
+		return errors.Join(fmt.Errorf("read Steam authorization exchange output: %w", err), b.finish(ctx, rec, "FAILED"))
 	}
 	if len(payload) > maximumCacheBytes {
 		return b.finish(ctx, rec, "FAILED")

@@ -9,6 +9,18 @@ EC2 game hosts, Systems Manager commands, Steam authorization, destructive
 archive/termination/reset operations, Terraform state, and the current manual
 deployment process.
 
+Phase 19.3.7 source review (2026-09-17) removes both host asset inline policies,
+uses trusted exact-object capabilities and verifies staged output before durable
+publication. All six issuers share a guarded runtime and normalized script digest.
+On 2026-09-18, test-67 actual-host cross-session/guild asset, secret and Steam-lease
+denials and live capability constraints passed. Review found and fixed preset
+authority persistence, timestamp ordering, Steam finalization and archive Bash
+dispatch defects. The fixes were deployed; test-71 completed verified
+archive/destruction/restore, final cleanup removed all session resources and
+versions, and the Ubuntu CI race gate passed. SEC-20-01 is closed for controlled
+beta admission. Detailed evidence is in
+`docs/phase-19-host-object-access.md` and this chat's external context file.
+
 The review treats Discord users, attachment metadata, Steam metadata and files,
 Workshop content, game files, archives, network responses, queue payloads, and
 managed hosts as untrusted. DynamoDB session/workflow records and checksum-
@@ -41,11 +53,11 @@ validation succeeds.
 | Archive traversal or expansion bomb | Archive checksum, member root/type/path validation, 20 GiB/200,000-member expansion limits | Acceptable for the documented archive contract |
 | S3 disclosure or downgrade | Account-owned bucket, encryption, public access block, narrowly scoped runtime actions | Insecure transport denial was missing and is corrected in Phase 20 |
 | Mutating unrelated EC2 instances | Most destructive roles require Project and Environment resource tags | Sleep/wake previously had wildcard mutation; corrected in Phase 20 |
-| Compromised game host accesses another session | Shared instance profile permits session-wide S3 patterns; an exact bearer URL reveals the Steam cache during an authorized operation | Standing Steam-cache access is removed by Phase 19.1; cross-session S3 access is accepted for supervised development but must close before production or multi-tenant use |
+| Compromised game host accesses another session | Shared instance profile has no standing asset permissions; an exact bearer URL can expose only its bounded authorized object during the capability lifetime | Standing Steam-cache access is removed by Phase 19.1; Phase 19.3 actual-host tests deny cross-session/guild assets, secrets and lease access. Theft of a currently issued bearer remains a bounded residual risk. |
 | Secret or raw diagnostic leakage | Secrets retrieved at runtime, auth files scrubbed, bounded allowlisted progress/errors, suppressed mentions | Acceptable with continued regression scanning; CloudWatch/S3 access remains privileged operator data |
 | Duplicate infrastructure and cost amplification | Idempotency, workflow locks, capacity slot, tagged discovery, budgets, inactivity policies, maximum-duration warnings and enforcement | Phase 19.2 adds a bounded wall-clock guardrail, but failed lifecycle cleanup can still retain billable resources; this is not a guaranteed spend cap |
 | Queue or API denial of service | Payload limits, FIFO queues, visibility bounds, DLQs, Lambda concurrency controls where configured | Residual account-level throttling/cost risk to be verified in 20.5 and 20.6 |
-| Dependency or CI supply-chain compromise | Go modules and action versions are declared; CI is read-only; replacement hosts download AWS CLI v2 from the official TLS endpoint | Actions are tag-pinned rather than commit-pinned, no dependency/security scan is enforced, and the host prerequisite checks the CLI major version but does not pin or cryptographically verify the downloaded installer; deferred below |
+| Dependency or CI supply-chain compromise | Go modules and action versions are declared; CI is read-only; Phase 19.3 removes the unused runtime AWS CLI installer | Actions are tag-pinned rather than commit-pinned; no dependency/security scan is enforced; approved host image and installer verification remain staging work |
 | Terraform state disclosure or unauthorized deployment | Private versioned encrypted state and manual reviewed plans | Human/deployment permission boundary is not yet codified; OIDC and protected deployment are 20.3 work |
 
 ## Corrections made by this review
@@ -55,8 +67,8 @@ validation succeeds.
 2. Sleep/wake retains wildcard `DescribeInstances`, which EC2 does not support
    at resource scope, but `StartInstances` and `StopInstances` now apply only to
    instances carrying the exact project and environment tags.
-3. Restore verifies AWS CLI v2 before archive access and publishes a stable,
-   sanitized prerequisite failure code.
+3. Phase 19.3 replaces host archive/input AWS CLI access with bounded HTTPS
+   transfers; mount/device, extraction and sanitized failure safeguards remain.
 4. Restore terminal-result shape is explicit, and malformed or contradictory
    results route through the normal failure finalizer.
 
@@ -64,13 +76,13 @@ validation succeeds.
 
 | ID | Severity | Residual risk | Required disposition | Owner / target |
 | --- | --- | --- | --- | --- |
-| SEC-20-01 | High | Phase 19.1 removes standing managed-host access to the shared Steam authorization cache through an exact, expiring, workflow-bound broker exchange. The shared host profile can still cross session S3 boundaries; that portion is an accepted risk only for the current supervised development stage. | Deploy and live-verify the Phase 19.1 broker. Complete Phase 19.3 exact-session host S3 access before production or multi-tenant use. Cache rotation is not required without evidence of exposure. | Platform owner; development may continue under supervision, production release blocker until 19.3 |
+| SEC-20-01 | Closed | Standing host asset grants are removed. Actual-host cross-session/guild, config/archive/progress/result/log/script, secret and Steam-lease denials passed; coherent modded/vanilla/TeamSpeak lifecycle, archive/restore, cleanup and Linux race acceptance passed. | Closed for controlled beta on 2026-09-18. Retain capability-expiry, lifecycle cleanup and broker-finalization monitoring; repeat acceptance after any boundary rollback. | Platform owner; Phase 19.3 complete |
 | SEC-20-02 | Medium | Phase 19.2 maximum-duration enforcement is implemented but not deployed or live-verified. Monitor, queue, workflow, or cleanup failures can still retain billable resources. | Deploy through a reviewed plan, exercise warning and deadline paths, retain AWS billing alarms, and investigate failed cleanup promptly. | Platform owner; deployment acceptance before production |
 | SEC-20-03 | High | Deployment still depends on a human AWS profile and broad first-deployment permissions. | Implement scoped GitHub OIDC plan/deploy roles and protected environments in 20.3. | Platform owner; 20.3 |
 | SEC-20-04 | Medium | GitHub Actions use major-version tags and CI does not run dependency, secret, or IaC security scanning. | Select pinned action commits and approved scanners as part of the protected CI/CD design. | Platform owner; 20.3 |
 | SEC-20-05 | Medium | Public game/voice UDP and unrestricted host egress are intentional for Steam and players but enlarge the compromised-host boundary. | Validate egress/ingress requirements in staging and document any practical restriction or accepted exposure. | Platform owner; 20.4/20.6 |
 | SEC-20-06 | Medium | AWS-managed encryption keys do not provide environment-specific key-policy separation. | Decide whether production requires customer-managed keys during staging design; record the decision in an ADR. | Platform owner; 20.4 |
-| SEC-20-07 | Medium | Replacement hosts download the current AWS CLI v2 installer over TLS and verify its major version, but do not pin a release checksum or verify AWS's signing key. | Prefer a versioned, patched host image with the approved CLI already installed or add pinned signature/checksum verification before production staging approval. | Platform owner; 20.4 |
+| SEC-20-07 | Medium | Phase 19.3 removes runtime AWS CLI installation; other host image and installer supply-chain verification remains unaccepted. | Verify approved patched host image and remaining installer provenance/checksums before production staging approval. | Platform owner; 20.4 |
 
 No exception authorizes production release by itself. Critical and high items
 must be closed or explicitly accepted by the accountable operator with scope,

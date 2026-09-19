@@ -277,47 +277,6 @@ resource "aws_iam_role_policy_attachment" "game_instance_ssm" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-data "aws_iam_policy_document" "game_instance" {
-  statement {
-    sid     = "ReadSessionInputs"
-    actions = ["s3:GetObject"]
-    resources = [
-      "${aws_s3_bucket.session_assets.arn}/sessions/*/input/*",
-      "${aws_s3_bucket.session_assets.arn}/guilds/*/server-config/revisions/*/server.cfg",
-    ]
-  }
-
-  statement {
-    sid     = "WriteSessionLogs"
-    actions = ["s3:PutObject"]
-    resources = [
-      "${aws_s3_bucket.session_assets.arn}/sessions/*/logs/*",
-    ]
-  }
-
-  statement {
-    sid     = "WriteSessionArchives"
-    actions = ["s3:PutObject"]
-    resources = [
-      "${aws_s3_bucket.session_assets.arn}/sessions/*/archives/*/session.tar.gz",
-    ]
-  }
-
-  statement {
-    sid     = "ReadSessionArchiveMetadata"
-    actions = ["s3:GetObject"]
-    resources = [
-      "${aws_s3_bucket.session_assets.arn}/sessions/*/archives/*/session.tar.gz",
-    ]
-  }
-}
-
-resource "aws_iam_role_policy" "game_instance" {
-  name   = "session-assets"
-  role   = aws_iam_role.game_instance.id
-  policy = data.aws_iam_policy_document.game_instance.json
-}
-
 resource "aws_iam_instance_profile" "game" {
   name = "${local.name_prefix}-game-instance"
   role = aws_iam_role.game_instance.name

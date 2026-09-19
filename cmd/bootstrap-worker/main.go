@@ -17,6 +17,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/hostdelivery"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3objects"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmbootstrap"
@@ -78,6 +79,11 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	hostDelivery, err := hostdelivery.NewCommandDelivery(awsConfig, repository, runnerConfig.AssetsBucket, env("PROJECT_NAME", "game-server-platform"), baseConfig.Environment, strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_KEY")), strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_SHA256")))
+	if err != nil {
+		return nil, err
+	}
+	runner.WithHostAccess(hostDelivery)
 	runner.WithSteamAuthorizationBroker(steamBroker)
 	runner.WithProgressStore(s3.NewFromConfig(awsConfig))
 	service, err := bootstrap.NewService(

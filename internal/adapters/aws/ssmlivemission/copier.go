@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/ssm/types"
 
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/hosttransfer"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
@@ -28,8 +29,7 @@ type API interface {
 }
 
 type Config struct {
-	Region       string
-	AssetsBucket string
+	Access       ports.LiveMissionAccess
 	PollInterval time.Duration
 	MaxPolls     int
 }
@@ -42,9 +42,8 @@ type Copier struct {
 var _ ports.LiveMissionCopier = (*Copier)(nil)
 
 func New(client API, config Config) (*Copier, error) {
-	config.Region, config.AssetsBucket = strings.TrimSpace(config.Region), strings.TrimSpace(config.AssetsBucket)
-	if client == nil || config.Region == "" || config.AssetsBucket == "" {
-		return nil, fmt.Errorf("SSM client, AWS region, and assets bucket are required")
+	if client == nil || config.Access == nil {
+		return nil, fmt.Errorf("SSM client and trusted live mission access are required")
 	}
 	if config.PollInterval <= 0 {
 		config.PollInterval = time.Second
@@ -65,7 +64,21 @@ func (copier *Copier) Copy(ctx context.Context, session domain.Session, mission 
 	if !strings.HasPrefix(mission.ObjectKey, expectedPrefix) || len(match) != 3 || match[2] != mission.Filename {
 		return fmt.Errorf("accepted mission object key is malformed")
 	}
-	script := command(copier.config.AssetsBucket, copier.config.Region, mission.ObjectKey, mission.Filename, match[1])
+	manifest, err := copier.config.Access.SignLiveMission(ctx, session.ID, mission.ObjectKey)
+	if err != nil {
+		return fmt.Errorf("authorize live mission copy: access unavailable")
+	}
+	if manifest.Scope.SessionID != session.ID || manifest.Scope.InstanceID != session.Infrastructure.InstanceID || len(manifest.Objects) != 1 || manifest.Objects[0].Object.Key != mission.ObjectKey {
+		return fmt.Errorf("live mission copy authority changed")
+	}
+	transport, err := hosttransfer.InlineMissionShell(manifest)
+	if err != nil {
+		return err
+	}
+	script := command(transport, mission.ObjectKey, mission.Filename, match[1])
+	if len(script) > domain.MaxHostAccessCommandBytes {
+		return fmt.Errorf("live mission copy command exceeds budget")
+	}
 	output, err := copier.client.SendCommand(ctx, &ssm.SendCommandInput{
 		DocumentName:   aws.String(documentName),
 		InstanceIds:    []string{session.Infrastructure.InstanceID},
@@ -74,7 +87,7 @@ func (copier *Copier) Copy(ctx context.Context, session domain.Session, mission 
 		TimeoutSeconds: aws.Int32(30),
 	})
 	if err != nil {
-		return fmt.Errorf("send live mission copy command: %w", err)
+		return fmt.Errorf("send live mission copy command failed; delivery may be ambiguous")
 	}
 	commandID := ""
 	if output.Command != nil {
@@ -109,19 +122,18 @@ func (copier *Copier) Copy(ctx context.Context, session domain.Session, mission 
 	return fmt.Errorf("live mission copy command did not complete within the bounded polling window")
 }
 
-func command(bucket, region, objectKey, filename, checksum string) string {
+func command(transport, objectKey, filename, checksum string) string {
 	encode := func(value string) string { return base64.StdEncoding.EncodeToString([]byte(value)) }
 	return "#!/usr/bin/env bash\nset -Eeuo pipefail\numask 077\n" +
-		"bucket=\"$(printf '%s' '" + encode(bucket) + "' | base64 -d)\"\n" +
-		"region=\"$(printf '%s' '" + encode(region) + "' | base64 -d)\"\n" +
+		transport +
 		"object_key=\"$(printf '%s' '" + encode(objectKey) + "' | base64 -d)\"\n" +
 		"filename=\"$(printf '%s' '" + encode(filename) + "' | base64 -d)\"\n" +
 		"checksum=\"$(printf '%s' '" + encode(checksum) + "' | base64 -d)\"\n" +
 		"target_dir=/srv/game-server/arma3/mpmissions\nmkdir -p \"$target_dir\"\n" +
 		"exec 9>/run/lock/gsp-mission-copy.lock\nflock --wait 30 9\n" +
-		"pending=\"$(mktemp \"$target_dir/.gsp-mission.XXXXXX\")\"\ntrap 'rm -f \"$pending\"' EXIT\n" +
-		"aws s3 cp \"s3://$bucket/$object_key\" \"$pending\" --region \"$region\" --only-show-errors\n" +
+		"pending=\"$(mktemp \"$target_dir/.gsp-mission.XXXXXX\")\"\ntrap 'rm -f \"$pending\"; rm -rf -- \"$HOST_ACCESS_ATTEMPT_DIR\"' EXIT\n" +
+		"python3 \"$HOST_ACCESS_HELPER\" fetch \"$HOST_ACCESS_MANIFEST\" \"$object_key\" \"$pending\"\n" +
 		"printf '%s  %s\\n' \"$checksum\" \"$pending\" | sha256sum --check --status\n" +
 		"chown steam:steam \"$pending\"\nchmod 0644 \"$pending\"\n" +
-		"mv -f \"$pending\" \"$target_dir/$filename\"\ntrap - EXIT\n"
+		"mv -f \"$pending\" \"$target_dir/$filename\"\n"
 }

@@ -2,7 +2,10 @@ package s3sessioncleanup
 
 import (
 	"context"
+	"github.com/L-McKendrick/game-server-platform/internal/domain"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -12,6 +15,28 @@ import (
 type fakeAPI struct {
 	listedPrefix string
 	deleted      []types.ObjectIdentifier
+}
+
+func TestAttemptCleanupRequiresExpiryAndExactNamespace(t *testing.T) {
+	api := &fakeAPI{}
+	cleaner, _ := New(api, "assets")
+	scope := domain.HostAccessScope{SessionID: "session", GuildID: "guild", OperationID: "operation", AttemptID: "attempt", InstanceID: "i-123", SnapshotSHA256: strings.Repeat("a", 64), DeadlineAt: time.Now().Add(time.Hour)}
+	if _, err := cleaner.DeleteHostAccessAttempt(context.Background(), scope); err == nil || api.listedPrefix != "" {
+		t.Fatal("deleted active attempt")
+	}
+	scope.DeadlineAt = time.Now().Add(-time.Hour)
+	count, err := cleaner.DeleteHostAccessAttempt(context.Background(), scope)
+	if err != nil || count != 2 || api.listedPrefix != "sessions/session/runtime/host-access/operation/attempt/" {
+		t.Fatalf("prefix=%s count=%d error=%v", api.listedPrefix, count, err)
+	}
+	for _, deleted := range api.deleted {
+		if !strings.HasPrefix(aws.ToString(deleted.Key), api.listedPrefix) || aws.ToString(deleted.VersionId) == "" {
+			t.Fatal("unscoped or unversioned deletion")
+		}
+	}
+	if _, err := cleaner.DeleteHostAccessAttempt(context.Background(), scope); err != nil {
+		t.Fatal("repeat cleanup failed", err)
+	}
 }
 
 func (fake *fakeAPI) ListObjectVersions(_ context.Context, input *s3.ListObjectVersionsInput, _ ...func(*s3.Options)) (*s3.ListObjectVersionsOutput, error) {

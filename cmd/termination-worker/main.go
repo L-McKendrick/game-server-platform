@@ -18,6 +18,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ec2destroy"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3sessioncleanup"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
+	"github.com/L-McKendrick/game-server-platform/internal/app"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/app/termination"
 	"github.com/L-McKendrick/game-server-platform/internal/config"
@@ -64,6 +65,7 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	service.WithHostAccessMaintenance(app.HostAttemptMaintenance{Issuer: app.HostManifestIssuer{Inputs: app.HostObjectIssuer{Authority: app.HostAccessAuthority{Records: repository}}, Attempts: repository}, Lister: repository, Cleaner: cleaner})
 	return &handler{service: service, logger: logging.New(cfg.LogLevel)}, nil
 }
 

@@ -72,9 +72,12 @@ IAM has no permission for this namespace.
    root-owned marker beside the private Steam-owned authorization directory.
    This marker crosses isolated shell-function boundaries without granting the
    Steam user control of promotion evidence or persisting on the managed
-   volume; a Guard challenge removes it. Only a marked-valid cache is uploaded
-   to the exact output URL. The SSM output identifies the exchange for
-   trusted-worker completion; it does not print cache contents or URLs.
+   volume; a Guard challenge removes it. A marked-valid cache is uploaded to
+   the exact output URL. A resumable command that opens an exchange but has no
+   remaining SteamCMD work uploads only the unchanged, checksum-verified input;
+   an unmarked changed cache is never uploaded. The SSM output identifies the
+   exchange for trusted-worker completion; it does not print cache contents or
+   URLs.
 6. The worker observes completion, reloads the exchange and workflow, reads the
    output object with its own role, applies size/schema/digest validation,
    preserves the enrolled username and timestamp, and conditionally promotes it
@@ -104,6 +107,11 @@ never promotes partial output.
 - Expired URLs and records fail closed. The next broker pass marks them expired,
   deletes any objects, releases only the matching exchange lease, and reports a
   bounded retryable failure when the lifecycle still owns the operation.
+- If a terminal successful host command has no readable exchange output, the
+  broker marks that exchange failed, removes its temporary objects, and releases
+  only its owner-matched lease before returning the error. The workflow remains
+  failed and retryable, but it cannot block unrelated sessions until lease
+  expiry.
 - URL expiry is derived from the bounded Steam operation timeout and capped at
   twelve hours. Temporary signing credentials can shorten effective validity,
   so long-running operations must treat an expired upload as a retryable
@@ -150,3 +158,6 @@ rollout or rollback and is required only when evidence indicates disclosure.
 - Successful bootstrap, resumed-install, and Workshop subshell paths propagate
   authorization validity to the parent, while a nested Guard failure clears it
   before exit cleanup can upload a cache.
+- A successful resumed bootstrap with no remaining SteamCMD work returns the
+  unchanged verified cache, while missing or unreadable terminal output fails
+  the exchange and releases its exact shared lease.

@@ -2,7 +2,6 @@ package ssmbootstrap
 
 import (
 	"context"
-	"encoding/base64"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
@@ -38,7 +37,7 @@ func TestRestartCommandBindsHostModeAndPendingServerMods(t *testing.T) {
 		want := "export RESTART_DOWNLOADS=false"
 		if pending {
 			want = "export RESTART_DOWNLOADS=true"
-			if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(session.PendingServerPresetRevision.PresetObjectKey))) {
+			if runner.config.HostAccess.(*fakeHostCommandAccess).values["SERVER_PRESET_KEY_B64"] != session.PendingServerPresetRevision.PresetObjectKey {
 				t.Fatal("pending server mods omitted")
 			}
 		}
@@ -199,7 +198,8 @@ GSP_OPERATION_MODE=restart; RESTART_DOWNLOADS=true; STEAM_AUTH_ACTIVE=false
 ASSETS_BUCKET=assets; AWS_REGION=test
 log(){ :; }; checkpoint(){ :; }; chown(){ :; }; systemctl(){ :; }
 begin_steam_auth(){ STEAM_AUTH_ACTIVE=true; }; persist_steam_auth(){ :; }; cleanup_steam_auth(){ STEAM_AUTH_ACTIVE=false; }
-aws(){ cp "$work/accepted.pbo" "$4"; }
+asset_read(){ [ "$1" = "$MISSION_KEY" ]; cp "$work/accepted.pbo" "$2"; }
+aws(){ printf 'unexpected host credential read\n' >&2; return 1; }
 sync_workshop_content(){ printf new > "$ROOT/arma3/mpmissions/scenario.Altis.pbo"; }
 launch_and_verify(){ [ "$(cat "$ROOT/arma3/mpmissions/scenario.Altis.pbo")" = new ]; }
 ` + s[deployStart:deployStart+deployEnd] + "}\n" + s[restartStart:restartStart+restartEnd]

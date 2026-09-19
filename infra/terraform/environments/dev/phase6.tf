@@ -57,44 +57,36 @@ resource "aws_s3_object" "bootstrap_script" {
   depends_on = [aws_s3_bucket_server_side_encryption_configuration.session_assets]
 }
 
-data "aws_iam_policy_document" "game_instance_bootstrap" {
-  statement {
-    sid       = "ReadBootstrapArtifact"
-    actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.session_assets.arn}/platform/bootstrap/*"]
-  }
-
-  statement {
-    sid       = "PublishBootstrapProgress"
-    actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.session_assets.arn}/sessions/*/runtime/bootstrap-progress-*.txt"]
-  }
-
-  statement {
-    sid     = "PublishResolvedWorkshopMissions"
-    actions = ["s3:PutObject"]
-    resources = [
-      "${aws_s3_bucket.session_assets.arn}/sessions/*/input/missions/*",
-      "${aws_s3_bucket.session_assets.arn}/sessions/*/workshop-resolutions/*.tsv",
-    ]
-  }
-
-  statement {
-    sid       = "PublishWorkshopSyncResults"
-    actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.session_assets.arn}/sessions/*/workshop-sync/*.json"]
-  }
-
-}
-
-resource "aws_iam_role_policy" "game_instance_bootstrap" {
-  name   = "bootstrap-secrets"
-  role   = aws_iam_role.game_instance.id
-  policy = data.aws_iam_policy_document.game_instance_bootstrap.json
-}
-
 resource "aws_s3_bucket_lifecycle_configuration" "steam_authorization_exchanges" {
   bucket = aws_s3_bucket.session_assets.id
+
+  rule {
+    id     = "remove-empty-session-delete-markers"
+    status = "Enabled"
+    filter {
+      prefix = "sessions/"
+    }
+    expiration {
+      expired_object_delete_marker = true
+    }
+  }
+
+  rule {
+    id     = "expire-host-access-staging"
+    status = "Enabled"
+    filter {
+      tag {
+        key   = "gsp-retention"
+        value = "host-access"
+      }
+    }
+    expiration {
+      days = 3
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 3
+    }
+  }
 
   rule {
     id     = "expire-steam-authorization-exchanges"
@@ -200,12 +192,6 @@ data "aws_iam_policy_document" "bootstrap_worker" {
   }
 
   statement {
-    sid       = "ReadBootstrapProgress"
-    actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.session_assets.arn}/sessions/*/runtime/bootstrap-progress-*.txt"]
-  }
-
-  statement {
     sid       = "ReadWorkshopMissionManifests"
     actions   = ["s3:GetObject"]
     resources = ["${aws_s3_bucket.session_assets.arn}/sessions/*/workshop-resolutions/*.tsv"]
@@ -257,22 +243,25 @@ resource "aws_lambda_function" "bootstrap_worker" {
 
   environment {
     variables = {
+      PROJECT_NAME                            = var.project_name
       APP_ENV                                 = var.environment
       LOG_LEVEL                               = "info"
       METADATA_TABLE_NAME                     = aws_dynamodb_table.metadata.name
       NOTIFICATION_QUEUE_URL                  = aws_sqs_queue.notifications.url
       SESSION_ASSETS_BUCKET                   = aws_s3_bucket.session_assets.id
       BOOTSTRAP_SCRIPT_KEY                    = aws_s3_object.bootstrap_script.key
+      BOOTSTRAP_SCRIPT_SHA256                 = local.bootstrap_script_hash
       STEAM_AUTH_SECRET_ID                    = aws_secretsmanager_secret.steam_authorization_cache.name
       TEAMSPEAK_VERSION                       = var.teamspeak_version
       BOOTSTRAP_COMMAND_TIMEOUT_SECONDS       = tostring(var.bootstrap_command_timeout_seconds)
-      BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION = "steam-auth-broker-v2"
+      BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION = "scoped-host-access-v1"
     }
   }
 
   depends_on = [
     aws_cloudwatch_log_group.bootstrap_worker,
     aws_iam_role_policy.bootstrap_worker,
+    aws_iam_role_policy.host_access_issuer["bootstrap"],
   ]
 }
 

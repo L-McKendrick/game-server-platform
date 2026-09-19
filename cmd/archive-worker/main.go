@@ -10,6 +10,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ec2compute"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ec2destroy"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/hostdelivery"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3archive"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmarchive"
@@ -60,6 +61,11 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	delivery, err := hostdelivery.NewCommandDelivery(awsCfg, repository, cfg.SessionAssetsBucket, env("PROJECT_NAME", "game-server-platform"), cfg.Environment, strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_KEY")), strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_SHA256")))
+	if err != nil {
+		return nil, err
+	}
+	runner.WithArchiveAccess(delivery)
 	store, err := s3archive.New(s3.NewFromConfig(awsCfg), cfg.SessionAssetsBucket)
 	if err != nil {
 		return nil, err

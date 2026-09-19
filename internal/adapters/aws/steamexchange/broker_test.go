@@ -241,6 +241,10 @@ func TestBrokerRejectsCrossWorkflowAndMissingOutput(t *testing.T) {
 	if err := broker.Complete(context.Background(), reference, "succeeded"); err == nil {
 		t.Fatal("missing output was accepted")
 	}
+	item := dynamoClient.items["STEAM_EXCHANGE#workflow-1#restore"]
+	if attributeString(item["state"]) != "FAILED" || dynamoClient.leaseOwner != "" || len(objects.objects) != 0 {
+		t.Fatalf("missing output retained shared state: state=%q lease=%q objects=%v", attributeString(item["state"]), dynamoClient.leaseOwner, objects.objects)
+	}
 }
 
 func TestBrokerResumesPromotionAndTerminalCleanupAfterAmbiguousWrites(t *testing.T) {

@@ -29,6 +29,12 @@ type Service struct {
 	inspector         ports.WorkflowExecutionInspector
 	deadLetters       ports.DeadLetterManager
 	commandReconciler ports.ActiveWorkflowReconciler
+	hostMaintenance   ports.HostAccessMaintenance
+}
+
+func (service *Service) WithHostAccessMaintenance(maintenance ports.HostAccessMaintenance) *Service {
+	service.hostMaintenance = maintenance
+	return service
 }
 
 func (service *Service) WithActiveWorkflowReconciler(reconciler ports.ActiveWorkflowReconciler) *Service {
@@ -146,8 +152,14 @@ func (service *Service) ReconcileWorkflows(ctx context.Context, limit int32) (Re
 		return ReconciliationReport{}, err
 	}
 	report := ReconciliationReport{}
+	var cleanupErr error
 	for _, session := range sessions {
 		report.Inspected++
+		if service.hostMaintenance != nil {
+			if _, err := service.hostMaintenance.CleanupSessionHostAttempts(ctx, session.ID); err != nil {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("host attempt cleanup for %s: %w", session.ID, err))
+			}
+		}
 		finding, repair, err := service.inspectWorkflow(ctx, session)
 		if err != nil {
 			return report, err
@@ -166,7 +178,7 @@ func (service *Service) ReconcileWorkflows(ctx context.Context, limit int32) (Re
 			report.Repaired++
 		}
 	}
-	return report, nil
+	return report, cleanupErr
 }
 
 func (service *Service) inspectWorkflow(ctx context.Context, session domain.Session) (*domain.ReconciliationFinding, bool, error) {

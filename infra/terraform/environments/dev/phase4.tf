@@ -216,23 +216,27 @@ resource "aws_lambda_function" "artifact_worker" {
 
   environment {
     variables = {
-      APP_ENV                           = var.environment
-      LOG_LEVEL                         = "info"
-      METADATA_TABLE_NAME               = aws_dynamodb_table.metadata.name
-      SESSION_ASSETS_BUCKET             = aws_s3_bucket.session_assets.id
-      NOTIFICATION_QUEUE_URL            = aws_sqs_queue.notifications.url
-      COMMAND_QUEUE_URL                 = aws_sqs_queue.commands.url
-      IDEMPOTENCY_RETENTION_HOURS       = "168"
-      BOOTSTRAP_SCRIPT_KEY              = aws_s3_object.bootstrap_script.key
-      STEAM_AUTH_SECRET_ID              = aws_secretsmanager_secret.steam_authorization_cache.name
-      TEAMSPEAK_VERSION                 = var.teamspeak_version
-      BOOTSTRAP_COMMAND_TIMEOUT_SECONDS = tostring(var.bootstrap_command_timeout_seconds)
+      PROJECT_NAME                            = var.project_name
+      APP_ENV                                 = var.environment
+      LOG_LEVEL                               = "info"
+      METADATA_TABLE_NAME                     = aws_dynamodb_table.metadata.name
+      SESSION_ASSETS_BUCKET                   = aws_s3_bucket.session_assets.id
+      NOTIFICATION_QUEUE_URL                  = aws_sqs_queue.notifications.url
+      COMMAND_QUEUE_URL                       = aws_sqs_queue.commands.url
+      IDEMPOTENCY_RETENTION_HOURS             = "168"
+      BOOTSTRAP_SCRIPT_KEY                    = aws_s3_object.bootstrap_script.key
+      BOOTSTRAP_SCRIPT_SHA256                 = local.bootstrap_script_hash
+      BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION = "scoped-host-access-v1"
+      STEAM_AUTH_SECRET_ID                    = aws_secretsmanager_secret.steam_authorization_cache.name
+      TEAMSPEAK_VERSION                       = var.teamspeak_version
+      BOOTSTRAP_COMMAND_TIMEOUT_SECONDS       = tostring(var.bootstrap_command_timeout_seconds)
     }
   }
 
   depends_on = [
     aws_cloudwatch_log_group.artifact_worker,
     aws_iam_role_policy.artifact_worker,
+    aws_iam_role_policy.host_access_issuer["artifact"],
   ]
 }
 

@@ -154,6 +154,8 @@ type sessionItem struct {
 	ActivePresetWorkshopCount         int      `dynamodbav:"active_preset_workshop_count,omitempty"`
 	ActivePresetStagedAt              string   `dynamodbav:"active_preset_staged_at,omitempty"`
 	ActivePresetActivatedAt           string   `dynamodbav:"active_preset_activated_at,omitempty"`
+	ActivePresetWorkshopResolution    string   `dynamodbav:"active_preset_workshop_resolution_sha256,omitempty"`
+	ActivePresetWorkshopSourceID      *uint64  `dynamodbav:"active_preset_workshop_source_id,omitempty"`
 	PendingPresetRevision             int64    `dynamodbav:"pending_preset_revision,omitempty"`
 	PendingPresetBaseRevision         int64    `dynamodbav:"pending_preset_base_revision,omitempty"`
 	PendingPresetObjectKey            string   `dynamodbav:"pending_preset_object_key,omitempty"`
@@ -162,6 +164,8 @@ type sessionItem struct {
 	PendingPresetModlistSHA           string   `dynamodbav:"pending_preset_modlist_sha256,omitempty"`
 	PendingPresetModlistSize          int64    `dynamodbav:"pending_preset_modlist_size,omitempty"`
 	PendingPresetWorkshopCount        int      `dynamodbav:"pending_preset_workshop_count,omitempty"`
+	PendingPresetWorkshopResolution   string   `dynamodbav:"pending_preset_workshop_resolution_sha256,omitempty"`
+	PendingPresetWorkshopSourceID     *uint64  `dynamodbav:"pending_preset_workshop_source_id,omitempty"`
 	PendingPresetStatus               string   `dynamodbav:"pending_preset_status,omitempty"`
 	PendingPresetStagedAt             string   `dynamodbav:"pending_preset_staged_at,omitempty"`
 	PendingPresetWorkflowID           string   `dynamodbav:"pending_preset_workflow_id,omitempty"`
@@ -1197,6 +1201,8 @@ func toSessionItem(session domain.Session) sessionItem {
 		ActivePresetWorkshopCount:         activePreset.Modlist.WorkshopCount,
 		ActivePresetStagedAt:              optionalTimestamp(activePreset.StagedAt),
 		ActivePresetActivatedAt:           optionalTimestamp(activePreset.ActivatedAt),
+		ActivePresetWorkshopResolution:    activePreset.WorkshopResolutionSHA256,
+		ActivePresetWorkshopSourceID:      aws.Uint64(activePreset.WorkshopSourceID),
 		PendingPresetRevision:             pendingPreset.Number,
 		PendingPresetBaseRevision:         pendingPreset.BaseRevision,
 		PendingPresetObjectKey:            pendingPreset.PresetObjectKey,
@@ -1205,6 +1211,8 @@ func toSessionItem(session domain.Session) sessionItem {
 		PendingPresetModlistSHA:           pendingPreset.Modlist.SHA256,
 		PendingPresetModlistSize:          pendingPreset.Modlist.SizeBytes,
 		PendingPresetWorkshopCount:        pendingPreset.Modlist.WorkshopCount,
+		PendingPresetWorkshopResolution:   pendingPreset.WorkshopResolutionSHA256,
+		PendingPresetWorkshopSourceID:     aws.Uint64(pendingPreset.WorkshopSourceID),
 		PendingPresetStatus:               string(pendingPreset.Status),
 		PendingPresetStagedAt:             optionalTimestamp(pendingPreset.StagedAt),
 		PendingPresetWorkflowID:           pendingPreset.ApplyWorkflowID,
@@ -1543,6 +1551,7 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 		PresetObjectKey:                   item.PresetObjectKey,
 		PresetRevisionSequence:            item.PresetRevisionSequence,
 		PendingPresetRevision: domain.PresetRevision{
+			WorkshopResolutionSHA256: item.PendingPresetWorkshopResolution, WorkshopSourceID: aws.ToUint64(item.PendingPresetWorkshopSourceID),
 			Number: item.PendingPresetRevision, BaseRevision: item.PendingPresetBaseRevision, PresetObjectKey: item.PendingPresetObjectKey,
 			Modlist: domain.PresetModlistMetadata{ObjectKey: item.PendingPresetModlistKey, Filename: item.PendingPresetModlistName, SHA256: item.PendingPresetModlistSHA, SizeBytes: item.PendingPresetModlistSize, WorkshopCount: item.PendingPresetWorkshopCount},
 			Status:  domain.PresetRevisionStatus(item.PendingPresetStatus), StagedAt: pendingPresetStagedAt, ApplyWorkflowID: item.PendingPresetWorkflowID, ApplyStartedAt: pendingPresetApplyStartedAt, FailedAt: pendingPresetFailedAt, FailureDetail: item.PendingPresetFailureDetail,
@@ -1609,6 +1618,7 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 	}
 	if item.ActivePresetRevision > 0 {
 		session.ActivePresetRevision = domain.PresetRevision{
+			WorkshopResolutionSHA256: item.ActivePresetWorkshopResolution, WorkshopSourceID: aws.ToUint64(item.ActivePresetWorkshopSourceID),
 			Number: item.ActivePresetRevision, PresetObjectKey: item.ActivePresetObjectKey,
 			Modlist: domain.PresetModlistMetadata{ObjectKey: item.ActivePresetModlistKey, Filename: item.ActivePresetModlistName, SHA256: item.ActivePresetModlistSHA, SizeBytes: item.ActivePresetModlistSize, WorkshopCount: item.ActivePresetWorkshopCount},
 			Status:  domain.PresetRevisionActive, StagedAt: activePresetStagedAt, ActivatedAt: activePresetActivatedAt,
@@ -1626,12 +1636,44 @@ func fromSessionItem(item sessionItem) (domain.Session, error) {
 			session.ServerPresetRevisionSequence = session.ActiveServerPresetRevision.Number
 		}
 	}
+	// Presence distinguishes legacy loss from an explicitly ordinary new preset.
+	if item.ActivePresetWorkshopSourceID == nil {
+		if err := recoverLegacyPresetWorkshopSource(&session.ActivePresetRevision, session.WorkshopModSources); err != nil {
+			return domain.Session{}, err
+		}
+	}
+	if item.PendingPresetWorkshopSourceID == nil {
+		if err := recoverLegacyPresetWorkshopSource(&session.PendingPresetRevision, session.WorkshopModSources); err != nil {
+			return domain.Session{}, err
+		}
+	}
 
 	if err := session.Validate(); err != nil {
 		return domain.Session{}, err
 	}
 
 	return session, nil
+}
+
+// Older writers dropped these two fields. Recover only one exact trusted source;
+// do not guess the latest resolution or change an explicitly stored identity.
+func recoverLegacyPresetWorkshopSource(revision *domain.PresetRevision, sources []domain.WorkshopModSource) error {
+	if revision.Empty() || revision.WorkshopResolutionSHA256 != "" || revision.WorkshopSourceID != 0 {
+		return nil
+	}
+	var digest string
+	var sourceID uint64
+	for _, source := range sources {
+		if source.PresetObjectKey != revision.PresetObjectKey {
+			continue
+		}
+		if source.Validate() != nil || (digest != "" && (digest != source.ResolutionSHA256 || sourceID != source.Source.PublishedFileID)) {
+			return fmt.Errorf("%w: ambiguous legacy preset Workshop source", domain.ErrConflict)
+		}
+		digest, sourceID = source.ResolutionSHA256, source.Source.PublishedFileID
+	}
+	revision.WorkshopResolutionSHA256, revision.WorkshopSourceID = digest, sourceID
+	return nil
 }
 
 func optionalTimestamp(value time.Time) string {

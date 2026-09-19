@@ -3,12 +3,15 @@ package s3sessioncleanup
 import (
 	"context"
 	"fmt"
+	"path"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
+	"github.com/L-McKendrick/game-server-platform/internal/domain"
 	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
@@ -38,6 +41,20 @@ func (cleaner *Cleaner) DeleteSessionObjects(ctx context.Context, sessionID stri
 		return 0, fmt.Errorf("invalid session ID")
 	}
 	prefix := "sessions/" + sessionID + "/"
+	return cleaner.deletePrefix(ctx, prefix)
+}
+
+// DeleteHostAccessAttempt is repeatable after all capability start windows close.
+// An upload already in flight may finish later; retained metadata and lifecycle
+// cleanup permit another sweep. Accepted output identity never depends on latest.
+func (cleaner *Cleaner) DeleteHostAccessAttempt(ctx context.Context, scope domain.HostAccessScope) (int, error) {
+	if scope.Validate() != nil || !time.Now().UTC().After(scope.DeadlineAt.Add(domain.HostAccessCredentialMargin)) {
+		return 0, fmt.Errorf("host access attempt has not expired")
+	}
+	return cleaner.deletePrefix(ctx, path.Dir(scope.StagingKey("manifest"))+"/")
+}
+
+func (cleaner *Cleaner) deletePrefix(ctx context.Context, prefix string) (int, error) {
 	var keyMarker, versionMarker *string
 	deleted := 0
 	for {
@@ -83,3 +100,5 @@ func (cleaner *Cleaner) DeleteSessionObjects(ctx context.Context, sessionID stri
 		}
 	}
 }
+
+var _ ports.HostAccessAttemptCleaner = (*Cleaner)(nil)
