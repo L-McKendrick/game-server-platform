@@ -237,8 +237,7 @@ type ActiveModlist struct {
 type PrepareCreationArtifactsCommand struct {
 	Actor                                             domain.Actor
 	SessionID, GuildID, CorrelationID, IdempotencyKey string
-	HasPreset                                         bool
-	HasMission                                        bool
+	HasPreset, HasMission, WaitForWorkshopMission     bool
 	Roles                                             []string
 }
 
@@ -253,18 +252,19 @@ func (service *Service) PrepareCreationArtifacts(ctx context.Context, command Pr
 		return domain.Session{}, fmt.Errorf("idempotency key is required")
 	}
 	hash, err := hashRequest(struct {
-		CommandType string   `json:"command_type"`
-		ActorID     string   `json:"actor_id"`
-		SessionID   string   `json:"session_id"`
-		HasPreset   bool     `json:"has_preset"`
-		HasMission  bool     `json:"has_mission"`
-		Roles       []string `json:"roles,omitempty"`
-	}{"PrepareCreationArtifacts", command.Actor.ID, strings.TrimSpace(command.SessionID), command.HasPreset, command.HasMission, command.Roles})
+		CommandType            string   `json:"command_type"`
+		ActorID                string   `json:"actor_id"`
+		SessionID              string   `json:"session_id"`
+		HasPreset              bool     `json:"has_preset"`
+		HasMission             bool     `json:"has_mission"`
+		WaitForWorkshopMission bool     `json:"wait_for_workshop_mission"`
+		Roles                  []string `json:"roles,omitempty"`
+	}{"PrepareCreationArtifacts", command.Actor.ID, strings.TrimSpace(command.SessionID), command.HasPreset, command.HasMission, command.WaitForWorkshopMission, command.Roles})
 	if err != nil {
 		return domain.Session{}, fmt.Errorf("hash artifact preparation: %w", err)
 	}
 	if replayed, found, err := service.replaySession(ctx, key, hash, command.Actor); err != nil || found {
-		if err == nil {
+		if err == nil && !command.WaitForWorkshopMission {
 			err = service.RequestAutomaticStart(ctx, replayed, command.CorrelationID, command.Roles)
 		}
 		return replayed, err
@@ -302,15 +302,17 @@ func (service *Service) PrepareCreationArtifacts(ctx context.Context, command Pr
 	}
 	if err := service.repository.SaveWithEvent(ctx, session, expectedVersion, event, record); err != nil {
 		if replayed, found, replayErr := service.replaySession(ctx, key, hash, command.Actor); replayErr != nil || found {
-			if replayErr == nil {
+			if replayErr == nil && !command.WaitForWorkshopMission {
 				replayErr = service.RequestAutomaticStart(ctx, replayed, command.CorrelationID, command.Roles)
 			}
 			return replayed, replayErr
 		}
 		return domain.Session{}, fmt.Errorf("persist artifact preparation: %w", err)
 	}
-	if err := service.RequestAutomaticStart(ctx, session, correlationID, command.Roles); err != nil {
-		return session, err
+	if !command.WaitForWorkshopMission {
+		if err := service.RequestAutomaticStart(ctx, session, correlationID, command.Roles); err != nil {
+			return session, err
+		}
 	}
 	return session, nil
 }
@@ -821,7 +823,7 @@ func (service *Service) UpdateModOptions(ctx context.Context, command UpdateModO
 // RequestAutomaticStart queues the ordinary start command once a creation
 // flow has reached the same readiness boundary as an explicit /rb start.
 func (service *Service) RequestAutomaticStart(ctx context.Context, session domain.Session, correlationID string, roles []string) error {
-	if !session.StartWhenReady || !session.CanStartInfrastructureProvisioning() {
+	if !session.StartWhenReady || session.WorkshopResolutionRequestKey != "" || !session.CanStartInfrastructureProvisioning() {
 		return nil
 	}
 	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", session.ID, session.ConfigurationRevision)))
