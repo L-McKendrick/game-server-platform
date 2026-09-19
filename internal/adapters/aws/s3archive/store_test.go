@@ -53,3 +53,29 @@ func TestStore_RejectsChecksumMismatch(t *testing.T) {
 		t.Fatal("Verify() returned nil error")
 	}
 }
+
+func TestArchiveVerificationRequiresImmutableWholeObjectIdentity(t *testing.T) {
+	checksum := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+	for _, scenario := range []string{"valid", "no-version", "null-version", "wrong-type", "oversized", "bad-checksum"} {
+		t.Run(scenario, func(t *testing.T) {
+			head := &s3.HeadObjectOutput{ContentLength: aws.Int64(42), ContentType: aws.String("application/gzip"), ChecksumSHA256: aws.String(checksum), VersionId: aws.String("pinned")}
+			switch scenario {
+			case "no-version":
+				head.VersionId = nil
+			case "null-version":
+				head.VersionId = aws.String("null")
+			case "wrong-type":
+				head.ContentType = aws.String("text/plain")
+			case "oversized":
+				head.ContentLength = aws.Int64(4294967297)
+			case "bad-checksum":
+				head.ChecksumSHA256 = aws.String("invalid")
+			}
+			store, _ := New(&fakeAPI{head: head}, "bucket")
+			err := store.Verify(context.Background(), ports.ArchiveObject{Key: "sessions/s/archives/a/session.tar.gz", SHA256: checksum, SizeBytes: 42, ContentType: "application/gzip"})
+			if (err == nil) != (scenario == "valid") {
+				t.Fatal("archive verification gate mismatch", err)
+			}
+		})
+	}
+}

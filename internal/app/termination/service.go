@@ -47,14 +47,20 @@ type TaskResult struct {
 }
 
 type Service struct {
-	sessions      ports.SessionRepository
-	workflows     ports.WorkflowRepository
-	stages        ports.ProvisioningRepository
-	destroyer     ports.InfrastructureDestroyer
-	cleaner       ports.SessionObjectCleaner
-	notifications ports.NotificationQueue
-	ids           IDGenerator
-	clock         Clock
+	sessions        ports.SessionRepository
+	workflows       ports.WorkflowRepository
+	stages          ports.ProvisioningRepository
+	destroyer       ports.InfrastructureDestroyer
+	cleaner         ports.SessionObjectCleaner
+	notifications   ports.NotificationQueue
+	ids             IDGenerator
+	clock           Clock
+	hostMaintenance ports.HostAccessMaintenance
+}
+
+func (service *Service) WithHostAccessMaintenance(maintenance ports.HostAccessMaintenance) *Service {
+	service.hostMaintenance = maintenance
+	return service
 }
 
 func NewService(sessions ports.SessionRepository, workflows ports.WorkflowRepository, stages ports.ProvisioningRepository, destroyer ports.InfrastructureDestroyer, cleaner ports.SessionObjectCleaner, notifications ports.NotificationQueue, ids IDGenerator, clock Clock) (*Service, error) {
@@ -125,12 +131,20 @@ func (service *Service) deleteObjects(ctx context.Context, session domain.Sessio
 		return TaskResult{}, progressErr
 	}
 	session = updated
+	stagingDeleted := 0
+	if service.hostMaintenance != nil {
+		var err error
+		stagingDeleted, err = service.hostMaintenance.CleanupSessionHostAttempts(ctx, session.ID)
+		if err != nil {
+			return TaskResult{}, err
+		}
+	}
 	count, err := service.cleaner.DeleteSessionObjects(ctx, session.ID)
 	if err != nil {
 		return TaskResult{}, err
 	}
 	result := taskResult(session, workflow)
-	result.Done, result.Succeeded, result.ObjectsDeleted = true, true, count
+	result.Done, result.Succeeded, result.ObjectsDeleted = true, true, count+stagingDeleted
 	return result, nil
 }
 

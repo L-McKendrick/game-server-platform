@@ -21,6 +21,7 @@ type SessionRepository struct {
 	events             map[string][]domain.SessionEvent
 	idempotency        map[string]domain.IdempotencyRecord
 	workflows          map[string]domain.Workflow
+	hostAccess         map[string]domain.HostAccessAttempt
 	capacity           map[string]string
 	cards              map[string]domain.SessionCardReference
 	cardControls       map[string]string

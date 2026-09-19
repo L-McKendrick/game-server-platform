@@ -671,13 +671,15 @@ func TestSessionItemRoundTripPreservesPresetRevisions(t *testing.T) {
 	session.ActivePresetRevision = domain.PresetRevision{
 		Number: 1, PresetObjectKey: session.PresetObjectKey, Status: domain.PresetRevisionActive,
 		StagedAt: now, ActivatedAt: now,
-		Modlist: domain.PresetModlistMetadata{ObjectKey: "sessions/session-1/input/modlists/v1/modlist.html", Filename: "session-1-modlist.html", SHA256: strings.Repeat("a", 64), SizeBytes: 1200, WorkshopCount: 3},
+		Modlist:                  domain.PresetModlistMetadata{ObjectKey: "sessions/session-1/input/modlists/v1/modlist.html", Filename: "session-1-modlist.html", SHA256: strings.Repeat("a", 64), SizeBytes: 1200, WorkshopCount: 3},
+		WorkshopResolutionSHA256: strings.Repeat("c", 64), WorkshopSourceID: 20,
 	}
 	session.PendingPresetRevision = domain.PresetRevision{
 		Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/presets/v2.html", Status: domain.PresetRevisionFailed,
 		StagedAt: now.Add(time.Minute), FailedAt: now.Add(2 * time.Minute), FailureDetail: "health verification failed",
 		RollbackDisposition: domain.PresetRollbackSucceeded, RollbackAt: now.Add(2 * time.Minute), RollbackDetail: "Previous active mod configuration restored and health-checked.",
-		Modlist: domain.PresetModlistMetadata{ObjectKey: "sessions/session-1/input/modlists/v2/modlist.html", Filename: "session-1-modlist.html", SHA256: strings.Repeat("b", 64), SizeBytes: 1300, WorkshopCount: 4},
+		Modlist:                  domain.PresetModlistMetadata{ObjectKey: "sessions/session-1/input/modlists/v2/modlist.html", Filename: "session-1-modlist.html", SHA256: strings.Repeat("b", 64), SizeBytes: 1300, WorkshopCount: 4},
+		WorkshopResolutionSHA256: strings.Repeat("d", 64), WorkshopSourceID: 30,
 	}
 	session.ServerPresetObjectKey = "sessions/session-1/input/server-presets/v1.html"
 	session.ServerPresetRevisionSequence = 2

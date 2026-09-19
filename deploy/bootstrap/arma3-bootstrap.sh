@@ -3,6 +3,14 @@ set -Eeuo pipefail
 umask 077
 
 decode() { printf '%s' "$1" | base64 -d; }
+asset_read() {
+  [ -n "${HOST_ACCESS_HELPER:-}" ] && [ -n "${HOST_ACCESS_MANIFEST:-}" ] || { printf 'ERR_HOST_ACCESS: missing command manifest\n' >&2; return 1; }
+  python3 "$HOST_ACCESS_HELPER" fetch "$HOST_ACCESS_MANIFEST" "$1" "$2"
+}
+asset_upload() {
+  [ -n "${HOST_ACCESS_HELPER:-}" ] && [ -n "${HOST_ACCESS_MANIFEST:-}" ] || { printf 'ERR_HOST_ACCESS: missing command manifest\n' >&2; return 1; }
+  python3 "$HOST_ACCESS_HELPER" upload "$HOST_ACCESS_MANIFEST" "$1" "$2"
+}
 SESSION_ID="$(decode "$SESSION_ID_B64")"
 WORKFLOW_ID="$(decode "$WORKFLOW_ID_B64")"
 DISPLAY_NAME="$(decode "$DISPLAY_NAME_B64")"
@@ -50,7 +58,6 @@ STEAM_AUTH_VALID=false
 STEAM_AUTH_FINALIZED=false
 STEAM_AUTH_PERSIST_ATTEMPTED=false
 PROGRESS_FILE=/run/gsp-bootstrap-progress
-PROGRESS_KEY="sessions/$SESSION_ID/runtime/bootstrap-progress-$WORKFLOW_ID.txt"
 WORKSHOP_STAGING_ROOT=""
 WORKSHOP_SYNC_RESULTS=""
 
@@ -63,7 +70,7 @@ elif [ -n "$STEAM_EXCHANGE_GET_URL" ] || [ -n "$STEAM_EXCHANGE_PUT_URL" ]; then
 fi
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
-publish_progress() { aws s3 cp "$PROGRESS_FILE" "s3://$ASSETS_BUCKET/$PROGRESS_KEY" --region "$AWS_REGION" --only-show-errors >/dev/null 2>&1 || true; }
+publish_progress() { timeout --signal=TERM 8s python3 "$HOST_ACCESS_HELPER" upload "$HOST_ACCESS_MANIFEST" progress "$PROGRESS_FILE" >/dev/null 2>&1 || true; }
 checkpoint() { printf 'GSP_CHECKPOINT:%s\n' "$1" | tee -a "$PROGRESS_FILE"; publish_progress; }
 activity() { sed -i '/^GSP_ACTIVITY:/d' "$PROGRESS_FILE"; printf 'GSP_ACTIVITY:%s\n' "$1" | tee -a "$PROGRESS_FILE"; publish_progress; }
 
@@ -200,13 +207,16 @@ begin_steam_auth() {
 persist_steam_auth() {
   local config_file config_size config_sha config_b64 payload now
   $STEAM_AUTH_ACTIVE || return 0
-  [ -f "$STEAM_AUTH_VALID_FILE" ] || return 0
-  STEAM_AUTH_PERSIST_ATTEMPTED=true
   config_file="$STEAM_AUTH_ROOT/config/config.vdf"
   [ -f "$config_file" ] || { log "Steam authorization cache update is missing"; return 1; }
   config_size="$(stat -c '%s' "$config_file")"
   [ "$config_size" -gt 0 ] && [ "$config_size" -le 524288 ] || { log "Steam authorization cache update exceeded its bound"; return 1; }
   config_sha="$(sha256sum "$config_file" | awk '{print $1}')"
+  # A resumed bootstrap may need no SteamCMD work after opening an exchange.
+  # Return its unchanged, already verified input so the broker can close the
+  # exchange instead of retaining the shared mutation lease until expiry.
+  [ -f "$STEAM_AUTH_VALID_FILE" ] || [ "$config_sha" = "$STEAM_AUTH_INITIAL_SHA" ] || return 0
+  STEAM_AUTH_PERSIST_ATTEMPTED=true
   config_b64="$(base64 -w0 "$config_file")"
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   payload="$STEAM_AUTH_ROOT/updated-cache.json"
@@ -280,7 +290,7 @@ sample_arma_download() {
   trap '[ -z "$sleeper" ] || kill "$sleeper" 2>/dev/null || true; [ -z "$uploader" ] || kill "$uploader" 2>/dev/null || true; wait 2>/dev/null || true; exit 0' TERM INT
   # Keep telemetry best-effort and bounded even when S3 is unavailable.
   publish_progress() {
-    AWS_MAX_ATTEMPTS=1 aws s3 cp "$PROGRESS_FILE" "s3://$ASSETS_BUCKET/$PROGRESS_KEY" --region "$AWS_REGION" --cli-connect-timeout 3 --cli-read-timeout 3 --only-show-errors >/dev/null 2>&1 & uploader=$!
+    python3 "$HOST_ACCESS_HELPER" upload "$HOST_ACCESS_MANIFEST" progress "$PROGRESS_FILE" >/dev/null 2>&1 & uploader=$!
     # Bash defers signal traps while blocked in `wait`, which could otherwise
     # leave workflow shutdown waiting for the AWS CLI timeout. Poll through an
     # interruptible child so TERM promptly reaches both children.
@@ -448,7 +458,7 @@ publish_workshop_sync_results() {
     [inputs | split("\t") | {target:.[0],published_file_id:.[1],revision:.[2],status:.[3]}] |
     {schema_version:1,session_id:$session,workflow_id:$workflow,target:$target,completed_at:$completed,items:.}
   ' < "$WORKSHOP_SYNC_RESULTS" > "$result_json"
-  if ! aws s3 cp "$result_json" "s3://$ASSETS_BUCKET/sessions/$SESSION_ID/workshop-sync/$WORKFLOW_ID.json" --region "$AWS_REGION" --only-show-errors --content-type application/json; then
+  if ! asset_upload workshop-result "$result_json"; then
     rm -f -- "$result_json" "$WORKSHOP_SYNC_RESULTS"
     WORKSHOP_SYNC_RESULTS=""
     printf 'ERR_WORKSHOP_RESULT_PUBLISH: The Workshop synchronization result could not be published.\n' >&2
@@ -516,12 +526,12 @@ install_workshop_missions() (
 	[ -z "${filename_seen[${filename,,}]+x}" ] || { log "Workshop scenarios contain duplicate mission filenames"; return 1; }
 	filename_seen[${filename,,}]=1
 	object_key="sessions/$SESSION_ID/input/missions/$checksum-$filename"
-	aws s3 cp "$final/mission.pbo" "s3://$ASSETS_BUCKET/$object_key" --region "$AWS_REGION" --only-show-errors --checksum-algorithm SHA256
+	asset_upload "mission-$id" "$final/mission.pbo"
 	mkdir -p "$ROOT/arma3/mpmissions"; cp -- "$final/mission.pbo" "$ROOT/arma3/mpmissions/.workshop-$id.pending"; chown steam:steam "$ROOT/arma3/mpmissions/.workshop-$id.pending"; chmod 0644 "$ROOT/arma3/mpmissions/.workshop-$id.pending"; mv -f -- "$ROOT/arma3/mpmissions/.workshop-$id.pending" "$ROOT/arma3/mpmissions/$filename"
 	printf '%s\t%s\t%s\t%s\n' "$checksum" "$filename" "$object_key" "$id" >> "$manifest_file"
 	record_workshop_sync_result mission "$id" "$WORKSHOP_MISSION_REVISION"
   done
-	aws s3 cp "$manifest_file" "s3://$ASSETS_BUCKET/sessions/$SESSION_ID/workshop-resolutions/$WORKSHOP_MISSION_REVISION.tsv" --region "$AWS_REGION" --only-show-errors --content-type text/tab-separated-values
+	asset_upload workshop-resolution "$manifest_file"
 )
 
 install_steamcmd() {
@@ -581,14 +591,14 @@ install_workshop() (
 	ids=()
 	server_ids=()
 	if [ -n "$PRESET_KEY" ]; then
-		aws s3 cp "s3://$ASSETS_BUCKET/$PRESET_KEY" "$preset_file" --region "$AWS_REGION" --only-show-errors
+		asset_read "$PRESET_KEY" "$preset_file"
 		mapfile -t ids < <(grep -Eio "id=[0-9]+|data-publishedfileid=[\"'][0-9]+" "$preset_file" | grep -Eo '[0-9]+' | awk '!seen[$0]++')
 	else
 		rm -f -- "$preset_file"
 		[ "$WORKSHOP_PROMOTE_MODS" = true ] && rm -f -- "$ROOT/config/preset.html"
 	fi
 	if [ -n "$SERVER_PRESET_KEY" ]; then
-		aws s3 cp "s3://$ASSETS_BUCKET/$SERVER_PRESET_KEY" "$server_preset_file" --region "$AWS_REGION" --only-show-errors
+		asset_read "$SERVER_PRESET_KEY" "$server_preset_file"
 		mapfile -t server_ids < <(grep -Eio "id=[0-9]+|data-publishedfileid=[\"'][0-9]+" "$server_preset_file" | grep -Eo '[0-9]+' | awk '!seen[$0]++')
 		client_ids=" ${ids[*]} "
 		filtered_server_ids=()
@@ -654,6 +664,9 @@ install_workshop() (
 )
 
 sync_workshop_content() {
+  # A configuration-only restart has no Workshop output capabilities or new
+  # download intent. Keep installed content and avoid unnecessary publication.
+  if [ "$GSP_OPERATION_MODE" = restart ] && [ "${RESTART_DOWNLOADS:-false}" != true ]; then return 0; fi
   progress_stage sync_workshop_content
   prepare_workshop_staging
   case "$WORKSHOP_SYNC_TARGET" in
@@ -677,7 +690,7 @@ deploy_content() {
     [[ "$mission_checksum" =~ ^[0-9a-f]{64}$ && "$mission_file" =~ ^[A-Za-z0-9_.+-]+\.[pP][bB][oO]$ ]] || { log "accepted mission manifest is invalid"; return 1; }
     if [ "$GSP_OPERATION_MODE" = restart ] && [ -f "$ROOT/arma3/mpmissions/$mission_file" ] && [ ! -L "$ROOT/arma3/mpmissions/$mission_file" ] && printf '%s  %s\n' "$mission_checksum" "$ROOT/arma3/mpmissions/$mission_file" | sha256sum --check --status; then continue; fi
     pending="$(mktemp "$ROOT/arma3/mpmissions/.gsp-mission.XXXXXX")"
-    aws s3 cp "s3://$ASSETS_BUCKET/$mission_key" "$pending" --region "$AWS_REGION" --only-show-errors || { rm -f "$pending"; return 1; }
+    asset_read "$mission_key" "$pending" || { rm -f "$pending"; return 1; }
     printf '%s  %s\n' "$mission_checksum" "$pending" | sha256sum --check --status || { rm -f "$pending"; log "mission checksum mismatch"; return 1; }
     chown steam:steam "$pending"
     chmod 0644 "$pending"
@@ -686,13 +699,13 @@ deploy_content() {
   if [ -z "$MISSION_MANIFEST" ] && [ -n "$MISSION_KEY" ]; then
     mission_file="$(basename "$MISSION_KEY")"
     if [[ "$mission_file" =~ ^[0-9a-f]{64}-(.+\.[pP][bB][oO])$ ]]; then mission_file="${BASH_REMATCH[1]}"; fi
-    aws s3 cp "s3://$ASSETS_BUCKET/$MISSION_KEY" "$ROOT/arma3/mpmissions/$mission_file" --region "$AWS_REGION" --only-show-errors
+    asset_read "$MISSION_KEY" "$ROOT/arma3/mpmissions/$mission_file"
   fi
   safe_name="$(sqf_escape "$DISPLAY_NAME")"
   safe_mission_template="$(sqf_escape "$mission_template")"
   if [ -n "$SERVER_CONFIG_KEY" ]; then
     [ "$SERVER_CONFIG_REVISION" -ge 1 ] && [ "${#SERVER_CONFIG_SHA256}" -eq 64 ] || { log "custom server configuration snapshot is invalid"; return 1; }
-    aws s3 cp "s3://$ASSETS_BUCKET/$SERVER_CONFIG_KEY" "$ROOT/config/server.cfg.pending" --region "$AWS_REGION" --only-show-errors
+    asset_read "$SERVER_CONFIG_KEY" "$ROOT/config/server.cfg.pending"
     printf '%s  %s\n' "$SERVER_CONFIG_SHA256" "$ROOT/config/server.cfg.pending" | sha256sum --check --status || { log "custom server configuration checksum mismatch"; return 1; }
     mv -f "$ROOT/config/server.cfg.pending" "$ROOT/config/server.cfg"
   else
@@ -883,7 +896,7 @@ for stage in install_steamcmd install_arma sync_workshop_content deploy_content 
 	esac
   marker="$STATE_DIR/$stage.complete"
 	if [ "$stage" = sync_workshop_content ]; then
-		marker="$STATE_DIR/$stage.missions-$WORKSHOP_MISSION_REVISION.client-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete"
+		marker="$STATE_DIR/$stage.missions-$WORKSHOP_MISSION_REVISION.client-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.workflow-$WORKFLOW_ID.complete"
 		[ "$PRESET_ROLLBACK" = true ] && rm -f -- "$marker"
 	fi
 	if [ "$stage" = deploy_content ]; then

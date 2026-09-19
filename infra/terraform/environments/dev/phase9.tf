@@ -151,9 +151,8 @@ locals {
         Type       = "Task"
         Resource   = "arn:aws:states:::lambda:invoke"
         Parameters = { FunctionName = aws_lambda_function.archive_worker.function_name, Payload = { action = "complete", "session_id.$" = "$.session_id", "workflow_id.$" = "$.workflow_id", "correlation_id.$" = "$.correlation_id" } }
-        Next       = "ArchiveWorkflowFailed"
+        End        = true
       }
-      ArchiveWorkflowFailed = { Type = "Fail", Error = "ArchiveWorkflowFailed", Cause = "Archive or guarded infrastructure destruction failed." }
       Fail = {
         Type       = "Task"
         Resource   = "arn:aws:states:::lambda:invoke"
@@ -507,15 +506,18 @@ resource "aws_lambda_function" "archive_worker" {
   memory_size      = 256
   environment {
     variables = {
-      APP_ENV                = var.environment
-      PROJECT_NAME           = var.project_name
-      LOG_LEVEL              = "info"
-      METADATA_TABLE_NAME    = aws_dynamodb_table.metadata.name
-      NOTIFICATION_QUEUE_URL = aws_sqs_queue.notifications.url
-      SESSION_ASSETS_BUCKET  = aws_s3_bucket.session_assets.id
+      APP_ENV                                 = var.environment
+      PROJECT_NAME                            = var.project_name
+      LOG_LEVEL                               = "info"
+      METADATA_TABLE_NAME                     = aws_dynamodb_table.metadata.name
+      NOTIFICATION_QUEUE_URL                  = aws_sqs_queue.notifications.url
+      SESSION_ASSETS_BUCKET                   = aws_s3_bucket.session_assets.id
+      BOOTSTRAP_SCRIPT_KEY                    = aws_s3_object.bootstrap_script.key
+      BOOTSTRAP_SCRIPT_SHA256                 = local.bootstrap_script_hash
+      BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION = "scoped-host-access-v1"
     }
   }
-  depends_on = [aws_cloudwatch_log_group.archive_worker, aws_iam_role_policy.archive_worker]
+  depends_on = [aws_cloudwatch_log_group.archive_worker, aws_iam_role_policy.archive_worker, aws_iam_role_policy.host_access_issuer["archive"]]
 }
 
 data "aws_iam_policy_document" "archive_workflow" {
@@ -630,7 +632,7 @@ resource "aws_lambda_function" "termination_worker" {
       SESSION_ASSETS_BUCKET  = aws_s3_bucket.session_assets.id
     }
   }
-  depends_on = [aws_cloudwatch_log_group.termination_worker, aws_iam_role_policy.termination_worker]
+  depends_on = [aws_cloudwatch_log_group.termination_worker, aws_iam_role_policy.termination_worker, aws_iam_role_policy.host_access_termination_query]
 }
 
 resource "aws_iam_role_policy" "archive_workflow" {
@@ -838,24 +840,26 @@ resource "aws_lambda_function" "restore_worker" {
   memory_size      = 256
   environment {
     variables = {
-      APP_ENV                              = var.environment
-      PROJECT_NAME                         = var.project_name
-      LOG_LEVEL                            = "info"
-      METADATA_TABLE_NAME                  = aws_dynamodb_table.metadata.name
-      NOTIFICATION_QUEUE_URL               = aws_sqs_queue.notifications.url
-      SESSION_ASSETS_BUCKET                = aws_s3_bucket.session_assets.id
-      BOOTSTRAP_SCRIPT_KEY                 = aws_s3_object.bootstrap_script.key
-      STEAM_AUTH_SECRET_ID                 = aws_secretsmanager_secret.steam_authorization_cache.name
-      TEAMSPEAK_VERSION                    = var.teamspeak_version
-      PROVISIONING_AMI_ID                  = data.aws_ssm_parameter.game_host_ami.value
-      PROVISIONING_INSTANCE_TYPE           = var.provisioning_instance_type
-      PROVISIONING_SUBNET_ID               = aws_subnet.game_public[0].id
-      PROVISIONING_GAME_SECURITY_GROUP_ID  = aws_security_group.arma.id
-      PROVISIONING_VOICE_SECURITY_GROUP_ID = aws_security_group.teamspeak.id
-      PROVISIONING_INSTANCE_PROFILE        = aws_iam_instance_profile.game.name
-      PROVISIONING_ROOT_VOLUME_GIB         = tostring(var.provisioning_root_volume_gib)
-      PROVISIONING_DATA_VOLUME_GIB         = tostring(var.provisioning_data_volume_gib)
-      MAX_PROVISIONED_SESSIONS             = tostring(var.max_provisioned_sessions)
+      APP_ENV                                 = var.environment
+      PROJECT_NAME                            = var.project_name
+      LOG_LEVEL                               = "info"
+      METADATA_TABLE_NAME                     = aws_dynamodb_table.metadata.name
+      NOTIFICATION_QUEUE_URL                  = aws_sqs_queue.notifications.url
+      SESSION_ASSETS_BUCKET                   = aws_s3_bucket.session_assets.id
+      BOOTSTRAP_SCRIPT_KEY                    = aws_s3_object.bootstrap_script.key
+      BOOTSTRAP_SCRIPT_SHA256                 = local.bootstrap_script_hash
+      BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION = "scoped-host-access-v1"
+      STEAM_AUTH_SECRET_ID                    = aws_secretsmanager_secret.steam_authorization_cache.name
+      TEAMSPEAK_VERSION                       = var.teamspeak_version
+      PROVISIONING_AMI_ID                     = data.aws_ssm_parameter.game_host_ami.value
+      PROVISIONING_INSTANCE_TYPE              = var.provisioning_instance_type
+      PROVISIONING_SUBNET_ID                  = aws_subnet.game_public[0].id
+      PROVISIONING_GAME_SECURITY_GROUP_ID     = aws_security_group.arma.id
+      PROVISIONING_VOICE_SECURITY_GROUP_ID    = aws_security_group.teamspeak.id
+      PROVISIONING_INSTANCE_PROFILE           = aws_iam_instance_profile.game.name
+      PROVISIONING_ROOT_VOLUME_GIB            = tostring(var.provisioning_root_volume_gib)
+      PROVISIONING_DATA_VOLUME_GIB            = tostring(var.provisioning_data_volume_gib)
+      MAX_PROVISIONED_SESSIONS                = tostring(var.max_provisioned_sessions)
     }
   }
   lifecycle {
@@ -864,5 +868,5 @@ resource "aws_lambda_function" "restore_worker" {
       error_message = "budget_alert_email must be set before provisioning_enabled can be true."
     }
   }
-  depends_on = [aws_cloudwatch_log_group.restore_worker, aws_iam_role_policy.restore_worker]
+  depends_on = [aws_cloudwatch_log_group.restore_worker, aws_iam_role_policy.restore_worker, aws_iam_role_policy.host_access_issuer["restore"]]
 }

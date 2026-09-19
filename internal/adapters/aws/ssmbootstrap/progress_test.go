@@ -43,7 +43,7 @@ func TestSnapshotStagesAndOversizedFallback(t *testing.T) {
 		{"GSP_STAGE:sync_workshop_content\nGSP_STAGE:unknown\n", false},
 		{"GSP_STAGE:install_arma\n" + strings.Repeat("x", 16*1024), false},
 	} {
-		runner, err := New(&fakeSSM{invocation: &ssm.GetCommandInvocationOutput{Status: types.CommandInvocationStatusInProgress}}, testConfig())
+		runner, err := New(&fakeSSM{invocation: &ssm.GetCommandInvocationOutput{Status: types.CommandInvocationStatusInProgress}, commands: ownedProgressFixture()}, testConfig())
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/hostaccess"
 	"io"
 	"strings"
 
@@ -78,6 +79,16 @@ func (store *Store) Put(ctx context.Context, object ports.ArchiveObject, body []
 func (store *Store) Verify(ctx context.Context, object ports.ArchiveObject) error {
 	if err := validateObject(object); err != nil {
 		return err
+	}
+	if object.ContentType == "application/gzip" {
+		pin, err := (hostaccess.ArchiveInspector{Client: store.client, Bucket: store.bucket}).InspectHostArchive(ctx, object.Key, "")
+		if err != nil {
+			return err
+		}
+		if pin.SHA256 != object.SHA256 || pin.SizeBytes != object.SizeBytes {
+			return fmt.Errorf("archive object prepared identity verification failed")
+		}
+		return nil
 	}
 	output, err := store.client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(store.bucket), Key: aws.String(object.Key), ChecksumMode: types.ChecksumModeEnabled,

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ec2compute"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/hostdelivery"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3objects"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/ssmbootstrap"
@@ -71,6 +72,11 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	hostDelivery, err := hostdelivery.NewCommandDelivery(awsCfg, repo, cfg.SessionAssetsBucket, sleepwakeEnv("PROJECT_NAME", "game-server-platform"), cfg.Environment, strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_KEY")), strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_SHA256")))
+	if err != nil {
+		return nil, err
+	}
+	presetRunner.WithHostAccess(hostDelivery)
 	presetRunner.WithSteamAuthorizationBroker(steamBroker)
 	service, err := sleepwake.NewService(repo, repo, repo, ec2compute.New(ec2.NewFromConfig(awsCfg), ssm.NewFromConfig(awsCfg)), monitor, sqsnotification.New(sqs.NewFromConfig(awsCfg), cfg.NotificationQueueURL), identity.Generator{}, appsession.SystemClock{}, sleepwake.WithPresetRevisionRunner(presetRunner), sleepwake.WithWorkshopMissionManifest(s3objects.New(s3.NewFromConfig(awsCfg), cfg.SessionAssetsBucket)))
 	if err != nil {

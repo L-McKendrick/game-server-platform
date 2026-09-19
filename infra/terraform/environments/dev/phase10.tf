@@ -188,31 +188,34 @@ resource "aws_lambda_function" "reliability_worker" {
 
   environment {
     variables = {
-      APP_ENV                  = var.environment
-      LOG_LEVEL                = "info"
-      PROJECT_NAME             = var.project_name
-      METADATA_TABLE_NAME      = aws_dynamodb_table.metadata.name
-      SESSION_ASSETS_BUCKET    = aws_s3_bucket.session_assets.bucket
-      COMMAND_DLQ_URL          = aws_sqs_queue.command_dlq.url
-      COMMAND_DLQ_ARN          = aws_sqs_queue.command_dlq.arn
-      COMMAND_QUEUE_ARN        = aws_sqs_queue.commands.arn
-      NOTIFICATION_DLQ_URL     = aws_sqs_queue.notification_dlq.url
-      NOTIFICATION_DLQ_ARN     = aws_sqs_queue.notification_dlq.arn
-      NOTIFICATION_QUEUE_ARN   = aws_sqs_queue.notifications.arn
-      ARTIFACT_DLQ_URL         = aws_sqs_queue.artifact_ingest_dlq.url
-      ARTIFACT_DLQ_ARN         = aws_sqs_queue.artifact_ingest_dlq.arn
-      ARTIFACT_QUEUE_ARN       = aws_sqs_queue.artifact_ingest.arn
-      ORPHAN_MINIMUM_AGE_HOURS = "24"
-      ORPHAN_QUARANTINE_HOURS  = "24"
-      BOOTSTRAP_SCRIPT_KEY     = aws_s3_object.bootstrap_script.key
-      STEAM_AUTH_SECRET_ID     = aws_secretsmanager_secret.steam_authorization_cache.name
-      TEAMSPEAK_VERSION        = var.teamspeak_version
+      APP_ENV                                 = var.environment
+      LOG_LEVEL                               = "info"
+      PROJECT_NAME                            = var.project_name
+      METADATA_TABLE_NAME                     = aws_dynamodb_table.metadata.name
+      SESSION_ASSETS_BUCKET                   = aws_s3_bucket.session_assets.bucket
+      COMMAND_DLQ_URL                         = aws_sqs_queue.command_dlq.url
+      COMMAND_DLQ_ARN                         = aws_sqs_queue.command_dlq.arn
+      COMMAND_QUEUE_ARN                       = aws_sqs_queue.commands.arn
+      NOTIFICATION_DLQ_URL                    = aws_sqs_queue.notification_dlq.url
+      NOTIFICATION_DLQ_ARN                    = aws_sqs_queue.notification_dlq.arn
+      NOTIFICATION_QUEUE_ARN                  = aws_sqs_queue.notifications.arn
+      ARTIFACT_DLQ_URL                        = aws_sqs_queue.artifact_ingest_dlq.url
+      ARTIFACT_DLQ_ARN                        = aws_sqs_queue.artifact_ingest_dlq.arn
+      ARTIFACT_QUEUE_ARN                      = aws_sqs_queue.artifact_ingest.arn
+      ORPHAN_MINIMUM_AGE_HOURS                = "24"
+      ORPHAN_QUARANTINE_HOURS                 = "24"
+      BOOTSTRAP_SCRIPT_KEY                    = aws_s3_object.bootstrap_script.key
+      BOOTSTRAP_SCRIPT_SHA256                 = local.bootstrap_script_hash
+      BOOTSTRAP_RUNTIME_CONFIGURATION_VERSION = "scoped-host-access-v1"
+      STEAM_AUTH_SECRET_ID                    = aws_secretsmanager_secret.steam_authorization_cache.name
+      TEAMSPEAK_VERSION                       = var.teamspeak_version
     }
   }
 
   depends_on = [
     aws_cloudwatch_log_group.reliability_worker,
     aws_iam_role_policy.reliability_worker,
+    aws_iam_role_policy.host_access_issuer["reliability"],
   ]
 }
 

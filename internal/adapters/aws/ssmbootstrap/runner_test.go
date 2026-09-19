@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -86,7 +87,7 @@ func (fake *fakeSSM) GetCommandInvocation(context.Context, *ssm.GetCommandInvoca
 }
 
 func TestObserveProgressUsesWorkflowScopedLiveSnapshot(t *testing.T) {
-	client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{Status: types.CommandInvocationStatusInProgress}}
+	client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{Status: types.CommandInvocationStatusInProgress}, commands: ownedProgressFixture()}
 	progress := &fakeProgress{body: "GSP_CHECKPOINT:HOST_PREPARED\nGSP_CHECKPOINT:GAME_SERVER_INSTALLED\nGSP_ACTIVITY:ARMA_SERVER\n"}
 	runner, err := New(client, testConfig())
 	if err != nil {
@@ -97,8 +98,24 @@ func TestObserveProgressUsesWorkflowScopedLiveSnapshot(t *testing.T) {
 	if err != nil || status.Activity != "Arma 3 server files" || !reflect.DeepEqual(status.Checkpoints, []domain.ProgressMilestone{domain.ProgressHostPrepared, domain.ProgressGameServerInstalled}) {
 		t.Fatalf("status = %#v, err = %v", status, err)
 	}
-	if got := aws.ToString(progress.input.Key); got != "sessions/session-1/runtime/bootstrap-progress-workflow-1.txt" {
+	if got := aws.ToString(progress.input.Key); got != "sessions/session-1/runtime/host-access/workflow-1/bootstrap/progress" {
 		t.Fatalf("progress key = %q", got)
+	}
+}
+
+func ownedProgressFixture() *ssm.ListCommandsOutput {
+	scope := domain.HostAccessScope{SessionID: "session-1", GuildID: "guild-1", OperationID: "workflow-1", InstanceID: "i-1", AttemptID: "bootstrap", SnapshotSHA256: strings.Repeat("a", 64), DeadlineAt: time.Now().Add(time.Hour)}
+	payload, _ := json.Marshal(scope)
+	return &ssm.ListCommandsOutput{Commands: []types.Command{{CommandId: aws.String("command-1"), InstanceIds: []string{"i-1"}, DocumentName: aws.String(documentName), Parameters: map[string][]string{"commands": {"# GSP_HOST_ACCESS:" + base64.StdEncoding.EncodeToString(payload)}}}}}
+}
+
+func TestProgressRejectsAnotherWorkflowBeforeReadingSnapshot(t *testing.T) {
+	client := &fakeSSM{invocation: &ssm.GetCommandInvocationOutput{Status: types.CommandInvocationStatusInProgress}, commands: ownedProgressFixture()}
+	runner, _ := New(client, testConfig())
+	progress := &fakeProgress{body: "GSP_CHECKPOINT:CONFIGURATION_READY\n"}
+	runner.WithProgressStore(progress)
+	if _, err := runner.ObserveProgress(context.Background(), "i-1", "command-1", "session-1", "other-workflow"); err == nil || progress.input != nil {
+		t.Fatal("foreign workflow snapshot read")
 	}
 }
 
@@ -175,33 +192,30 @@ func TestStartBuildsSecretSafeResumableCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	session := domain.Session{ID: "session-1", GuildID: "guild-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: "sessions/session-1/input/preset.html", ServerConfigRevision: 2, ServerConfigObjectKey: "guilds/guild-1/server-config/revisions/000002-a/server.cfg", ServerConfigSHA256: strings.Repeat("a", 64), LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{CapacitySlotID: "slot-0", InstanceID: "i-1", DataVolumeID: "vol-1"}}
+	session := domain.Session{ID: "session-1", GuildID: "guild-1", ActiveWorkflowID: "workflow-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: "sessions/session-1/input/preset.html", ServerConfigRevision: 2, ServerConfigObjectKey: "guilds/guild-1/server-config/revisions/000002-a/server.cfg", ServerConfigSHA256: strings.Repeat("a", 64), LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{CapacitySlotID: "slot-0", InstanceID: "i-1", DataVolumeID: "vol-1"}}
 	commandID, err := runner.Start(context.Background(), session)
 	if err != nil || commandID != "command-1" {
 		t.Fatalf("command = %q, err = %v", commandID, err)
 	}
 	script := client.sent.Parameters["commands"][0]
-	for _, required := range []string{"aws s3 cp", "gsp-bootstrap", base64.StdEncoding.EncodeToString([]byte(session.MissionObjectKey)), base64.StdEncoding.EncodeToString([]byte(session.ServerConfigObjectKey)), base64.StdEncoding.EncodeToString([]byte(session.ServerConfigSHA256))} {
+	for _, required := range []string{"HOST_ACCESS_MANIFEST", " fetch ", "gsp-bootstrap"} {
 		if !strings.Contains(script, required) {
 			t.Errorf("command missing %q", required)
 		}
 	}
-	if len(script) > 4096 {
-		t.Fatalf("SSM command is unexpectedly large: %d bytes", len(script))
+	if len(script) > domain.MaxHostAccessCommandBytes {
+		t.Fatalf("command exceeds budget: %d", len(script))
 	}
-	if strings.Contains(script, "get-secret-value") {
-		t.Fatal("bootstrap implementation should be delivered through the private S3 artifact")
-	}
-	for _, forbidden := range []string{testConfig().SteamAuthSecretID, base64.StdEncoding.EncodeToString([]byte(testConfig().SteamAuthSecretID)), base64.StdEncoding.EncodeToString([]byte(testConfig().MetadataTableName))} {
+	for _, forbidden := range []string{"aws s3 cp", "get-secret-value", session.MissionObjectKey, session.ServerConfigObjectKey, base64.StdEncoding.EncodeToString([]byte("https://example.com/input")), base64.StdEncoding.EncodeToString([]byte("https://example.com/output"))} {
 		if strings.Contains(script, forbidden) {
-			t.Fatal("SSM command contains standing Steam authorization configuration")
+			t.Fatal("SSM command contains inline content or standing access")
 		}
 	}
-	for _, required := range []string{base64.StdEncoding.EncodeToString([]byte("https://example.com/input")), base64.StdEncoding.EncodeToString([]byte("https://example.com/output"))} {
-		if !strings.Contains(script, required) {
-			t.Fatal("SSM command omitted a brokered Steam exchange capability")
-		}
+	values := runner.config.HostAccess.(*fakeHostCommandAccess).values
+	if values["MISSION_KEY_B64"] != session.MissionObjectKey || values["SERVER_CONFIG_KEY_B64"] != session.ServerConfigObjectKey || values["SERVER_CONFIG_SHA_B64"] != session.ServerConfigSHA256 || values["STEAM_EXCHANGE_GET_URL_B64"] != "https://example.com/input" {
+		t.Fatal("manifest context omitted accepted inputs")
 	}
+	assertBashSyntax(t, []byte(script))
 }
 
 func TestStartAllowsOnlyOwnedRestoreLifecycleWithoutPendingPreset(t *testing.T) {
@@ -239,7 +253,7 @@ func TestCommandSupportsBuiltInDefaultMissionWithoutS3Object(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := domain.Session{ID: "session-default", DisplayName: "Default", Vanilla: true, ConfiguredMission: domain.DefaultMissionSelection(), CurrentMission: domain.DefaultMissionSelection(), LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}}
-	script, err := runner.command(session)
+	script, err := testContextCommand(runner, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +277,7 @@ func TestCommandSynchronizesEveryAcceptedActiveMissionWithoutChangingSelection(t
 		{ObjectKey: secondKey, Filename: "Second.Stratis.pbo", Status: domain.ArtifactAccepted},
 		{ObjectKey: "rejected", Filename: "Rejected.pbo", Status: domain.ArtifactRejected},
 	}, LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}}
-	script, err := runner.command(session)
+	script, err := testContextCommand(runner, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +368,7 @@ func TestCommandPassesCreatorDLCsThroughExistingModPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := domain.Session{ID: "session-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: "sessions/session-1/input/preset.html", CreatorDLCs: []string{domain.CreatorDLCGlobalMobilization, domain.CreatorDLCReactionForces}, LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}}
-	script, err := runner.command(session)
+	script, err := testContextCommand(runner, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,7 +384,7 @@ func TestCommandAllowsCreatorDLCOnlyModdedContent(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := domain.Session{ID: "session-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", CreatorDLCs: []string{domain.CreatorDLCWesternSahara}, ConfigurationRevision: 3, LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}}
-	script, err := runner.command(session)
+	script, err := testContextCommand(runner, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +404,7 @@ func TestCommandInstallsApplyingPendingRevisionWithoutChangingActivePointer(t *t
 	now := time.Date(2026, 8, 17, 23, 0, 0, 0, time.UTC)
 	resolutionDigest := strings.Repeat("a", 64)
 	session := domain.Session{ID: "session-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: "sessions/session-1/input/presets/v1.html", PresetRevisionSequence: 2, LifecycleState: domain.StateWaking, ActiveWorkflowID: "wake-1", ActiveWorkflowType: domain.WakeWorkflowType, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}, ActivePresetRevision: domain.PresetRevision{Number: 1, PresetObjectKey: "sessions/session-1/input/presets/v1.html", Status: domain.PresetRevisionActive, StagedAt: now, ActivatedAt: now}, PendingPresetRevision: domain.PresetRevision{Number: 2, BaseRevision: 1, PresetObjectKey: "sessions/session-1/input/presets/v2.html", Status: domain.PresetRevisionApplying, StagedAt: now, ApplyWorkflowID: "wake-1", ApplyStartedAt: now, WorkshopResolutionSHA256: resolutionDigest, WorkshopSourceID: 42}}
-	script, err := runner.command(session)
+	script, err := testContextCommand(runner, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,12 +440,12 @@ func TestStartRollbackSelectsPriorActiveRevision(t *testing.T) {
 	if err != nil || commandID != "command-1" {
 		t.Fatalf("rollback command=%q err=%v", commandID, err)
 	}
-	script := client.sent.Parameters["commands"][0]
-	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(activeKey))) || strings.Contains(script, base64.StdEncoding.EncodeToString([]byte(pendingKey))) {
-		t.Fatalf("rollback did not select active revision: %s", script)
+	values := runner.config.HostAccess.(*fakeHostCommandAccess).values
+	if values["PRESET_KEY_B64"] != activeKey {
+		t.Fatal("rollback did not select active revision")
 	}
-	if !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte("true"))) || !strings.Contains(script, base64.StdEncoding.EncodeToString([]byte("1"))) {
-		t.Fatalf("rollback mode/revision missing: %s", script)
+	if values["PRESET_ROLLBACK_B64"] != "true" || values["PRESET_REVISION_B64"] != "1" {
+		t.Fatal("rollback mode/revision missing")
 	}
 	if session.PresetObjectKey != activeKey || session.ActivePresetRevision.Number != 1 || session.PendingPresetRevision.Number != 2 {
 		t.Fatal("rollback command construction mutated revision authority")
@@ -450,7 +464,7 @@ func TestCommandSelectsApplyingServerPresetIndependently(t *testing.T) {
 	session := domain.Session{ID: "session-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: "sessions/session-1/input/presets/v1.html", LifecycleState: domain.StateWaking, ActiveWorkflowID: "wake-1", Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}, ServerPresetObjectKey: activeServer,
 		ActiveServerPresetRevision:  domain.PresetRevision{Number: 1, PresetObjectKey: activeServer, Status: domain.PresetRevisionActive, StagedAt: now, ActivatedAt: now},
 		PendingServerPresetRevision: domain.PresetRevision{Number: 2, BaseRevision: 1, PresetObjectKey: pendingServer, Status: domain.PresetRevisionApplying, StagedAt: now, ApplyWorkflowID: "wake-1", ApplyStartedAt: now}}
-	script, err := runner.command(session)
+	script, err := testContextCommand(runner, session)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +478,7 @@ func TestGeneratedCommandPassesBashSyntaxCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script, err := runner.command(domain.Session{ID: "session-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: "sessions/session-1/input/preset.html", LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}})
+	script, err := testContextCommand(runner, domain.Session{ID: "session-1", DisplayName: "Test", MissionObjectKey: "sessions/session-1/input/mission.pbo", PresetObjectKey: "sessions/session-1/input/preset.html", LifecycleState: domain.StateInstalling, Infrastructure: domain.Infrastructure{InstanceID: "i-1", DataVolumeID: "vol-1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +491,7 @@ func TestVanillaCommandUsesSteamAuthorizationWithoutPreset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script, err := runner.command(domain.Session{
+	script, err := testContextCommand(runner, domain.Session{
 		ID: "session-vanilla", DisplayName: "Vanilla", Vanilla: true,
 		MissionObjectKey: "sessions/session-vanilla/input/mission.pbo",
 		LifecycleState:   domain.StateInstalling,
@@ -501,7 +515,7 @@ func TestBootstrapArtifactPassesBashSyntaxCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"STEAM_EXCHANGE_GET_URL", "STEAM_EXCHANGE_PUT_URL", "GSP_STEAM_EXCHANGE:", "curl --fail", "source_version_id", "config_sha256", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "VANILLA_MODE", "PRESET_REVISION", "SERVER_PRESET_REVISION", "PRESET_ROLLBACK", "MOD_CONFIG_REVISION", "CONTENT_REVISION", "SERVER_CONFIG_KEY", "SERVER_CONFIG_SHA256", "server.cfg.pending", "sha256sum --check --status", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "$stage.missions-$WORKSHOP_MISSION_REVISION.client-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.complete", "$stage.revision-$CONTENT_REVISION.complete", "rm -f -- \"$STATE_DIR/deploy_content.complete\" \"$STATE_DIR\"/deploy_content.revision-*.complete", "mod-revisions/revision-", "server-mod-revisions/revision-", "-serverMod=$server_mods", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma sync_workshop_content", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "safe_mission_template=\"$(sqf_escape \"$mission_template\")\"", "template = \"$safe_mission_template\";", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
+	for _, required := range []string{"STEAM_EXCHANGE_GET_URL", "STEAM_EXCHANGE_PUT_URL", "GSP_STEAM_EXCHANGE:", "curl --fail", "source_version_id", "config_sha256", "REAUTH_REQUIRED", "ERR_STEAM_REAUTH_REQUIRED", "login \"%s\"", "VANILLA_MODE", "PRESET_REVISION", "SERVER_PRESET_REVISION", "PRESET_ROLLBACK", "MOD_CONFIG_REVISION", "CONTENT_REVISION", "SERVER_CONFIG_KEY", "SERVER_CONFIG_SHA256", "server.cfg.pending", "sha256sum --check --status", "[ \"$PRESET_ROLLBACK\" = true ] && rm -f -- \"$marker\"", "$stage.missions-$WORKSHOP_MISSION_REVISION.client-$PRESET_REVISION.server-$SERVER_PRESET_REVISION.config-$MOD_CONFIG_REVISION.workflow-$WORKFLOW_ID.complete", "$stage.revision-$CONTENT_REVISION.complete", "rm -f -- \"$STATE_DIR/deploy_content.complete\" \"$STATE_DIR\"/deploy_content.revision-*.complete", "mod-revisions/revision-", "server-mod-revisions/revision-", "-serverMod=$server_mods", "active-preset-revision", "app_update 233780 validate", "bootstrap.lock", "for stage in install_steamcmd install_arma sync_workshop_content", "scrub_persistent_steam_auth", "trap steam_auth_exit EXIT", "trap 'exit 143' TERM", "STEAM_AUTH_ROOT", "safe_mission_template=\"$(sqf_escape \"$mission_template\")\"", "template = \"$safe_mission_template\";", "GSP_CHECKPOINT:%s", "checkpoint HOST_PREPARED", "checkpoint GAME_SERVER_INSTALLED", "checkpoint MODS_APPLIED", "checkpoint CONFIGURATION_READY", "checkpoint SERVICE_STARTED", "checkpoint HEALTH_VERIFICATION", "launch_and_verify", "systemctl restart arma3-server.service", "awk '{print $4}' | grep -Eq '(^|:)2302$'", "awk '{print $4}' | grep -Eq '(^|:)9987$'"} {
 		if !strings.Contains(string(script), required) {
 			t.Errorf("script missing %q", required)
 		}
@@ -692,5 +706,5 @@ func TestObserveClearsActivityAfterNewerCheckpoint(t *testing.T) {
 }
 
 func testConfig() Config {
-	return Config{Region: "us-west-2", AssetsBucket: "assets", BootstrapScriptKey: "platform/bootstrap/arma3.sh", MetadataTableName: "metadata", SteamAuthSecretID: "/steam-auth", TeamSpeakVersion: "3.13.8", TimeoutSeconds: 21600, SteamBroker: fakeSteamBroker{}}
+	return Config{Region: "us-west-2", AssetsBucket: "assets", BootstrapScriptKey: "platform/bootstrap/arma3.sh", MetadataTableName: "metadata", SteamAuthSecretID: "/steam-auth", TeamSpeakVersion: "3.13.8", TimeoutSeconds: 21600, SteamBroker: fakeSteamBroker{}, HostAccess: &fakeHostCommandAccess{}}
 }

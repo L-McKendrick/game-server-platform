@@ -15,11 +15,14 @@ import (
 	"github.com/aws/aws-lambda-go/lambda"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/dynamodbstore"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/hostaccess"
+	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/hostdelivery"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/s3objects"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqscommand"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/sqsnotification"
@@ -28,6 +31,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/aws/steamexchange"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/httpartifact"
 	"github.com/L-McKendrick/game-server-platform/internal/adapters/steamworkshop"
+	apphost "github.com/L-McKendrick/game-server-platform/internal/app"
 	"github.com/L-McKendrick/game-server-platform/internal/app/artifacts"
 	"github.com/L-McKendrick/game-server-platform/internal/app/serverconfig"
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
@@ -85,7 +89,12 @@ func build(ctx context.Context) (*handler, error) {
 	clock := appsession.SystemClock{}
 	queueClient := sqs.NewFromConfig(awsCfg)
 	ssmClient := ssm.NewFromConfig(awsCfg)
-	liveMissionCopier, err := ssmlivemission.New(ssmClient, ssmlivemission.Config{Region: cfg.AWSRegion, AssetsBucket: cfg.SessionAssetsBucket})
+	project := strings.TrimSpace(os.Getenv("PROJECT_NAME"))
+	if project == "" {
+		project = "game-server-platform"
+	}
+	liveAccess := apphost.HostObjectIssuer{Authority: apphost.HostAccessAuthority{Records: repository, Instances: hostaccess.InstanceAuthority{Client: ec2.NewFromConfig(awsCfg), Project: project, Environment: cfg.Environment}}, Signer: hostaccess.NewSigner(awsCfg, cfg.SessionAssetsBucket)}
+	liveMissionCopier, err := ssmlivemission.New(ssmClient, ssmlivemission.Config{Access: liveAccess})
 	if err != nil {
 		return nil, err
 	}
@@ -129,6 +138,11 @@ func build(ctx context.Context) (*handler, error) {
 	if err != nil {
 		return nil, err
 	}
+	hostDelivery, err := hostdelivery.NewCommandDelivery(awsCfg, repository, cfg.SessionAssetsBucket, artifactEnv("PROJECT_NAME", "game-server-platform"), cfg.Environment, strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_KEY")), strings.TrimSpace(os.Getenv("BOOTSTRAP_SCRIPT_SHA256")))
+	if err != nil {
+		return nil, err
+	}
+	contentRunner.WithHostAccess(hostDelivery)
 	contentRunner.WithSteamAuthorizationBroker(steamBroker)
 	contentSync, err := workshopcontent.New(repository, repository, contentRunner, identity.Generator{}, clock, workshopcontent.WithWorkshopMissionManifest(objects))
 	if err != nil {
