@@ -2,49 +2,53 @@
 
 ## State and Objective
 
-Phase 19.3 is complete on `codex/phase-19-session-host-access`, baseline
-`967cc6c` (PR #28). SEC-20-01 is closed for controlled beta admission. Prepare
-the reviewed branch for its pull request; do not create the PR from this task.
+Beta-release copy and README preparation are complete on
+`codex/beta-release-prep`, based on `04aac08` (PR #29). Routine Discord handler
+responses now use short, plain-language wording, and the README provides a
+step-by-step Discord application setup path.
 
 ## Current Handoff
 
-- Managed hosts retain only the reviewed Systems Manager managed policy and have
-  no standing S3, Secrets Manager, or Steam-lease DynamoDB access. Existing
-  trusted workers issue exact, expiring HTTPS capabilities after checking the
-  current session, workflow, instance tags, purpose, and content snapshot.
-- Live 19.3.8 acceptance covered modded, vanilla and TeamSpeak bootstrap;
-  manifest renewal; live mission copy; Workshop sync; sleep, wake and restart;
-  failure diagnostics; verified archive creation; original-resource destruction;
-  replacement-host restore; and terminal Steam exchange cleanup.
-- The test-67 host passed populated same-guild and synthetic-other-guild
-  read/write denials plus 19 constrained-capability checks using its actual
-  credentials. Secret and Steam-lease access were denied.
-- Archive/restore defects found by test-69 through test-71 were corrected and
-  deployed. The deployed ArchiveSession definition now ends its successful
-  `Complete` task truthfully. All affected package/runtime verifiers pass.
-- Test-67, test-69, test-70 and test-71 are `DELETED`. Test-71 termination
-  workflow `1550712481541005322` succeeded; no tagged EC2 instance, EBS volume,
-  session S3 object version, or delete marker remains.
-- Test-71's completed Steam exchanges have logical delete markers and their
-  noncurrent temporary versions remain under the intended three-day lifecycle.
-  The current Steam lease belongs to a separate running bootstrap workflow,
-  not Phase 19.3 acceptance residue.
-- Go 1.26.5 coverage, vet/build, focused regressions, package generation,
-  Terraform 1.15.8 fmt/validation, offline IAM checks, deployment verifiers, and
-  the user-confirmed Ubuntu CI race run pass.
-  No PR was created.
+- Simplified routine access, expired-form, cancellation, confirmation,
+  lifecycle, capacity, start-readiness, in-progress, and fallback error text.
+- Archive and permanent-deletion confirmations remain explicit about their
+  effect and ten-minute confirmation window.
+- Preserved the pre-existing user edit intent while correcting confirmed
+  archives so they are described as archived rather than deleted.
+- Updated exact-copy tests without changing command behavior, authorization,
+  lifecycle rules, or Discord command definitions.
+- Added a ten-step README checklist covering Discord application creation,
+  installation scopes and permissions, AWS deployment, secret storage,
+  interaction-endpoint connection, `/rb` registration, access setup, and
+  first-run verification. It links to the detailed deployment runbook.
+- `go test ./internal/adapters/discord/interactions`, `go vet ./...`, and
+  `git diff --check` pass.
+- `go test ./...` has one unrelated failure:
+  `TestArchiveWorkflowCompletesSuccessfullyAfterDurableCompletion` expects the
+  archive state machine's `Complete` state to end the execution successfully.
 
-## Beta Preparation
+## Important User Attention
 
-- SEC-20-01 no longer blocks a controlled beta. Continue monitoring failed
-  lifecycle cleanup, Steam exchange finalization, capability-renewal failures,
-  DLQs, budget alarms, and retained-resource reports during beta.
-- Production release remains subject to the open Phase 20 hardening work,
-  especially protected OIDC deployment, staging, operational dashboards,
-  cost/quota recovery gates, and measured performance work.
+- Review the unrelated archive workflow security-contract failure before using
+  a full-suite pass as a beta release gate. This copy-only task does not change
+  the archive state machine.
 
 ## Commands to Apply Current Changes
 
-No Lambda packaging, Terraform apply, Discord command registration, migration,
-or live cleanup is required. The final source and deployed environment are
-coherent. Open the pull request only when requested.
+Package the updated Discord Lambda, create and review a fresh Terraform plan,
+then apply that exact plan only after approval:
+
+```powershell
+./scripts/package-discord-lambda.ps1
+$env:AWS_PROFILE = "game-server-dev"
+$env:AWS_REGION = "us-west-2"
+$env:AWS_EC2_METADATA_DISABLED = "true"
+aws sts get-caller-identity
+terraform -chdir=infra/terraform/environments/dev init -backend-config=backend.hcl -input=false
+terraform -chdir=infra/terraform/environments/dev plan -out=beta-handler-copy.tfplan
+terraform -chdir=infra/terraform/environments/dev show beta-handler-copy.tfplan
+terraform -chdir=infra/terraform/environments/dev apply beta-handler-copy.tfplan
+```
+
+Discord command registration is not required because command definitions did
+not change.

@@ -249,7 +249,7 @@ func TestHandlerRecognizesModalSubmission(t *testing.T) {
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
 	if response.Code != http.StatusOK || decoded.Type != interactionResponseChannelMessageWithSource ||
-		decoded.Data == nil || !strings.Contains(decoded.Data.Content, "modal is not supported or has expired") {
+		decoded.Data == nil || !strings.Contains(decoded.Data.Content, "form has expired") {
 		t.Fatalf("modal response = %#v; body = %s", decoded, response.Body.String())
 	}
 }
@@ -773,7 +773,7 @@ func TestHandlerAuthorizesComponentBeforeReturningStaleResponse(t *testing.T) {
 	response := executeSignedRequest(t, handler, privateKey, body, testNow)
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "not authorized") ||
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "cannot use this bot") ||
 		strings.Contains(decoded.Data.Content, customID) || strings.Contains(decoded.Data.Content, "expired") {
 		t.Fatalf("unauthorized component response = %#v", decoded)
 	}
@@ -891,7 +891,7 @@ func TestHandlerRejectsCardControlFromWrongChannel(t *testing.T) {
 	response := executeSignedRequest(t, handler, privateKey, marshalPayload(payload), testNow)
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "not authorized") {
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "cannot use this bot") {
 		t.Fatalf("wrong-channel response = %#v", decoded)
 	}
 }
@@ -1240,7 +1240,7 @@ func TestHandlerGuildManagerConfiguresRolesWithSelectMenu(t *testing.T) {
 		createCommandBody("interaction-create-after-clear", "owner-1", "guild-1", "different-channel"), testNow)
 	var denied interactionResponse
 	decodeResponse(t, deniedAfterClear, &denied)
-	if denied.Data == nil || !strings.Contains(denied.Data.Content, "not authorized") {
+	if denied.Data == nil || !strings.Contains(denied.Data.Content, "cannot use this bot") {
 		t.Fatalf("normal access after clear = %#v", denied)
 	}
 }
@@ -1433,7 +1433,7 @@ func TestHandlerArchiveCreatesThenConsumesDurableConfirmation(t *testing.T) {
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
 	code := domain.PendingConfirmationCode("guild-1", "owner-1")
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "No destructive work has been queued") || !strings.Contains(decoded.Data.Content, "Within 10 minutes") || !strings.Contains(decoded.Data.Content, "`/rb confirm` without any options") || strings.Contains(decoded.Data.Content, code) || strings.Contains(decoded.Data.Content, "by in") {
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Confirm archive") || !strings.Contains(decoded.Data.Content, "within 10 minutes") || !strings.Contains(decoded.Data.Content, "`/rb confirm`") || strings.Contains(decoded.Data.Content, code) || strings.Contains(decoded.Data.Content, "by in") {
 		t.Fatalf("response = %#v", decoded.Data)
 	}
 	confirmation, err := repository.GetConfirmation(context.Background(), code)
@@ -1444,7 +1444,7 @@ func TestHandlerArchiveCreatesThenConsumesDurableConfirmation(t *testing.T) {
 	confirmBody := commandBody("interaction-confirm", "owner-1", "guild-1", "channel-1", "confirm", nil)
 	response = executeSignedRequest(t, handler, privateKey, confirmBody, testNow)
 	decodeResponse(t, response, &decoded)
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Archive request accepted") || !strings.Contains(decoded.Data.Content, "cannot be replayed") {
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Request accepted") || !strings.Contains(decoded.Data.Content, "will now be archived") {
 		t.Fatalf("response = %#v", decoded.Data)
 	}
 	confirmation, err = repository.GetConfirmation(context.Background(), code)
@@ -1464,13 +1464,13 @@ func TestHandlerTerminateConfirmationCanBeCancelled(t *testing.T) {
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
 	code := domain.PendingConfirmationCode("guild-1", "owner-1")
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "irreversible") || !strings.Contains(decoded.Data.Content, "Within 10 minutes") || !strings.Contains(decoded.Data.Content, "`/rb confirm` without any options") || strings.Contains(decoded.Data.Content, code) || strings.Contains(decoded.Data.Content, "by in") {
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "cannot be undone") || !strings.Contains(decoded.Data.Content, "within 10 minutes") || !strings.Contains(decoded.Data.Content, "`/rb confirm`") || strings.Contains(decoded.Data.Content, code) || strings.Contains(decoded.Data.Content, "by in") {
 		t.Fatalf("response = %#v", decoded.Data)
 	}
 	cancelBody := commandBody("interaction-cancel", "owner-1", "guild-1", "channel-1", "cancel-confirmation", nil)
 	response = executeSignedRequest(t, handler, privateKey, cancelBody, testNow)
 	decodeResponse(t, response, &decoded)
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "confirmation cancelled") || !strings.Contains(decoded.Data.Content, "No destructive work was queued") {
+	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "Deletion cancelled") || !strings.Contains(decoded.Data.Content, "No changes were made") {
 		t.Fatalf("response = %#v", decoded.Data)
 	}
 }
@@ -1479,8 +1479,7 @@ func TestConfirmationQueueUncertaintyNeverPromisesRetry(t *testing.T) {
 	t.Parallel()
 	err := confirmationUserError(domain.ErrConfirmationDispatchUncertain)
 	var userErr userError
-	if !errors.As(err, &userErr) || !strings.Contains(userErr.message, "No automatic retry is scheduled") ||
-		!strings.Contains(userErr.message, "may remain and incur cost") || strings.Contains(userErr.message, "will retry") {
+	if !errors.As(err, &userErr) || !strings.Contains(userErr.message, "Check `/rb status`") || strings.Contains(userErr.message, "will retry") {
 		t.Fatalf("confirmation uncertainty message = %v", err)
 	}
 }
@@ -1490,8 +1489,7 @@ func TestUnknownCommandErrorIsBoundedAndWarnsWithoutPromisingRetry(t *testing.T)
 	handler := &Handler{}
 	message := handler.commandErrorMessage(errors.New("sensitive internal failure"), "safe-reference")
 	if !strings.Contains(message, "Reference: `safe-reference`") ||
-		!strings.Contains(message, "No automatic retry is scheduled") ||
-		!strings.Contains(message, "may remain and incur cost") ||
+		!strings.Contains(message, "Check `/rb status`") ||
 		strings.Contains(message, "sensitive internal failure") || strings.Contains(message, "will retry") {
 		t.Fatalf("unknown command message = %q", message)
 	}
@@ -1500,7 +1498,7 @@ func TestUnknownCommandErrorIsBoundedAndWarnsWithoutPromisingRetry(t *testing.T)
 func TestCapacityErrorExplainsHowToFreeTheSlot(t *testing.T) {
 	t.Parallel()
 	message := (&Handler{}).commandErrorMessage(domain.ErrQuotaExceeded, "reference")
-	if message != "Session capacity reached. Archive or terminate the currently provisioned session before starting or waking another one." {
+	if message != "All server slots are in use. Archive or delete a server before starting another one." {
 		t.Fatalf("capacity message = %q", message)
 	}
 }
@@ -1597,7 +1595,7 @@ func TestHandlerRejectsNonGuildContextBeforeAuthorizationOrRouting(t *testing.T)
 	response := executeSignedRequest(t, handler, privateKey, body, testNow)
 	var decoded interactionResponse
 	decodeResponse(t, response, &decoded)
-	if decoded.Data == nil || decoded.Data.Flags&messageFlagEphemeral == 0 || !strings.Contains(decoded.Data.Content, "only in a configured Discord server") {
+	if decoded.Data == nil || decoded.Data.Flags&messageFlagEphemeral == 0 || !strings.Contains(decoded.Data.Content, "Discord server where the bot is set up") {
 		t.Fatalf("non-guild response = %#v", decoded)
 	}
 	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
@@ -2255,7 +2253,7 @@ func TestHandlerAdministratorResetFlowIsTypedReplaySafeAndFreezesSessionCommands
 	listResponse := executeSignedRequest(t, handler, privateKey, commandBody("list-while-reset", "admin-1", "guild-1", "channel-1", "list", nil), testNow)
 	var list interactionResponse
 	decodeResponse(t, listResponse, &list)
-	if list.Data == nil || !strings.Contains(list.Data.Content, "reset is in progress") || !strings.Contains(list.Data.Content, "No session operation was queued") {
+	if list.Data == nil || !strings.Contains(list.Data.Content, "reset is in progress") || !strings.Contains(list.Data.Content, "Try again when it is finished") {
 		t.Fatalf("command during reset = %#v", list)
 	}
 }
@@ -2527,14 +2525,14 @@ func TestHandlerUnifiedStartSleepingAndArchived(t *testing.T) {
 	}{
 		{"owner restart", domain.StateRunning, "owner-1", "0", "restart", "Restart request accepted"},
 		{"admin restart", domain.StateIdle, "admin-1", "32", "restart", "Restart request accepted"},
-		{"sleeping restart", domain.StateSleeping, "owner-1", "0", "restart", "Restart requires"},
+		{"sleeping restart", domain.StateSleeping, "owner-1", "0", "restart", "cannot restart right now"},
 		{"unauthorized restart", domain.StateRunning, "other-1", "0", "restart", "Session not found"},
 		{"owner wake", domain.StateSleeping, "owner-1", "0", "start", "Start request accepted"},
 		{"admin wake", domain.StateSleeping, "admin-1", "32", "start", "Start request accepted"},
 		{"nonowner denied", domain.StateSleeping, "other-1", "0", "start", "Session not found"},
 		{"owner restore through start", domain.StateArchived, "owner-1", "0", "start", "Start request accepted"},
 		{"owner retry restore through start", domain.StateFailed, "owner-1", "0", "start", "Start request accepted"},
-		{"unsupported running", domain.StateRunning, "owner-1", "0", "start", "cannot start in its current state"},
+		{"unsupported running", domain.StateRunning, "owner-1", "0", "start", "cannot start right now"},
 		{"removed command", domain.StateSleeping, "owner-1", "0", "wake", "not supported yet"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -39,11 +39,57 @@ server is active. A completed archived card is reduced to its description,
 last active modlist link, and archive time; it retains only the `Refresh`
 control. Actionable archive/restore failures continue to show diagnostics.
 
-## Deploy to your Discord server
+## Set up the app in Discord
 
-Follow [Deploy the bot to a Discord server](docs/deployment.md) for the full
-Discord application, AWS, Terraform, secret, command-registration, and
-verification procedure.
+The app needs a Discord application, an AWS deployment, and the `/rb` command
+registered in your server. The complete copy-and-paste procedure is in
+[Deploy the bot to a Discord server](docs/deployment.md).
+
+Before starting, install Git, Go 1.26.5, Terraform 1.15.x, and AWS CLI v2. You
+also need permission to deploy the AWS stack and add apps to the Discord
+server.
+
+1. Open the [Discord Developer Portal](https://discord.com/developers/applications),
+   create an application, and copy its **Application ID** and **Public Key**.
+2. On the application's **Bot** page, create a bot token and store it in a
+   password manager. Never put it in Git, Terraform variables, or shell
+   history. Privileged gateway intents are not required.
+3. On **Installation**, enable **Guild Install**. Add the
+   `applications.commands` and `bot` scopes, then grant **View Channels**,
+   **Send Messages**, **Embed Links**, **Attach Files**, and
+   **Read Message History**.
+4. Use the installation link to add the app to your Discord server. Enable
+   Discord Developer Mode and copy the server ID.
+5. Follow [the deployment guide](docs/deployment.md#2-authenticate-to-aws) to
+   bootstrap Terraform state, create `terraform.tfvars`, package the Lambdas,
+   review a fresh Terraform plan, and deploy the control plane. Keep
+   `provisioning_enabled = false` during initial setup.
+6. Store the bot token in the Terraform-managed AWS Secrets Manager secret;
+   do not store it in Terraform state. See
+   [Store the Discord bot token](docs/deployment.md#7-store-the-discord-bot-token).
+7. Copy the Terraform output `discord_interactions_endpoint_url` into the
+   application's **Interactions Endpoint URL** field in the Developer Portal.
+   Discord must accept its signed endpoint check before you continue.
+8. Register `/rb` in the server from the repository root:
+
+   ```powershell
+   ./scripts/register-discord-command.ps1 `
+     -ApplicationId "<application-id>" `
+     -GuildId "<server-id>"
+   ```
+
+   Enter the bot token only in the script's secure prompt. Registration
+   replaces this app's guild command set with the repository's `/rb` command.
+9. In Discord, run `/rb help`, then run `/rb admin` as an Administrator or a
+   member with **Manage Server**. Choose the roles allowed to use the app and
+   the channel where public session cards should be posted.
+10. As an allowed member, run `/rb create` and confirm that the private setup
+    flow opens and its public session card appears. No game server is created
+    while provisioning remains disabled.
+
+Do not enable game-server provisioning until the AWS budget recipient,
+capacity limit, network settings, and a fresh Terraform plan have been
+reviewed. Enabling it can create EC2, EBS, storage, and data-transfer charges.
 
 ## Local Discord interaction server
 

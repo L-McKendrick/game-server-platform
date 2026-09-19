@@ -276,7 +276,7 @@ func (handler *Handler) ServeHTTP(
 		payload.Type != interactionTypeMessageComponent &&
 		payload.Type != interactionTypeApplicationCommandAutocomplete &&
 		payload.Type != interactionTypeModalSubmit {
-		writeInteractionMessage(writer, "This interaction type is not supported yet.")
+		writeInteractionMessage(writer, "That action is not supported.")
 		return
 	}
 
@@ -292,7 +292,7 @@ func (handler *Handler) ServeHTTP(
 		if payload.Type == interactionTypeApplicationCommandAutocomplete {
 			writeAutocompleteChoices(writer, nil)
 		} else {
-			writeInteractionMessage(writer, "This command is available only in a configured Discord server.")
+			writeInteractionMessage(writer, "Use this command in a Discord server where the bot is set up.")
 		}
 		return
 	}
@@ -319,7 +319,7 @@ func (handler *Handler) ServeHTTP(
 			if payload.Type == interactionTypeApplicationCommandAutocomplete {
 				writeAutocompleteChoices(writer, nil)
 			} else {
-				writeInteractionMessage(writer, "Only members with Administrator or Manage Server permission can use `/rb admin` actions.")
+				writeInteractionMessage(writer, "You need Administrator or Manage Server permission to use `/rb admin`.")
 			}
 			return
 		}
@@ -348,12 +348,12 @@ func (handler *Handler) ServeHTTP(
 		return
 	}
 	if handler.reset != nil {
-		if operation, active, err := handler.reset.Active(request.Context()); err != nil {
+		if _, active, err := handler.reset.Active(request.Context()); err != nil {
 			handler.logger.Error("failed to check platform reset lock", slog.Any("error", err))
-			writeInteractionMessage(writer, "The platform state could not be checked safely. No operation was queued. Please try again later.")
+			writeInteractionMessage(writer, "Something went wrong. Please try again later.")
 			return
 		} else if active {
-			writeInteractionMessage(writer, fmt.Sprintf("A platform reset is in progress at **%s**. No session operation was queued.", sanitizeInline(operation.Stage)))
+			writeInteractionMessage(writer, "A platform reset is in progress. Try again when it is finished.")
 			return
 		}
 	}
@@ -362,7 +362,7 @@ func (handler *Handler) ServeHTTP(
 		if payload.Type == interactionTypeApplicationCommandAutocomplete {
 			writeAutocompleteChoices(writer, nil)
 		} else {
-			writeInteractionMessage(writer, "You are not authorized to use this app in this channel.")
+			writeInteractionMessage(writer, "You cannot use this bot in this channel.")
 		}
 		return
 	}
@@ -406,7 +406,7 @@ func (handler *Handler) ServeHTTP(
 		return
 	}
 	if payload.Type == interactionTypeModalSubmit && (payload.Data == nil || (payload.Data.CustomID != createModalCustomID && !isSetupModalCustomID(payload.Data.CustomID) && !isModsModalCustomID(payload.Data.CustomID) && !isMissionUploadModal(payload.Data.CustomID) && !strings.HasPrefix(payload.Data.CustomID, adminResetModalPrefix) && !strings.HasPrefix(payload.Data.CustomID, adminServerConfigUploadPrefix))) {
-		writeInteractionMessage(writer, "This modal is not supported or has expired.")
+		writeInteractionMessage(writer, "This form has expired. Run the command again.")
 		return
 	}
 	if payload.isRBCreateCommand() {
@@ -531,11 +531,11 @@ func (handler *Handler) routeCommand(
 ) (string, string, error) {
 	actorID := payload.actorID()
 	if actorID == "" {
-		return "", "rb", newUserError("Discord user information is missing from the command.")
+		return "", "rb", newUserError("Discord could not identify you. Please run the command again.")
 	}
 
 	if strings.TrimSpace(payload.ChannelID) == "" {
-		return "", "rb", newUserError("Discord channel information is missing from the command.")
+		return "", "rb", newUserError("Discord could not identify this channel. Please run the command again.")
 	}
 
 	actor := domain.Actor{
@@ -606,7 +606,7 @@ func (handler *Handler) cancelWorkflow(ctx context.Context, payload interactionP
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("**Cancellation requested**\nThe `%s` workflow will stop only if it has not crossed its initial safe boundary. Otherwise its current operation and any required rollback will finish. No new retry was scheduled.\n\nNext: use `/rb status` to verify the authoritative outcome.", workflow.Type), nil
+	return fmt.Sprintf("**Cancellation requested**\nWe will stop %s if it is still safe to do so. Check `/rb status` for updates.", strings.ToLower(workflowDisplayName(workflow.Type))), nil
 }
 
 func (handler *Handler) createConfirmation(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, action string) (string, error) {
@@ -623,14 +623,14 @@ func (handler *Handler) createConfirmation(ctx context.Context, payload interact
 	})
 	if err != nil {
 		if errors.Is(err, domain.ErrIdempotencyConflict) {
-			return "", newUserError("You already have a pending archive or termination in this server. Run `/rb confirm` or `/rb cancel-confirmation` before requesting another one.")
+			return "", newUserError("You already have an action waiting for confirmation. Use `/rb confirm` or `/rb cancel-confirmation` first.")
 		}
 		return "", err
 	}
 	if action == "archive" {
-		return "**Archive confirmation required**\nNo destructive work has been queued. Archiving stops game services and removes EC2/EBS only after the portable backup is verified. A later restore creates billable replacement resources.\n\nWithin 10 minutes, run `/rb confirm` without any options. To cancel, run `/rb cancel-confirmation`.", nil
+		return "**Confirm archive**\nThis will stop the server and save its data. You can restore it later.\n\nRun `/rb confirm` within 10 minutes, or `/rb cancel-confirmation` to cancel.", nil
 	}
-	return "**Termination confirmation required**\nNo destructive work has been queued. Termination permanently deletes tagged EC2/EBS resources and all stored session artifacts without creating a backup. This is irreversible.\n\nWithin 10 minutes, run `/rb confirm` without any options. To cancel, run `/rb cancel-confirmation`.", nil
+	return "**Confirm permanent deletion**\nThis will permanently delete the server and all saved data. This cannot be undone.\n\nRun `/rb confirm` within 10 minutes, or `/rb cancel-confirmation` to cancel.", nil
 }
 
 func (handler *Handler) confirmAction(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor, correlationID string) (string, error) {
@@ -648,11 +648,11 @@ func (handler *Handler) confirmAction(ctx context.Context, payload interactionPa
 	if err != nil {
 		return "", confirmationUserError(err)
 	}
-	action := "Archive"
+	action := "archived"
 	if confirmation.Action == domain.ConfirmationTerminate {
-		action = "Termination"
+		action = "permanently deleted"
 	}
-	return fmt.Sprintf("**%s request accepted**\nThe confirmation was consumed and cannot be replayed. Use `/rb status` to follow progress.", action), nil
+	return fmt.Sprintf("**Request accepted**\nThis session will now be %s. Check `/rb status` for updates.", action), nil
 }
 
 func (handler *Handler) cancelConfirmation(ctx context.Context, payload interactionPayload, options []applicationCommandOption, actor domain.Actor) (string, error) {
@@ -663,23 +663,27 @@ func (handler *Handler) cancelConfirmation(ctx context.Context, payload interact
 	if err != nil {
 		return "", confirmationUserError(err)
 	}
-	return fmt.Sprintf("**%s confirmation cancelled**\nNo destructive work was queued. The pending action cannot be confirmed.\n\nNext: use `/rb status` or request a new action if it is still appropriate.", strings.ToUpper(string(confirmation.Action[:1]))+strings.ToLower(string(confirmation.Action[1:]))), nil
+	action := "Archive"
+	if confirmation.Action == domain.ConfirmationTerminate {
+		action = "Deletion"
+	}
+	return fmt.Sprintf("**%s cancelled**\nNo changes were made.", action), nil
 }
 
 func confirmationUserError(err error) error {
 	switch {
 	case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrConfirmationMismatch):
-		return newUserError("You have no pending archive or termination to confirm in this server. Run the destructive command again if it is still appropriate.")
+		return newUserError("You have no pending archive or termination to confirm in this server.")
 	case errors.Is(err, domain.ErrConfirmationExpired):
-		return newUserError("That confirmation expired. Run the archive or terminate command again to create a new ten-minute confirmation.")
+		return newUserError("That confirmation expired. Run the command again.")
 	case errors.Is(err, domain.ErrConfirmationConsumed):
-		return newUserError("That confirmation was already used and cannot be replayed.")
+		return newUserError("That confirmation was already used.")
 	case errors.Is(err, domain.ErrConfirmationCancelled):
-		return newUserError("That confirmation was cancelled and cannot be used.")
+		return newUserError("That confirmation was cancelled.")
 	case errors.Is(err, domain.ErrConfirmationStateDrift):
-		return newUserError("The session changed after this confirmation was created. Run `/rb status`, then request a new confirmation if the action is still appropriate.")
+		return newUserError("The session changed. Check `/rb status`, then run the command again.")
 	case errors.Is(err, domain.ErrConfirmationDispatchUncertain):
-		return newUserError("The confirmation was consumed, but queue delivery could not be confirmed. No automatic retry is scheduled. Check `/rb status`; if no operation appears, run archive or terminate again. Resources may remain and incur cost.")
+		return newUserError("We could not confirm that the request started. Check `/rb status` before trying again.")
 	default:
 		return err
 	}
@@ -712,19 +716,11 @@ func (handler *Handler) requestLifecycle(ctx context.Context, payload interactio
 	}
 	if err := handler.service.RequestLifecycle(ctx, appsession.LifecycleCommand{Actor: actor, Roles: roles, SessionID: sessionID, GuildID: payload.GuildID, ChannelID: payload.ChannelID, CommandID: payload.ID, CorrelationID: correlationID, IdempotencyKey: "discord:" + payload.ID, CommandType: typeName, CanManageGuild: payload.memberCanManageGuild()}); err != nil {
 		if action == "restart" && errors.Is(err, domain.ErrInvalidTransition) {
-			return "", newUserError("Restart requires a running or idle game server with no other operation in progress. Check `/rb status`; use `/rb start` if the server is sleeping.")
+			return "", newUserError("This server cannot restart right now. Check `/rb status`, or use `/rb start` if it is sleeping.")
 		}
 		return "", err
 	}
-	message := fmt.Sprintf("**%s request accepted**\nUse `/rb status` to follow progress.", strings.ToUpper(action[:1])+action[1:])
-	if action == "archive" {
-		message += "\nThe game services will stop while the archive is captured. EC2 and EBS are removed only after the archive and manifest checksums are durably verified."
-	} else if action == "restore" {
-		message += "\nNew EC2 and EBS resources will be created; the recorded archive is revalidated before provisioning."
-	} else if action == "terminate" {
-		message += "\nTermination is irreversible. Tagged EC2/EBS resources and all stored session artifact/archive versions will be permanently deleted; only an audit tombstone remains."
-	}
-	return message, nil
+	return fmt.Sprintf("**%s request accepted**\nCheck `/rb status` for updates.", strings.ToUpper(action[:1])+action[1:]), nil
 }
 
 func (handler *Handler) startSession(
@@ -743,10 +739,10 @@ func (handler *Handler) startSession(
 		return "", err
 	}
 	if session.ActiveWorkflowID == "" && session.WorkshopResolutionRequestKey != "" {
-		return "", newUserError("Steam Workshop metadata is still being checked. Wait for `/rb status` to show the source as accepted or rejected, then run `/rb start` when the session is ready.")
+		return "", newUserError("The mod list is still being checked. Wait a moment, then check `/rb status`.")
 	}
 	if session.LifecycleState == domain.StateDraft {
-		return "", newUserError("This session is still a draft and is not ready to start. Review `/rb status` and provide any missing or rejected mission and mod configuration through `/rb edit`.")
+		return "", newUserError("This session is not ready. Check `/rb status`, then use `/rb edit` to add anything missing.")
 	}
 	if session.CanRestore() {
 		message, restoreErr := handler.requestLifecycle(ctx, payload, options, actor, correlationID, "restore")
@@ -766,11 +762,11 @@ func (handler *Handler) startSession(
 		IdempotencyKey: "discord:" + strings.TrimSpace(payload.ID),
 	}); err != nil {
 		if errors.Is(err, domain.ErrInvalidTransition) {
-			return "", newUserError("This session cannot start in its current state. Use `/rb status` for its current state and next action.")
+			return "", newUserError("This session cannot start right now. Check `/rb status` for what to do next.")
 		}
 		return "", fmt.Errorf("request session start: %w", err)
 	}
-	return "**Start request accepted**\nUse `/rb status` to follow startup progress.", nil
+	return "**Start request accepted**\nCheck `/rb status` for updates.", nil
 }
 
 func (handler *Handler) handleAdmin(ctx context.Context, writer http.ResponseWriter, payload interactionPayload, actorID, correlationID string) error {
@@ -1533,16 +1529,16 @@ func (handler *Handler) commandErrorMessage(err error, correlationID string) str
 	case errors.Is(err, domain.ErrForbidden):
 		return "You do not have access to that session."
 	case errors.Is(err, domain.ErrIdempotencyConflict):
-		return "Discord reused this interaction ID for different command data. Please run the command again."
+		return "Discord could not reuse that request. Please run the command again."
 	case errors.Is(err, domain.ErrFeatureDisabled):
-		return "Infrastructure provisioning is not enabled in this environment yet."
+		return "Starting servers is not available right now."
 	case errors.Is(err, domain.ErrQuotaExceeded):
-		return "Session capacity reached. Archive or terminate the currently provisioned session before starting or waking another one."
+		return "All server slots are in use. Archive or delete a server before starting another one."
 	case errors.Is(err, domain.ErrConfirmationRequired):
-		return "Create a durable confirmation with `/rb archive` or `/rb terminate` before requesting that action."
+		return "Run `/rb archive` or `/rb terminate` first, then confirm the action."
 	default:
 		return fmt.Sprintf(
-			"The command failed. Reference: `%s`\nState may be unchanged or partially complete. No automatic retry is scheduled. Check `/rb status` before trying again. Provisioned resources may remain and incur cost.",
+			"Something went wrong. Check `/rb status` before trying again. Reference: `%s`",
 			sanitizeInline(correlationID),
 		)
 	}
@@ -1574,15 +1570,7 @@ func (handler *Handler) adminErrorMessage(err error, correlationID string) strin
 }
 
 func activeOperationMessage(active domain.OperationInProgressError) string {
-	operation := map[string]string{
-		"ProvisionSession": "Starting server", domain.BootstrapWorkflowType: "Setting up game and content",
-		domain.SleepWorkflowType: "Putting server to sleep", domain.WakeWorkflowType: "Waking server",
-		domain.ArchiveWorkflowType: "Archiving server", domain.RestoreWorkflowType: "Restoring server",
-		domain.TerminationWorkflowType: "Terminating server",
-	}[active.WorkflowType]
-	if operation == "" {
-		operation = "Session operation"
-	}
+	operation := workflowDisplayName(active.WorkflowType)
 	progress := sessioncard.ProgressStageLabel(active.Milestone)
 	if progress == "" {
 		progress = "Request accepted"
@@ -1594,7 +1582,20 @@ func activeOperationMessage(active domain.OperationInProgressError) string {
 	if !active.StartedAt.IsZero() {
 		message += fmt.Sprintf(" Started <t:%d:R>.", active.StartedAt.UTC().Unix())
 	}
-	return message + " No second operation was queued. Use `/rb status` for the latest details."
+	return message + " Check `/rb status` for updates."
+}
+
+func workflowDisplayName(workflowType string) string {
+	operation := map[string]string{
+		"ProvisionSession": "Starting the server", domain.BootstrapWorkflowType: "Setting up the server",
+		domain.SleepWorkflowType: "Putting the server to sleep", domain.WakeWorkflowType: "Waking the server",
+		domain.ArchiveWorkflowType: "Archiving the server", domain.RestoreWorkflowType: "Restoring the server",
+		domain.TerminationWorkflowType: "Deleting the server",
+	}[workflowType]
+	if operation == "" {
+		return "Current action"
+	}
+	return operation
 }
 
 func validateContentType(value string) error {
