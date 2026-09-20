@@ -486,6 +486,10 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **19.4.4** [x] Inventory and migrate every current guild/state session-discovery caller—including autocomplete, `/rb list`, admin timeout selection, repair controls, public-card lookup fallbacks, monitoring or operator checks, and future eligibility menus—to the shared query contract wherever its access pattern applies. Prohibit new bounded table scans for session discovery. Add over-1,000-table-item, more-than-100-session, pagination, multi-state merge, state-transition, backfill, eventual-consistency revalidation, authorization, and deterministic-limit coverage.
     - **19.5** [x] Simplify routine Discord handler messages for beta users, keeping technical detail in `/rb status` and protected administration views.
     - **19.6** [x] Prepare release-facing README guidance with a complete, linked Discord application setup procedure.
+    - **19.7** [x] Repair the beta creation auto-start race exposed by Test B1.
+      - **19.7.1** [x] Keep automatic start deferred while a creation-time Workshop mission resolution is pending, then request it exactly after the accepted resolution is durable.
+      - **19.7.2** [x] Make DynamoDB workflow acquisition retries use request-specific idempotency tokens so an optimistic-lock retry cannot become `IdempotentParameterMismatchException`.
+      - **19.7.3** [x] Add focused creation, workflow-race, and retry regression coverage; validate the affected Go packages and refresh the deployment handoff.
 
 20. **Production Hardening and Optimization — Pending**
     - Proceeded before Phase 19 by explicit user approval. Deliver on

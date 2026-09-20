@@ -28,6 +28,7 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/app/sessioncard"
 	appsession "github.com/L-McKendrick/game-server-platform/internal/app/sessions"
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
+	"github.com/L-McKendrick/game-server-platform/internal/ports"
 )
 
 var testNow = time.Date(2026, 8, 3, 20, 0, 0, 0, time.UTC)
@@ -52,6 +53,13 @@ func (query *sequencePlayerQuery) Query(context.Context, string) (domain.PlayerS
 type discardCommandQueue struct{}
 
 func (discardCommandQueue) Enqueue(context.Context, domain.CommandEnvelope) error { return nil }
+
+type recordingInteractionCommandQueue struct{ commands []domain.CommandEnvelope }
+
+func (queue *recordingInteractionCommandQueue) Enqueue(_ context.Context, command domain.CommandEnvelope) error {
+	queue.commands = append(queue.commands, command)
+	return nil
+}
 
 func (clock fixedClock) Now() time.Time {
 	return clock.now
@@ -425,6 +433,39 @@ func TestHandlerCreatesConfiguredDraftAndQueuesModalUploadsIdempotently(t *testi
 		cardRequests[0].SessionID != session.ID || cardRequests[0].CardRevision != session.Version ||
 		!strings.Contains(cardRequests[0].Content, "Setting up: Saturday Arma") {
 		t.Fatalf("card requests = %#v; want one replay-safe public card", cardRequests)
+	}
+}
+
+func TestHandlerDefersAutomaticStartUntilWorkshopMissionResolution(t *testing.T) {
+	t.Parallel()
+
+	commands := &recordingInteractionCommandQueue{}
+	handler, repository, queue, _, privateKey := newTestHandlerWithQueuesAndCommandQueue(
+		t,
+		[]string{"correlation-workshop-create"},
+		[]string{"session-workshop-create", "event-created", "event-configured", "event-artifacts", "event-workshop-queued"},
+		commands,
+	)
+	response := executeSignedRequest(t, handler, privateKey, createWorkshopModalSubmissionBody(
+		"interaction-workshop-create", "Workshop Beta", []string{createFeatureAutoStart}, "https://steamcommunity.com/sharedfiles/filedetails/?id=1818899168",
+	), testNow)
+	var decoded interactionResponse
+	decodeResponse(t, response, &decoded)
+	if response.Code != http.StatusOK || decoded.Data == nil || !strings.Contains(decoded.Data.Content, "queued for metadata validation") {
+		t.Fatalf("response = %#v", decoded)
+	}
+	sessions, err := repository.ListByOwner(context.Background(), "owner-1", 10)
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("sessions = %#v, error = %v", sessions, err)
+	}
+	if sessions[0].WorkshopResolutionTarget != domain.WorkshopTargetMission || sessions[0].WorkshopResolutionRequestKey == "" {
+		t.Fatalf("Workshop resolution marker = %#v", sessions[0])
+	}
+	if len(commands.commands) != 0 {
+		t.Fatalf("automatic start commands = %#v; want none before resolution", commands.commands)
+	}
+	if requests := queue.WorkshopRequests(); len(requests) != 1 || requests[0].SessionID != sessions[0].ID {
+		t.Fatalf("Workshop requests = %#v", requests)
 	}
 }
 
@@ -1682,6 +1723,15 @@ func newTestHandlerWithQueues(
 	correlationIDs []string,
 	serviceIDs []string,
 ) (*Handler, *memory.SessionRepository, *memory.ArtifactQueue, *memory.NotificationQueue, ed25519.PrivateKey) {
+	return newTestHandlerWithQueuesAndCommandQueue(t, correlationIDs, serviceIDs, discardCommandQueue{})
+}
+
+func newTestHandlerWithQueuesAndCommandQueue(
+	t *testing.T,
+	correlationIDs []string,
+	serviceIDs []string,
+	commandQueue ports.CommandQueue,
+) (*Handler, *memory.SessionRepository, *memory.ArtifactQueue, *memory.NotificationQueue, ed25519.PrivateKey) {
 	t.Helper()
 
 	seed := bytes.Repeat([]byte{7}, ed25519.SeedSize)
@@ -1699,7 +1749,7 @@ func newTestHandlerWithQueues(
 		appsession.WithArtifactQueue(artifactQueue),
 		appsession.WithWorkshopQueue(artifactQueue),
 		appsession.WithNotificationQueue(notificationQueue),
-		appsession.WithCommandQueue(discardCommandQueue{}),
+		appsession.WithCommandQueue(commandQueue),
 		appsession.WithConfirmationRepository(repository),
 	)
 	if err != nil {
@@ -2041,6 +2091,28 @@ func createModalSubmissionBody(
 				label(map[string]any{"type": componentTypeFileUpload, "custom_id": createMissionCustomID, "values": []string{"attachment-mission"}}),
 			},
 			"resolved": map[string]any{"attachments": attachments},
+		},
+	})
+}
+
+func createWorkshopModalSubmissionBody(interactionID, displayName string, features []string, workshopURL string) []byte {
+	label := func(component map[string]any) map[string]any {
+		return map[string]any{"type": componentTypeLabel, "component": component}
+	}
+	return marshalPayload(map[string]any{
+		"id": interactionID, "application_id": "app-1", "type": interactionTypeModalSubmit,
+		"guild_id": "guild-1", "channel_id": "channel-1",
+		"member": map[string]any{"user": map[string]any{"id": "owner-1"}, "roles": []string{"role-1"}},
+		"data": map[string]any{
+			"custom_id": createModalCustomID,
+			"components": []any{
+				label(map[string]any{"type": componentTypeTextInput, "custom_id": createNameCustomID, "value": displayName}),
+				label(map[string]any{"type": componentTypeTextInput, "custom_id": createDescriptionCustomID, "value": "Workshop setup"}),
+				label(map[string]any{"type": componentTypeCheckboxGroup, "custom_id": createFeaturesCustomID, "values": features}),
+				label(map[string]any{"type": componentTypeFileUpload, "custom_id": createMissionCustomID, "values": []string{}}),
+				label(map[string]any{"type": componentTypeTextInput, "custom_id": createMissionWorkshopID, "value": workshopURL}),
+			},
+			"resolved": map[string]any{"attachments": map[string]any{}},
 		},
 	})
 }
