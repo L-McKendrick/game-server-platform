@@ -2,66 +2,52 @@
 
 ## State and Objective
 
-The Test B1 creation-time automatic-start race is fixed on
-`codex/fix-test-b1-setup-race`, based on `dcb6877` (`main`). Test B1 recovered
-without operator mutation and is running; the source correction is not yet
-deployed.
+The beta client-preset integrity defect exposed by session `bro` is fixed on
+`codex/fix-bro-session`, based on `3eba37a` (`main`). The artifact-worker fix is
+deployed in development and `bro`'s retained preset metadata is repaired.
 
 ## Current Handoff
 
-- Test B1 (`01M2W7PESG2ZQDMZB9GBQF7592`) accepted its Workshop mission at
-  2026-09-19 07:04:40 UTC while an earlier automatic-start command raced the
-  same session-version update.
-- The first workflow transaction lost that optimistic race and was reported as
-  `session workflow lock is held`. Later retries rebuilt different event/time
-  fields while reusing the workflow ID as DynamoDB's client request token,
-  producing `IdempotentParameterMismatchException` until the token window
-  expired.
-- Creation now explicitly defers automatic start when a Workshop mission link
-  is queued. The shared automatic-start boundary also refuses to queue while a
-  Workshop resolution marker is pending. The accepted-resolution worker remains
-  the sole trigger that starts the ready session.
-- Workflow acquisition now binds DynamoDB idempotency to the exact event/attempt
-  rather than the reusable workflow ID, so a later optimistic-lock retry can
-  safely rebuild its transaction.
-- Test B1's original command succeeded at 07:19:39 UTC after the old token
-  window expired. Provisioning and bootstrap both succeeded, and the session
-  reached `RUNNING` at 08:00:59 UTC. No live repair was performed.
-- Focused sessions, DynamoDB repository, Discord interaction, artifact-worker,
-  and command-worker tests pass. `go vet ./...`, `go build ./cmd/...`, and
-  `git diff --check` pass.
-- `go test ./...` still has the pre-existing unrelated failure
-  `TestArchiveWorkflowCompletesSuccessfullyAfterDurableCompletion`; all affected
-  packages pass.
+- Client preset ingestion previously stored generated public-modlist bytes at
+  the digest-addressed preset input key. The key retained the original upload's
+  SHA-256, so scoped host access rejected the stored bytes during bootstrap.
+- Ingestion now preserves the original validated preset bytes, content type,
+  digest-derived key, and checksum. The sanitized public modlist remains a
+  separate object used for Discord publication.
+- Regression coverage verifies the two objects have distinct bytes and that the
+  private preset key and upload checksum match the original preset.
+- The reviewed targeted Terraform plan
+  `bro-preset-integrity-minimal.tfplan` updated only the development
+  artifact-worker Lambda. The broader `bro-preset-integrity.tfplan` was not
+  applied because local `.tfvars` drifted from live Discord, provisioning, and
+  capacity settings.
+- `bro` (`01M31DE6PZ34F8W1NFH2D775KM`) remains `FAILED` with its instance and
+  data volume retained. Its valid stored preset was copied to a checksum-correct
+  key, and a version-guarded DynamoDB transaction updated both preset pointers
+  from version 29 to 30 and appended `PresetIntegrityRepaired` audit evidence.
+- An attempted operator queue retry was denied by normal guild-role
+  authorization and made no session change. It will move to the command DLQ
+  after five receives unless removed through the existing operator tooling.
+- Focused tests pass. `go vet ./...`, `go build ./cmd/...`, and
+  `git diff --check` pass. `go test ./...` has only the pre-existing unrelated
+  `TestArchiveWorkflowCompletesSuccessfullyAfterDurableCompletion` failure.
 
 ## Important User Attention
 
-- Deploy this branch before relying on automatic setup for another session that
-  uses a Workshop mission link.
-- The unrelated archive state-machine security-contract failure remains a
-  release-gate concern and was not changed in this focused fix.
+- Run `/rb start session:bro` from an authorized Discord account. The platform
+  will resume bootstrap on the retained host and should skip the completed game
+  installation stage.
+- Inspect and remove or quarantine the single authorization-denied repair
+  command after it reaches the command DLQ; do not redrive it.
+- Reconcile the ignored development `.tfvars` with live values before the next
+  untargeted Terraform deployment. The current local values would change the
+  Discord application/guild, disable provisioning, and reduce capacity.
 
 ## Commands to Apply Current Changes
 
-Package the affected Lambda sources, create and review a fresh Terraform plan,
-then apply that exact reviewed plan only after approval:
+No further code deployment or Discord command registration is required; the
+artifact-worker source correction is already deployed in development.
 
-```powershell
-./scripts/package-discord-lambda.ps1
-$env:AWS_PROFILE = "game-server-dev"
-$env:AWS_REGION = "us-west-2"
-$env:AWS_EC2_METADATA_DISABLED = "true"
-aws sts get-caller-identity
-terraform -chdir=infra/terraform/environments/dev init -backend-config=backend.hcl -input=false
-terraform -chdir=infra/terraform/environments/dev plan -out=test-b1-setup-race.tfplan
-terraform -chdir=infra/terraform/environments/dev show test-b1-setup-race.tfplan
-terraform -chdir=infra/terraform/environments/dev apply test-b1-setup-race.tfplan
-```
-
-After deployment, create a disposable vanilla session with automatic setup and
-a Workshop mission link. Verify that no provisioning workflow starts before
-`WorkshopMissionResolved`, then verify one provisioning workflow proceeds to
-`RUNNING`.
-
-Discord command registration is not required because command definitions did
-not change.
+After the authorized Discord retry, verify the session reaches `RUNNING` and
+then inspect the command DLQ with the existing reliability runbook. Do not apply
+`bro-preset-integrity.tfplan`.
