@@ -21,10 +21,14 @@ deployed in development and `bro`'s retained preset metadata is repaired.
   artifact-worker Lambda. The broader `bro-preset-integrity.tfplan` was not
   applied because local `.tfvars` drifted from live Discord, provisioning, and
   capacity settings.
-- `bro` (`01M31DE6PZ34F8W1NFH2D775KM`) remains `FAILED` with its instance and
-  data volume retained. Its valid stored preset was copied to a checksum-correct
-  key, and a version-guarded DynamoDB transaction updated both preset pointers
-  from version 29 to 30 and appended `PresetIntegrityRepaired` audit evidence.
+- `bro` (`01M31DE6PZ34F8W1NFH2D775KM`) had its valid stored preset copied to a
+  checksum-correct key. A version-guarded DynamoDB transaction updated both
+  preset pointers from version 29 to 30 and appended
+  `PresetIntegrityRepaired` audit evidence.
+- An authorized Discord retry started workflow `1551507903913918464` on the
+  retained instance. At the last observation the session was `INSTALLING`, the
+  command was in progress, and durable progress had advanced past the checksum
+  boundary to `MODS_APPLIED`.
 - An attempted operator queue retry was denied by normal guild-role
   authorization and made no session change. It will move to the command DLQ
   after five receives unless removed through the existing operator tooling.
@@ -34,9 +38,8 @@ deployed in development and `bro`'s retained preset metadata is repaired.
 
 ## Important User Attention
 
-- Run `/rb start session:bro` from an authorized Discord account. The platform
-  will resume bootstrap on the retained host and should skip the completed game
-  installation stage.
+- Monitor workflow `1551507903913918464` until `bro` reaches `RUNNING` or a new
+  actionable failure. Do not submit another start while it is active.
 - Inspect and remove or quarantine the single authorization-denied repair
   command after it reaches the command DLQ; do not redrive it.
 - Reconcile the ignored development `.tfvars` with live values before the next
@@ -48,6 +51,5 @@ deployed in development and `bro`'s retained preset metadata is repaired.
 No further code deployment or Discord command registration is required; the
 artifact-worker source correction is already deployed in development.
 
-After the authorized Discord retry, verify the session reaches `RUNNING` and
-then inspect the command DLQ with the existing reliability runbook. Do not apply
-`bro-preset-integrity.tfplan`.
+Verify the active retry reaches `RUNNING`, then inspect the command DLQ with the
+existing reliability runbook. Do not apply `bro-preset-integrity.tfplan`.
