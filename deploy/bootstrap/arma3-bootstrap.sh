@@ -303,7 +303,11 @@ sample_arma_download() {
     uploader=""
   }
   while kill -0 "$owner" 2>/dev/null; do
-    value="$(arma_download_activity "$output_file")"
+    if [ -n "${3:-}" ]; then
+      value="$(workshop_download_activity "$output_file" "$3")"
+    else
+      value="$(arma_download_activity "$output_file")"
+    fi
     if [ "$value" != "$previous" ]; then activity "$value" >/dev/null; previous="$value"; fi
     sleep 30 & sleeper=$!
     wait "$sleeper" || true
@@ -314,13 +318,23 @@ sample_arma_download() {
 run_steamcmd() {
   local runfile="$1" output_file code progress_pid="" progress_owner="$BASHPID"
   output_file="${STEAM_AUTH_ROOT:-/run}/steamcmd-output.$$.log"
-  : > "$output_file"
+  : > "$output_file" || return $?
   if [ "${2:-}" = arma ]; then sample_arma_download "$output_file" "$progress_owner" & progress_pid=$!; fi
+  if [ "${2:-}" = workshop ]; then sample_arma_download "$output_file" "$progress_owner" "$3" & progress_pid=$!; fi
   set +e
   runuser -u steam -- env HOME="$STEAM_AUTH_ROOT/home" "$ROOT/steamcmd/steamcmd.sh" +runscript "$runfile" >"$output_file" 2>&1
   code=$?
   if [ -n "$progress_pid" ]; then kill "$progress_pid" 2>/dev/null; wait "$progress_pid" 2>/dev/null; fi
   set -e
+  if [ "${2:-}" = workshop ]; then
+    # Exit status alone does not prove that every runscript item succeeded.
+    # Export only exact requested IDs, never Steam output or authentication data.
+    if ! awk 'NR == FNR {requested[$1]=1; next} /^Success\. Downloaded item [0-9]+ / {if ($4 in requested) print $4}' "$3" "$output_file" | sort -u > "$4"; then
+      rm -f -- "$output_file"
+      return 1
+    fi
+    if grep -Eq '^ERROR!' "$output_file"; then code=1; fi
+  fi
   if grep -Eqi 'Steam Guard|two[- ]factor|Account Logon Denied|InvalidPassword|Invalid Password|login failure|password required' "$output_file"; then
     STEAM_AUTH_VALID=false
     mark_steam_reauthorization_required
@@ -349,17 +363,62 @@ run_steamcmd() {
 }
 
 download_workshop_item() {
-	local id="$1" runfile code=1 attempt
-	[[ "$id" =~ ^[1-9][0-9]{5,19}$ ]] || { log "Workshop mod item ID is invalid"; return 1; }
-	for attempt in 1 2 3; do
-		runfile="$(mktemp /run/gsp-steam-mod.XXXXXX)"; steam_login_file "$runfile"
-		printf 'workshop_download_item 107410 %s validate\nquit\n' "$id" >> "$runfile"
-		if run_steamcmd "$runfile"; then code=0; else code=$?; fi
-		rm -f -- "$runfile"; [ "$code" -eq 0 ] && return 0; [ "$code" -eq 75 ] || return "$code"
-		log "Retrying transient Workshop mod download"
-	done
-	printf 'ERR_WORKSHOP_DOWNLOAD_TIMEOUT: Workshop item download retries were exhausted.\n' >&2; return 1
+  local id="$1" requests
+  requests="$(mktemp /run/gsp-workshop-requests.XXXXXX)"
+  printf '%s\t%s\t%s\n' "$id" "${2:-1}" "${3:-1}" > "$requests"
+  local code=0
+  download_workshop_batch "$requests" || code=$?
+  rm -f -- "$requests"
+  return "$code"
 }
+
+workshop_download_activity() {
+  local line id
+  line="$(tail -c 8192 "$1" 2>/dev/null | tr '\r' '\n' | grep -E '^Downloading item [0-9]+ ' | tail -n 1)" || true
+  id="$(printf '%s\n' "$line" | awk '{print $3}')"
+  awk -v id="$id" '$1 == id {printf "WORKSHOP_ITEM:%s:%s:%s", $1, $2, $3; exit}' "$2"
+}
+
+download_workshop_batch() (
+  local requests="$1" runfile='' pending='' successes='' next='' id index count extra attempt code
+  trap 'rm -f -- "$runfile" "$pending" "$successes" "$next"' EXIT
+  runfile="$(mktemp /run/gsp-steam-workshop.XXXXXX)" || return $?
+  pending="$(mktemp /run/gsp-workshop-pending.XXXXXX)" || return $?
+  successes="$(mktemp /run/gsp-workshop-success.XXXXXX)" || return $?
+  next="$(mktemp /run/gsp-workshop-next.XXXXXX)" || return $?
+  # Validate the complete command inventory before opening Steam.
+  while IFS=$'\t' read -r id index count extra; do
+    [[ "$id" =~ ^[1-9][0-9]{0,19}$ && "$index" =~ ^[1-9][0-9]{0,2}$ && "$count" =~ ^[1-9][0-9]{0,2}$ && -z "$extra" ]] || return 1
+    [ "$index" -le "$count" ] && [ "$count" -le 250 ] || return 1
+  done < "$requests"
+  awk '!seen[$1]++' "$requests" > "$pending" || return $?
+  [ -s "$pending" ] || return 0
+  require_workshop_space "${2:-5368709120}" || return $?
+  for attempt in 1 2 3; do
+    { : > "$runfile" && : > "$successes"; } || return $?
+    printf '@ShutdownOnFailedCommand 1\n@NoPromptForPassword 1\n' >> "$runfile" || return $?
+    steam_login_file "$runfile" || return $?
+    while IFS=$'\t' read -r id index count; do
+      printf 'workshop_download_item 107410 %s validate\n' "$id" >> "$runfile" || return $?
+    done < "$pending"
+    printf 'quit\n' >> "$runfile" || return $?
+    IFS=$'\t' read -r id index count < "$pending"
+    activity "WORKSHOP_ITEM:$id:$index:$count"
+    if run_steamcmd "$runfile" workshop "$pending" "$successes"; then code=0; else code=$?; fi
+    # Guard/visibility/removal failures must not be masked by earlier successes.
+    [ "$code" -eq 0 ] || [ "$code" -eq 75 ] || return "$code"
+    awk 'FILENAME == ARGV[1] {done[$1]=1; next} !($1 in done)' "$successes" "$pending" > "$next" || return $?
+    mv -- "$next" "$pending" || return $?
+    if [ ! -s "$pending" ]; then activity ""; return 0; fi
+    if [ "$code" -eq 0 ]; then
+      printf 'ERR_WORKSHOP_ITEM_DOWNLOAD: Steam did not confirm every requested Workshop download.\n' >&2
+      return 1
+    fi
+    log "Retrying transient Workshop batch download"
+  done
+  printf 'ERR_WORKSHOP_DOWNLOAD_TIMEOUT: Workshop item download retries were exhausted.\n' >&2
+  return 1
+)
 
 prepare_workshop_staging() {
   [[ "$WORKFLOW_ID" =~ ^[A-Za-z0-9_-]{1,80}$ ]] || { log "Workshop workflow identity is invalid"; return 1; }
@@ -405,23 +464,28 @@ ensure_workshop_revision_root() {
   chmod 0750 "$revision_root"
 }
 
-ensure_staged_workshop_mod() {
-  local id="$1" expected_update="$2" revision_root="$3" download_count="$4" download_index="$5" source source_size pending marker marker_pending actual_update
-  [[ "$id" =~ ^[1-9][0-9]{0,19}$ && "$expected_update" =~ ^-?[0-9]+$ && "$download_count" =~ ^[1-9][0-9]{0,3}$ ]] || return 1
-  ensure_workshop_revision_root "$revision_root"
-  source="$revision_root/$id"
-  marker="$revision_root/.snapshot-$id"
+workshop_mod_cached() {
+  local id="$1" expected_update="$2" revision_root="$3" source="$3/$1" marker="$3/.snapshot-$1" source_size
   if [ -d "$source" ] && [ ! -L "$source" ] && [ -f "$marker" ] && [ ! -L "$marker" ] && [ "$(cat -- "$marker")" = "$id:$expected_update" ] && ! find "$source" -type l -print -quit | grep -q .; then
     source_size="$(du -sb "$source" | awk '{print $1}')"
     if [[ "$source_size" =~ ^[1-9][0-9]*$ ]] && [ "$source_size" -le 21474836480 ]; then
-      STAGED_WORKSHOP_MOD_PATH="$source"
       return 0
     fi
   fi
-  require_workshop_space 5368709120
-  activity "WORKSHOP_ITEM:$id:$download_index:$download_count"
-  download_workshop_item "$id"
-  activity ""
+  return 1
+}
+
+ensure_staged_workshop_mod() {
+  local id="$1" expected_update="$2" revision_root="$3" download_count="$4" download_index="$5" source source_size pending marker="$3/.snapshot-$1" marker_pending actual_update
+  [[ "$id" =~ ^[1-9][0-9]{0,19}$ && "$expected_update" =~ ^-?[0-9]+$ && "$download_count" =~ ^[1-9][0-9]{0,3}$ ]] || return 1
+  ensure_workshop_revision_root "$revision_root" || return $?
+  if workshop_mod_cached "$id" "$expected_update" "$revision_root"; then
+    STAGED_WORKSHOP_MOD_PATH="$revision_root/$id"
+    return 0
+  fi
+  if [ "${WORKSHOP_BATCH_READY:-false}" != true ]; then
+    download_workshop_item "$id" "$download_index" "$download_count" || return $?
+  fi
   source="$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/$id"
   [ -d "$source" ] && [ ! -L "$source" ] || { log "Workshop item $id was not downloaded safely"; return 1; }
   ! find "$source" -type l -print -quit | grep -q . || { log "Workshop mod content contains a symbolic link"; return 1; }
@@ -431,17 +495,18 @@ ensure_staged_workshop_mod() {
   fi
   source_size="$(du -sb "$source" | awk '{print $1}')"
   [ "$source_size" -gt 0 ] && [ "$source_size" -le 21474836480 ] || { log "Workshop mod content size is outside the allowed range"; return 1; }
-  lowercase_tree "$source"
-  [ ! -e "$revision_root/$id" ] || rm -rf -- "$revision_root/$id"
-  pending="$(mktemp -d "$revision_root/.pending-$id.XXXXXX")"
-  cp -a -- "$source/." "$pending/"
-  chown -R steam:steam "$pending"
-  mv -- "$pending" "$revision_root/$id"
-  marker_pending="$(mktemp "$revision_root/.snapshot-$id.XXXXXX")"
-  printf '%s:%s\n' "$id" "$expected_update" > "$marker_pending"
-  chmod 0640 "$marker_pending"
-  chown steam:steam "$marker_pending"
-  mv -f -- "$marker_pending" "$marker"
+  lowercase_tree "$source" || return $?
+  if [ -e "$revision_root/$id" ]; then rm -rf -- "$revision_root/$id" || return $?; fi
+  pending="$(mktemp -d "$revision_root/.pending-$id.XXXXXX")" || return $?
+  if ! { cp -a -- "$source/." "$pending/" && chown -R steam:steam "$pending" && mv -- "$pending" "$revision_root/$id"; }; then
+    rm -rf -- "$pending"
+    return 1
+  fi
+  marker_pending="$(mktemp "$revision_root/.snapshot-$id.XXXXXX")" || return $?
+  if ! { printf '%s:%s\n' "$id" "$expected_update" > "$marker_pending" && chmod 0640 "$marker_pending" && chown steam:steam "$marker_pending" && mv -f -- "$marker_pending" "$marker"; }; then
+    rm -f -- "$marker_pending"
+    return 1
+  fi
   STAGED_WORKSHOP_MOD_PATH="$revision_root/$id"
 }
 
@@ -469,8 +534,9 @@ publish_workshop_sync_results() {
 }
 
 install_workshop_missions() (
-	local id revision expected_filename expected_size extra source pbo size parent pending='' final attempt code checksum runfile filename object_key manifest_file candidate_name expected_total=0 download_index=0
+	local id revision expected_filename expected_size extra source pbo size parent pending='' final checksum filename object_key manifest_file candidate_name expected_total=0 download_index=0
   local -a ids=() pbos=()
+  local requests
   declare -A seen=()
 	declare -A filename_seen=()
 	declare -A expected_filenames=()
@@ -486,24 +552,24 @@ install_workshop_missions() (
 	[ "${#ids[@]}" -gt 0 ] || return 0
 	require_workshop_space "$((expected_total * 2 + 268435456))"
 	manifest_file="$(mktemp /run/gsp-workshop-missions.XXXXXX)"
-	trap '[ -z "$pending" ] || rm -rf -- "$pending"; rm -f -- "$manifest_file"' EXIT
+  requests="$(mktemp /run/gsp-workshop-requests.XXXXXX)"
+	trap '[ -z "$pending" ] || rm -rf -- "$pending"; rm -f -- "$manifest_file" "$requests"' EXIT
+  for id in "${ids[@]}"; do
+    download_index=$((download_index + 1))
+    final="$ROOT/workshop-missions/$id/$WORKSHOP_MISSION_REVISION"
+    if ! { [ -f "$final/mission.pbo" ] && [ -f "$final/mission.sha256" ] && [ -f "$final/metadata" ] && (cd "$final" && sha256sum --check --status mission.sha256); }; then
+      [ ! -e "$final" ] || { log "Workshop mission staging destination is inconsistent"; return 1; }
+      printf '%s\t%s\t%s\n' "$id" "$download_index" "${#ids[@]}" >> "$requests"
+    fi
+  done
+  download_workshop_batch "$requests" "$((expected_total * 2 + 268435456))" || return $?
+  download_index=0
   for id in "${ids[@]}"; do
     download_index=$((download_index + 1))
 	expected_filename="${expected_filenames[$id]}"; expected_size="${expected_sizes[$id]}"
     parent="$ROOT/workshop-missions/$id"; final="$parent/$WORKSHOP_MISSION_REVISION"
 	if ! { [ -f "$final/mission.pbo" ] && [ -f "$final/mission.sha256" ] && [ -f "$final/metadata" ] && (cd "$final" && sha256sum --check --status mission.sha256); }; then
 	  [ ! -e "$final" ] || { log "Workshop mission staging destination is inconsistent"; return 1; }
-	  activity "WORKSHOP_ITEM:$id:$download_index:${#ids[@]}"
-	  code=1
-	  for attempt in 1 2 3; do
-		runfile="$(mktemp /run/gsp-steam-mission.XXXXXX)"; steam_login_file "$runfile"
-		printf 'workshop_download_item 107410 %s validate\nquit\n' "$id" >> "$runfile"
-		if run_steamcmd "$runfile"; then code=0; else code=$?; fi
-		rm -f -- "$runfile"; [ "$code" -eq 0 ] && break; [ "$code" -eq 75 ] || return "$code"
-		log "Retrying transient Workshop mission download"
-	  done
-	  [ "$code" -eq 0 ] || { printf 'ERR_WORKSHOP_DOWNLOAD_TIMEOUT: Workshop scenario download retries were exhausted.\n' >&2; return 1; }
-	  activity ""
 	  source="$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/$id"
 	  [ -d "$source" ] || { printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario content was not downloaded.\n' >&2; return 1; }
 	  ! find "$source" -type l -print -quit | grep -q . || { printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario content contains a symbolic link.\n' >&2; return 1; }
@@ -625,12 +691,33 @@ install_workshop() (
 	done <<< "$WORKSHOP_MOD_MANIFEST"
   workshop_count=$((${#ids[@]} + ${#server_ids[@]}))
 	[ "$workshop_count" -le 250 ] || { log "Workshop mod count exceeds the supported limit"; return 1; }
+  local requests WORKSHOP_BATCH_READY=false
+  requests="$(mktemp /run/gsp-workshop-requests.XXXXXX)"
+  trap 'rm -f -- "$requests"' EXIT
+  for id in "${ids[@]}" "${server_ids[@]}"; do
+    download_index=$((download_index + 1))
+    if [ "$download_index" -le "${#ids[@]}" ]; then
+      revision_root="$ROOT/workshop/mod-revisions/client-$PRESET_REVISION"
+      expected_update="${expected_updates[$id]:-0}"
+    else
+      revision_root="$ROOT/workshop/mod-revisions/server-$SERVER_PRESET_REVISION"
+      expected_update=0
+    fi
+    [[ "$id" =~ ^[1-9][0-9]{0,19}$ ]] || { log "Workshop mod item ID is invalid"; return 1; }
+    ensure_workshop_revision_root "$revision_root"
+    if ! workshop_mod_cached "$id" "$expected_update" "$revision_root"; then
+      printf '%s\t%s\t%s\n' "$id" "$download_index" "$workshop_count" >> "$requests"
+    fi
+  done
+  download_workshop_batch "$requests" || return $?
+  WORKSHOP_BATCH_READY=true
+  download_index=0
   if [ "$workshop_count" -gt 0 ]; then
   for id in "${ids[@]}"; do
 	expected_update="${expected_updates[$id]:-0}"
 	revision_root="$ROOT/workshop/mod-revisions/client-$PRESET_REVISION"
 	download_index=$((download_index + 1))
-	ensure_staged_workshop_mod "$id" "$expected_update" "$revision_root" "$workshop_count" "$download_index"
+	ensure_staged_workshop_mod "$id" "$expected_update" "$revision_root" "$workshop_count" "$download_index" || return $?
 	source="$STAGED_WORKSHOP_MOD_PATH"
 	mods="${mods:+$mods;}@workshop_$id"
 	if [ "$WORKSHOP_PROMOTE_MODS" = true ]; then
@@ -642,7 +729,7 @@ install_workshop() (
 	for id in "${server_ids[@]}"; do
 		revision_root="$ROOT/workshop/mod-revisions/server-$SERVER_PRESET_REVISION"
 		download_index=$((download_index + 1))
-		ensure_staged_workshop_mod "$id" 0 "$revision_root" "$workshop_count" "$download_index"
+		ensure_staged_workshop_mod "$id" 0 "$revision_root" "$workshop_count" "$download_index" || return $?
 		source="$STAGED_WORKSHOP_MOD_PATH"
 		server_mods="${server_mods:+$server_mods;}@workshop_$id"
 		if [ "$WORKSHOP_PROMOTE_MODS" = true ]; then

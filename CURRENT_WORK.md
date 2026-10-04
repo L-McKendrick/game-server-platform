@@ -2,66 +2,70 @@
 
 ## State and Objective
 
-The Test B1 creation-time automatic-start race is fixed on
-`codex/fix-test-b1-setup-race`, based on `dcb6877` (`main`). Test B1 recovered
-without operator mutation and is running; the source correction is not yet
-deployed.
+Workshop batching is implemented on `codex/workshop-download-batching` for task
+20.7.1. AWS development remains in `us-west-2`; this work is not deployed.
 
 ## Current Handoff
 
-- Test B1 (`01M2W7PESG2ZQDMZB9GBQF7592`) accepted its Workshop mission at
-  2026-09-19 07:04:40 UTC while an earlier automatic-start command raced the
-  same session-version update.
-- The first workflow transaction lost that optimistic race and was reported as
-  `session workflow lock is held`. Later retries rebuilt different event/time
-  fields while reusing the workflow ID as DynamoDB's client request token,
-  producing `IdempotentParameterMismatchException` until the token window
-  expired.
-- Creation now explicitly defers automatic start when a Workshop mission link
-  is queued. The shared automatic-start boundary also refuses to queue while a
-  Workshop resolution marker is pending. The accepted-resolution worker remains
-  the sole trigger that starts the ready session.
-- Workflow acquisition now binds DynamoDB idempotency to the exact event/attempt
-  rather than the reusable workflow ID, so a later optimistic-lock retry can
-  safely rebuild its transaction.
-- Test B1's original command succeeded at 07:19:39 UTC after the old token
-  window expired. Provisioning and bootstrap both succeeded, and the session
-  reached `RUNNING` at 08:00:59 UTC. No live repair was performed.
-- Focused sessions, DynamoDB repository, Discord interaction, artifact-worker,
-  and command-worker tests pass. `go vet ./...`, `go build ./cmd/...`, and
-  `git diff --check` pass.
-- `go test ./...` still has the pre-existing unrelated failure
-  `TestArchiveWorkflowCompletesSuccessfullyAfterDurableCompletion`; all affected
-  packages pass.
+- Missing client/server mods share one SteamCMD session; missing missions use
+  a separate batch session. Cached revision content skips downloads.
+- Exact requested-item success confirmations gate batch completion. Transient
+  failures retry only unconfirmed IDs, up to three attempts; Guard and permanent
+  failures remain terminal. Item positions and private-output cleanup are retained.
+- Existing per-item metadata, size, checksum, symlink and publication checks
+  remain after download. Copy/marker failures cannot report a completed mod.
+- Reviewed executable shell tests cover batching, duplicate/cache handling,
+  transient/terminal failures, unconfirmed success, auth failure, mission replay,
+  size drift, unsafe payloads, and sampler/temporary-file cleanup.
+- Go 1.26.5 affected-package coverage tests, vet/build, Bash syntax and Terraform
+  1.15.x validation pass. Tracked Terraform `.tf` formatting passes.
+- Full `go test -cover ./...` has one unrelated unchanged archive contract test
+  failure: its literal LF comparison rejects the CRLF checkout of `phase9.tf`.
+  LF-normalized content matches. Ignored `terraform.tfvars` also fails formatting;
+  left untouched. No working C compiler; the CI race gate remains required.
+- Deployment changes the content-addressed S3 script and six worker environment
+  script references. Lambda executable code and Discord commands are unchanged;
+  no Lambda packaging or Discord registration is required.
+- The pre-existing deletion of `infra/terraform/bootstrap/backend.tf` is untouched.
 
 ## Important User Attention
 
-- Deploy this branch before relying on automatic setup for another session that
-  uses a Workshop mission link.
-- The unrelated archive state-machine security-contract failure remains a
-  release-gate concern and was not changed in this focused fix.
+- Review and approve a fresh Terraform plan before applying. Default: no deployment.
+- Task 20.7.2 remains pending: benchmark identical Workshop content after deployment.
+  No measured speedup or live Steam output-format acceptance is claimed yet.
+- Existing executions retain their dispatched script; assess batching on a new
+  bootstrap/sync operation. Game and Workshop installation remain sequential.
 
 ## Commands to Apply Current Changes
 
-Package the affected Lambda sources, create and review a fresh Terraform plan,
-then apply that exact reviewed plan only after approval:
+Run from the repository root. Authentication uses the user-approved `platform-admin`
+profile. No packaging or Discord command registration is needed.
 
 ```powershell
-./scripts/package-discord-lambda.ps1
-$env:AWS_PROFILE = "game-server-dev"
-$env:AWS_REGION = "us-west-2"
-$env:AWS_EC2_METADATA_DISABLED = "true"
-aws sts get-caller-identity
-terraform -chdir=infra/terraform/environments/dev init -backend-config=backend.hcl -input=false
-terraform -chdir=infra/terraform/environments/dev plan -out=test-b1-setup-race.tfplan
-terraform -chdir=infra/terraform/environments/dev show test-b1-setup-race.tfplan
-terraform -chdir=infra/terraform/environments/dev apply test-b1-setup-race.tfplan
+$env:AWS_PROFILE = 'platform-admin'
+$batchPlan = 'workshop-batching-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.tfplan'
+if (Test-Path -LiteralPath "infra/terraform/environments/dev/$batchPlan") { throw 'Plan already exists; choose a fresh filename.' }
+terraform -chdir=infra/terraform/environments/dev plan -out=$batchPlan
+if ($LASTEXITCODE -ne 0) { throw 'Terraform plan failed.' }
+terraform -chdir=infra/terraform/environments/dev show -no-color $batchPlan
+
+# Only after reviewing and approving that exact saved plan:
+terraform -chdir=infra/terraform/environments/dev apply $batchPlan
+if ($LASTEXITCODE -ne 0) { throw 'Terraform apply failed.' }
+
+$workers = 'artifact', 'bootstrap', 'sleepwake', 'archive', 'restore', 'reliability'
+foreach ($worker in $workers) {
+    aws lambda wait function-updated-v2 --function-name "game-server-platform-dev-$worker-worker" --profile platform-admin --region us-west-2
+    if ($LASTEXITCODE -ne 0) { throw "Worker update failed: $worker" }
+    aws lambda get-function-configuration --function-name "game-server-platform-dev-$worker-worker" --profile platform-admin --region us-west-2 --query '{State:State,Update:LastUpdateStatus,Key:Environment.Variables.BOOTSTRAP_SCRIPT_KEY,SHA256:Environment.Variables.BOOTSTRAP_SCRIPT_SHA256}' --output json
+    if ($LASTEXITCODE -ne 0) { throw "Worker verification failed: $worker" }
+}
+$assetsBucket = terraform -chdir=infra/terraform/environments/dev output -raw session_assets_bucket_name
+$scriptKey = aws lambda get-function-configuration --function-name game-server-platform-dev-bootstrap-worker --profile platform-admin --region us-west-2 --query Environment.Variables.BOOTSTRAP_SCRIPT_KEY --output text
+aws s3api head-object --bucket $assetsBucket --key $scriptKey --profile platform-admin --region us-west-2 --query '{Bytes:ContentLength,Type:ContentType,Version:VersionId}' --output json
+if ($LASTEXITCODE -ne 0) { throw 'Bootstrap script verification failed.' }
 ```
 
-After deployment, create a disposable vanilla session with automatic setup and
-a Workshop mission link. Verify that no provisioning workflow starts before
-`WorkshopMissionResolved`, then verify one provisioning workflow proceeds to
-`RUNNING`.
-
-Discord command registration is not required because command definitions did
-not change.
+Verify all six workers reference the reviewed script key/digest. Then use a new,
+approved modded-session operation to verify real Steam confirmations, current-item
+progress, cached replay, and download timing before claiming live acceptance.

@@ -25,7 +25,12 @@ SSM results still take precedence over deadline expiry.
 The stage shows `Downloading and installing workshop files (3 of 7)` and the download line shows the linked item ID. The position counts items in the current batch:
 Workshop missions have their own batch; client and server-only mods share one
 ordered batch. Cached items keep their position but emit no download activity;
-retries retain the same position. Activity clears when SteamCMD returns
+each batch downloads all missing items in one SteamCMD login/session. Missions
+use a separate session from the combined client/server-mod batch. Transient
+failures retry only IDs without an explicit Steam success confirmation, up to
+three attempts; exit status alone cannot complete a batch. Original item
+positions are retained on retry. A bounded private-output sampler tracks the
+current requested item without publishing raw Steam output. Activity clears when SteamCMD returns
 successfully, before payload validation, and when the shell stage changes.
 Workshop titles, byte percentages, per-item history, and new event infrastructure
 are not introduced. Snapshots may skip fast intermediate items between observations.

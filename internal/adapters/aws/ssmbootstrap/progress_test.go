@@ -130,11 +130,13 @@ steam_login_file() { :; }
 mktemp() {
  if [[ "${1:-}" == /run/* ]]; then command mktemp "$TEST_ROOT/run.XXXXXX"; else command mktemp "$@"; fi
 }
-calls=0
+printf 0 > "$TEST_ROOT/calls"
 run_steamcmd() {
  grep -qx 'GSP_ACTIVITY:WORKSHOP_ITEM:450814997:2:3' "$PROGRESS_FILE"
- calls=$((calls + 1))
+ calls=$(( $(cat "$TEST_ROOT/calls") + 1 ))
+ printf "%s" "$calls" > "$TEST_ROOT/calls"
  [ "$calls" -ge 3 ] || return 75
+ printf "450814997\n" > "$4"
  mkdir -p "$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/450814997"
  printf payload > "$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/450814997/mod.pbo"
 }
@@ -143,12 +145,12 @@ run_steamcmd() {
 		extract("ensure_workshop_revision_root() {", "\nrecord_workshop_sync_result() {") + `
 revision_root="$ROOT/workshop/mod-revisions/client-1"
 ensure_staged_workshop_mod 450814997 0 "$revision_root" 3 2
-[ "$calls" = 3 ]
+[ "$(cat "$TEST_ROOT/calls")" = 3 ]
 [ -f "$revision_root/450814997/mod.pbo" ]
 ! grep -q '^GSP_ACTIVITY:WORKSHOP_ITEM:' "$PROGRESS_FILE"
 # A valid materialized item is skipped without pretending to download it again.
 ensure_staged_workshop_mod 450814997 0 "$revision_root" 3 2
-[ "$calls" = 3 ]
+[ "$(cat "$TEST_ROOT/calls")" = 3 ]
 ! grep -q '^GSP_ACTIVITY:WORKSHOP_ITEM:' "$PROGRESS_FILE"
 `
 	bash, err := bashExecutable()

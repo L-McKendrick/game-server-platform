@@ -522,6 +522,8 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **20.5** [ ] Add operational dashboards, missing actionable alarms, validated notification delivery, and tested production and disaster-recovery runbooks.
     - **20.6** [ ] Verify costs, quotas, failure recovery, backup restoration, and operational readiness against explicit owned release gates.
     - **20.7** [ ] Benchmark bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements, then optimize only demonstrated bottlenecks within cost and reliability guardrails.
+      - **20.7.1** [x] Batch missing Workshop mods and missions into one SteamCMD session per content batch, preserving item validation, progress, bounded retries, cache reuse, and authorization cleanup; reviewed with executable shell edge-case tests on `codex/workshop-download-batching`. Offline validation passes for affected packages; deployment and measured speedup remain 20.7.2.
+      - **20.7.2** [ ] Benchmark deployed batching against identical content and record throughput and end-to-end improvement before considering concurrent game/Workshop workers or resource upgrades.
 
 21. **Potential Enhancements — Pending**
     - **21.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.
