@@ -2,55 +2,56 @@
 
 ## State and Objective
 
-Workshop batching is implemented on `codex/workshop-download-batching` for task
-20.7.1. AWS development remains in `us-west-2`; this work is not deployed.
+Branch `codex/workshop-download-batching` contains the committed Workshop batch
+installer and the Launcher preset export correction. Neither change is deployed.
 
 ## Current Handoff
 
-- Missing client/server mods share one SteamCMD session; missing missions use
-  a separate batch session. Cached revision content skips downloads.
-- Exact requested-item success confirmations gate batch completion. Transient
-  failures retry only unconfirmed IDs, up to three attempts; Guard and permanent
-  failures remain terminal. Item positions and private-output cleanup are retained.
-- Existing per-item metadata, size, checksum, symlink and publication checks
-  remain after download. Copy/marker failures cannot report a completed mod.
-- Reviewed executable shell tests cover batching, duplicate/cache handling,
-  transient/terminal failures, unconfirmed success, auth failure, mission replay,
-  size drift, unsafe payloads, and sampler/temporary-file cleanup.
-- Go 1.26.5 affected-package coverage tests, vet/build, Bash syntax and Terraform
-  1.15.x validation pass. Tracked Terraform `.tf` formatting passes.
-- Full `go test -cover ./...` has one unrelated unchanged archive contract test
-  failure: its literal LF comparison rejects the CRLF checkout of `phase9.tf`.
-  LF-normalized content matches. Ignored `terraform.tfvars` also fails formatting;
-  left untouched. No working C compiler; the CI race gate remains required.
-- Deployment changes the content-addressed S3 script and six worker environment
-  script references. Lambda executable code and Discord commands are unchanged;
-  no Lambda packaging or Discord registration is required.
-- The pre-existing deletion of `infra/terraform/bootstrap/backend.tf` is untouched.
+- Task 20.7.1 batches missing client/server mods into one SteamCMD session;
+  missions have a separate session. Confirmed successes are omitted from bounded
+  transient retries. Cache reuse, item checks, progress and cleanup are covered.
+- Task 20.7.3 fixes exports missing `arma:Type=preset` and containing unclosed XML
+  meta tags. Uploaded Steam Store DLC rows are retained and configured cDLCs are
+  added once. Store app IDs remain separate from Workshop items and counts.
+- Upload and Workshop-source exports share the corrected renderer. The supplied
+  Launcher fixture round-trips all 19 mods and two cDLCs with strict XML parsing.
+- Coverage tests for modlist/artifacts/Workshop/artifact-worker and vet pass;
+  modlist coverage is 89.1%. Executable builds and Linux artifact-worker ZIP pass.
+  Earlier batching shell tests, Terraform validation and tracked `.tf` formatting
+  also passed. No compiler is available for local race tests; CI remains required.
+- The earlier full-suite run exposed an unrelated unchanged archive contract test
+  whose literal LF comparison rejects the CRLF checkout. Ignored local `.tfvars`
+  formatting and deleted `infra/terraform/bootstrap/backend.tf` remain untouched.
+- Local generated outputs: `dist/artifact-worker.zip` and a corrected reference
+  export `dist/my-server-modlist.html`. Generated files are not committed.
 
 ## Important User Attention
 
-- Review and approve a fresh Terraform plan before applying. Default: no deployment.
-- Task 20.7.2 remains pending: benchmark identical Workshop content after deployment.
-  No measured speedup or live Steam output-format acceptance is claimed yet.
-- Existing executions retain their dispatched script; assess batching on a new
-  bootstrap/sync operation. Game and Workshop installation remain sequential.
+- Default: no deployment until a fresh plan is reviewed and approved. Expected
+  changes are the S3 bootstrap script, its six worker environment references,
+  and artifact-worker code. Investigate any additional plan changes.
+- Existing durable modlist objects are not migrated. After deployment, upload a
+  new client preset or resolve its Workshop source to regenerate the attachment.
+  Message repair alone reuses the old object. Pending revisions publish on activation.
+- A real Launcher import and identical-content timing benchmark (20.7.2) remain
+  pending. No measured speedup or live import acceptance is claimed.
 
 ## Commands to Apply Current Changes
 
-Run from the repository root. Authentication uses the user-approved `platform-admin`
-profile. No packaging or Discord command registration is needed.
+The affected artifact-worker ZIP is already built locally; no repackaging or
+Discord command registration is required for this handoff. Run from the repository
+root with the user-approved `platform-admin` profile.
 
 ```powershell
 $env:AWS_PROFILE = 'platform-admin'
-$batchPlan = 'workshop-batching-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.tfplan'
-if (Test-Path -LiteralPath "infra/terraform/environments/dev/$batchPlan") { throw 'Plan already exists; choose a fresh filename.' }
-terraform -chdir=infra/terraform/environments/dev plan -out=$batchPlan
+$presetPlan = 'workshop-batching-launcher-presets-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.tfplan'
+if (Test-Path -LiteralPath "infra/terraform/environments/dev/$presetPlan") { throw 'Choose a fresh plan filename.' }
+terraform -chdir=infra/terraform/environments/dev plan -out=$presetPlan
 if ($LASTEXITCODE -ne 0) { throw 'Terraform plan failed.' }
-terraform -chdir=infra/terraform/environments/dev show -no-color $batchPlan
+terraform -chdir=infra/terraform/environments/dev show -no-color $presetPlan
 
 # Only after reviewing and approving that exact saved plan:
-terraform -chdir=infra/terraform/environments/dev apply $batchPlan
+terraform -chdir=infra/terraform/environments/dev apply $presetPlan
 if ($LASTEXITCODE -ne 0) { throw 'Terraform apply failed.' }
 
 $workers = 'artifact', 'bootstrap', 'sleepwake', 'archive', 'restore', 'reliability'
@@ -60,12 +61,13 @@ foreach ($worker in $workers) {
     aws lambda get-function-configuration --function-name "game-server-platform-dev-$worker-worker" --profile platform-admin --region us-west-2 --query '{State:State,Update:LastUpdateStatus,Key:Environment.Variables.BOOTSTRAP_SCRIPT_KEY,SHA256:Environment.Variables.BOOTSTRAP_SCRIPT_SHA256}' --output json
     if ($LASTEXITCODE -ne 0) { throw "Worker verification failed: $worker" }
 }
+./scripts/verify-bootstrap-worker-deployment.ps1 -Worker artifact -Profile platform-admin -Region us-west-2
 $assetsBucket = terraform -chdir=infra/terraform/environments/dev output -raw session_assets_bucket_name
 $scriptKey = aws lambda get-function-configuration --function-name game-server-platform-dev-bootstrap-worker --profile platform-admin --region us-west-2 --query Environment.Variables.BOOTSTRAP_SCRIPT_KEY --output text
 aws s3api head-object --bucket $assetsBucket --key $scriptKey --profile platform-admin --region us-west-2 --query '{Bytes:ContentLength,Type:ContentType,Version:VersionId}' --output json
 if ($LASTEXITCODE -ne 0) { throw 'Bootstrap script verification failed.' }
 ```
 
-Verify all six workers reference the reviewed script key/digest. Then use a new,
-approved modded-session operation to verify real Steam confirmations, current-item
-progress, cached replay, and download timing before claiming live acceptance.
+Check all six workers reference the reviewed script key/digest. Regenerate a
+preset through a new upload/source resolution, import it into Arma Launcher,
+then benchmark batching on a new approved bootstrap/sync operation.

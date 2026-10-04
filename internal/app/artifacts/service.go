@@ -93,7 +93,7 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 	}
 	var publicModlist *modlist.Artifact
 	if request.Kind == domain.ArtifactPreset && !session.Vanilla {
-		generated, generateErr := modlist.Generate(body, session.ID, session.DisplayName, session.Slug, len(session.CreatorDLCs) > 0)
+		generated, generateErr := modlist.Generate(body, session.ID, session.DisplayName, session.Slug, len(session.CreatorDLCs) > 0, session.CreatorDLCs...)
 		if generateErr != nil {
 			return service.reject(ctx, session, request, generateErr)
 		}

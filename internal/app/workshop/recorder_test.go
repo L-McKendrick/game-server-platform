@@ -10,10 +10,14 @@ import (
 	"github.com/L-McKendrick/game-server-platform/internal/domain"
 )
 
-type recorderObjectStore struct{ puts int }
+type recorderObjectStore struct {
+	puts   int
+	bodies [][]byte
+}
 
-func (store *recorderObjectStore) Put(context.Context, string, string, []byte, string) error {
+func (store *recorderObjectStore) Put(_ context.Context, _ string, _ string, body []byte, _ string) error {
 	store.puts++
+	store.bodies = append(store.bodies, append([]byte(nil), body...))
 	return nil
 }
 
@@ -35,6 +39,7 @@ func TestRecordModResolutionPersistsOneVersionAndReplays(t *testing.T) {
 	if err := session.BeginWorkshopResolution(domain.WorkshopTargetMods, "request-1", now); err != nil {
 		t.Fatal(err)
 	}
+	session.CreatorDLCs = []string{domain.CreatorDLCReactionForces}
 	createRecord, err := domain.NewCompletedIdempotencyRecord("create-1", "create-hash", session.ID, now, 24*time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -59,6 +64,18 @@ func TestRecordModResolutionPersistsOneVersionAndReplays(t *testing.T) {
 	persisted, err := repository.Get(ctx, session.ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	presets := 0
+	for _, body := range objects.bodies {
+		if strings.HasPrefix(string(body), "<?xml") {
+			presets++
+			if !strings.Contains(string(body), `name="arma:Type" content="preset" />`) || !strings.Contains(string(body), "/app/2647760") {
+				t.Fatalf("Workshop preset omits Launcher metadata or configured cDLC: %s", body)
+			}
+		}
+	}
+	if presets != 2 {
+		t.Fatalf("stored %d preset bodies; want private and public exports", presets)
 	}
 	if persisted.Version != session.Version+1 || persisted.WorkshopResolutionRequestKey != "" || len(persisted.WorkshopModSources) != 1 || result.Revision.Number != 1 {
 		t.Fatalf("persisted = %#v, result = %#v", persisted, result)

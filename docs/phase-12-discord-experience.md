@@ -218,6 +218,14 @@ validated preset, use a slug-based filename, and strip irrelevant local or
 sensitive metadata. Recreate the message from the durable S3 object if it is
 deleted.
 
+Exports use well-formed XML with `arma:Type=preset`, the session preset name,
+and Launcher-typed `ModContainer`/`DlcContainer` rows. Preserve uploaded Steam
+Store DLC links and add configured Creator DLCs without duplicates; DLC app IDs
+remain separate from Workshop item IDs and counts. The same renderer serves
+uploaded presets and Workshop-source resolution. Older durable attachments need
+a new preset upload/source resolution to regenerate their contents; message
+repair alone reuses the existing object.
+
 Post-creation `/rb edit` with the `mods` section updates the desired Creator DLC set and optionally
 uploads and validates independent pending client or server-only preset
 revisions. A running session is not
