@@ -37,6 +37,9 @@ func createModsContinueCustomID(sessionID string, version int64) (string, error)
 }
 
 func parseCreateModsContinueCustomID(value string) (string, int64, error) {
+	if !strings.HasPrefix(strings.TrimSpace(value), createModsContinuePrefix) {
+		return "", 0, fmt.Errorf("create mod continuation prefix is invalid")
+	}
 	remainder := strings.TrimPrefix(strings.TrimSpace(value), createModsContinuePrefix)
 	separator := strings.LastIndexByte(remainder, ':')
 	if remainder == "" || separator < 1 {
@@ -93,7 +96,12 @@ func (handler *Handler) openCreateModsModal(ctx context.Context, writer http.Res
 	if err != nil {
 		return err
 	}
-	if session.Version != version || session.Vanilla || session.LifecycleState != domain.StateDraft {
+	if session.GuildID != strings.TrimSpace(payload.GuildID) {
+		return domain.ErrForbidden
+	}
+	// This button only opens a form. Background artifact and card updates may
+	// advance the draft; bind the form to the latest version at click time.
+	if session.Version < version || session.Vanilla || session.LifecycleState != domain.StateDraft || session.ActiveWorkflowID != "" {
 		return newUserError("This creation step is stale. Use `/rb edit` with section `mods` to continue setup.")
 	}
 	return writeModsModal(writer, session, modsModeCreate)

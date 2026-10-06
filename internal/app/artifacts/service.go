@@ -148,17 +148,12 @@ func (service *Service) Process(ctx context.Context, request domain.ArtifactInge
 		directory,
 		objectFilename,
 	)
-	storedBody, storedContentType, storedDigest := body, request.ContentType, digest
-	if publicModlist != nil {
-		storedBody, storedContentType = publicModlist.Body, publicModlist.ContentType
-		storedDigest = sha256.Sum256(storedBody)
-	}
 	if err := service.objects.Put(
 		ctx,
 		objectKey,
-		storedContentType,
-		storedBody,
-		base64.StdEncoding.EncodeToString(storedDigest[:]),
+		request.ContentType,
+		body,
+		base64.StdEncoding.EncodeToString(digest[:]),
 	); err != nil {
 		return fmt.Errorf("store validated artifact: %w", err)
 	}
