@@ -2,54 +2,72 @@
 
 ## State and Objective
 
-The beta client-preset integrity defect exposed by session `bro` is fixed on
-`codex/fix-bro-session`, based on `3eba37a` (`main`). The artifact-worker fix is
-deployed in development and `bro`'s retained preset metadata is repaired.
+Creation mod-options continuation is fixed in source on the current beta-fix
+branch. The earlier client-preset integrity fix is already deployed; the
+Discord interaction handler change still needs deployment.
 
 ## Current Handoff
 
-- Client preset ingestion previously stored generated public-modlist bytes at
-  the digest-addressed preset input key. The key retained the original upload's
-  SHA-256, so scoped host access rejected the stored bytes during bootstrap.
-- Ingestion now preserves the original validated preset bytes, content type,
-  digest-derived key, and checksum. The sanitized public modlist remains a
-  separate object used for Discord publication.
-- Regression coverage verifies the two objects have distinct bytes and that the
-  private preset key and upload checksum match the original preset.
-- The reviewed targeted Terraform plan
-  `bro-preset-integrity-minimal.tfplan` updated only the development
-  artifact-worker Lambda. The broader `bro-preset-integrity.tfplan` was not
-  applied because local `.tfvars` drifted from live Discord, provisioning, and
-  capacity settings.
-- `bro` (`01M31DE6PZ34F8W1NFH2D775KM`) had its valid stored preset copied to a
-  checksum-correct key. A version-guarded DynamoDB transaction updated both
-  preset pointers from version 29 to 30 and appended
-  `PresetIntegrityRepaired` audit evidence.
-- An authorized Discord retry started workflow `1551507903913918464` on the
-  retained instance. At the last observation the session was `INSTALLING`, the
-  command was in progress, and durable progress had advanced past the checksum
-  boundary to `MODS_APPLIED`.
-- An attempted operator queue retry was denied by normal guild-role
-  authorization and made no session change. It will move to the command DLQ
-  after five receives unless removed through the existing operator tooling.
-- Focused tests pass. `go vet ./...`, `go build ./cmd/...`, and
-  `git diff --check` pass. `go test ./...` has only the pre-existing unrelated
-  `TestArchiveWorkflowCompletesSuccessfullyAfterDurableCompletion` failure.
+- The creation button previously required an exact session version. Asynchronous
+  mission validation and card metadata changes could invalidate it immediately.
+- The button now opens the latest owner-authorized modded draft, rejects future
+  versions, other guilds, non-drafts, vanilla sessions and active workflows,
+  and binds the modal to the current version. Submission concurrency checks remain.
+- Continuation parsing now requires its own prefix so unrelated controls cannot
+  be mistaken for creation buttons.
+- Regression coverage checks older-button recovery/current modal version, future
+  versions, other owners and other guilds. Interaction package tests and vet,
+  Discord handler build, and diff whitespace checks pass with Go 1.26.5.
+- No infrastructure definitions or Discord command definitions changed.
 
 ## Important User Attention
 
-- Monitor workflow `1551507903913918464` until `bro` reaches `RUNNING` or a new
-  actionable failure. Do not submit another start while it is active.
-- Inspect and remove or quarantine the single authorization-denied repair
-  command after it reaches the command DLQ; do not redrive it.
-- Reconcile the ignored development `.tfvars` with live values before the next
-  untargeted Terraform deployment. The current local values would change the
-  Discord application/guild, disable provisioning, and reduce capacity.
+- Reconcile ignored development `.tfvars` with live values before any untargeted
+  deployment; the previous handoff recorded Discord, provisioning and capacity drift.
+- Prior recovery follow-up remains unverified: check workflow
+  `1551507903913918464` to completion and inspect/quarantine the authorization-denied
+  repair command if it reaches the command DLQ. Do not redrive it.
 
 ## Commands to Apply Current Changes
 
-No further code deployment or Discord command registration is required; the
-artifact-worker source correction is already deployed in development.
+Run from the repository root. Package only the changed handler, create a fresh
+saved targeted plan because of the recorded local configuration drift, and review
+it. Proceed with apply only after approving a plan that changes only the handler's
+code; stop if it changes environment, permissions or other configuration.
 
-Verify the active retry reaches `RUNNING`, then inspect the command DLQ with the
-existing reliability runbook. Do not apply `bro-preset-integrity.tfplan`.
+```powershell
+$env:GOCACHE = Join-Path (Get-Location) '.cache/go-build'
+$previousGOOS = $env:GOOS
+$previousGOARCH = $env:GOARCH
+$previousCGOEnabled = $env:CGO_ENABLED
+try {
+    $env:GOOS = 'linux'
+    $env:GOARCH = 'amd64'
+    $env:CGO_ENABLED = '0'
+    go build -buildvcs=false -tags lambda.norpc -trimpath -ldflags '-s -w' -o .cache/mod-options-bootstrap ./cmd/discord-lambda
+    if ($LASTEXITCODE -ne 0) { throw 'Handler build failed' }
+} finally {
+    $env:GOOS = $previousGOOS
+    $env:GOARCH = $previousGOARCH
+    $env:CGO_ENABLED = $previousCGOEnabled
+}
+go run ./cmd/package-lambda -source .cache/mod-options-bootstrap -output dist/discord-interactions.zip
+if ($LASTEXITCODE -ne 0) { throw 'Handler packaging failed' }
+$env:AWS_PROFILE = 'game-server-dev'
+$modOptionsPlan = 'creation-mod-options-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.tfplan'
+terraform -chdir=infra/terraform/environments/dev plan -target=aws_lambda_function.discord_interactions "-out=$modOptionsPlan"
+if ($LASTEXITCODE -ne 0) { throw 'Terraform plan failed' }
+terraform -chdir=infra/terraform/environments/dev show $modOptionsPlan
+```
+
+After reviewing and approving that exact saved plan:
+
+```powershell
+terraform -chdir=infra/terraform/environments/dev apply $modOptionsPlan
+if ($LASTEXITCODE -ne 0) { throw 'Terraform apply failed' }
+```
+
+Verify through Discord: create a modded draft with a mission, wait for validation
+and card updates, then click `Continue to mod options`. It should open the mod
+options form without `/rb edit`. Submit options and verify normal validation.
+No Discord command registration is required. Preserve older saved plan files.
