@@ -2,10 +2,26 @@ package ssmbootstrap
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func workshopPresetFunctions(t *testing.T) string {
+	t.Helper()
+	prefix := ""
+	if runtime.GOOS == "windows" {
+		python, err := exec.LookPath("python")
+		if err != nil {
+			t.Skip("Python unavailable for preset extraction harness")
+		}
+		// Windows Python writes CRLF; the deployed Linux interpreter writes LF.
+		prefix = "python3(){ '" + strings.ReplaceAll(filepath.ToSlash(python), "'", "'\"'\"'") + "' \"$@\" | tr -d '\\r'; }\n"
+	}
+	return prefix + workshopFunctions(t, "extract_workshop_ids() {", "\ninstall_workshop() (")
+}
 
 func workshopFunctions(t *testing.T, start, end string) string {
 	t.Helper()
@@ -22,7 +38,7 @@ func workshopFunctions(t *testing.T, start, end string) string {
 }
 
 func TestWorkshopBatchConfirmationRetriesAndCleanup(t *testing.T) {
-	for _, scenario := range []string{"success", "transient", "timeout", "unconfirmed", "guard", "private", "removed", "invalid", "empty", "login-failure"} {
+	for _, scenario := range []string{"success", "transient", "timeout", "unconfirmed", "guard", "private", "removed", "mixed-private", "mixed-removed", "invalid", "empty", "login-failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			harness := `set -euo pipefail
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
@@ -41,6 +57,8 @@ runuser(){
     guard) echo 'Steam Guard secret-must-not-escape'; return 1 ;;
     private) echo 'ERROR! access denied secret-must-not-escape'; return 0 ;;
     removed) echo 'ERROR! item removed secret-must-not-escape'; return 0 ;;
+    mixed-private) echo 'Connection established'; echo 'Success. Downloaded item 111111111 to somewhere'; echo 'ERROR! access denied secret-must-not-escape'; return 1 ;;
+    mixed-removed) echo 'Connection established'; echo 'Success. Downloaded item 111111111 to somewhere'; echo 'ERROR! item removed secret-must-not-escape'; return 1 ;;
     unconfirmed) echo 'Success. Downloaded item 999999999 to somewhere'; return 0 ;;
     timeout) echo 'ERROR! connection timed out secret-must-not-escape'; return 1 ;;
   esac
@@ -66,17 +84,18 @@ download_workshop_batch "$work/requests" 2>"$work/error" || code=$?
 calls="$(cat "$work/calls")"
 case "$scenario" in
  success) [ "$code" = 0 ] && [ "$calls" = 1 ]; [ "$(grep -c '^login ' "$work/script-1")" = 1 ]; [ "$(grep -c '^workshop_download_item ' "$work/script-1")" = 2 ]; [ "$(grep -c '^quit$' "$work/script-1")" = 1 ] ;;
- transient) [ "$code" = 0 ] && [ "$calls" = 2 ]; ! grep -q '111111111' "$work/script-2"; grep -q '222222222' "$work/script-2" ;;
+ transient) [ "$code" = 0 ] && [ "$calls" = 2 ]; if grep -q '111111111' "$work/script-2"; then exit 1; fi; grep -q '222222222' "$work/script-2" ;;
  timeout) [ "$code" = 1 ] && [ "$calls" = 3 ]; grep -q ERR_WORKSHOP_DOWNLOAD_TIMEOUT "$work/error" ;;
  unconfirmed) [ "$code" = 1 ] && [ "$calls" = 1 ]; grep -q ERR_WORKSHOP_ITEM_DOWNLOAD "$work/error" ;;
  guard) [ "$code" = 42 ] && [ "$calls" = 1 ]; [ -f "$work/reauth" ] ;;
- private) [ "$code" = 1 ] && [ "$calls" = 1 ]; grep -q ERR_WORKSHOP_VISIBILITY "$work/error" ;;
- removed) [ "$code" = 1 ] && [ "$calls" = 1 ]; grep -q ERR_WORKSHOP_ITEM_REMOVED "$work/error" ;;
+ private|mixed-private) [ "$code" = 1 ] && [ "$calls" = 1 ]; grep -q ERR_WORKSHOP_VISIBILITY "$work/error" ;;
+ removed|mixed-removed) [ "$code" = 1 ] && [ "$calls" = 1 ]; grep -q ERR_WORKSHOP_ITEM_REMOVED "$work/error" ;;
  invalid) [ "$code" = 1 ] && [ "$calls" = 0 ] ;;
  empty) [ "$code" = 0 ] && [ "$calls" = 0 ] ;;
  login-failure) [ "$code" = 42 ] && [ "$calls" = 0 ] ;;
 esac
-! grep -q secret-must-not-escape "$work/error"+[ -z "$(find "$work" -name 'temporary.*' -print -quit)" ]
+if grep -q secret-must-not-escape "$work/error"; then echo 'raw Steam output escaped' >&2; exit 1; fi
+[ -z "$(find "$work" -name 'temporary.*' -print -quit)" ]
 [ ! -f "$STEAM_AUTH_ROOT/steamcmd-output.$$.log" ]
 printf 'Downloading item 222222222 ...\n' > "$work/output"
 [ "$(workshop_download_activity "$work/output" "$work/requests")" = "$(awk '$1 == "222222222" {printf "WORKSHOP_ITEM:%s:%s:%s",$1,$2,$3;exit}' "$work/requests")" ]
@@ -104,8 +123,9 @@ find(){
  else command find "$@"; fi
 }
 asset_read(){
- if [ "$1" = client ]; then printf 'id=111111111\nid=222222222\nid=111111111\n' > "$2";
- else printf 'id=222222222\nid=333333333\n' > "$2"; fi
+ if [ "$1" = client ]; then
+   printf '<tr data-type="ModContainer"><td>?id=111111111</td><td data-publishedfileid="222222222"></td><td>?id=111111111</td></tr>\n<tr data-type="DlcContainer"><td data-publishedfileid="1227700"></td></tr><footer>?id=999999999</footer>\n' > "$2"
+ else printf '<tr data-type="ModContainer"><td>?id=222222222</td><td>?id=333333333</td></tr>\n' > "$2"; fi
 }
 mktemp(){ if [[ "${1:-}" == /run/* ]]; then command mktemp "$work/temporary.XXXXXX"; else command mktemp "$@"; fi; }
 download_workshop_batch(){
@@ -119,7 +139,7 @@ download_workshop_batch(){
  done < "$1"
 }
 ` + workshopFunctions(t, "ensure_workshop_revision_root() {", "\nrecord_workshop_sync_result() {") +
-		workshopFunctions(t, "install_workshop() (", "\nsync_workshop_content() {") + `
+		workshopPresetFunctions(t) + workshopFunctions(t, "install_workshop() (", "\nsync_workshop_content() {") + `
 cached="$ROOT/workshop/mod-revisions/client-1"
 mkdir -p "$cached/111111111"; echo payload > "$cached/111111111/mod.pbo"
 echo '111111111:0' > "$cached/.snapshot-111111111"
@@ -136,6 +156,24 @@ UNSAFE=false; COPY_FAIL=true
 if install_workshop; then echo 'copy failure unexpectedly succeeded' >&2; exit 1; fi
 [ ! -f "$cached/.snapshot-222222222" ]
 [ -z "$(find "$cached" -name '.pending-*' -print -quit)" ]
+`
+	runWorkshopHarness(t, harness)
+}
+
+func TestWorkshopPresetExtractionMatchesTypedRows(t *testing.T) {
+	harness := `set -euo pipefail
+work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+` + workshopPresetFunctions(t) + `
+cat > "$work/preset" <<'HTML'
+<TR data-type='modcontainer'><td>?id=111111111</td><td>?id=222222222</td>
+<td data-publishedfileid='111111111'></td></TR>
+<tr data-type="DlcContainer"><td>?id=1227700</td></tr>
+<a href="?id=999999999">footer</a>
+HTML
+[ "$(extract_workshop_ids "$work/preset")" = "$(printf '111111111\n222222222')" ]
+printf '<tr data-type="DlcContainer"><td>?id=1227700</td></tr>' > "$work/preset"
+[ -z "$(extract_workshop_ids "$work/preset")" ]
+if extract_workshop_ids "$work/missing" 2>/dev/null; then echo 'missing input accepted' >&2; exit 1; fi
 `
 	runWorkshopHarness(t, harness)
 }
@@ -205,7 +243,7 @@ printf '111111111\t2\t3\n' > "$work/requests"
 run_steamcmd "$work/runfile" workshop "$work/requests" "$work/success"
 grep -qx WORKSHOP_ITEM:111111111:2:3 "$work/activity"
 grep -qx 111111111 "$work/success"
-! jobs -pr | grep -q .
+if jobs -pr | grep -q .; then echo 'sampler still running' >&2; exit 1; fi
 [ ! -f "$work/steamcmd-output.$$.log" ]
 printf 'Downloading item 999999999 ...\n' > "$work/output"
 [ -z "$(workshop_download_activity "$work/output" "$work/requests")" ]

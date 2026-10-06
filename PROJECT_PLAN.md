@@ -490,6 +490,13 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **19.7.1** [x] Keep automatic start deferred while a creation-time Workshop mission resolution is pending, then request it exactly after the accepted resolution is durable.
       - **19.7.2** [x] Make DynamoDB workflow acquisition retries use request-specific idempotency tokens so an optimistic-lock retry cannot become `IdempotentParameterMismatchException`.
       - **19.7.3** [x] Add focused creation, workflow-race, and retry regression coverage; validate the affected Go packages and refresh the deployment handoff.
+    - **19.8** [x] Repair client-preset integrity exposed by beta session `bro`.
+      - **19.8.1** [x] Preserve the original validated client preset at its digest-addressed input key and keep the sanitized public modlist in its separate object.
+      - **19.8.2** [x] Add artifact-ingestion regression coverage for preset bytes, key digest, upload checksum, and separate modlist publication.
+      - **19.8.3** [x] Validate, deploy the artifact worker through a one-resource reviewed plan, and conditionally repair the retained `bro` preset pointers. An authorized Discord `/rb start` remains the normal trigger for its bootstrap retry.
+
+    - **19.9** [x] Repair creation mod-options continuation after background updates.
+      - **19.9.1** [x] Open the latest authorized modded draft from the continuation button despite background version advances; retain lifecycle/workflow guards and modal submission concurrency checks, reject other guilds and malformed prefixes, add regression coverage, and record deployment commands. Interaction tests, vet, and handler build pass; development deployment and live click verification remain pending.
 
 20. **Production Hardening and Optimization — Pending**
     - Proceeded before Phase 19 by explicit user approval. Deliver on
@@ -525,6 +532,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **20.7.1** [x] Batch missing Workshop mods and missions into one SteamCMD session per content batch, preserving item validation, progress, bounded retries, cache reuse, and authorization cleanup; reviewed with executable shell edge-case tests on `codex/workshop-download-batching`. Offline validation passes for affected packages; deployment and measured speedup remain 20.7.2.
       - **20.7.2** [ ] Benchmark deployed batching against identical content and record throughput and end-to-end improvement before considering concurrent game/Workshop workers or resource upgrades.
       - **20.7.3** [x] Repair generated Arma Launcher preset XML/metadata and preserve uploaded plus configured Creator DLCs across upload and Workshop-source exports; verified against the supplied 19-mod/two-cDLC Launcher reference with strict XML parsing, deterministic regeneration and ingestion/Workshop recorder regressions. Artifact-worker package built; deployment and live Launcher import remain pending.
+      - **20.7.4** [x] Reconcile the Workshop batching branch with current main, preserve original preset integrity and creation continuation fixes, review refactoring and failure paths, and validate the combined changes. Original-byte integrity and typed Workshop extraction are both covered; permanent-failure classification and shell assertions corrected. Optional refactors recorded in docs/workshop-batching-review.md; live gates remain pending.
 
 21. **Potential Enhancements — Pending**
     - **21.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.

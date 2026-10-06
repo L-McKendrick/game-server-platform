@@ -565,6 +565,28 @@ func TestHandlerKeepsModdedCreationWithoutPresetRecoverable(t *testing.T) {
 		t.Fatalf("modded queued requests = %#v; want mission only", requests)
 	}
 	button := (*decoded.Data.Components)[0].Components[0]
+	for _, scenario := range []struct {
+		name, actor, guild string
+		version            int64
+	}{
+		{"future version", "owner-1", "guild-1", sessions[0].Version + 1},
+		{"different owner", "other-owner", "guild-1", sessions[0].Version - 1},
+		{"different guild", "owner-1", "other-guild", sessions[0].Version - 1},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			customID, err := createModsContinueCustomID(sessions[0].ID, scenario.version)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writer := httptest.NewRecorder()
+			err = handler.openCreateModsModal(context.Background(), writer, interactionPayload{
+				GuildID: scenario.guild, Data: &applicationCommandData{CustomID: customID},
+			}, domain.Actor{Type: domain.ActorTypeDiscordUser, ID: scenario.actor})
+			if err == nil {
+				t.Fatal("invalid continuation opened a modal")
+			}
+		})
+	}
 	staleID, err := createModsContinueCustomID("session-modded-missing", sessions[0].Version-1)
 	if err != nil {
 		t.Fatal(err)
@@ -577,8 +599,12 @@ func TestHandlerKeepsModdedCreationWithoutPresetRecoverable(t *testing.T) {
 	})
 	stale := executeSignedRequest(t, handler, privateKey, staleBody, testNow)
 	decodeResponse(t, stale, &decoded)
-	if decoded.Data == nil || !strings.Contains(decoded.Data.Content, "stale") {
-		t.Fatalf("stale continuation response = %#v", decoded.Data)
+	if decoded.Type != interactionResponseModal || decoded.Data == nil {
+		t.Fatalf("older continuation should open latest draft = %#v", decoded)
+	}
+	state, err := parseModsModalCustomID(decoded.Data.CustomID)
+	if err != nil || state.version != sessions[0].Version {
+		t.Fatalf("continuation modal state = %#v, error = %v; want latest draft version", state, err)
 	}
 	openBody := marshalPayload(map[string]any{
 		"id": "create-mod-options-open", "application_id": "app-1", "type": interactionTypeMessageComponent,

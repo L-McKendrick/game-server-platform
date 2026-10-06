@@ -2,6 +2,8 @@ package artifacts
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -41,14 +43,16 @@ func (downloader *testDownloader) Download(context.Context, domain.ArtifactInges
 }
 
 type storedObject struct {
-	key      string
-	contents []byte
+	key         string
+	contentType string
+	contents    []byte
+	checksum    string
 }
 
 type testObjectStore struct{ objects []storedObject }
 
-func (store *testObjectStore) Put(_ context.Context, key string, _ string, body []byte, _ string) error {
-	store.objects = append(store.objects, storedObject{key: key, contents: append([]byte(nil), body...)})
+func (store *testObjectStore) Put(_ context.Context, key string, contentType string, body []byte, checksum string) error {
+	store.objects = append(store.objects, storedObject{key: key, contentType: contentType, contents: append([]byte(nil), body...), checksum: checksum})
 	return nil
 }
 
@@ -348,17 +352,19 @@ func TestProcessAcceptsPresetWithRepeatedWorkshopReferences(t *testing.T) {
 	if err := service.Process(context.Background(), request); err != nil {
 		t.Fatalf("Process() returned error: %v", err)
 	}
+	presetDigest := sha256.Sum256(downloader.body)
+	presetChecksum := base64.StdEncoding.EncodeToString(presetDigest[:])
 	if len(objects.objects) != 2 || !strings.HasPrefix(objects.objects[0].key, "sessions/session-1/input/presets/") ||
 		!strings.HasPrefix(objects.objects[1].key, "sessions/session-1/input/modlists/") ||
-		strings.Contains(string(objects.objects[0].contents), "1227700") || strings.Contains(string(objects.objects[1].contents), "1227700") ||
-		strings.Contains(string(objects.objects[0].contents), "data-publishedfileid") || strings.Contains(string(objects.objects[1].contents), "data-publishedfileid") {
-		t.Fatalf("stored objects = %#v; want sanitized server and download presets", objects.objects)
+		!strings.Contains(string(objects.objects[0].contents), "1227700") || !strings.Contains(string(objects.objects[0].contents), "data-publishedfileid") ||
+		objects.objects[0].checksum != presetChecksum || !strings.Contains(objects.objects[0].key, fmt.Sprintf("/%x-", presetDigest)) ||
+		strings.Contains(string(objects.objects[1].contents), "1227700") || strings.Contains(string(objects.objects[1].contents), "data-publishedfileid") ||
+		string(objects.objects[0].contents) == string(objects.objects[1].contents) {
+		t.Fatalf("stored objects = %#v; want original digest-addressed preset plus separate sanitized modlist", objects.objects)
 	}
-	for _, object := range objects.objects {
-		body := string(object.contents)
-		if !strings.Contains(body, `name="arma:Type" content="preset" />`) || !strings.Contains(body, "/app/2647760") || !strings.Contains(body, "/app/2647830") {
-			t.Fatalf("stored preset omits Launcher metadata or uploaded/configured DLCs: %s", body)
-		}
+	publicBody := string(objects.objects[1].contents)
+	if !strings.Contains(publicBody, `name="arma:Type" content="preset" />`) || !strings.Contains(publicBody, "/app/2647760") || !strings.Contains(publicBody, "/app/2647830") {
+		t.Fatalf("public preset omits Launcher metadata or uploaded/configured DLCs: %s", publicBody)
 	}
 	session, err := repository.Get(context.Background(), "session-1")
 	if err != nil {

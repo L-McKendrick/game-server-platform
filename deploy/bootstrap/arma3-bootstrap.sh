@@ -345,14 +345,14 @@ run_steamcmd() {
   if grep -Eqi 'Logged in OK|Waiting for user info.*OK' "$output_file"; then mark_steam_authorization_valid; fi
   if [ "$code" -eq 0 ]; then mark_steam_authorization_valid; fi
   if [ "$code" -ne 0 ]; then
-	if grep -Eqi 'timeout|timed out|connection|network|content server|rate limit|temporarily unavailable|service unavailable' "$output_file"; then
-	  rm -f -- "$output_file"; log "SteamCMD transient download failure"; return 75
-	fi
 	if grep -Eqi 'access denied|private|visibility|not permitted' "$output_file"; then
 	  rm -f -- "$output_file"; printf 'ERR_WORKSHOP_VISIBILITY: Workshop item is not publicly downloadable.\n' >&2; return 1
 	fi
 	if grep -Eqi 'not found|removed|deleted|no subscription|missing file' "$output_file"; then
 	  rm -f -- "$output_file"; printf 'ERR_WORKSHOP_ITEM_REMOVED: Workshop item is no longer available.\n' >&2; return 1
+	fi
+	if grep -Eqi 'timeout|timed out|connection|network|content server|rate limit|temporarily unavailable|service unavailable' "$output_file"; then
+	  rm -f -- "$output_file"; log "SteamCMD transient download failure"; return 75
 	fi
     log "SteamCMD download failed without exposing its raw output"
 	rm -f -- "$output_file"
@@ -639,6 +639,24 @@ workshop_item_updated_at() {
   awk -F'"' -v id="$id" '$2 == id {inside=1; next} inside && tolower($2) == "timeupdated" {print $4; exit} inside && $0 ~ /^[[:space:]]*}[[:space:]]*$/ {exit}' "$acf"
 }
 
+extract_workshop_ids() {
+  # Match ingestion's typed-row contract while retaining original upload bytes.
+  python3 - "$1" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+rows = re.findall(r'''<tr\b[^>]*\bdata-type\s*=\s*["']ModContainer["'][^>]*>(.*?)</tr>''', source, re.I | re.S)
+seen = set()
+for row in rows:
+    for item in re.findall(r'''(?:[?&]id=|data-publishedfileid=["'])([0-9]{6,20})''', row, re.I):
+        if item not in seen:
+            seen.add(item)
+            print(item)
+PY
+}
+
 install_workshop() (
   if [ "$VANILLA_MODE" = true ]; then
 	[ "$WORKSHOP_PROMOTE_MODS" = true ] || return 0
@@ -648,7 +666,7 @@ install_workshop() (
     chown steam:steam "$ROOT/config/mods.txt" "$ROOT/config/server-mods.txt"
     return 0
   fi
-	local preset_file server_preset_file mods_file server_mods_file mods="" server_mods="" dlc
+	local preset_file server_preset_file mods_file server_mods_file mods="" server_mods="" dlc extracted_ids
 	mkdir -p "$ROOT/config/presets" "$ROOT/config/server-presets" "$ROOT/config/mod-revisions" "$ROOT/config/server-mod-revisions"
 	preset_file="$ROOT/config/presets/revision-$PRESET_REVISION.html"
 	mods_file="$ROOT/config/mod-revisions/revision-$PRESET_REVISION.txt"
@@ -658,14 +676,16 @@ install_workshop() (
 	server_ids=()
 	if [ -n "$PRESET_KEY" ]; then
 		asset_read "$PRESET_KEY" "$preset_file"
-		mapfile -t ids < <(grep -Eio "id=[0-9]+|data-publishedfileid=[\"'][0-9]+" "$preset_file" | grep -Eo '[0-9]+' | awk '!seen[$0]++')
+		extracted_ids="$(extract_workshop_ids "$preset_file")" || return $?
+		if [ -n "$extracted_ids" ]; then mapfile -t ids <<< "$extracted_ids"; fi
 	else
 		rm -f -- "$preset_file"
 		[ "$WORKSHOP_PROMOTE_MODS" = true ] && rm -f -- "$ROOT/config/preset.html"
 	fi
 	if [ -n "$SERVER_PRESET_KEY" ]; then
 		asset_read "$SERVER_PRESET_KEY" "$server_preset_file"
-		mapfile -t server_ids < <(grep -Eio "id=[0-9]+|data-publishedfileid=[\"'][0-9]+" "$server_preset_file" | grep -Eo '[0-9]+' | awk '!seen[$0]++')
+		extracted_ids="$(extract_workshop_ids "$server_preset_file")" || return $?
+		if [ -n "$extracted_ids" ]; then mapfile -t server_ids <<< "$extracted_ids"; fi
 		client_ids=" ${ids[*]} "
 		filtered_server_ids=()
 		for id in "${server_ids[@]}"; do [[ "$client_ids" == *" $id "* ]] || filtered_server_ids+=("$id"); done

@@ -106,10 +106,12 @@ mod pipeline: bootstrap maps the supported catalog to the server directories
 directory, and writes them before Workshop links in the same `mods.txt` read by
 the existing `-mod` argument. Archive manifests preserve the canonical
 selection, restore rejects drift, and cards show the selected product names.
-Only rows explicitly typed `ModContainer` are accepted from Launcher presets.
-The original HTML is never used for server bootstrap: both the server input and
-downloadable copy are rebuilt from those rows, so `DlcContainer` sections and
-Workshop-looking IDs in footers or unrelated markup cannot override the form.
+Only rows explicitly typed `ModContainer` supply Workshop identities from Launcher
+presets. Preserve validated original bytes at the digest-addressed server input
+key so bootstrap integrity checks match the upload. Generate the downloadable
+copy separately: retain typed Steam Store DLC links and add configured cDLCs.
+Server cDLC selection still comes from the form; uploaded `DlcContainer` rows and
+Workshop-looking IDs in footers or unrelated markup cannot override it.
 A preset that becomes Workshop-empty after filtering is accepted only when the
 form selects at least one supported cDLC. cDLC-only sessions are therefore
 valid, while a content-empty modded session remains a recoverable draft.
