@@ -77,15 +77,11 @@ func GenerateWorkshop(mods []WorkshopMod, sessionID, sessionName, sessionSlug st
 		}
 		normalized = append(normalized, workshopMod{ID: fmt.Sprintf("%d", mod.ID), Name: name})
 	}
-	filename := modlistFilename(sessionSlug)
 	dlcs, err := presetDLCs("", creatorDLCs)
 	if err != nil {
 		return Artifact{}, err
 	}
-	body := renderPreset(sessionName, normalized, dlcs)
-	digest := sha256.Sum256(body)
-	digestHex := hex.EncodeToString(digest[:])
-	return Artifact{ObjectKey: fmt.Sprintf("sessions/%s/input/modlists/%s/%s", strings.TrimSpace(sessionID), digestHex, filename), Filename: filename, ContentType: contentType, Body: body, SHA256Hex: digestHex, SHA256Base64: base64.StdEncoding.EncodeToString(digest[:]), WorkshopCount: len(normalized)}, nil
+	return presetArtifact(sessionID, sessionName, sessionSlug, normalized, dlcs), nil
 }
 
 // Generate extracts Steam Workshop and Steam Store DLC identities and bounded names,
@@ -98,11 +94,16 @@ func Generate(source []byte, sessionID, sessionName, sessionSlug string, allowEm
 	if len(mods) > 250 {
 		return Artifact{}, fmt.Errorf("launcher preset references more than 250 Workshop items")
 	}
-	filename := modlistFilename(sessionSlug)
 	dlcs, err := presetDLCs(string(source), creatorDLCs)
 	if err != nil {
 		return Artifact{}, err
 	}
+	return presetArtifact(sessionID, sessionName, sessionSlug, mods, dlcs), nil
+}
+
+// Both export paths must address the exact rendered bytes with the same digest.
+func presetArtifact(sessionID, sessionName, sessionSlug string, mods, dlcs []workshopMod) Artifact {
+	filename := modlistFilename(sessionSlug)
 	body := renderPreset(sessionName, mods, dlcs)
 	digest := sha256.Sum256(body)
 	digestHex := hex.EncodeToString(digest[:])
@@ -110,7 +111,7 @@ func Generate(source []byte, sessionID, sessionName, sessionSlug string, allowEm
 	return Artifact{
 		ObjectKey: objectKey, Filename: filename, ContentType: contentType, Body: body,
 		SHA256Hex: digestHex, SHA256Base64: base64.StdEncoding.EncodeToString(digest[:]), WorkshopCount: len(mods),
-	}, nil
+	}
 }
 
 func presetDLCs(source string, configured []string) ([]workshopMod, error) {

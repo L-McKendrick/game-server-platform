@@ -2,106 +2,93 @@
 
 ## State and Objective
 
-Reconcile `codex/workshop-download-batching` with `origin/main` at `b5e386f`
-and review the combined Workshop batching and Launcher preset changes.
-Batching and Launcher fixes remain undeployed.
+Complete branch review and SteamCMD Workshop simulations on
+`codex/workshop-download-batching`. Source checks pass except the unchanged
+archive test's CRLF-sensitive assertion. Successful live Workshop completion,
+matched timing and real Launcher import remain pending.
 
 ## Current Handoff
 
-- Preserve main's original client-preset bytes, digest-addressed key and checksum;
-  generate the public Launcher modlist independently with uploaded/configured cDLCs.
-  The merge regression covers both contracts and idempotent replay.
-- Preserve main's creation continuation fix; its handler deployment was still
-  pending in main's handoff. Package that handler together with artifact-worker.
-- Permanent Workshop visibility/removal failures now precede transient matching,
-  avoiding retries caused by ordinary connection text in a batch log.
-- Correct the shell regression's concatenated redaction/cleanup assertions and
-  make negative retry/redaction/sampler checks explicitly fail the harness.
-- Review details and optional refactors: `docs/workshop-batching-review.md`.
-- Bootstrap now extracts only typed ModContainer rows from original client/server
-  inputs, matching ingestion and excluding DLC/footer IDs. Mixed-row, DLC-only,
-  deduplication and unreadable-file regressions exercise the real extractor.
-- Affected coverage tests, vet, executable builds and Bash syntax checks pass.
-  The full suite fails the unchanged archive contract's LF-only comparison in this
-  CRLF checkout. Its sampler timing threshold also failed under concurrent load;
-  three isolated repetitions passed. No local C compiler; CI race gate remains.
+- PR #33 targets the older d123d57 head. Local main reconciliation at 629a849
+  and the reviewed output-parsing fixes will be published together. Merge only
+  after current-head checks pass; deployment remains the separate plan below.
+
+- Task 20.7.8: production shell functions pass simulated ANSI/CR output, a complete
+  19-item batch in one SteamCMD invocation, partial transient retries, duplicate or
+  misleading confirmations, missing items, zero-exit errors and cleanup checks.
+- Table-driven shell expectations now independently assert exit status, invocation
+  count and error category. Failed `&&` assertions could previously be masked.
+- Share checked symlink traversal for cached/downloaded mods and missions; failed
+  directory inspection cannot establish that content is safe. Failure regressions pass.
+- Share rendering/checksum/artifact construction between uploaded and Workshop
+  Launcher exports, preserving validation and original-preset integrity.
+- All 81 packages checked sequentially: 80 pass; only the unchanged archive
+  security-contract test fails its LF-only multiline assertion in this CRLF checkout.
+  Affected package coverage: ssmbootstrap 82.0%, modlist 88.9%, artifacts 63.8%,
+  workshop 46.5%, interactions 67.5%. Full vet and Bash syntax checks pass.
+- The broad build hit low disk space. Every executable then built individually,
+  temporary build artifacts were removed, and the artifact-worker Linux archive
+  was rebuilt successfully. No local C compiler; required CI race gate remains.
+- Artifact ZIP SHA256: 671c8eb22d57465ac0b614467bea0d95b629ae5e9a57c5ae87820124b91d5b5d.
+- test-workshop-3 failed when ANSI prefixes hid success/progress markers. The
+  installed client's no-login probe confirms ANSI output; raw failed-run lines
+  were scrubbed during credential cleanup. Formatting regressions now pass.
+- test-workshop-3 is FAILED with no workflow lock and is terminable. Its original
+  preset checksum is valid. No live setup retry, deletion or deployment performed.
+- Details and deferred Creator DLC catalog refactor: docs/workshop-batching-review.md.
 
 ## Important User Attention
 
-- Default: no deployment until a fresh plan is reviewed and approved. Reconcile
-  ignored development tfvars with live values before an untargeted plan; main
-  reports Discord, provisioning and capacity drift. Stop on unrelated plan changes.
-- Expected rollout: bootstrap S3 object, six worker script environment references,
-  artifact-worker code and the pending Discord handler code. No registration needed.
-- Existing durable attachments require a new upload/source resolution; message
-  repair alone reuses old bytes. Actual Launcher import and matched timing remain
-  task 20.7.2/live acceptance gates.
+- Default: apply only a fresh reviewed plan. Expected changes are the new bootstrap
+  S3 script object, six workers' script key/digest references and artifact-worker
+  code. Stop on unrelated infrastructure or other Lambda package changes.
+- File/directory existence alone does not prove completion. Preserve SteamCMD item
+  confirmations alongside size, revision, symlink and applicable checksum checks.
+- Old checksum-broken objects from tests 1/2 require new uploads. Test 3 can reuse
+  its valid original preset. Live timing and Launcher acceptance remain 20.7.2 gates.
 - Carry forward main's unverified recovery follow-up: inspect workflow
   `1551507903913918464` and quarantine its authorization-denied repair if it enters
   the command DLQ; do not redrive it.
 
 ## Commands to Apply Current Changes
 
-Run from the repository root. Rebuild the two affected archives after reconciliation;
-older local archives are stale. Preserve old plan files. Review a fresh plan and
-apply only the exact approved plan, after resolving the configuration drift above.
+The affected artifact-worker archive is already rebuilt. No further packaging or
+Discord registration is required for this handoff. Deploy the script and artifact
+worker with a new plan; the argument array preserves complete dotted targets in
+PowerShell. From the repository root:
 
 ```powershell
-$env:GOCACHE = Join-Path (Get-Location) '.cache/go-build'
-$previousGOOS = $env:GOOS
-$previousGOARCH = $env:GOARCH
-$previousCGOEnabled = $env:CGO_ENABLED
-try {
-    $env:GOOS = 'linux'
-    $env:GOARCH = 'amd64'
-    $env:CGO_ENABLED = '0'
-    foreach ($entry in @(@{ Command = './cmd/artifact-worker'; Archive = 'artifact-worker.zip' }, @{ Command = './cmd/discord-lambda'; Archive = 'discord-interactions.zip' })) {
-        go build -buildvcs=false -tags lambda.norpc -trimpath -ldflags '-s -w' -o .cache/reconciled-bootstrap $entry.Command
-        if ($LASTEXITCODE -ne 0) { throw 'Lambda build failed.' }
-        # Go's packager runs on the host, so temporarily restore its target.
-        $env:GOOS = $previousGOOS
-        $env:GOARCH = $previousGOARCH
-        $env:CGO_ENABLED = $previousCGOEnabled
-        go run ./cmd/package-lambda -source .cache/reconciled-bootstrap -output "dist/$($entry.Archive)"
-        if ($LASTEXITCODE -ne 0) { throw 'Lambda packaging failed.' }
-        $env:GOOS = 'linux'
-        $env:GOARCH = 'amd64'
-        $env:CGO_ENABLED = '0'
-    }
-} finally {
-    $env:GOOS = $previousGOOS
-    $env:GOARCH = $previousGOARCH
-    $env:CGO_ENABLED = $previousCGOEnabled
-}
+$ErrorActionPreference = 'Stop'
 $env:AWS_PROFILE = 'platform-admin'
-$presetPlan = 'reconciled-workshop-launcher-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.tfplan'
-if (Test-Path -LiteralPath "infra/terraform/environments/dev/$presetPlan") { throw 'Choose a fresh plan filename.' }
-terraform -chdir=infra/terraform/environments/dev plan -out=$presetPlan
+$env:AWS_REGION = 'us-west-2'
+$workshopReviewPlan = 'workshop-reviewed-output-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.tfplan'
+$workshopPlanArguments = @(
+    '-chdir=infra/terraform/environments/dev'
+    'plan'
+    "-out=$workshopReviewPlan"
+    '-target=aws_s3_object.bootstrap_script'
+    '-target=aws_lambda_function.bootstrap_worker'
+    '-target=aws_lambda_function.artifact_worker'
+    '-target=aws_lambda_function.sleepwake_worker'
+    '-target=aws_lambda_function.archive_worker'
+    '-target=aws_lambda_function.restore_worker'
+    '-target=aws_lambda_function.reliability_worker'
+)
+terraform @workshopPlanArguments
 if ($LASTEXITCODE -ne 0) { throw 'Terraform plan failed.' }
-terraform -chdir=infra/terraform/environments/dev show -no-color $presetPlan
+if (-not (Test-Path -LiteralPath (Join-Path 'infra/terraform/environments/dev' $workshopReviewPlan))) { throw 'Saved plan file is missing.' }
+terraform -chdir=infra/terraform/environments/dev show $workshopReviewPlan
+if ($LASTEXITCODE -ne 0) { throw 'Terraform plan review failed.' }
 
-# Only after reviewing and approving that exact saved plan:
-terraform -chdir=infra/terraform/environments/dev apply $presetPlan
+# Run only after reviewing and approving this exact newly saved plan.
+terraform -chdir=infra/terraform/environments/dev apply $workshopReviewPlan
 if ($LASTEXITCODE -ne 0) { throw 'Terraform apply failed.' }
-
-$workers = 'artifact', 'bootstrap', 'sleepwake', 'archive', 'restore', 'reliability'
-foreach ($worker in $workers) {
-    aws lambda wait function-updated-v2 --function-name "game-server-platform-dev-$worker-worker" --profile platform-admin --region us-west-2
-    if ($LASTEXITCODE -ne 0) { throw "Worker update failed: $worker" }
-    aws lambda get-function-configuration --function-name "game-server-platform-dev-$worker-worker" --profile platform-admin --region us-west-2 --query '{State:State,Update:LastUpdateStatus,Key:Environment.Variables.BOOTSTRAP_SCRIPT_KEY,SHA256:Environment.Variables.BOOTSTRAP_SCRIPT_SHA256}' --output json
-    if ($LASTEXITCODE -ne 0) { throw "Worker verification failed: $worker" }
+foreach ($worker in @('bootstrap', 'artifact', 'sleepwake', 'archive', 'restore', 'reliability')) {
+    ./scripts/verify-bootstrap-worker-deployment.ps1 -Worker $worker -Profile platform-admin -Region us-west-2
 }
-./scripts/verify-bootstrap-worker-deployment.ps1 -Worker artifact -Profile platform-admin -Region us-west-2
-aws lambda wait function-updated-v2 --function-name game-server-platform-dev-discord-interactions --profile platform-admin --region us-west-2
-if ($LASTEXITCODE -ne 0) { throw 'Discord handler update failed.' }
-./scripts/verify-bootstrap-worker-deployment.ps1 -FunctionName game-server-platform-dev-discord-interactions -ArchivePath dist/discord-interactions.zip -Profile platform-admin -Region us-west-2
-$assetsBucket = terraform -chdir=infra/terraform/environments/dev output -raw session_assets_bucket_name
-$scriptKey = aws lambda get-function-configuration --function-name game-server-platform-dev-bootstrap-worker --profile platform-admin --region us-west-2 --query Environment.Variables.BOOTSTRAP_SCRIPT_KEY --output text
-aws s3api head-object --bucket $assetsBucket --key $scriptKey --profile platform-admin --region us-west-2 --query '{Bytes:ContentLength,Type:ContentType,Version:VersionId}' --output json
-if ($LASTEXITCODE -ne 0) { throw 'Bootstrap script verification failed.' }
 ```
 
-Check all six workers reference the reviewed script key/digest. Regenerate a
-preset through a new upload/source resolution, import it into Arma Launcher,
-then benchmark batching on a new approved bootstrap/sync operation. Verify the
-creation continuation still opens mod options after asynchronous draft updates.
+After deployment, retry test-workshop-3 through the authorized Discord `/rb start`
+flow, or terminate it through `/rb terminate` and its normal confirmation flow.
+Do not reuse failed SSM commands, old host-access manifests or saved Terraform plans.
+Preserve user-owned plans, including the literal `$presetPlan` file.

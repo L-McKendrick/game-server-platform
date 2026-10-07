@@ -496,7 +496,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
       - **19.8.3** [x] Validate, deploy the artifact worker through a one-resource reviewed plan, and conditionally repair the retained `bro` preset pointers. An authorized Discord `/rb start` remains the normal trigger for its bootstrap retry.
 
     - **19.9** [x] Repair creation mod-options continuation after background updates.
-      - **19.9.1** [x] Open the latest authorized modded draft from the continuation button despite background version advances; retain lifecycle/workflow guards and modal submission concurrency checks, reject other guilds and malformed prefixes, add regression coverage, and record deployment commands. Interaction tests, vet, and handler build pass; development deployment and live click verification remain pending.
+      - **19.9.1** [x] Open the latest authorized modded draft from the continuation button despite background version advances; retain lifecycle/workflow guards and modal submission concurrency checks, reject other guilds and malformed prefixes, add regression coverage, and record deployment commands. Interaction tests, vet, and handler build pass; rebuilt handler deployment is verified, and live click verification remains pending.
 
 20. **Production Hardening and Optimization — Pending**
     - Proceeded before Phase 19 by explicit user approval. Deliver on
@@ -531,8 +531,18 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
     - **20.7** [ ] Benchmark bootstrap throughput end to end using Steam, CPU, ENA, instance, and EBS measurements, then optimize only demonstrated bottlenecks within cost and reliability guardrails.
       - **20.7.1** [x] Batch missing Workshop mods and missions into one SteamCMD session per content batch, preserving item validation, progress, bounded retries, cache reuse, and authorization cleanup; reviewed with executable shell edge-case tests on `codex/workshop-download-batching`. Offline validation passes for affected packages; deployment and measured speedup remain 20.7.2.
       - **20.7.2** [ ] Benchmark deployed batching against identical content and record throughput and end-to-end improvement before considering concurrent game/Workshop workers or resource upgrades.
-      - **20.7.3** [x] Repair generated Arma Launcher preset XML/metadata and preserve uploaded plus configured Creator DLCs across upload and Workshop-source exports; verified against the supplied 19-mod/two-cDLC Launcher reference with strict XML parsing, deterministic regeneration and ingestion/Workshop recorder regressions. Artifact-worker package built; deployment and live Launcher import remain pending.
+      - **20.7.3** [x] Repair generated Arma Launcher preset XML/metadata and preserve uploaded plus configured Creator DLCs across upload and Workshop-source exports; verified against the supplied 19-mod/two-cDLC Launcher reference with strict XML parsing, deterministic regeneration and ingestion/Workshop recorder regressions. Rebuilt artifact-worker deployment is verified; live Launcher import remains pending.
       - **20.7.4** [x] Reconcile the Workshop batching branch with current main, preserve original preset integrity and creation continuation fixes, review refactoring and failure paths, and validate the combined changes. Original-byte integrity and typed Workshop extraction are both covered; permanent-failure classification and shell assertions corrected. Optional refactors recorded in docs/workshop-batching-review.md; live gates remain pending.
+
+      - **20.7.5** [x] Correct PowerShell saved-plan argument expansion in the deployment handoff; reproduce literal unquoted output and dotted-target splitting, quote complete native output/target arguments, and gate show/apply on plan existence. No infrastructure changes applied.
+
+      - **20.7.6** [x] Correct Discord deployment verification to check its package and Active/Successful status without bootstrap-worker environment requirements. Both rebuilt handler/artifact archives match live code; artifact runtime verification passes. Existing malformed preset objects still require regeneration.
+
+      - **20.7.7** [x] Repair test-workshop-3's batch parser: installed SteamCMD confirms ANSI-prefixed output; normalize CSI/carriage-return formatting before exact success/progress/error matching. ANSI, CR, combined formatting, large zero-exit error, missing-ID, retry and cleanup regressions pass. Script deployment and successful live acceptance remain pending in 20.7.2.
+
+      - **20.7.8** [x] Review branch and simulate production batch functions, including 19 ANSI/CR-formatted items, retries, partial/duplicate/misleading confirmations, permanent errors and cleanup. Make test assertions unconditional, fail closed on tree-scan errors, and share preset artifact construction. 80/81 packages pass; only unchanged CRLF-sensitive archive assertion fails. Vet, individual executable builds and Bash syntax pass; artifact archive rebuilt. Live rollout/acceptance remains 20.7.2.
+
+      - **20.7.9** [ ] Publish the reviewed fixes and existing main reconciliation to PR #33, verify its current-head checks, and merge through GitHub.
 
 21. **Potential Enhancements — Pending**
     - **21.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.

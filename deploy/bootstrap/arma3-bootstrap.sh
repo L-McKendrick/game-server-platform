@@ -315,6 +315,12 @@ sample_arma_download() {
   done
 }
 
+# SteamCMD emits terminal control sequences even with redirected output.
+# Keep exact line/ID matching, but remove display formatting before parsing.
+normalize_steam_output() {
+  tr '\r' '\n' | sed -E $'s/\033\\[[0-?]*[ -/]*[@-~]//g'
+}
+
 run_steamcmd() {
   local runfile="$1" output_file code progress_pid="" progress_owner="$BASHPID"
   output_file="${STEAM_AUTH_ROOT:-/run}/steamcmd-output.$$.log"
@@ -329,11 +335,11 @@ run_steamcmd() {
   if [ "${2:-}" = workshop ]; then
     # Exit status alone does not prove that every runscript item succeeded.
     # Export only exact requested IDs, never Steam output or authentication data.
-    if ! awk 'NR == FNR {requested[$1]=1; next} /^Success\. Downloaded item [0-9]+ / {if ($4 in requested) print $4}' "$3" "$output_file" | sort -u > "$4"; then
+    if ! normalize_steam_output < "$output_file" | awk 'NR == FNR {requested[$1]=1; next} /^Success\. Downloaded item [0-9]+ / {if ($4 in requested) print $4}' "$3" - | sort -u > "$4"; then
       rm -f -- "$output_file"
       return 1
     fi
-    if grep -Eq '^ERROR!' "$output_file"; then code=1; fi
+    if normalize_steam_output < "$output_file" | grep -E '^ERROR!' >/dev/null; then code=1; fi
   fi
   if grep -Eqi 'Steam Guard|two[- ]factor|Account Logon Denied|InvalidPassword|Invalid Password|login failure|password required' "$output_file"; then
     STEAM_AUTH_VALID=false
@@ -374,7 +380,7 @@ download_workshop_item() {
 
 workshop_download_activity() {
   local line id
-  line="$(tail -c 8192 "$1" 2>/dev/null | tr '\r' '\n' | grep -E '^Downloading item [0-9]+ ' | tail -n 1)" || true
+  line="$(tail -c 8192 "$1" 2>/dev/null | normalize_steam_output | grep -E '^Downloading item [0-9]+ ' | tail -n 1)" || true
   id="$(printf '%s\n' "$line" | awk '{print $3}')"
   awk -v id="$id" '$1 == id {printf "WORKSHOP_ITEM:%s:%s:%s", $1, $2, $3; exit}' "$2"
 }
@@ -464,9 +470,16 @@ ensure_workshop_revision_root() {
   chmod 0750 "$revision_root"
 }
 
+# A failed traversal cannot establish that a cached/downloaded tree is safe.
+workshop_tree_has_no_symlinks() {
+  local link
+  link="$(find "$1" -type l -print -quit)" || return $?
+  [ -z "$link" ]
+}
+
 workshop_mod_cached() {
   local id="$1" expected_update="$2" revision_root="$3" source="$3/$1" marker="$3/.snapshot-$1" source_size
-  if [ -d "$source" ] && [ ! -L "$source" ] && [ -f "$marker" ] && [ ! -L "$marker" ] && [ "$(cat -- "$marker")" = "$id:$expected_update" ] && ! find "$source" -type l -print -quit | grep -q .; then
+  if [ -d "$source" ] && [ ! -L "$source" ] && [ -f "$marker" ] && [ ! -L "$marker" ] && [ "$(cat -- "$marker")" = "$id:$expected_update" ] && workshop_tree_has_no_symlinks "$source"; then
     source_size="$(du -sb "$source" | awk '{print $1}')"
     if [[ "$source_size" =~ ^[1-9][0-9]*$ ]] && [ "$source_size" -le 21474836480 ]; then
       return 0
@@ -488,7 +501,7 @@ ensure_staged_workshop_mod() {
   fi
   source="$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/$id"
   [ -d "$source" ] && [ ! -L "$source" ] || { log "Workshop item $id was not downloaded safely"; return 1; }
-  ! find "$source" -type l -print -quit | grep -q . || { log "Workshop mod content contains a symbolic link"; return 1; }
+  workshop_tree_has_no_symlinks "$source" || { log "Workshop mod content contains a symbolic link or could not be inspected"; return 1; }
   if [ "$expected_update" -gt 0 ]; then
     actual_update="$(workshop_item_updated_at "$id" || true)"
     [ "$actual_update" = "$expected_update" ] || { printf 'ERR_WORKSHOP_METADATA_DRIFT: Workshop mod changed after metadata resolution.\n' >&2; return 1; }
@@ -572,7 +585,7 @@ install_workshop_missions() (
 	  [ ! -e "$final" ] || { log "Workshop mission staging destination is inconsistent"; return 1; }
 	  source="$WORKSHOP_STAGING_ROOT/steamapps/workshop/content/107410/$id"
 	  [ -d "$source" ] || { printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario content was not downloaded.\n' >&2; return 1; }
-	  ! find "$source" -type l -print -quit | grep -q . || { printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario content contains a symbolic link.\n' >&2; return 1; }
+	  workshop_tree_has_no_symlinks "$source" || { printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario content contains a symbolic link or could not be inspected.\n' >&2; return 1; }
 	  mapfile -d '' pbos < <(find "$source" -maxdepth 4 -type f \( -iname '*.pbo' -o -iname '*_legacy.bin' \) -print0)
 	  [ "${#pbos[@]}" -eq 1 ] || { printf 'ERR_WORKSHOP_SCENARIO_PAYLOAD: Workshop scenario must contain exactly one PBO or legacy payload.\n' >&2; return 1; }
 	  pbo="${pbos[0]}"; size="$(stat -c %s -- "$pbo")"; candidate_name="$(basename -- "$pbo")"
