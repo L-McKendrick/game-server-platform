@@ -2,72 +2,93 @@
 
 ## State and Objective
 
-Creation mod-options continuation is fixed in source on the current beta-fix
-branch. The earlier client-preset integrity fix is already deployed; the
-Discord interaction handler change still needs deployment.
+Complete branch review and SteamCMD Workshop simulations on
+`codex/workshop-download-batching`. Source checks pass except the unchanged
+archive test's CRLF-sensitive assertion. Successful live Workshop completion,
+matched timing and real Launcher import remain pending.
 
 ## Current Handoff
 
-- The creation button previously required an exact session version. Asynchronous
-  mission validation and card metadata changes could invalidate it immediately.
-- The button now opens the latest owner-authorized modded draft, rejects future
-  versions, other guilds, non-drafts, vanilla sessions and active workflows,
-  and binds the modal to the current version. Submission concurrency checks remain.
-- Continuation parsing now requires its own prefix so unrelated controls cannot
-  be mistaken for creation buttons.
-- Regression coverage checks older-button recovery/current modal version, future
-  versions, other owners and other guilds. Interaction package tests and vet,
-  Discord handler build, and diff whitespace checks pass with Go 1.26.5.
-- No infrastructure definitions or Discord command definitions changed.
+- PR #33 targets the older d123d57 head. Local main reconciliation at 629a849
+  and the reviewed output-parsing fixes will be published together. Merge only
+  after current-head checks pass; deployment remains the separate plan below.
+
+- Task 20.7.8: production shell functions pass simulated ANSI/CR output, a complete
+  19-item batch in one SteamCMD invocation, partial transient retries, duplicate or
+  misleading confirmations, missing items, zero-exit errors and cleanup checks.
+- Table-driven shell expectations now independently assert exit status, invocation
+  count and error category. Failed `&&` assertions could previously be masked.
+- Share checked symlink traversal for cached/downloaded mods and missions; failed
+  directory inspection cannot establish that content is safe. Failure regressions pass.
+- Share rendering/checksum/artifact construction between uploaded and Workshop
+  Launcher exports, preserving validation and original-preset integrity.
+- All 81 packages checked sequentially: 80 pass; only the unchanged archive
+  security-contract test fails its LF-only multiline assertion in this CRLF checkout.
+  Affected package coverage: ssmbootstrap 82.0%, modlist 88.9%, artifacts 63.8%,
+  workshop 46.5%, interactions 67.5%. Full vet and Bash syntax checks pass.
+- The broad build hit low disk space. Every executable then built individually,
+  temporary build artifacts were removed, and the artifact-worker Linux archive
+  was rebuilt successfully. No local C compiler; required CI race gate remains.
+- Artifact ZIP SHA256: 671c8eb22d57465ac0b614467bea0d95b629ae5e9a57c5ae87820124b91d5b5d.
+- test-workshop-3 failed when ANSI prefixes hid success/progress markers. The
+  installed client's no-login probe confirms ANSI output; raw failed-run lines
+  were scrubbed during credential cleanup. Formatting regressions now pass.
+- test-workshop-3 is FAILED with no workflow lock and is terminable. Its original
+  preset checksum is valid. No live setup retry, deletion or deployment performed.
+- Details and deferred Creator DLC catalog refactor: docs/workshop-batching-review.md.
 
 ## Important User Attention
 
-- Reconcile ignored development `.tfvars` with live values before any untargeted
-  deployment; the previous handoff recorded Discord, provisioning and capacity drift.
-- Prior recovery follow-up remains unverified: check workflow
-  `1551507903913918464` to completion and inspect/quarantine the authorization-denied
-  repair command if it reaches the command DLQ. Do not redrive it.
+- Default: apply only a fresh reviewed plan. Expected changes are the new bootstrap
+  S3 script object, six workers' script key/digest references and artifact-worker
+  code. Stop on unrelated infrastructure or other Lambda package changes.
+- File/directory existence alone does not prove completion. Preserve SteamCMD item
+  confirmations alongside size, revision, symlink and applicable checksum checks.
+- Old checksum-broken objects from tests 1/2 require new uploads. Test 3 can reuse
+  its valid original preset. Live timing and Launcher acceptance remain 20.7.2 gates.
+- Carry forward main's unverified recovery follow-up: inspect workflow
+  `1551507903913918464` and quarantine its authorization-denied repair if it enters
+  the command DLQ; do not redrive it.
 
 ## Commands to Apply Current Changes
 
-Run from the repository root. Package only the changed handler, create a fresh
-saved targeted plan because of the recorded local configuration drift, and review
-it. Proceed with apply only after approving a plan that changes only the handler's
-code; stop if it changes environment, permissions or other configuration.
+The affected artifact-worker archive is already rebuilt. No further packaging or
+Discord registration is required for this handoff. Deploy the script and artifact
+worker with a new plan; the argument array preserves complete dotted targets in
+PowerShell. From the repository root:
 
 ```powershell
-$env:GOCACHE = Join-Path (Get-Location) '.cache/go-build'
-$previousGOOS = $env:GOOS
-$previousGOARCH = $env:GOARCH
-$previousCGOEnabled = $env:CGO_ENABLED
-try {
-    $env:GOOS = 'linux'
-    $env:GOARCH = 'amd64'
-    $env:CGO_ENABLED = '0'
-    go build -buildvcs=false -tags lambda.norpc -trimpath -ldflags '-s -w' -o .cache/mod-options-bootstrap ./cmd/discord-lambda
-    if ($LASTEXITCODE -ne 0) { throw 'Handler build failed' }
-} finally {
-    $env:GOOS = $previousGOOS
-    $env:GOARCH = $previousGOARCH
-    $env:CGO_ENABLED = $previousCGOEnabled
+$ErrorActionPreference = 'Stop'
+$env:AWS_PROFILE = 'platform-admin'
+$env:AWS_REGION = 'us-west-2'
+$workshopReviewPlan = 'workshop-reviewed-output-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.tfplan'
+$workshopPlanArguments = @(
+    '-chdir=infra/terraform/environments/dev'
+    'plan'
+    "-out=$workshopReviewPlan"
+    '-target=aws_s3_object.bootstrap_script'
+    '-target=aws_lambda_function.bootstrap_worker'
+    '-target=aws_lambda_function.artifact_worker'
+    '-target=aws_lambda_function.sleepwake_worker'
+    '-target=aws_lambda_function.archive_worker'
+    '-target=aws_lambda_function.restore_worker'
+    '-target=aws_lambda_function.reliability_worker'
+)
+terraform @workshopPlanArguments
+if ($LASTEXITCODE -ne 0) { throw 'Terraform plan failed.' }
+if (-not (Test-Path -LiteralPath (Join-Path 'infra/terraform/environments/dev' $workshopReviewPlan))) { throw 'Saved plan file is missing.' }
+terraform -chdir=infra/terraform/environments/dev show $workshopReviewPlan
+if ($LASTEXITCODE -ne 0) { throw 'Terraform plan review failed.' }
+
+# Run only after reviewing and approving this exact newly saved plan.
+terraform -chdir=infra/terraform/environments/dev apply $workshopReviewPlan
+if ($LASTEXITCODE -ne 0) { throw 'Terraform apply failed.' }
+foreach ($worker in @('bootstrap', 'artifact', 'sleepwake', 'archive', 'restore', 'reliability')) {
+    ./scripts/verify-bootstrap-worker-deployment.ps1 -Worker $worker -Profile platform-admin -Region us-west-2
 }
-go run ./cmd/package-lambda -source .cache/mod-options-bootstrap -output dist/discord-interactions.zip
-if ($LASTEXITCODE -ne 0) { throw 'Handler packaging failed' }
-$env:AWS_PROFILE = 'game-server-dev'
-$modOptionsPlan = 'creation-mod-options-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.tfplan'
-terraform -chdir=infra/terraform/environments/dev plan -target=aws_lambda_function.discord_interactions "-out=$modOptionsPlan"
-if ($LASTEXITCODE -ne 0) { throw 'Terraform plan failed' }
-terraform -chdir=infra/terraform/environments/dev show $modOptionsPlan
 ```
 
-After reviewing and approving that exact saved plan:
-
-```powershell
-terraform -chdir=infra/terraform/environments/dev apply $modOptionsPlan
-if ($LASTEXITCODE -ne 0) { throw 'Terraform apply failed' }
-```
-
-Verify through Discord: create a modded draft with a mission, wait for validation
-and card updates, then click `Continue to mod options`. It should open the mod
-options form without `/rb edit`. Submit options and verify normal validation.
-No Discord command registration is required. Preserve older saved plan files.
+After deployment, retry test-workshop-3 through the authorized Discord `/rb start`
+flow, or terminate it through `/rb terminate` and its normal confirmation flow.
+Do not reuse failed SSM commands, old host-access manifests or saved Terraform plans.
+Preserve user-owned plans, including the literal `$presetPlan` file.

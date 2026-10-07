@@ -333,10 +333,11 @@ func TestProcessAcceptsPresetWithRepeatedWorkshopReferences(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 8, 8, 21, 0, 0, 0, time.UTC)
-	repository := seededRepository(t, now)
+	repository := seededRepository(t, now, domain.CreatorDLCExpeditionaryForces)
 	downloader := &testDownloader{body: []byte(`<html><table>
 <tr data-type="ModContainer"><td data-type="DisplayName">CBA</td><td><a href="https://steamcommunity.com/sharedfiles/filedetails/?id=450814997" data-publishedfileid="450814997">mod</a></td></tr>
 <tr data-type="DlcContainer"><td data-type="DisplayName">Creator DLC</td><td><a data-publishedfileid="1227700">dlc</a></td></tr>
+<tr data-type="DlcContainer"><td data-type="DisplayName">Reaction Forces</td><td><a href="https://store.steampowered.com/app/2647760" data-type="Link">dlc</a></td></tr>
 </table></html>`)}
 	objects := &testObjectStore{}
 	notifications := &testNotifications{}
@@ -360,6 +361,10 @@ func TestProcessAcceptsPresetWithRepeatedWorkshopReferences(t *testing.T) {
 		strings.Contains(string(objects.objects[1].contents), "1227700") || strings.Contains(string(objects.objects[1].contents), "data-publishedfileid") ||
 		string(objects.objects[0].contents) == string(objects.objects[1].contents) {
 		t.Fatalf("stored objects = %#v; want original digest-addressed preset plus separate sanitized modlist", objects.objects)
+	}
+	publicBody := string(objects.objects[1].contents)
+	if !strings.Contains(publicBody, `name="arma:Type" content="preset" />`) || !strings.Contains(publicBody, "/app/2647760") || !strings.Contains(publicBody, "/app/2647830") {
+		t.Fatalf("public preset omits Launcher metadata or uploaded/configured DLCs: %s", publicBody)
 	}
 	session, err := repository.Get(context.Background(), "session-1")
 	if err != nil {
@@ -621,7 +626,7 @@ func TestProcessKeepsPartiallySuccessfulModdedDraftRecoverable(t *testing.T) {
 	}
 }
 
-func seededRepository(t *testing.T, now time.Time) *memory.SessionRepository {
+func seededRepository(t *testing.T, now time.Time, creatorDLCs ...string) *memory.SessionRepository {
 	t.Helper()
 	repository := memory.NewSessionRepository()
 	session, err := domain.NewSession(domain.NewSessionInput{
@@ -631,6 +636,7 @@ func seededRepository(t *testing.T, now time.Time) *memory.SessionRepository {
 	if err != nil {
 		t.Fatalf("NewSession() returned error: %v", err)
 	}
+	session.CreatorDLCs = append([]string(nil), creatorDLCs...)
 	actor := domain.Actor{Type: domain.ActorTypeDiscordUser, ID: "owner-1"}
 	event := domain.NewSessionCreatedEvent("create-event", "correlation-create", actor, session, now)
 	idempotency, err := domain.NewCompletedIdempotencyRecord("discord:create", "create-hash", session.ID, now, 7*24*time.Hour)

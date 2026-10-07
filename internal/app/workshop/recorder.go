@@ -97,7 +97,7 @@ func (recorder *Recorder) RecordModResolution(ctx context.Context, request domai
 	for _, item := range source.AcceptedItems {
 		mods = append(mods, modlist.WorkshopMod{ID: item.PublishedFileID, Name: item.Title})
 	}
-	artifact, err := modlist.GenerateWorkshop(mods, session.ID, session.DisplayName, session.Slug)
+	artifact, err := modlist.GenerateWorkshop(mods, session.ID, session.DisplayName, session.Slug, session.CreatorDLCs...)
 	if err != nil {
 		return ModResolutionResult{}, fmt.Errorf("%w: %v", domain.ErrPermanentWorkshopRejection, err)
 	}

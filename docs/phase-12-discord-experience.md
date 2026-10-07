@@ -106,10 +106,12 @@ mod pipeline: bootstrap maps the supported catalog to the server directories
 directory, and writes them before Workshop links in the same `mods.txt` read by
 the existing `-mod` argument. Archive manifests preserve the canonical
 selection, restore rejects drift, and cards show the selected product names.
-Only rows explicitly typed `ModContainer` are accepted from Launcher presets.
-The original HTML is never used for server bootstrap: both the server input and
-downloadable copy are rebuilt from those rows, so `DlcContainer` sections and
-Workshop-looking IDs in footers or unrelated markup cannot override the form.
+Only rows explicitly typed `ModContainer` supply Workshop identities from Launcher
+presets. Preserve validated original bytes at the digest-addressed server input
+key so bootstrap integrity checks match the upload. Generate the downloadable
+copy separately: retain typed Steam Store DLC links and add configured cDLCs.
+Server cDLC selection still comes from the form; uploaded `DlcContainer` rows and
+Workshop-looking IDs in footers or unrelated markup cannot override it.
 A preset that becomes Workshop-empty after filtering is accepted only when the
 form selects at least one supported cDLC. cDLC-only sessions are therefore
 valid, while a content-empty modded session remains a recoverable draft.
@@ -217,6 +219,14 @@ from the card. Generate a sanitized Arma Launcher-compatible file from the
 validated preset, use a slug-based filename, and strip irrelevant local or
 sensitive metadata. Recreate the message from the durable S3 object if it is
 deleted.
+
+Exports use well-formed XML with `arma:Type=preset`, the session preset name,
+and Launcher-typed `ModContainer`/`DlcContainer` rows. Preserve uploaded Steam
+Store DLC links and add configured Creator DLCs without duplicates; DLC app IDs
+remain separate from Workshop item IDs and counts. The same renderer serves
+uploaded presets and Workshop-source resolution. Older durable attachments need
+a new preset upload/source resolution to regenerate their contents; message
+repair alone reuses the existing object.
 
 Post-creation `/rb edit` with the `mods` section updates the desired Creator DLC set and optionally
 uploads and validates independent pending client or server-only preset

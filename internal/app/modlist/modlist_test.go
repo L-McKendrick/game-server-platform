@@ -33,7 +33,7 @@ func TestGenerateRebuildsSanitizedLauncherPreset(t *testing.T) {
 		}
 	}
 	if strings.Contains(content, "1227700") || strings.Contains(content, "Prairie Fire") {
-		t.Fatalf("sanitized preset retained Creator DLC section: %s", content)
+		t.Fatalf("sanitized preset accepted a DLC row without a Steam Store link: %s", content)
 	}
 	if artifact.Filename != "saturday-ops-modlist.html" || artifact.WorkshopCount != 2 ||
 		!strings.HasPrefix(artifact.ObjectKey, "sessions/session-1/input/modlists/") || len(artifact.SHA256Hex) != 64 {
