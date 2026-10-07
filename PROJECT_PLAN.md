@@ -542,7 +542,7 @@ Build a secure, cost-bounded AWS platform controlled through Discord that provis
 
       - **20.7.8** [x] Review branch and simulate production batch functions, including 19 ANSI/CR-formatted items, retries, partial/duplicate/misleading confirmations, permanent errors and cleanup. Make test assertions unconditional, fail closed on tree-scan errors, and share preset artifact construction. 80/81 packages pass; only unchanged CRLF-sensitive archive assertion fails. Vet, individual executable builds and Bash syntax pass; artifact archive rebuilt. Live rollout/acceptance remains 20.7.2.
 
-      - **20.7.9** [ ] Publish the reviewed fixes and existing main reconciliation to PR #33, verify its current-head checks, and merge through GitHub.
+      - **20.7.9** [x] Publish reviewed fixes and main reconciliation to PR #33; exact-head Ubuntu Go race/coverage/packaging and Terraform checks pass. Merged through GitHub as a6697df and synchronized local main. Live deployment/benchmark acceptance remains 20.7.2.
 
 21. **Potential Enhancements — Pending**
     - **21.1** [ ] Evaluate scheduling and operational analytics using the established admin and presentation contracts.

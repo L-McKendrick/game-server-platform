@@ -2,16 +2,15 @@
 
 ## State and Objective
 
-Complete branch review and SteamCMD Workshop simulations on
-`codex/workshop-download-batching`. Source checks pass except the unchanged
-archive test's CRLF-sensitive assertion. Successful live Workshop completion,
-matched timing and real Launcher import remain pending.
+PR #33 is merged into main at a6697df; local main is synchronized. Exact-head
+Ubuntu Go race/coverage/packaging and Terraform checks passed. Successful live
+Workshop completion, matched timing and real Launcher import remain pending.
 
 ## Current Handoff
 
-- PR #33 targets the older d123d57 head. Local main reconciliation at 629a849
-  and the reviewed output-parsing fixes will be published together. Merge only
-  after current-head checks pass; deployment remains the separate plan below.
+- PR #33 merged after all checks passed on 8ad769d. Commit 8ad769d includes the
+  parsing/review fixes; 629a849 preserves the earlier main conflict resolution.
+  Merge commit a6697df is on main. Deployment remains the separate plan below.
 
 - Task 20.7.8: production shell functions pass simulated ANSI/CR output, a complete
   19-item batch in one SteamCMD invocation, partial transient retries, duplicate or
@@ -28,7 +27,7 @@ matched timing and real Launcher import remain pending.
   workshop 46.5%, interactions 67.5%. Full vet and Bash syntax checks pass.
 - The broad build hit low disk space. Every executable then built individually,
   temporary build artifacts were removed, and the artifact-worker Linux archive
-  was rebuilt successfully. No local C compiler; required CI race gate remains.
+  was rebuilt successfully. No local C compiler; Ubuntu CI race gate passed.
 - Artifact ZIP SHA256: 671c8eb22d57465ac0b614467bea0d95b629ae5e9a57c5ae87820124b91d5b5d.
 - test-workshop-3 failed when ANSI prefixes hid success/progress markers. The
   installed client's no-login probe confirms ANSI output; raw failed-run lines
